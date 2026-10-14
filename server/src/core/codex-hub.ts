@@ -1,0 +1,231 @@
+// server/src/core/codex-hub.ts — Codex chats from OTHER PCs, pushed here by their own AgentHydra.
+//
+// A Codex chat lives on the PC that ran it: its rollout under that PC's CODEX_HOME, its place in the
+// sidebar in that PC's state database. A daemon on a server (or on another PC) never sees it. Codex's
+// own remote control does not help: it pairs one PC with the ChatGPT app over OpenAI's encrypted relay
+// and offers no API to anything else. So each PC asks its own Codex app-server for its chat list
+// (codex-hub-push.ts) and pushes the list, plus every rollout that changed, to one hub daemon.
+//
+// The hub keeps each PC's copy as a Codex home of its own under <CONFIG_DIR>/codex-hub/<pc>/:
+// `sessions/` holds the rollouts at the same relative paths as on the PC, `session_index.jsonl`
+// the titles, and `manifest.json` the list as that PC's app-server last answered it. Because it is
+// shaped like a Codex home, codexInstanceStores() serves it to the transcript index unchanged, so
+// listing, reading, search and analytics treat a pushed chat like a local one. Read-only: nothing
+// here can start a turn on, rename or archive a chat on the PC it came from.
+//
+// Off unless AGENTHYDRA_CODEX_HUB_TOKEN is set; then every push must carry it as a bearer token.
+// Any number of PCs may push with the same token; each is kept apart by the name it sends.
+
+import { timingSafeEqual } from 'node:crypto'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { dirname, join } from 'node:path'
+import { appEnv, CONFIG_DIR } from '../config'
+
+/** One chat as the PC's app-server listed it (the subset of its `Thread` the hub keeps). */
+export interface HubThread {
+  id: string
+  name: string | null
+  preview: string
+  cwd: string | null
+  /** Unix seconds, as app-server reports it. */
+  updatedAt: number
+  /** `cli`, `vscode`, ... (app-server's SessionSource; an object source is sent as its key). */
+  source: string
+  /** The rollout's path relative to the PC's CODEX_HOME (`sessions/2026/10/14/rollout-...jsonl`). */
+  path: string | null
+}
+
+export interface HubFile {
+  path: string
+  updatedAt: number
+  /** The rollout, gzipped, base64. */
+  gz: string
+}
+
+export interface HubPush {
+  pc: string
+  threads: HubThread[]
+  files?: HubFile[]
+}
+
+export interface HubManifest {
+  pc: string
+  pushedAt: string
+  threads: HubThread[]
+  /** Relative rollout path -> the `updatedAt` of the thread row it was copied for. */
+  files: Record<string, number>
+}
+
+export const CODEX_HUB_DIR = join(CONFIG_DIR, 'codex-hub')
+const MANIFEST = 'manifest.json'
+const PC_MAX = 63
+/** Only paths a rollout can have: under sessions/, no `..`, a .jsonl file. */
+const ROLLOUT_PATH = /^sessions\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.jsonl$/
+
+export function codexHubToken(): string | null {
+  return appEnv('CODEX_HUB_TOKEN')?.trim() || null
+}
+
+export function hubTokenMatches(header: string | undefined, token: string): boolean {
+  const presented = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
+  if (!presented) return false
+  const a = Buffer.from(presented)
+  const b = Buffer.from(token)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+/** The folder name for a PC: its name lowercased to letters, digits and dashes. */
+export function hubPcKey(pc: string): string | null {
+  const key = pc
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, PC_MAX)
+  return key || null
+}
+
+/** A rollout path from another machine, relative to its CODEX_HOME: the part from `sessions/` on. */
+export function relativeRolloutPath(path: string | null | undefined): string | null {
+  if (!path) return null
+  const parts = path.split(/[\\/]+/)
+  const at = parts.lastIndexOf('sessions')
+  if (at === -1) return null
+  const rel = parts.slice(at).join('/')
+  return ROLLOUT_PATH.test(rel) && !rel.split('/').includes('..') ? rel : null
+}
+
+/** The list a PC last pushed into this hub folder, or null for a folder that is not a hub copy. */
+export function readCodexHubManifest(dir: string): HubManifest | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, MANIFEST), 'utf8')) as HubManifest
+    return parsed && Array.isArray(parsed.threads) && parsed.files ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function writeAtomic(path: string, data: string | Uint8Array): void {
+  mkdirSync(dirname(path), { recursive: true })
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, data)
+  renameSync(tmp, path)
+}
+
+function cleanThread(raw: unknown): HubThread | null {
+  const t = raw as Partial<HubThread> | null
+  if (!t || typeof t.id !== 'string' || !t.id.trim() || typeof t.updatedAt !== 'number') return null
+  return {
+    id: t.id.trim(),
+    name: typeof t.name === 'string' && t.name.trim() ? t.name.trim() : null,
+    preview: typeof t.preview === 'string' ? t.preview : '',
+    cwd: typeof t.cwd === 'string' && t.cwd ? t.cwd : null,
+    updatedAt: t.updatedAt,
+    source: typeof t.source === 'string' ? t.source : 'unknown',
+    path: relativeRolloutPath(t.path),
+  }
+}
+
+export type HubPushResult =
+  | { ok: true; pc: string; stored: number; want: string[] }
+  | { ok: false; status: 400; error: string }
+
+/**
+ * Takes one PC's push: its whole chat list (which replaces the last one) and any rollouts it sent.
+ * Answers the rollout paths the hub still lacks at the version listed, so the PC sends those next;
+ * a rollout no listed chat names any more (archived or deleted there) is removed here.
+ */
+export function acceptCodexHubPush(body: unknown, root: string = CODEX_HUB_DIR): HubPushResult {
+  const push = body as Partial<HubPush> | null
+  const pc = typeof push?.pc === 'string' ? push.pc.trim() : ''
+  const key = pc ? hubPcKey(pc) : null
+  if (!key) return { ok: false, status: 400, error: 'pc is required' }
+  if (!Array.isArray(push?.threads))
+    return { ok: false, status: 400, error: 'threads must be a list' }
+  const threads = push.threads.map(cleanThread).filter((t): t is HubThread => t !== null)
+
+  const dir = join(root, key)
+  const previous = readCodexHubManifest(dir)
+  const files: Record<string, number> = { ...(previous?.files ?? {}) }
+
+  // Rollouts first, so a manifest never names a file that is not there yet.
+  let stored = 0
+  for (const f of Array.isArray(push.files) ? push.files : []) {
+    const rel = relativeRolloutPath(f?.path)
+    if (!rel || typeof f.gz !== 'string' || typeof f.updatedAt !== 'number') continue
+    let bytes: Uint8Array
+    try {
+      bytes = Bun.gunzipSync(Buffer.from(f.gz, 'base64'))
+    } catch {
+      continue
+    }
+    writeAtomic(join(dir, ...rel.split('/')), bytes)
+    files[rel] = f.updatedAt
+    stored++
+  }
+
+  // A rollout of each listed version per path: an older row for the same file never asks for it again.
+  const listed = new Map<string, number>()
+  for (const t of threads)
+    if (t.path) listed.set(t.path, Math.max(listed.get(t.path) ?? 0, t.updatedAt))
+  for (const rel of Object.keys(files)) {
+    if (listed.has(rel)) continue
+    rmSync(join(dir, ...rel.split('/')), { force: true })
+    delete files[rel]
+  }
+  const want = [...listed]
+    .filter(
+      ([rel, at]) =>
+        !(rel in files) || files[rel]! < at || !existsSync(join(dir, ...rel.split('/'))),
+    )
+    .map(([rel]) => rel)
+
+  const manifest: HubManifest = { pc, pushedAt: new Date().toISOString(), threads, files }
+  writeAtomic(join(dir, MANIFEST), JSON.stringify(manifest))
+  // Titles where the transcript index looks for them (transcript.ts parseCodexSessionIndex).
+  const index = threads
+    .filter((t) => t.name)
+    .map((t) =>
+      JSON.stringify({
+        id: t.id,
+        thread_name: t.name,
+        updated_at: new Date(t.updatedAt * 1000).toISOString(),
+      }),
+    )
+  writeAtomic(join(dir, 'session_index.jsonl'), index.length ? `${index.join('\n')}\n` : '')
+  return { ok: true, pc, stored, want }
+}
+
+export interface CodexHubHome {
+  /** `hub:<pc key>`, the instance id its chats carry. */
+  id: string
+  /** The PC's name as it sent it. */
+  name: string
+  codexHome: string
+  manifest: HubManifest
+}
+
+/** Every PC that has pushed here, by folder. Empty when the hub has never been used. */
+export function codexHubHomes(root: string = CODEX_HUB_DIR): CodexHubHome[] {
+  let entries: string[]
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return []
+  }
+  const homes: CodexHubHome[] = []
+  for (const key of entries.sort()) {
+    const codexHome = join(root, key)
+    const manifest = readCodexHubManifest(codexHome)
+    if (manifest) homes.push({ id: `hub:${key}`, name: manifest.pc || key, codexHome, manifest })
+  }
+  return homes
+}

@@ -93,6 +93,8 @@ export interface AhCodexChatRow {
   title: string
   cwd: string | null
   lastActivityAt: string | null // ISO
+  /** Set on a chat another PC pushed to AgentHydra's Codex hub: that PC's name. It cannot be resumed here. */
+  fromPc?: string
 }
 
 /** GET /api/codex-instances: one Codex account, only what Desk reads (no identity: its sign-in stays AgentHydra's). */

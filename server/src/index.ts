@@ -72,6 +72,7 @@ import {
 } from './core/cli-instances'
 import { startLoginSync, stopLoginSync } from './core/cli-login-sync'
 import { startCliResetSweep, stopCliResetSweep } from './core/cli-reset-sweep'
+import { codexHubPushConfig, startCodexHubPusher } from './core/codex-hub-push'
 import { reconcileCodexInstanceDirs } from './core/codex-instances'
 import { startDesktopCliFeed, stopDesktopCliFeed } from './core/desktop-cli-pairing'
 import { createRunningCodeProbe } from './core/running-code'
@@ -926,6 +927,7 @@ await import('./routes/helpers')
 await import('./routes/routing')
 await import('./routes/dashboards')
 await import('./routes/fourman')
+await import('./routes/codex-hub')
 
 // --- full-shutdown sentinel (web-UI "Shut down") -----------------------------
 // A marker file the PowerShell tray host polls (misc/Tray-Host.ps1 watch timer) so a user "Shut
@@ -1760,6 +1762,11 @@ disarmBootWatchdog()
 // build's table, and never awaited: a daemon that cannot reach the network still prices every
 // model it shipped knowing about.
 startPriceCatalog()
+
+// This PC's Codex chats to a hub daemon on another machine (core/codex-hub-push.ts), when
+// AGENTHYDRA_CODEX_HUB_URL names one. A malformed setting stops boot here rather than failing quietly.
+const codexHubPush = codexHubPushConfig()
+if (codexHubPush) startCodexHubPusher(codexHubPush)
 
 // The conversation index is opened here, once listening, because a search never opens it
 // (session-search.ts indexState): the open is synchronous and can wait seconds for a held file,

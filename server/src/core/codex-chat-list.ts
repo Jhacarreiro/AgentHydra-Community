@@ -14,6 +14,7 @@
 import { Database } from 'bun:sqlite'
 import { existsSync, readdirSync } from 'node:fs'
 import { join, sep } from 'node:path'
+import { type HubManifest, type HubThread, readCodexHubManifest } from './codex-hub'
 import { type CodexInstanceStore, codexInstanceStores } from './codex-instances'
 
 /** The thread sources thread/list shows by default: chats a person started. */
@@ -32,6 +33,8 @@ export interface CodexChatRow {
   cwd: string | null
   /** When Codex last updated the thread (ISO), the order its app's sidebar uses. */
   lastActivityAt: string | null
+  /** The PC a chat pushed to this hub came from (codex-hub.ts); absent for this PC's own chats. */
+  fromPc?: string
 }
 
 /** The newest state database in a Codex home (`state_5.sqlite` as of Codex 0.162), or null. */
@@ -102,6 +105,27 @@ function readHome(store: CodexInstanceStore): CodexChatRow[] {
   }
 }
 
+/** A hub copy's chats (codex-hub.ts): the list its PC's app-server last answered, newest row per chat. */
+function readHubHome(store: CodexInstanceStore, manifest: HubManifest): CodexChatRow[] {
+  const newest = new Map<string, HubThread>()
+  for (const t of manifest.threads)
+    if (
+      INTERACTIVE_SOURCES.has(t.source) &&
+      (newest.get(t.id)?.updatedAt ?? -Infinity) < t.updatedAt
+    )
+      newest.set(t.id, t)
+  return [...newest.values()].map((t) => ({
+    instance: store.name,
+    instanceNum: store.num,
+    instanceId: store.id,
+    threadId: t.id,
+    title: t.name || firstLine(t.preview) || t.id,
+    cwd: t.cwd,
+    lastActivityAt: new Date(t.updatedAt * 1000).toISOString(),
+    fromPc: manifest.pc,
+  }))
+}
+
 const lastRead = new Map<string, CodexChatRow[]>()
 
 /** Every Codex home's unarchived chats, newest first. A home whose database cannot be read now serves its last answer. */
@@ -110,7 +134,8 @@ export function listCodexChats(): CodexChatRow[] {
   for (const store of codexInstanceStores()) {
     let rows: CodexChatRow[]
     try {
-      rows = readHome(store)
+      const hub = readCodexHubManifest(store.codexHome)
+      rows = hub ? readHubHome(store, hub) : readHome(store)
       lastRead.set(store.codexHome, rows)
     } catch {
       rows = lastRead.get(store.codexHome) ?? []

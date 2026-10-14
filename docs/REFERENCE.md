@@ -551,6 +551,11 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CLAUDE_PATH` | npm-global install / `claude` | Claude CLI executable for every spawn (usage probe, keepalive, launches); point it at `server/tests/mocks/bin/claude(.cmd)` to replay a recording |
 | `AGENTHYDRA_CODEX_PATH` | auto-detected / `codex` | Codex executable used by managed Codex instances |
 | `AGENTHYDRA_CODEX_DESKTOP_PATH` | auto-detected | Codex Desktop GUI executable; useful for nonstandard installs |
+| `AGENTHYDRA_CODEX_HUB_TOKEN` | unset | turns this daemon into a [Codex hub](#codex-chats-from-other-pcs-codex-hub) and is the bearer token every push must carry; on a pushing PC, the same token |
+| `AGENTHYDRA_CODEX_HUB_URL` | unset | the hub this PC pushes its Codex chats to (`https://hub.example.test`); with the token set, the daemon pushes every interval |
+| `AGENTHYDRA_CODEX_HUB_PC` | the computer's name | the name this PC's chats are listed under on the hub |
+| `AGENTHYDRA_CODEX_HUB_HEADERS` | unset | JSON object of extra headers for each push, e.g. a Cloudflare Access service token in front of the hub |
+| `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
 | `AGENTHYDRA_BOOT_DEADLINE_MS` | `120000` (full daemon) / `30000` (`--instances`) | startup-liveness watchdog deadline; if boot hasn't reached a bound port by then, the process logs its last-known phase and exits `87` for the supervisor to restart it (see `server/src/boot-watchdog.ts`) |
@@ -784,6 +789,25 @@ which sources are ingested up to when (`sources`, `cursors`, and `dirtyFrom`, no
 hours are still being rolled up), `window` the resolved span and how it was resolved (`basis`), and
 `notes` any place the answer is narrower than asked. A low figure beside a lagging source is
 partial, not true.
+
+### Codex chats from other PCs (Codex hub)
+
+A Codex chat lives on the PC that ran it, so a daemon on a server or another PC never sees it. Codex's own
+remote control pairs one PC with the ChatGPT app over OpenAI's encrypted relay and has no API for anything
+else. Instead, each PC asks its own Codex app-server for its chat list (`thread/list`, the list and titles
+the Codex app shows) and pushes it to one hub daemon, which keeps a Codex home per PC under
+`<config dir>/codex-hub/<pc>/`. The hub's chat list, sessions, search and transcripts then include every
+PC's chats, each marked with the PC it came from. They are read-only there: nothing on the hub can start a
+turn on, rename or archive a chat on its PC.
+
+- **Hub:** set `AGENTHYDRA_CODEX_HUB_TOKEN`. `POST /api/codex-hub/push` takes a PC's list and the rollouts
+  it lacks (`Authorization: Bearer <token>`); `GET /api/codex-hub/pcs` lists each PC and its last push.
+  Like the rest of the API it answers loopback Hosts only, so a hub on another machine sits behind a
+  proxy that forwards `/api/codex-hub/` with a loopback Host.
+- **Each PC:** set `AGENTHYDRA_CODEX_HUB_URL` and the same token. The daemon pushes every two minutes;
+  a PC that does not run the daemon can run `bun server/src/codex-hub-push-main.ts` (`--once` for one
+  round). The first push sends every rollout, later ones only what changed; a chat archived or deleted
+  on the PC leaves the hub at its next push. Add PCs by repeating this on each with its own name.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 

@@ -183,6 +183,7 @@ export function mapExternal(
       parentId?: string
       codexAccountId?: string
       model?: string | null
+      fromPc?: string
     },
   ) => {
     const row = index.get(id)
@@ -215,7 +216,7 @@ export function mapExternal(
       ...(base.codexAccountId ? { codexAccountId: base.codexAccountId } : {}),
       canResume: canResume({ status, source, codexAccountId: base.codexAccountId }),
       // The chat sync's mark on its index row: the row draws a cloud for another PC's chat, as the cloud list does.
-      fromPc: row?.from_pc || null,
+      fromPc: base.fromPc || row?.from_pc || null,
       ...(base.parentId ? { parentId: base.parentId } : {}),
       ...limitOf(row),
       ...UNMARKED,
@@ -234,7 +235,8 @@ export function mapExternal(
       model: c.model ?? null,
     })
   for (const c of inp.codexChats ?? [])
-    fromIndex(c.threadId, 'codex', { title: c.title, cwd: c.cwd, instance: c.instance, last: iso(c.lastActivityAt), codexAccountId: c.instanceId })
+    // A chat another PC pushed to the Codex hub lives on that PC: listed and readable, never resumed on an account here.
+    fromIndex(c.threadId, 'codex', { title: c.title, cwd: c.cwd, instance: c.instance, last: iso(c.lastActivityAt), ...(c.fromPc ? { fromPc: c.fromPc } : { codexAccountId: c.instanceId }) })
   // The session each Desktop chat runs as now, by its local id (archived ones too). A live engine with no transcript
   // whose chat runs as another session is a spare one Claude Desktop left running, nothing to show (owner, 2026-10-10:
   // "ddc6fc99 ... shows nothing, like cannot load"; a second engine of a listed chat, started with no prompt, was a row

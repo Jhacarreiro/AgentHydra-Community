@@ -16,6 +16,7 @@ import {
   type ScanDesktopProcesses,
   scanCodexDesktopProcesses,
 } from './codex-desktop'
+import { codexHubHomes } from './codex-hub'
 import { instanceNumbers, instanceRef } from './instance-numbers'
 import {
   describeStoreRefusal,
@@ -340,6 +341,9 @@ export function codexInstanceStores(): CodexInstanceStore[] {
       name: basename(CODEX_HOME),
       codexHome: CODEX_HOME,
     })
+  // Other PCs' chats pushed to this daemon (codex-hub.ts) are kept as Codex homes of their own, last.
+  for (const home of codexHubHomes())
+    rows.push({ id: home.id, name: home.name, codexHome: home.codexHome })
   const numbers = instanceNumbers(rows.map((row) => instanceRef('codex', row.id)))
   return rows.map((row) => {
     const ref = instanceRef('codex', row.id)
