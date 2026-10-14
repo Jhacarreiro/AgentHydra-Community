@@ -310,6 +310,15 @@ describe('groupCloud', () => {
     expect(hitsOnThisPc(hits, external, 'PC').map((h) => h.sessionId)).toEqual(['here'])
   })
 
+  test("cloud off keeps another PC's Codex chats the Codex hub holds; a synced chat still leaves", () => {
+    const external = [
+      outside('hub-chat', { source: 'codex', fromPc: 'OTHER-PC' } as never),
+      outside('synced', { fromPc: 'OTHER-PC' } as never),
+      outside('codex-here', { source: 'codex', codexAccountId: 'codex-1' } as never),
+    ]
+    expect(deskOnPcs([], external, null, 'PC', false).external.map((s) => s.id)).toEqual(['hub-chat', 'codex-here'])
+  })
+
   // Owner, 2026-10-05: "show only local, which should mean this PC" did nothing to the desk list.
   test('Show only local narrows the desk list too: Desk chats are this PC\'s, a synced outside session its PC\'s', () => {
     const chats = [deskChat('chat-1', 'chat-session')]

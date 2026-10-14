@@ -261,10 +261,15 @@ export function deskOnPcs<C, E extends Pick<CloudSession, 'fromPc'>>(
   cloudOn = true
 ): { chats: C[]; external: E[] } {
   // Cloud off looks as if the other PCs' chats did not exist (owner, 2026-10-10): the chat sync's rows leave first.
-  if (!cloudOn) external = external.filter((s) => !otherPc(s, thisPc))
+  // A Codex chat another PC pushed to the Codex hub stays: the hub is how this window sees that PC's chats at all.
+  if (!cloudOn) external = external.filter((s) => !otherPc(s, thisPc) || codexHubRow(s))
   if (pcs === null) return { chats, external }
   return { chats: pcs.includes(thisPc) ? chats : [], external: external.filter((s) => pcKept(s, pcs, thisPc)) }
 }
+
+/** A Codex chat the Codex hub holds for another PC: it names that PC and no Codex account here. */
+export const codexHubRow = (r: { fromPc?: string | null; source?: string; codexAccountId?: string }): boolean =>
+  r.source === 'codex' && !!r.fromPc && !r.codexAccountId
 
 /** Cloud off: another PC's chat is not there (owner, 2026-10-10); the one rule deskOnPcs and the search hits share. */
 export const otherPc = (r: Pick<CloudSession, 'fromPc'>, thisPc: string): boolean => !!r.fromPc && r.fromPc !== thisPc
