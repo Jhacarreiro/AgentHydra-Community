@@ -267,9 +267,9 @@ export function deskOnPcs<C, E extends Pick<CloudSession, 'fromPc'>>(
   return { chats: pcs.includes(thisPc) ? chats : [], external: external.filter((s) => pcKept(s, pcs, thisPc)) }
 }
 
-/** A Codex chat the Codex hub holds for another PC: it names that PC and no Codex account here. */
+/** A Codex chat the Codex hub holds for another PC: it names that PC, and its account (if any) is the hub's `hub:<pc>`. */
 export const codexHubRow = (r: { fromPc?: string | null; source?: string; codexAccountId?: string }): boolean =>
-  r.source === 'codex' && !!r.fromPc && !r.codexAccountId
+  r.source === 'codex' && !!r.fromPc && (!r.codexAccountId || r.codexAccountId.startsWith('hub:'))
 
 /** Cloud off: another PC's chat is not there (owner, 2026-10-10); the one rule deskOnPcs and the search hits share. */
 export const otherPc = (r: Pick<CloudSession, 'fromPc'>, thisPc: string): boolean => !!r.fromPc && r.fromPc !== thisPc

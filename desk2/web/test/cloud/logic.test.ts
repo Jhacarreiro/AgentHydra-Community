@@ -312,7 +312,7 @@ describe('groupCloud', () => {
 
   test("cloud off keeps another PC's Codex chats the Codex hub holds; a synced chat still leaves", () => {
     const external = [
-      outside('hub-chat', { source: 'codex', fromPc: 'OTHER-PC' } as never),
+      outside('hub-chat', { source: 'codex', fromPc: 'OTHER-PC', codexAccountId: 'hub:other-pc' } as never),
       outside('synced', { fromPc: 'OTHER-PC' } as never),
       outside('codex-here', { source: 'codex', codexAccountId: 'codex-1' } as never),
     ]
