@@ -6,13 +6,14 @@
 // handoff of the chat so far (the manager's `handoff`), so Codex knows what was said on Claude.
 
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ImageRef, PermissionDecision, PermissionMode, QuestionAnswer, ServiceThread, TranscriptItem } from '@shared/protocol'
 import { mediaCache } from '../../media/cache'
 import { ANSWER_NOW } from '../handoff'
 import { type Sent, ServiceRuntime, type ServiceRuntimeDeps } from '../service-runtime'
 import type { CodexAccount, CodexPick } from './accounts'
-import { type AppServer, type OpenAppServer, openAppServer, type ThreadListener } from './app-server'
+import { type AppServer, isRelayHome, type OpenAppServer, openAppServer, type ThreadListener } from './app-server'
 import { activityOf, type CodexItem, codexItems, planTodos, shownCommand } from './items'
 
 export interface CodexRuntimeDeps extends ServiceRuntimeDeps {
@@ -62,6 +63,14 @@ export function policy(mode: PermissionMode): { approvalPolicy: string; sandbox:
 
 /** A chat model only Codex knows (a Claude id stays with Claude). */
 export const codexModel = (model: string | null): string | null => (model && /^(?:gpt-|o\d|codex)/i.test(model) ? model : null)
+
+const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }
+
+/** A cached picture as a data URL, for a Codex that runs on another PC. */
+function dataUrl(path: string): string {
+  const type = IMAGE_TYPES[path.split('.').pop()?.toLowerCase() ?? ''] ?? 'image/png'
+  return `data:${type};base64,${readFileSync(path).toString('base64')}`
+}
 
 export const isLimit = (info: unknown): boolean => info === 'usageLimitExceeded' || info === 'sessionBudgetExceeded'
 
@@ -525,10 +534,14 @@ export class CodexRuntime extends ServiceRuntime {
   private pictures(images?: ImageRef[]): Record<string, unknown>[] {
     const cache = mediaCache(this.deps.store.home)
     if (!images?.length || !cache) return []
-    return images.flatMap((img) => {
+    return images.flatMap((img): Record<string, unknown>[] => {
       const ref = img.dataBase64 ? cache.putBase64(img.dataBase64, img.name) : img
       const file = ref?.url?.split('/').pop()
-      return file ? [{ type: 'localImage', path: join(cache.dir, file) }] : []
+      if (!file) return []
+      const path = join(cache.dir, file)
+      // Another PC's Codex cannot read a file here: the picture goes with the message.
+      if (this.home && isRelayHome(this.home)) return [{ type: 'image', url: dataUrl(path) }]
+      return [{ type: 'localImage', path }]
     })
   }
 }

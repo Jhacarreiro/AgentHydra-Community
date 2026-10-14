@@ -556,6 +556,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HUB_PC` | the computer's name | the name this PC's chats are listed under on the hub |
 | `AGENTHYDRA_CODEX_HUB_HEADERS` | unset | JSON object of extra headers for each push, e.g. a Cloudflare Access service token in front of the hub |
 | `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes |
+| `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, `full` also without them (Desk's bypass mode), `off` keeps the relay closed |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
 | `AGENTHYDRA_BOOT_DEADLINE_MS` | `120000` (full daemon) / `30000` (`--instances`) | startup-liveness watchdog deadline; if boot hasn't reached a bound port by then, the process logs its last-known phase and exits `87` for the supervisor to restart it (see `server/src/boot-watchdog.ts`) |
@@ -797,13 +798,23 @@ remote control pairs one PC with the ChatGPT app over OpenAI's encrypted relay a
 else. Instead, each PC asks its own Codex app-server for its chat list (`thread/list`, the list and titles
 the Codex app shows) and pushes it to one hub daemon, which keeps a Codex home per PC under
 `<config dir>/codex-hub/<pc>/`. The hub's chat list, sessions, search and transcripts then include every
-PC's chats, each marked with the PC it came from. They are read-only there: nothing on the hub can start a
-turn on, rename or archive a chat on its PC.
+PC's chats, each marked with the PC it came from.
+
+A chat from another PC can be continued in Desk while that PC is on. Its pusher keeps a WebSocket open to the
+hub (`/api/codex-hub/relay`); when Desk continues one of its chats, the hub asks the PC to start its own
+`codex app-server` and carries the JSON-RPC lines between it and Desk unread, so the turn runs on the PC, with
+its files and its Codex login, and its approvals and questions are answered in Desk. The PC only lets the hub
+resume, read, start and stop turns in existing threads (never start a thread, change config or sign in), and
+by default refuses a turn without approvals or outside the sandbox (`AGENTHYDRA_CODEX_HUB_RELAY`). A turn
+that ends is pushed at once. The Codex app on the PC holds a chat it has open, so close it there first. Nothing
+on the hub can rename or archive a chat on its PC.
 
 - **Hub:** set `AGENTHYDRA_CODEX_HUB_TOKEN`. `POST /api/codex-hub/push` takes a PC's list and the rollouts
-  it lacks (`Authorization: Bearer <token>`); `GET /api/codex-hub/pcs` lists each PC and its last push.
+  it lacks (`Authorization: Bearer <token>`), and `GET /api/codex-hub/relay?pc=<name>` is the PC's relay
+  socket. Desk's end, `GET /api/codex-relay/<pc>/app-server` (a WebSocket, same token), and
+  `GET /api/codex-relay/pcs` (each PC, its last push and whether its relay is open) sit outside that prefix.
   Like the rest of the API it answers loopback Hosts only, so a hub on another machine sits behind a
-  proxy that forwards `/api/codex-hub/` with a loopback Host.
+  proxy that forwards `/api/codex-hub/` only, with a loopback Host and WebSocket upgrades passed through.
 - **Each PC:** set `AGENTHYDRA_CODEX_HUB_URL` and the same token. The daemon pushes every two minutes;
   a PC that does not run the daemon can run `bun server/src/codex-hub-push-main.ts` (`--once` for one
   round). The first push sends every rollout, later ones only what changed; a chat archived or deleted

@@ -105,6 +105,17 @@ export interface AhCodexInstance {
   codexHome: string
   loggedIn?: boolean
   isDesktopRunning?: boolean
+  /** Another PC's Codex, reached through the Codex hub's relay (GET /api/codex-relay/pcs): it only continues that PC's own chats. */
+  relay?: boolean
+}
+
+/** GET /api/codex-relay/pcs: a PC that pushes its Codex chats to this AgentHydra, and whether its relay is open now. */
+export interface AhCodexRelayPc {
+  id: string
+  pc: string
+  pushedAt: string
+  chats: number
+  relay: boolean
 }
 
 /** GET /api/codex-instances/:id/usage, AgentHydra's cached reading: each window's use in percent and its reset (ISO). */
@@ -533,6 +544,8 @@ export function createClient(opts: HydraClientOptions = {}) {
     codexInstances: () => get<AhCodexInstance[]>('/api/codex-instances'),
     /** Its cached usage: never a fresh read, which would refresh the login beside an app-server Desk holds. */
     codexUsage: (id: string) => get<AhCodexUsage>(`/api/codex-instances/${enc(id)}/usage`),
+    /** Other PCs' Codex behind the Codex hub. An AgentHydra without the hub answers 404: none. */
+    codexRelayPcs: () => get<AhCodexRelayPc[]>('/api/codex-relay/pcs').catch(() => [] as AhCodexRelayPc[]),
     sessions: () => get<AhSessionRow[]>('/api/sessions?limit=200&period=24h'),
     cliInstances: () => get<AhCliInstance[]>('/api/cli-instances'),
     desktopInstances: () => get<AhDesktopInstance[]>('/api/instances'),

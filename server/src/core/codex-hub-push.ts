@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { appEnv, CODEX_HOME } from '../config'
 import type { HubFile, HubThread } from './codex-hub'
 import { relativeRolloutPath } from './codex-hub'
+import { startCodexHubRelay } from './codex-hub-relay-pc'
 import { type CodexRpc, connectCodexRpc } from './codex-rpc'
 
 /** What thread/list answers per row; only the fields pushed are named. */
@@ -192,13 +193,35 @@ export async function pushCodexHubOnce(
   return { threads: threads.length, sent, missing: want.length }
 }
 
-/** Pushes now and then every interval until stopped. A failed round is logged and retried next interval. */
+/** How long after a turn ends on this PC its chats are pushed: the turn's last lines are written by then. */
+const AFTER_TURN_MS = 3_000
+
+/**
+ * Pushes now and then every interval until stopped, and keeps the relay to the hub open
+ * (codex-hub-relay-pc.ts) so Desk can continue this PC's chats; a turn that ends here is pushed at once.
+ * A failed round is logged and retried next interval.
+ */
 export function startCodexHubPusher(cfg: CodexHubPushConfig, deps: PushDeps = {}): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
+  let running = false
+  let again = false
+  const relay = startCodexHubRelay(cfg, { onTurnDone: () => schedule(AFTER_TURN_MS) })
+  // While Desk holds an app-server here, the chat list is read through it: a second one on this home could
+  // refresh the login beside it.
+  const roundDeps: PushDeps = {
+    ...deps,
+    connect: deps.connect ?? (async (home) => relay?.localRpc() ?? connectCodexRpc(home)),
+  }
   const round = async () => {
+    timer = null
+    if (running) {
+      again = true
+      return
+    }
+    running = true
     try {
-      const r = await pushCodexHubOnce(cfg, deps)
+      const r = await pushCodexHubOnce(cfg, roundDeps)
       if (r.sent)
         console.log(`[codex-hub] pushed ${r.threads} chats, sent ${r.sent} rollouts to ${cfg.url}`)
     } catch (error) {
@@ -207,11 +230,22 @@ export function startCodexHubPusher(cfg: CodexHubPushConfig, deps: PushDeps = {}
         error instanceof Error ? error.message : error,
       )
     }
-    if (!stopped) timer = setTimeout(round, cfg.intervalMs)
+    running = false
+    if (again) {
+      again = false
+      return schedule(0)
+    }
+    schedule(cfg.intervalMs)
+  }
+  function schedule(ms: number) {
+    if (stopped) return
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(round, ms)
   }
   void round()
   return () => {
     stopped = true
     if (timer) clearTimeout(timer)
+    relay?.stop()
   }
 }

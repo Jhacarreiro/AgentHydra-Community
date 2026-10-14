@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { join } from 'node:path'
+import { websocket } from 'hono/bun'
 import { cors } from 'hono/cors'
 import { warmAnalyticsInBackground } from './analytics'
 import { apiBodyLimit } from './api-body-limit'
@@ -1745,6 +1746,8 @@ const server = Bun.serve({
   hostname: HOST,
   // A dashboard site (Host <id>.localhost) is answered before any middleware or /api route sees the request.
   fetch: async (req, srv) => (await serveDashboardSite(req)) ?? app.fetch(req, srv),
+  // The Codex hub's relay sockets (routes/codex-hub.ts) are the only WebSockets this daemon serves.
+  websocket,
   idleTimeout: 255,
 })
 // Desk 2 is told this address (HYDRA_URL), so a daemon that hopped off 7787 is the one it talks to.

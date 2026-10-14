@@ -19,7 +19,7 @@ function homeKey(codexHome: string): string {
 }
 
 /** Waits for this home's earlier connections to close; answers the release for this one (idempotent). */
-async function takeHomeTurn(codexHome: string): Promise<() => void> {
+export async function takeHomeTurn(codexHome: string): Promise<() => void> {
   const key = homeKey(codexHome)
   const before = homeTurns.get(key) ?? Promise.resolve()
   const { promise: mine, resolve: release } = Promise.withResolvers<void>()

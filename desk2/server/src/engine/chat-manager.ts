@@ -1931,6 +1931,8 @@ export class ChatManager {
     if (!this.codexDir) throw new ChatError(409, 'Codex chats cannot continue here: this Desk has no Codex accounts.')
     if (!outside.codexAccountId) throw new ChatError(409, 'AgentHydra does not say which Codex account holds this chat, so it cannot continue here.')
     const found = (await this.codexDir.instances().catch(() => [])).find((i) => i.id === outside.codexAccountId)
+    if (found?.relay && !found.loggedIn)
+      throw new ChatError(409, `${found.name ?? 'That PC'} is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.`)
     if (!found?.loggedIn) throw new ChatError(409, `${where} is signed out, so this chat cannot continue here.`)
     return { accountId: found.id, label: codexAccount(found).label, threadId: req.sessionId }
   }

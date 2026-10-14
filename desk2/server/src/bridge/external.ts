@@ -236,7 +236,7 @@ export function mapExternal(
     })
   for (const c of inp.codexChats ?? [])
     // A chat another PC pushed to the Codex hub lives on that PC: listed and readable, never resumed on an account here.
-    fromIndex(c.threadId, 'codex', { title: c.title, cwd: c.cwd, instance: c.instance, last: iso(c.lastActivityAt), ...(c.fromPc ? { fromPc: c.fromPc } : { codexAccountId: c.instanceId }) })
+    fromIndex(c.threadId, 'codex', { title: c.title, cwd: c.cwd, instance: c.instance, last: iso(c.lastActivityAt), codexAccountId: c.instanceId, ...(c.fromPc ? { fromPc: c.fromPc } : {}) })
   // The session each Desktop chat runs as now, by its local id (archived ones too). A live engine with no transcript
   // whose chat runs as another session is a spare one Claude Desktop left running, nothing to show (owner, 2026-10-10:
   // "ddc6fc99 ... shows nothing, like cannot load"; a second engine of a listed chat, started with no prompt, was a row

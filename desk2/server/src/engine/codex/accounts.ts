@@ -3,12 +3,17 @@
 // one would refresh the login beside the app-server Desk holds). Desk only picks.
 
 import type { AhCodexInstance, AhCodexUsage, HydraClient } from '../../bridge/client'
+import { relayHome } from './app-server'
 
-/** A Codex account a chat can run on: AgentHydra's instance id, the label the window shows, its CODEX_HOME. */
+/**
+ * A Codex account a chat can run on: AgentHydra's instance id, the label the window shows, its CODEX_HOME. Another
+ * PC's Codex (`relay`) has no home here: `home` names it for app-server.ts, which reaches it through the hub.
+ */
 export interface CodexAccount {
   id: string
   label: string
   home: string
+  relay?: boolean
 }
 
 /** What Desk reads of AgentHydra's Codex accounts. */
@@ -19,14 +24,25 @@ export interface CodexDirectory {
 
 export type CodexPick = { account: CodexAccount } | { why: string }
 
-/** The directory through AgentHydra's API. */
-export function codexDirectory(client: Pick<HydraClient, 'codexInstances' | 'codexUsage'>): CodexDirectory {
-  return { instances: () => client.codexInstances(), usage: (id) => client.codexUsage(id).catch(() => null) }
+/** The directory through AgentHydra's API: this machine's accounts, then every PC behind its Codex hub. */
+export function codexDirectory(client: Pick<HydraClient, 'codexInstances' | 'codexUsage' | 'codexRelayPcs'>): CodexDirectory {
+  return {
+    instances: async () => {
+      const [own, pcs] = await Promise.all([client.codexInstances(), client.codexRelayPcs()])
+      return [...own, ...pcs.map((p) => ({ id: p.id, name: p.pc, codexHome: relayHome(p.id), loggedIn: p.relay, relay: true }))]
+    },
+    usage: (id) => (id.startsWith('hub:') ? Promise.resolve(null) : client.codexUsage(id).catch(() => null)),
+  }
 }
 
 export function codexAccount(i: AhCodexInstance): CodexAccount {
   const name = i.name?.trim()
-  return { id: i.id, label: typeof i.num === 'number' ? `#${i.num}${name ? ` ${name}` : ''}` : (name ?? i.id), home: i.codexHome }
+  return {
+    id: i.id,
+    label: typeof i.num === 'number' ? `#${i.num}${name ? ` ${name}` : ''}` : (name ?? i.id),
+    home: i.codexHome,
+    ...(i.relay ? { relay: true } : {}),
+  }
 }
 
 /** The fuller of an account's 5-hour and weekly windows, in percent, and when a full one frees up; null when unread. */
@@ -57,7 +73,8 @@ export async function pickCodexAccount(dir: CodexDirectory, avoid: ReadonlySet<s
   } catch {
     return { why: 'AgentHydra is not answering, so Desk cannot see the Codex accounts.' }
   }
-  const signedIn = instances.filter((i) => i.loggedIn)
+  // Another PC's Codex only goes on with that PC's own chats: a new thread never starts there.
+  const signedIn = instances.filter((i) => i.loggedIn && !i.relay)
   if (!signedIn.length) return { why: 'No Codex account is signed in. Sign one in on AgentHydra’s Codex page.' }
   const open = signedIn.filter((i) => !avoid.has(i.id) && (held.get(i.id) ?? 0) <= now)
   const read = await Promise.all(open.map(async (i) => ({ i, full: fullness(await dir.usage(i.id).catch(() => null), now) })))
