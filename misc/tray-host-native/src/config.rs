@@ -89,6 +89,10 @@ pub struct Config {
     pub action_fail_text: String,
     pub action_timeout_secs: u64,
 
+    /// Adds "About <App>" to the menu: the running version, and an offer to open this page. No
+    /// item without it.
+    pub changelog_url: Option<String>,
+
     /// Shown when the daemon starts but never serves. One app's overwhelmingly likely cause is a
     /// missing configuration step, and a tray icon that silently does nothing is a worse answer
     /// than telling the user which command to run.
@@ -432,6 +436,7 @@ impl Config {
                 .unwrap_or("{APP} didn't accept that. Open it to check.")
                 .to_string(),
             action_timeout_secs: v.num_at("actionTimeoutSec").unwrap_or(60.0) as u64,
+            changelog_url: opt_string(v.str_at("changelogUrl")),
             not_serving_hint: opt_string(v.str_at("notServingHint")),
             first_run: resolve_first_run(v, &compiled),
             app_root,

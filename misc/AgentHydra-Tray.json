@@ -19,6 +19,7 @@
   "serviceName": "agenthydra",
   "mutexName": "AgentHydraTrayHost",
   "menuOpenLabel": "Open AgentHydra",
+  "changelogUrl": "https://github.com/LunarWerxs/AgentHydra/blob/main/CHANGELOG.md",
   "iconFile": "AgentHydra.ico",
   "appRoot": "..",
   "openCommand": {

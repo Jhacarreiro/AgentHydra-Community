@@ -39,6 +39,8 @@ const ID_QUIT: usize = 4;
 const ID_ACTION: usize = 5;
 /// Offered only after an unclean exit (see Config::crash_sentinel_dir).
 const ID_SAFE_MODE: usize = 6;
+/// Offered only when the config names a `changelogUrl`.
+const ID_ABOUT: usize = 7;
 
 // --- timers -----------------------------------------------------------------------------------
 const TIMER_HEALTH: usize = 1;
@@ -47,6 +49,8 @@ const TIMER_SENTINEL: usize = 2;
 const HEALTH_INTERVAL_MS: u32 = 5_000;
 /// Sentinel-file cadence. PowerShell: `$watchTimer.Interval = 500`.
 const SENTINEL_INTERVAL_MS: u32 = 500;
+/// The About box's version probe. A person is waiting on it, but a busy daemon still gets a beat.
+const PROBE_ABOUT: Duration = Duration::from_secs(2);
 
 // --- watchdog thresholds (all from Tray-Host.ps1) ----------------------------------------------
 /// CONSECUTIVE failed probes before a daemon counts as dead. Must be > 1: a single miss is a
@@ -205,6 +209,10 @@ unsafe fn show_menu(hwnd: HWND) {
         AppendMenuW(menu, MF_STRING | grey, ID_ACTION, label.as_ptr());
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, null_mut());
+    if a.cfg.changelog_url.is_some() {
+        let about = wide(&format!("About {}", a.cfg.display_name));
+        AppendMenuW(menu, MF_STRING, ID_ABOUT, about.as_ptr());
+    }
     let quit = wide("Quit");
     AppendMenuW(menu, MF_STRING, ID_QUIT, quit.as_ptr());
 
@@ -309,6 +317,40 @@ fn start_action(hwnd: HWND) {
         unsafe {
             PostMessageW(hwnd_val as HWND, WM_APP_WORKER_DONE, code, 0);
         }
+    });
+}
+
+/// One About box at a time: a second click while it is open would only stack another behind it.
+static ABOUT_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// The About box, on its own thread: the version is asked of the live daemon, and neither that
+/// probe nor a modal box should hold up the tray's message loop (the watchdog runs on its timers).
+fn show_about() {
+    let a = app();
+    let Some(page) = a.cfg.changelog_url.clone() else {
+        return;
+    };
+    if ABOUT_OPEN.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let name = &a.cfg.display_name;
+        let info =
+            get_url().and_then(|url| daemon::about_info(&url, &a.cfg.service_name, PROBE_ABOUT));
+        let head = match info {
+            Some((version, Some(dist))) => format!("{name} {version} ({dist})"),
+            Some((version, None)) => format!("{name} {version}"),
+            None => format!("{name} isn't running, so its version can't be read."),
+        };
+        let text = format!("{head}\n\nOpen the changelog?");
+        if ask_yes_no(
+            &format!("About {name}"),
+            &text,
+            MB_ICONINFORMATION | MB_SETFOREGROUND,
+        ) {
+            shell_open(&page);
+        }
+        ABOUT_OPEN.store(false, Ordering::Relaxed);
     });
 }
 
@@ -782,6 +824,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 ID_RESTART => restart_in_mode(h, false),
                 ID_SAFE_MODE => restart_in_mode(h, true),
                 ID_ACTION => start_action(h),
+                ID_ABOUT => show_about(),
                 ID_QUIT => quit_app(h),
                 _ => {}
             }

@@ -54,6 +54,10 @@ pub const LR_DEFAULTSIZE: u32 = 0x0040;
 pub const MB_OK: u32 = 0x0000;
 pub const MB_ICONWARNING: u32 = 0x0030;
 pub const MB_ICONERROR: u32 = 0x0010;
+pub const MB_YESNO: u32 = 0x0004;
+pub const MB_ICONINFORMATION: u32 = 0x0040;
+pub const MB_SETFOREGROUND: u32 = 0x0001_0000;
+pub const IDYES: i32 = 6;
 
 pub const ERROR_ALREADY_EXISTS: u32 = 183;
 
@@ -324,4 +328,11 @@ pub fn message_box(caption: &str, text: &str, kind: u32) {
     unsafe {
         MessageBoxW(null_mut(), t.as_ptr(), c.as_ptr(), MB_OK | kind);
     }
+}
+
+/// A Yes/No question, answered true on Yes.
+pub fn ask_yes_no(caption: &str, text: &str, kind: u32) -> bool {
+    let c = wide(caption);
+    let t = wide(text);
+    unsafe { MessageBoxW(null_mut(), t.as_ptr(), c.as_ptr(), MB_YESNO | kind) == IDYES }
 }

@@ -89,19 +89,21 @@ pub const PROBE_POLL: Duration = Duration::from_millis(400);
 /// fallback, which is how a sibling app once latched onto a stranger and reported the wrong thing
 /// in both directions.
 pub fn health_ok(host: &str, port: u16, service: &str, timeout: Duration) -> bool {
-    let Some(addr) = resolve(host, port) else {
+    let Some(body) = health_response(host, port, timeout) else {
         return false;
     };
-    let Ok(mut sock) = TcpStream::connect_timeout(&addr, timeout) else {
-        return false;
-    };
+    body.contains("\"ok\":true") && body.contains(&format!("\"service\":\"{service}\""))
+}
+
+/// The raw HTTP response to one `GET /api/health`, headers included, or None when nothing answered.
+fn health_response(host: &str, port: u16, timeout: Duration) -> Option<String> {
+    let addr = resolve(host, port)?;
+    let mut sock = TcpStream::connect_timeout(&addr, timeout).ok()?;
     let _ = sock.set_read_timeout(Some(timeout));
     let _ = sock.set_write_timeout(Some(timeout));
     let req =
         format!("GET /api/health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
-    if sock.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
+    sock.write_all(req.as_bytes()).ok()?;
     let mut body = String::new();
     let mut buf = [0u8; 4096];
     loop {
@@ -117,7 +119,26 @@ pub fn health_ok(host: &str, port: u16, service: &str, timeout: Duration) -> boo
         }
     }
     let _ = sock.shutdown(Shutdown::Both);
-    body.contains("\"ok\":true") && body.contains(&format!("\"service\":\"{service}\""))
+    Some(body)
+}
+
+/// What the About box shows: the live daemon's `version` and `distribution` from /api/health.
+/// None when the daemon at `url` is not ours or does not answer.
+pub fn about_info(url: &str, service: &str, timeout: Duration) -> Option<(String, Option<String>)> {
+    let (host, port) = split_url(url)?;
+    parse_about(&health_response(&host, port, timeout)?, service)
+}
+
+fn parse_about(response: &str, service: &str) -> Option<(String, Option<String>)> {
+    let body = response.split_once("\r\n\r\n").map_or(response, |(_, b)| b);
+    let v = crate::json::parse(body.trim())?;
+    if v.get("ok").map(crate::json::Json::truthy) != Some(true)
+        || v.str_at("service") != Some(service)
+    {
+        return None;
+    }
+    let version = v.str_at("version")?.to_string();
+    Some((version, v.str_at("distribution").map(str::to_string)))
 }
 
 fn resolve(host: &str, port: u16) -> Option<SocketAddr> {
@@ -892,5 +913,26 @@ mod death_record_tests {
         // A witness must never be a dependency: the tray keeps running the app regardless.
         let bad = PathBuf::from("Z:\no-such-drive\nested\tray.log");
         log_line(&bad, "this must not panic");
+    }
+}
+
+#[cfg(test)]
+mod about_tests {
+    use super::parse_about;
+
+    #[test]
+    fn the_version_comes_from_our_own_health_body_and_never_a_strangers() {
+        let ours = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 77\r\n\r\n\
+            {\"ok\":true,\"service\":\"agenthydra\",\"version\":\"2.0.4\",\"distribution\":\"release\"}";
+        assert_eq!(
+            parse_about(ours, "agenthydra"),
+            Some(("2.0.4".to_string(), Some("release".to_string())))
+        );
+        // A neighbour on the port (another app's daemon) must not lend us its version.
+        let other = ours.replace("agenthydra", "devwebui");
+        assert_eq!(parse_about(&other, "agenthydra"), None);
+        // A Vite SPA fallback answering /api/health with HTML is not a version either.
+        let spa = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!doctype html><html></html>";
+        assert_eq!(parse_about(spa, "agenthydra"), None);
     }
 }
