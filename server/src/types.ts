@@ -955,7 +955,7 @@ export interface Incident {
  *  permission prompt, a question, a usage wall), or its turn is done. */
 export type AgentStatusState = 'working' | 'blocked' | 'done'
 /** Who wrote a status row. Kept on the row so a reader can say where a verdict came from. */
-export type AgentStatusSource = 'claude-hook' | 'rate-limit'
+export type AgentStatusSource = 'claude-hook' | 'rate-limit' | 'claude-cloud'
 
 export interface AgentStatus {
   sessionId: string

@@ -201,7 +201,7 @@ create table if not exists agent_status (
   main_state          text not null,       -- working | done (the lead agent alone)
   subagents           integer not null default 0,
   waiting             text,                -- why it is blocked (notification type, 'rate-limit'), else null
-  source              text not null,       -- provenance: claude-hook | rate-limit
+  source              text not null,       -- provenance: claude-hook | rate-limit | claude-cloud
   event               text not null,       -- the hook event (or 'rate-limit') that wrote the row
   cwd                 text,
   at                  text not null,       -- ISO time of the fact the row reflects

@@ -26,7 +26,8 @@ export type { AgentStatus, AgentStatusSource, AgentStatusState }
 export interface AgentStatusEvent {
   sessionId: string
   source: AgentStatusSource
-  /** A Claude Code hook event name (UserPromptSubmit, PreToolUse, ...) or 'rate-limit'. */
+  /** A Claude Code hook event name (UserPromptSubmit, PreToolUse, ...), 'rate-limit', or one of the
+   *  cloud-* states cloud-sessions.ts reads off claude.ai's session list. */
   event: string
   at: string
   cwd?: string | null
@@ -124,6 +125,23 @@ export function nextAgentStatus(prev: Row | null, e: AgentStatusEvent): Row | nu
       main = 'done'
       waiting = 'rate-limit'
       break
+    // A cloud session's whole state, read off the server's list rather than built up from hook
+    // events, so each one replaces the row outright. There are no sub-agent events to count.
+    case 'cloud-working':
+      main = 'working'
+      subagents = 0
+      waiting = null
+      break
+    case 'cloud-blocked':
+      main = 'done'
+      subagents = 0
+      waiting = e.notificationType || 'input'
+      break
+    case 'cloud-done':
+      main = 'done'
+      subagents = 0
+      waiting = null
+      break
     default:
       return null
   }
@@ -205,6 +223,25 @@ export function releaseRateLimitStatus(stillAtWall: Iterable<string>): number {
     .all()
     .filter((r) => !keep.has(r.session_id))
   const drop = db.query("delete from agent_status where session_id = ? and source = 'rate-limit'")
+  for (const r of stale) drop.run(r.session_id)
+  return stale.length
+}
+
+/**
+ * The cloud poll's clearing half, for the same reason as releaseRateLimitStatus: a session that left
+ * claude.ai's active list (archived, deleted) gets no further fact, so its last row would read
+ * "waiting on you" forever. Only called after every account listed cleanly; a failed list proves
+ * nothing about which sessions still exist. Answers how many rows went.
+ */
+export function releaseCloudStatus(stillListed: Iterable<string>): number {
+  const keep = new Set(stillListed)
+  const stale = db
+    .query<{ session_id: string }, []>(
+      "select session_id from agent_status where source = 'claude-cloud'",
+    )
+    .all()
+    .filter((r) => !keep.has(r.session_id))
+  const drop = db.query("delete from agent_status where session_id = ? and source = 'claude-cloud'")
   for (const r of stale) drop.run(r.session_id)
   return stale.length
 }

@@ -32,6 +32,8 @@ import { registerAskMcpRoute, registerStopHookRoute } from './climayte-ask-mcp'
 import { workers as climayteWorkers, preloadDone, storeLoaded } from './climayte-core'
 import { registerManagerMcpRoute } from './climayte-manager-mcp'
 import { flushCliMayteStore } from './climayte-store-writer'
+import { cloudAccounts, cloudSessionsEnabled, startCloudSessions } from './cloud-sessions'
+import { CLOUD_SESSIONS_DIR_ENV, cloudSessionsRoot } from './cloud-sessions-cache'
 import {
   APP_ROOT,
   appEnv,
@@ -62,7 +64,11 @@ import {
   updateAppearance,
 } from './connections'
 import { createChatGptContextPack } from './context-pack'
-import { migrateCliInstanceConfigDirs, reconcileCliInstanceDirs } from './core/cli-instances'
+import {
+  listCliInstances,
+  migrateCliInstanceConfigDirs,
+  reconcileCliInstanceDirs,
+} from './core/cli-instances'
 import { startLoginSync, stopLoginSync } from './core/cli-login-sync'
 import { startCliResetSweep, stopCliResetSweep } from './core/cli-reset-sweep'
 import { reconcileCodexInstanceDirs } from './core/codex-instances'
@@ -1595,6 +1601,17 @@ startVersionDriftWatch()
 // charge at its limit, leaked console hosts, a stopped orphan reaper). Records incidents, changes
 // nothing. See box-doctor.ts.
 startBoxDoctorWatch()
+
+// Opt-in (AGENTHYDRA_CLOUD_SESSIONS=1): every minute, Claude Code's cloud and Remote Control sessions
+// from claude.ai's own list, plus a live socket for each one that is working. See cloud-sessions.ts.
+if (cloudSessionsEnabled()) {
+  process.env[CLOUD_SESSIONS_DIR_ENV] ||= join(CONFIG_DIR, 'cloud-sessions')
+  startCloudSessions({
+    root: cloudSessionsRoot(),
+    accounts: () => cloudAccounts(listCliInstances().map((i) => i.configDir)),
+    log: (line) => console.log(line),
+  })
+}
 
 // Every minute: builds the managed Claude copy as soon as a new Claude build is installed, so the
 // first Open after an update does not copy 600 MB first. See claude-native-prewarm.ts.

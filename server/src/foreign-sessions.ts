@@ -21,6 +21,7 @@
 import { Database } from 'bun:sqlite'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { readCloudSnapshot } from './cloud-sessions-cache'
 import { timeSlice } from './core/loop-yield'
 import type { TailEvent } from './types'
 
@@ -971,6 +972,121 @@ const pi: Adapter = {
   },
 }
 
+// --- Claude Code cloud and Remote Control ----------------------------------------------------
+// Not a store any tool writes: cloud-sessions.ts mirrors claude.ai's session list into
+// `<root>/<account>/sessions.json`, and the subscribe socket of each session it watched into
+// `<root>/<account>/<id>.jsonl`, one SDK message (`type: user | assistant`) per line. A session that
+// was never working while the daemon ran has no event file yet and reads as empty, which is honest:
+// its transcript lives on the server, not here.
+
+interface CloudBlock {
+  type?: string
+  text?: string
+  thinking?: string
+  name?: string
+  input?: unknown
+  content?: unknown
+  is_error?: boolean
+}
+
+interface CloudMessage {
+  type?: string
+  created_at?: string
+  uuid?: string
+  message?: { content?: string | CloudBlock[] }
+}
+
+function cloudBlockText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((c) => (c && typeof c === 'object' && typeof c.text === 'string' ? c.text : ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+function cloudEvents(m: CloudMessage): TailEvent[] {
+  const role: TailEvent['role'] | null =
+    m.type === 'assistant' ? 'assistant' : m.type === 'user' ? 'user' : null
+  if (!role) return []
+  const at = m.created_at ?? null
+  const base = { role, timestamp: at, ...(m.uuid && role === 'assistant' ? { uuid: m.uuid } : {}) }
+  const content = m.message?.content
+  if (typeof content === 'string') {
+    const t = compact(content)
+    return t ? [{ ...base, kind: 'text', text: truncate(t), tool_name: null }] : []
+  }
+  const out: TailEvent[] = []
+  for (const b of Array.isArray(content) ? content : []) {
+    if (b?.type === 'text' && b.text?.trim())
+      out.push({ ...base, kind: 'text', text: truncate(b.text.trim()), tool_name: null })
+    else if (b?.type === 'thinking' && b.thinking?.trim())
+      out.push({ ...base, kind: 'thinking', text: truncate(b.thinking.trim()), tool_name: null })
+    else if (b?.type === 'tool_use')
+      out.push({
+        ...base,
+        kind: 'tool_use',
+        text: truncate(compact(JSON.stringify(b.input ?? {})), 500),
+        tool_name: b.name ?? 'tool',
+      })
+    else if (b?.type === 'tool_result') {
+      const t = compact(cloudBlockText(b.content))
+      out.push({
+        ...base,
+        kind: 'tool_result',
+        text: truncate(t),
+        tool_name: 'tool',
+        ...(b.is_error ? { error: true } : {}),
+      })
+    }
+  }
+  return out
+}
+
+const claudeCloud: Adapter = {
+  list(root) {
+    const out: ForeignSession[] = []
+    for (const account of dirs(root)) {
+      const dir = join(root, account)
+      for (const r of readCloudSnapshot(dir)) {
+        const events = join(dir, `${r.id}.jsonl`)
+        const last = Date.parse(r.last_event_at)
+        const created = r.created_at ? Date.parse(r.created_at) : Number.NaN
+        const where = r.tags?.includes('hearth-thread')
+          ? 'projects'
+          : r.environment_kind === 'bridge'
+            ? 'remote-control'
+            : 'cloud'
+        out.push({
+          session_id: r.id,
+          path: events,
+          title: r.title,
+          cwd: '',
+          project: `claude-${where}`,
+          created_at: Number.isFinite(created) ? created : null,
+          last_activity_at: Number.isFinite(last) ? last : mtimeOf(events),
+          size_bytes: sizeOf(events),
+          archived: false,
+        })
+      }
+    }
+    return out
+  },
+  read(path) {
+    if (!existsSync(path)) return []
+    const out: TailEvent[] = []
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      if (!line.trim()) continue
+      try {
+        out.push(...cloudEvents(JSON.parse(line) as CloudMessage))
+      } catch {
+        // A torn last line (the socket was mid-write) costs that line, not the transcript.
+      }
+    }
+    return out
+  },
+}
+
 /** Adapter per catalog tool id. A tool with `format: 'foreign'` and no entry here reads as empty,
  *  which is the same bounded failure as a path that does not exist. */
 const ADAPTERS: Record<string, Adapter> = {
@@ -980,6 +1096,7 @@ const ADAPTERS: Record<string, Adapter> = {
   copilot: copilotCli,
   zed,
   pi,
+  'claude-cloud': claudeCloud,
 }
 
 export function foreignAdapter(toolId: string): Adapter | undefined {

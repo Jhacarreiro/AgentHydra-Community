@@ -533,12 +533,19 @@ export function createBridge(opts: BridgeOptions = {}) {
     // missing from it is read by id, as externalSession(id) does. One AgentHydra does not know is left out.
     // An Unassigned one too: its account's app archived it, so /api/chats no longer lists it.
     const pinned = pinnedIds()
-    for (const old of pinnedRows.keys()) if (!pinned.includes(old)) pinnedRows.delete(old)
+    // A session a status row says is working or waiting is listed whatever its age, and its index row is read
+    // by id too, for its title: a cloud session that has waited since yesterday is not in the 24 h answer, and
+    // listed by its id it read as an untitled row.
+    const statused = inp.agentStatus.filter((h) => h.state !== 'done' && !h.restoredUnconfirmed).map((h) => h.sessionId)
+    const byId = [...new Set([...pinned, ...statused])]
+    for (const old of pinnedRows.keys()) if (!byId.includes(old)) pinnedRows.delete(old)
     const known = new Set(inp.sessions.map((s) => s.session_id))
-    const extra = (await Promise.all(pinned.filter((id) => !known.has(id)).map((id) => pinnedRow(id)))).filter(
+    const extra = (await Promise.all(byId.filter((id) => !known.has(id)).map((id) => pinnedRow(id)))).filter(
       (r): r is NonNullable<typeof r> => r !== null,
     )
-    const withPinned: ExternalInputs = pinned.length ? { ...inp, sessions: [...inp.sessions, ...extra], wanted: new Set(pinned) } : inp
+    const withPinned: ExternalInputs = byId.length
+      ? { ...inp, sessions: [...inp.sessions, ...extra], ...(pinned.length ? { wanted: new Set(pinned) } : {}) }
+      : inp
     const mapped = mapExternal({ ...withPinned, knownTitle }, exclude, now(), (q) => resumeAccount(q, who))
     const list = o.throwaway ? mapped : mapped.filter((s) => !isThrowawayCwd(s.cwd))
     rememberTitles(list)

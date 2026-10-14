@@ -441,6 +441,16 @@ export const AGENT_TOOLS: AgentTool[] = [
     format: null,
   },
   {
+    // Not a store Claude writes: cloud-sessions.ts mirrors claude.ai's list of Claude Code cloud and
+    // Remote Control sessions here when AGENTHYDRA_CLOUD_SESSIONS=1.
+    id: 'claude-cloud',
+    name: 'Claude Code (cloud)',
+    vendor: 'Anthropic',
+    envVar: 'AGENTHYDRA_CLOUD_SESSIONS_DIR',
+    dirs: ['.agenthydra/cloud-sessions'],
+    format: 'foreign',
+  },
+  {
     id: 'zed',
     name: 'Zed',
     vendor: 'Zed Industries',
