@@ -744,6 +744,10 @@ on the bun AgentHydra's launcher downloads into the install's `runtime/` on firs
 Open runs the launcher below; on Linux and macOS the daemon starts the server on that bun and opens your
 browser. Either way the daemon starts it when it is down.
 
+**On a machine with no screen** (a server, a container), set `AGENTHYDRA_DESK_AT_BOOT=1` on the daemon: it
+starts this server as soon as it listens, instead of on the first page asked of it, so a reverse proxy pointed
+at port 7798 has a window to reach right after a restart.
+
 **The shortcut.** Run `launcher\install-shortcuts.ps1` once. It puts an "AgentHydra" shortcut on the
 Desktop and in the Start Menu. Clicking it starts the server in the background if it is not running,
 waits for it to answer, then opens Hydra Desk in its own window (`launcher\HydraDesk2.exe`, which needs

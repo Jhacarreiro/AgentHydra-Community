@@ -41,6 +41,7 @@ import {
   DATA_DIR,
   DATA_DIR_NOTICE,
   DB_PATH,
+  deskAtBoot,
   HOST,
   IS_RELEASE,
   LAUNCHER_PATH,
@@ -1793,6 +1794,12 @@ warmSessionMetaIndex()
   // is what the user is waiting for; racing them would slow the visible thing to speed up a tab
   // nobody has opened yet. Fire-and-forget by design (see warmAnalyticsInBackground).
   .finally(() => warmAnalyticsInBackground())
+
+if (deskAtBoot() && desk2.present()) {
+  void desk2.start().then((r) => {
+    if (!r.ok) console.error(`[agenthydra] Desk 2 did not start at boot: ${r.reason}`)
+  })
+}
 
 if (releaseDoubleClick && !noAutoOpen()) {
   const url = `http://127.0.0.1:${server.port}/`

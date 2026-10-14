@@ -36,6 +36,14 @@ export function noAutoOpen(): boolean {
   return appEnv('NO_OPEN') === '1'
 }
 
+/** `*_DESK_AT_BOOT=1` — start Desk 2 as soon as the daemon listens, instead of on the first page asked of
+ *  the daemon. For a daemon on a machine with no screen (a server, a container) whose window is reached
+ *  through a proxy: without it, the first visit after every restart lands on the "Starting AgentHydra..."
+ *  page, and a proxy pointed straight at Desk 2 answers 502 until someone asks the daemon for a page. */
+export function deskAtBoot(): boolean {
+  return appEnv('DESK_AT_BOOT') === '1'
+}
+
 /**
  * Resolve the per-user config dir, moving a pre-rename `~/.ccmanagerui` across on first run.
  *
