@@ -258,7 +258,7 @@ const groups = computed(() =>
     filter: filter.value,
     external: onPcs.value.external,
     // The Filter menu's Apps (cloud store scopes) narrow this list's outside sessions too; Claude alone by default.
-    showApp: (s) => appShown(ahSource(s.source), cloud.scopes.value.apps),
+    showApp: (s) => appShown(s.app ?? ahSource(s.source), cloud.scopes.value.apps),
     order: order.value,
     hidden: hiddenGroups.hidden.value,
     showHidden: hiddenGroups.showHidden.value

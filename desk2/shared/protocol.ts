@@ -361,6 +361,8 @@ export interface ExternalSession {
   title: string
   cwd: string | null
   source: 'desktop' | 'cli' | 'climayte' | 'codex' | 'other'
+  /** The app the Apps filter counts it as when its source does not say: 'claude' for a cloud Claude Code session. */
+  app?: string
   instance: string | null // which desktop/CLI instance (label or number) it runs under
   status: 'working' | 'needs_you' | 'idle' | 'stale' // stale = no activity for a long time
   activity: string | null

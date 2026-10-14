@@ -117,6 +117,8 @@ export interface AhCodexUsage {
 export interface AhSessionRow {
   session_id: string
   source: string // claude, codex, opencode, hermes, dsh, zswarm, foreign
+  /** A foreign row's adapter (claude-cloud, ...). */
+  tool?: string
   title: string
   cwd: string
   last_activity_at: number

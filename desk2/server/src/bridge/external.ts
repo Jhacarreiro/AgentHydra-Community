@@ -202,6 +202,8 @@ export function mapExternal(
       title: base.title || row?.title || inp.knownTitle?.(id) || id.slice(0, 8),
       cwd: base.cwd || row?.cwd || h?.cwd || null,
       source,
+      // A cloud Claude Code session comes through AgentHydra's foreign reader, but the Apps filter counts it as Claude's.
+      ...(row?.source === 'foreign' && row.tool === 'claude-cloud' ? { app: 'claude' } : {}),
       instance: base.instance ?? row?.instance ?? (row?.instance_num ? `#${row.instance_num}` : null),
       status,
       activity: hookActivity(h),
