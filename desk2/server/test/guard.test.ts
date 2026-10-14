@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
-import { createServer, type DeskServer, foreignRequest, localOnly } from '../src/index'
+import { createServer, type DeskServer, foreignRequest, localOnly, publicOrigins } from '../src/index'
 
 const temps: string[] = []
 const servers: DeskServer[] = []
@@ -54,6 +54,37 @@ describe('foreignRequest', () => {
 
   test('refuses another host, another origin and a cross-site fetch', () => {
     for (const h of REFUSE) expect(typeof foreignRequest(new Headers(h))).toBe('string')
+  })
+})
+
+describe('HYDRA_DESK_PUBLIC_ORIGINS', () => {
+  const env = { HYDRA_DESK_PUBLIC_ORIGINS: 'https://inbox.example.com, http://desk.example.test:8080' }
+
+  test('keeps bare http(s) origins and drops anything else', () => {
+    expect(
+      publicOrigins({ HYDRA_DESK_PUBLIC_ORIGINS: 'https://Inbox.Example.com/, https://a.example.com/path, ftp://b.example.com, *, ' }),
+    ).toEqual(['https://inbox.example.com'])
+    expect(publicOrigins({})).toEqual([])
+  })
+
+  test("passes the proxy's own page on a listed origin", () => {
+    const page = { host: 'inbox.example.com', origin: 'https://inbox.example.com', 'sec-fetch-site': 'same-origin' }
+    expect(foreignRequest(new Headers(page), env)).toBeNull()
+    expect(foreignRequest(new Headers({ host: 'desk.example.test:8080' }), env)).toBeNull()
+    expect(typeof foreignRequest(new Headers(page), {})).toBe('string')
+  })
+
+  test('still refuses other names, other origins and cross-site fetches', () => {
+    const refused: Record<string, string>[] = [
+      { host: 'evil.example' },
+      { host: 'inbox.example.com:8443' },
+      { host: 'desk.example.test' },
+      { host: 'inbox.example.com', origin: 'https://evil.example' },
+      { host: 'inbox.example.com', origin: 'http://inbox.example.com' },
+      { host: 'inbox.example.com', origin: 'https://inbox.example.com', 'sec-fetch-site': 'cross-site' },
+    ]
+    for (const h of refused) expect(typeof foreignRequest(new Headers(h), env)).toBe('string')
+    for (const h of REFUSE) expect(typeof foreignRequest(new Headers(h), env)).toBe('string')
   })
 })
 

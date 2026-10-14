@@ -53,12 +53,36 @@ function isLocalHost(value: string, isOrigin: boolean): boolean {
   }
 }
 
-/** Why a request must be refused, or null. Requests without these headers (curl, the SDK, tests) pass. */
-export function foreignRequest(headers: Headers): string | null {
+/**
+ * The public origins (scheme://host[:port]) an authenticating reverse proxy serves this window at, from
+ * HYDRA_DESK_PUBLIC_ORIGINS (comma-separated). Empty unless set. Each one is trusted as if it were this machine,
+ * so it must only ever name a proxy that signs the person in first (Cloudflare Access, oauth2-proxy, a VPN-only
+ * name): this server has no sign-in of its own. A value that is not a bare http(s) origin is ignored.
+ */
+export function publicOrigins(env: Record<string, string | undefined> = process.env): string[] {
+  const out: string[] = []
+  for (const raw of (env.HYDRA_DESK_PUBLIC_ORIGINS ?? '').split(',')) {
+    const value = raw.trim()
+    if (!value) continue
+    try {
+      const u = new URL(value)
+      if ((u.protocol === 'https:' || u.protocol === 'http:') && u.origin === value.toLowerCase().replace(/\/$/, '')) out.push(u.origin)
+    } catch {
+      // floor-ok: not an origin, so it trusts nothing
+    }
+  }
+  return out
+}
+
+/** Why a request must be refused, or null. Requests without these headers (curl, the SDK, tests) pass. A Host or
+ *  Origin naming one of `publicOrigins` passes too; a cross-site fetch never does. */
+export function foreignRequest(headers: Headers, env: Record<string, string | undefined> = process.env): string | null {
+  const trusted = publicOrigins(env)
   const host = headers.get('host')
-  if (host !== null && !isLocalHost(host, false)) return `this server only answers to 127.0.0.1 or localhost, not ${host}`
+  if (host !== null && !isLocalHost(host, false) && !trusted.some((o) => new URL(o).host === host.toLowerCase()))
+    return `this server only answers to 127.0.0.1 or localhost, not ${host}`
   const origin = headers.get('origin')
-  if (origin !== null && !isLocalHost(origin, true)) return `requests from ${origin} are refused`
+  if (origin !== null && !isLocalHost(origin, true) && !trusted.includes(origin.toLowerCase())) return `requests from ${origin} are refused`
   if (headers.get('sec-fetch-site') === 'cross-site') return 'cross-site requests are refused'
   return null
 }

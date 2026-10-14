@@ -817,6 +817,14 @@ rebuild the host (`cargo build --release` in `launcher/host`, then copy the exe 
 | 4798 | Vite dev server during `bun run dev`, forwarding `/api` and `/ws` to 7798 |
 | 7787 | AgentHydra's daemon, which Hydra Desk talks to (`HYDRA_URL` overrides) |
 
+Every port binds `127.0.0.1` only, and the server refuses a browser that names any other host or origin (a page on
+another site, a DNS name rebound to this machine). To reach the window from another device, put a reverse proxy that
+**signs you in first** (Cloudflare Access, oauth2-proxy, a name only your VPN resolves) in front of 7798, pass the
+browser's own `Host` and `Origin` through, and list the proxy's address in `HYDRA_DESK_PUBLIC_ORIGINS`
+(comma-separated origins, for example `https://desk.example.com`) on the daemon, which hands it to the server it
+starts. That name is then trusted like this machine; this server has no sign-in of its own, so never list a name
+anyone can reach without the proxy's sign-in.
+
 ## Where data lives
 
 - `~/.hydra-desk-2/`, the real home (`HYDRA_DESK_HOME` runs a Desk on another folder, as every test, e2e script
