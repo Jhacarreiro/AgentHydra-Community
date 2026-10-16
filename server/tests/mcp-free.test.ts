@@ -13,6 +13,7 @@ import {
   providerDown,
   resetFreeHealth,
   restingFor,
+  setFreeTickMsForTests,
   windowResetAt,
 } from '../src/mcp-free'
 
@@ -162,8 +163,15 @@ describe('free_chat through a stand-in Desk 2', () => {
   let overlap = 0
   let server: ReturnType<typeof Bun.serve>
   let port: string | undefined
+  // A job the stand-in runs takes JOB_MS. A batch's tick (1.5 s in the daemon) only has to outlast it,
+  // so a job sent on one tick is done when the next one reads it: both are timers on this one event
+  // loop, and the job's starts first with the shorter delay, so it fires first however busy the box.
+  // The tests that wait out ticks (up to three each) then take a fraction of a second, not 4.5 s.
+  const JOB_MS = 100
+  let tick = 0
 
   beforeAll(() => {
+    tick = setFreeTickMsForTests(JOB_MS + 50)
     // From no sends, rests or caps: a pacing test above that fails before its own reset leaves #2 at its
     // cap, and two of these then waited out their 30 s for an account that never frees (2026-10-11).
     resetFreeHealth()
@@ -236,7 +244,7 @@ describe('free_chat through a stand-in Desk 2', () => {
                   response: `re: ${r.prompt}`,
                   model: 'm',
                 }
-          }, 100)
+          }, JOB_MS)
           return Response.json(job, { status: 202 })
         }
         const job = jobs.get(path.replace('/jobs/', ''))
@@ -247,6 +255,7 @@ describe('free_chat through a stand-in Desk 2', () => {
     process.env.HYDRA_DESK_PORT = String(server.port)
   })
   afterAll(() => {
+    setFreeTickMsForTests(tick)
     if (port === undefined) delete process.env.HYDRA_DESK_PORT
     else process.env.HYDRA_DESK_PORT = port
     server.stop(true)

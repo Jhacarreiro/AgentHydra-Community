@@ -464,7 +464,15 @@ const batches = new Map<string, Batch>()
 /** How long a queued task waits for an idle account before it is given up. */
 const QUEUE_LIMIT_MS = 30 * 60_000
 /** How often a running batch looks at Desk 2 again. */
-const TICK_MS = 1500
+let TICK_MS = 1500
+
+/** Test seam: a shorter tick, so a batch against a stand-in Desk 2 finishes in a fraction of a
+ *  second instead of a few 1.5 s ticks. Returns the previous value. */
+export function setFreeTickMsForTests(ms: number): number {
+  const was = TICK_MS
+  TICK_MS = ms
+  return was
+}
 const KEEP_BATCH_MS = 6 * 60 * 60_000
 
 function finish(it: Item, result: FreeResult | undefined, account: FreeInstance | undefined) {
