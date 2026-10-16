@@ -13,17 +13,16 @@ var (
 	grey  = rgb{0x8a, 0x8a, 0x8a}
 )
 
-var icons = map[rgb][]byte{}
-
-// icon is the tray icon in the status colour, in the format this system's tray takes (encodeIcon: .ico on
-// Windows, PNG elsewhere).
-func icon(c rgb) []byte {
-	if b, ok := icons[c]; ok {
-		return b
-	}
-	icons[c] = encodeIcon(drawIcon(c))
-	return icons[c]
+// The tray icon in each status colour, in the format this system's tray takes (encodeIcon: .ico on Windows, PNG
+// elsewhere). They are made once, before anything runs: the supervisor and the updater both show a status, and a
+// map written from two goroutines can end the program.
+var icons = map[rgb][]byte{
+	green: encodeIcon(drawIcon(green)),
+	amber: encodeIcon(drawIcon(amber)),
+	grey:  encodeIcon(drawIcon(grey)),
 }
+
+func icon(c rgb) []byte { return icons[c] }
 
 // drawIcon draws a ring and a centre dot (a hub) in the colour, 32x32.
 func drawIcon(c rgb) *image.NRGBA {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -154,6 +155,23 @@ func TestPairHandler(t *testing.T) {
 			t.Errorf("the hub was asked for platform %q, want %q", p, platform)
 		}
 	}
+}
+
+// The supervisor and the updater both show a status, so two goroutines ask for icons at once (go test -race).
+func TestIconsFromTwoGoroutines(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, c := range []rgb{green, amber, grey, green} {
+				if len(icon(c)) == 0 {
+					t.Errorf("no icon for %v", c)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestDesktopEntry(t *testing.T) {
