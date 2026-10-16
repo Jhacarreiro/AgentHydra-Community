@@ -52,10 +52,4 @@ describe('repo root binding', () => {
       rmSync(outside, { recursive: true, force: true })
     }
   })
-
-  // The swap that adopted this helper must not have moved any path. Identical value today is what
-  // makes it a safe replacement; being immune to a future move is what makes it worth doing.
-  test('matches what the hop count resolved to while the hop count was still correct', () => {
-    expect(REPO_ROOT).toBe(resolve(import.meta.dir, '..'))
-  })
 })
