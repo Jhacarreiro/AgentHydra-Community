@@ -7,26 +7,20 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 
 const src = join(import.meta.dir, '..', 'src')
-// This environment without a hub, so a pusher stops at its own first check, which comes after config has loaded.
-const noHub = Object.fromEntries(
-  Object.entries(process.env).filter(
-    ([k]) => !/^(AGENTHYDRA|CCMANAGERUI)_CODEX_HUB_(URL|TOKEN)$/.test(k),
-  ),
-)
 const run = (args: string[], host: string) =>
   spawnSync(process.execPath, args, {
     cwd: join(import.meta.dir, '..'),
     encoding: 'utf8',
-    env: { ...noHub, HOST: host },
+    env: { ...process.env, HOST: host },
     timeout: 30_000,
   })
 
 test('the pusher starts whatever HOST says', () => {
   for (const host of ['example.test', '0.0.0.0']) {
-    const r = run([join(src, 'codex-hub-push-main.ts'), '--once'], host)
-    // The pusher's own refusal of a missing hub, not config's of the HOST.
-    expect(r.stderr).toBe('Set AGENTHYDRA_CODEX_HUB_URL and AGENTHYDRA_CODEX_HUB_TOKEN.\n')
-    expect(r.status).toBe(2)
+    const r = run([join(src, 'codex-hub-push-main.ts'), '--version'], host)
+    expect(r.stderr).toBe('')
+    expect(r.stdout).toBe('codex-hub-push\n')
+    expect(r.status).toBe(0)
   }
   // A child bun's start: a few seconds on a busy box (codex-rpc.test.ts).
 }, 60_000)

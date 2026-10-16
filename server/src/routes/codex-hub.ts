@@ -18,6 +18,8 @@ import {
   hubNameTaken,
   hubPcKey,
   hubTokenMatches,
+  PUSHER_EXE,
+  pusherRelease,
   ROLLOUT_UNPACKED_MAX,
 } from '../core/codex-hub'
 import {
@@ -80,6 +82,19 @@ app.post('/api/codex-hub/push', requireHubToken, async (c) => {
   )
   if (!result.ok) return c.json({ error: result.error }, result.status)
   return c.json({ pc: result.pc, stored: result.stored, want: result.want })
+})
+
+// The pusher build PCs update themselves to (core/codex-hub-update.ts): its hash, then the file.
+app.get('/api/codex-hub/pusher', requireHubToken, async (c) => {
+  const release = await pusherRelease()
+  return release ? c.json(release) : c.json({ error: 'this hub hands out no pusher build' }, 404)
+})
+
+app.get('/api/codex-hub/pusher/download', requireHubToken, async (c) => {
+  if (!(await pusherRelease())) return c.json({ error: 'this hub hands out no pusher build' }, 404)
+  return new Response(Bun.file(PUSHER_EXE), {
+    headers: { 'content-type': 'application/octet-stream' },
+  })
 })
 
 // Which PCs have pushed and when, and which have a relay open now (their chats can be continued).

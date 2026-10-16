@@ -26,6 +26,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -378,4 +379,36 @@ export function codexHubHomes(root: string = CODEX_HUB_DIR): CodexHubHome[] {
     if (manifest) homes.push({ id: `hub:${key}`, name: manifest.pc || key, codexHome, manifest })
   }
   return homes
+}
+
+/**
+ * The pusher build this hub hands out (codex-hub-update.ts): each PC's pusher fetches it when its own differs, so a
+ * PC is installed once. `.pusher` can never be a PC's folder: hubPcKey makes no dots. Absent: PCs keep what they have.
+ */
+export const PUSHER_EXE = join(CODEX_HUB_DIR, '.pusher', 'codex-hub-push.exe')
+
+const pusherHashes = new Map<string, { mtimeMs: number; size: number; sha256: string }>()
+
+/** The build's SHA-256 and size, hashed again only when the file changed; null when there is none. */
+export async function pusherRelease(
+  path: string = PUSHER_EXE,
+): Promise<{ sha256: string; size: number } | null> {
+  let st: { mtimeMs: number; size: number }
+  try {
+    st = statSync(path)
+  } catch {
+    return null
+  }
+  let known = pusherHashes.get(path)
+  if (!known || known.mtimeMs !== st.mtimeMs || known.size !== st.size) {
+    known = { mtimeMs: st.mtimeMs, size: st.size, sha256: await sha256File(path) }
+    pusherHashes.set(path, known)
+  }
+  return { sha256: known.sha256, size: known.size }
+}
+
+export async function sha256File(path: string): Promise<string> {
+  const hasher = new Bun.CryptoHasher('sha256')
+  for await (const chunk of Bun.file(path).stream()) hasher.update(chunk)
+  return hasher.digest('hex')
 }
