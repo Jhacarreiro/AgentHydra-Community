@@ -134,7 +134,10 @@ STATE=$(echo "$LINK" | grep -o 'state=[0-9a-f]*' | cut -d= -f2)
 code=$(curl -s -o /dev/null -w '%{http_code}' -d state=wrong -d "token=$TOKEN" "http://127.0.0.1:$PORT/paired")
 check "a post with the wrong state is refused (400)" test "$code" = 400
 code=$(curl -s -o /dev/null -w '%{http_code}' -d "state=$STATE" -d token=short "http://127.0.0.1:$PORT/paired")
-check "a too-short token is refused (400)" test "$code" = 400
+check "a token the hub does not take is refused (401)" test "$code" = 401
+code=$(curl -s -o "$T/shape.html" -w '%{http_code}' -d "state=$STATE" -d "token=two%0Alines" "http://127.0.0.1:$PORT/paired")
+check "a token with a line break is refused (400)" test "$code" = 400
+check "  ...saying so, not that the link is wrong" grep -q "shape this app cannot use" "$T/shape.html"
 code=$(curl -s -o "$T/paired.html" -w '%{http_code}' -d "state=$STATE" -d "token=$TOKEN" "http://127.0.0.1:$PORT/paired")
 check "the hub page's post is taken (200)" test "$code" = 200
 check "the token is saved" grep -q "\"token\": \"$TOKEN\"" "$APP/tray.json"

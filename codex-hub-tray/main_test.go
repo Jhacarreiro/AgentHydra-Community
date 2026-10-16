@@ -96,8 +96,23 @@ func fakeHub(t *testing.T, token string, platforms *[]string) *httptest.Server {
 	return srv
 }
 
+func TestTokenUsable(t *testing.T) {
+	// The hub takes any token its operator set, trimmed.
+	for _, ok := range []string{"x", "short", "has spaces inside", "tökén ñ", "Hub_Token-0123456789~!", strings.Repeat("é", 512)} {
+		if !tokenUsable(ok) {
+			t.Errorf("refused %q", ok)
+		}
+	}
+	for _, bad := range []string{"", " padded", "padded ", "two\nlines", "a\rb", "tab\there", "del\x7f", "\xff\xfe", strings.Repeat("x", 513)} {
+		if tokenUsable(bad) {
+			t.Errorf("took %q", bad)
+		}
+	}
+}
+
 func TestPairHandler(t *testing.T) {
-	const good = "Hub_Token-0123456789~!"
+	// Short, with a space and not ASCII: the hub takes such a token, so the tray does too.
+	const good = "Hub tökén ~!"
 	var platforms []string
 	srv := fakeHub(t, good, &platforms)
 	t.Cleanup(func() { os.Remove(configPath) })
@@ -107,33 +122,32 @@ func TestPairHandler(t *testing.T) {
 	a := newApp()
 	finished := false
 	h := a.pairHandler("the-state", func() { finished = true })
-	post := func(state, token string) int {
+	post := func(state, token string) (int, string) {
 		form := url.Values{"state": {state}, "token": {token}}
 		req := httptest.NewRequest(http.MethodPost, "/paired", strings.NewReader(form.Encode()))
 		req.Header.Set("content-type", "application/x-www-form-urlencoded")
 		rec := httptest.NewRecorder()
 		h(rec, req)
-		io.Copy(io.Discard, rec.Body)
-		return rec.Code
+		b, _ := io.ReadAll(rec.Body)
+		return rec.Code, string(b)
 	}
 
-	if code := post("another-state", good); code != http.StatusBadRequest {
-		t.Errorf("wrong state: %d", code)
+	if code, body := post("another-state", good); code != http.StatusBadRequest || !strings.Contains(body, "not the one this PC opened") {
+		t.Errorf("wrong state: %d %s", code, body)
 	}
-	if code := post("the-state", "short-token-15c"); code != http.StatusBadRequest {
-		t.Errorf("15-character token: %d", code)
-	}
-	if code := post("the-state", "has a space 0123456789"); code != http.StatusBadRequest {
-		t.Errorf("token with a space: %d", code)
-	}
-	if code := post("the-state", strings.Repeat("x", 513)); code != http.StatusBadRequest {
-		t.Errorf("513-character token: %d", code)
+	// A token the tray cannot use gets its own message, not the one for a forged post.
+	for _, bad := range []string{"", "two\nlines", strings.Repeat("x", 513)} {
+		if code, body := post("the-state", bad); code != http.StatusBadRequest || !strings.Contains(body, "shape this app cannot use") {
+			t.Errorf("token %q: %d %s", bad, code, body)
+		}
 	}
 	if c := loadConfig(); c.Token != "" || finished {
 		t.Fatalf("a refused post saved %q (finished %v)", c.Token, finished)
 	}
-	if code := post("the-state", "refused-by-the-hub-0123"); code != http.StatusUnauthorized {
-		t.Errorf("token the hub refuses: %d", code)
+	for _, refused := range []string{"short", "refused by the hub", strings.Repeat("é", 512)} {
+		if code, body := post("the-state", refused); code != http.StatusUnauthorized || !strings.Contains(body, "did not take that token") {
+			t.Errorf("token the hub refuses (%q): %d %s", refused, code, body)
+		}
 	}
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest(http.MethodGet, "/paired", nil))
@@ -141,8 +155,8 @@ func TestPairHandler(t *testing.T) {
 		t.Errorf("GET: %d", rec.Code)
 	}
 
-	if code := post("the-state", good); code != http.StatusOK {
-		t.Fatalf("valid post: %d", code)
+	if code, body := post("the-state", good); code != http.StatusOK {
+		t.Fatalf("valid post: %d %s", code, body)
 	}
 	if c := loadConfig(); c.Token != good || c.Hub != srv.URL {
 		t.Fatalf("saved config: %+v", c)

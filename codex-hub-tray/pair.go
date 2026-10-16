@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Pairing gets the hub token from the hub's own page (GET /codex-hub/pair, behind the operator's sign-in): the tray
@@ -23,8 +25,16 @@ import (
 
 const pairFor = 20 * time.Minute
 
-// The hub takes any token its operator set; this only refuses what cannot be one (printable ASCII, no spaces).
-var tokenShape = regexp.MustCompile(`^[!-~]{16,512}$`)
+// tokenUsable: the hub takes any token its operator set (trimmed, of any length and characters), so this refuses
+// only what cannot be the hub's or cannot go as it is into the Authorization header and the pusher's environment: an
+// empty token, one with spaces at either end (the hub trims its own), one with a line break or another control
+// character, and, as a sanity limit, one over 512 characters.
+func tokenUsable(t string) bool {
+	if t == "" || t != strings.TrimSpace(t) || !utf8.ValidString(t) || utf8.RuneCountInString(t) > 512 {
+		return false
+	}
+	return !strings.ContainsFunc(t, unicode.IsControl)
+}
 
 type pairing struct {
 	mu   sync.Mutex
@@ -90,8 +100,12 @@ func (a *app) pairHandler(state string, finish func()) http.HandlerFunc {
 			return
 		}
 		got, token := r.PostFormValue("state"), r.PostFormValue("token")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(state)) != 1 || !tokenShape.MatchString(token) {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(state)) != 1 {
 			page(w, http.StatusBadRequest, "This pairing link is not the one this PC opened. Choose Connect this PC in the Codex Hub menu again.")
+			return
+		}
+		if !tokenUsable(token) {
+			page(w, http.StatusBadRequest, "The hub's token has a shape this app cannot use: it is empty, over 512 characters, has spaces at either end, or has a line break or another control character. Give the hub another token, then choose Connect this PC again.")
 			return
 		}
 		c := loadConfig()
