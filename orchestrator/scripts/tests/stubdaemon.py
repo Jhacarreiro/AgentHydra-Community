@@ -75,7 +75,12 @@ class StubDaemon:
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self._server.server_port}"
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # close()'s shutdown() waits for serve_forever to look at its stop flag, which it does once per
+        # poll_interval: at the default 0.5 s that was half a second at the end of every stub-backed
+        # test (test_archive_chat.py: 28 tests, 14 s). Requests are answered as they arrive either way.
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self._thread.start()
         hydralib.INPROC[self.url] = self.dispatch
 
