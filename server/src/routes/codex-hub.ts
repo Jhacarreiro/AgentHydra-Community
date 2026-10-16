@@ -43,9 +43,11 @@ export const relayWebSocket = {
   backpressureLimit: 2 * RELAY_MAX_FRAME,
 }
 
-/** Bun's send gives 0 for a frame it dropped. */
-const dropped = (ws: { raw?: unknown }, data: string): boolean =>
-  (ws.raw as ServerWebSocket<unknown>).send(data) === 0
+/** Bun's send gives 0 for a frame it dropped. A socket already closed gives 0 too, and its own close says why. */
+const dropped = (ws: { raw?: unknown }, data: string): boolean => {
+  const raw = ws.raw as ServerWebSocket<unknown>
+  return raw.send(data) === 0 && raw.readyState === WebSocket.OPEN
+}
 
 async function requireHubToken(c: Context, next: Next) {
   const token = codexHubToken()
