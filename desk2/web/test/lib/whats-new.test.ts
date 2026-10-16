@@ -116,6 +116,10 @@ describe('the update click and the restarted copy', () => {
       new Response(JSON.stringify(url === '/api/health' ? { version, startedAt } : { sections }), { status: 200 })) as typeof fetch
   }
 
+  // silent()'s fetch settles only when the click's own timeout aborts it: 10 ms here instead of the real 1.5 s, the
+  // same path through the click (six tests sat through 9 s of it).
+  const CUT_OFF_MS = 10
+
   const silent = () => {
     globalThis.fetch = ((_: string, init?: RequestInit) =>
       new Promise<Response>((_, reject) =>
@@ -125,7 +129,7 @@ describe('the update click and the restarted copy', () => {
   test('a click before anything was read still writes a version-only marker from the version kept', async () => {
     kept.set('hydra-desk.whatsNew.seenVersion', '2.0.3')
     silent()
-    const click = rememberForUpdate()
+    const click = rememberForUpdate(CUT_OFF_MS)
     expect(readMarker()).toEqual({ version: '2.0.3', headlines: null, at: expect.any(Number), startedAt: null })
     await click
   })
@@ -134,7 +138,7 @@ describe('the update click and the restarted copy', () => {
     serving('2.0.3', sections(['Chats load faster']))
     await checkWhatsNew()
     silent()
-    const click = rememberForUpdate()
+    const click = rememberForUpdate(CUT_OFF_MS)
     expect(readMarker()).toEqual({ version: '2.0.3', headlines: ['Chats load faster', 'Plain bullet'], at: expect.any(Number), startedAt: 100 })
     await click
     expect(readMarker()?.version).toBe('2.0.3')
@@ -144,7 +148,7 @@ describe('the update click and the restarted copy', () => {
     serving('2.0.3', sections(['Chats load faster']))
     await checkWhatsNew()
     silent()
-    await rememberForUpdate()
+    await rememberForUpdate(CUT_OFF_MS)
     serving('2.0.4', sections(['Chats load faster', 'Dialog shows the changes']), 200)
     await checkWhatsNew()
     expect(whatsNew.value?.updated).toBe(true)
@@ -158,7 +162,7 @@ describe('the update click and the restarted copy', () => {
     serving('2.0.3', sections(['Chats load faster']))
     await checkWhatsNew()
     silent()
-    await rememberForUpdate()
+    await rememberForUpdate(CUT_OFF_MS)
     serving('2.0.3', sections(['Chats load faster', 'Dialog shows the changes']))
     await checkWhatsNew()
     expect(whatsNew.value).toBeNull()
@@ -169,7 +173,7 @@ describe('the update click and the restarted copy', () => {
     serving('2.0.3', sections(['Chats load faster']))
     await checkWhatsNew()
     silent()
-    await rememberForUpdate()
+    await rememberForUpdate(CUT_OFF_MS)
     serving('2.0.3', sections(['Chats load faster', 'Dialog shows the changes']), 200)
     await checkWhatsNew()
     expect(whatsNew.value?.count).toBe(2)
@@ -183,7 +187,7 @@ describe('the update click and the restarted copy', () => {
     serving('2.0.4', sections(['Chats load faster']))
     await checkWhatsNew()
     silent()
-    await rememberForUpdate()
+    await rememberForUpdate(CUT_OFF_MS)
     serving('2.0.4', sections(['Chats load faster']), 200)
     await checkWhatsNew()
     expect(whatsNew.value).toBeNull()
