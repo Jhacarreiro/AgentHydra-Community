@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -50,9 +51,20 @@ type release struct {
 
 var client = &http.Client{Timeout: 30 * time.Second}
 
+// platform names this system the way the hub names its builds (Bun's targets: windows-x64, linux-x64, linux-arm64,
+// darwin-x64, darwin-arm64), so each PC is handed the build that runs on it.
+var platform = platformName(runtime.GOOS, runtime.GOARCH)
+
+func platformName(goos, goarch string) string {
+	if goarch == "amd64" {
+		goarch = "x64"
+	}
+	return goos + "-" + goarch
+}
+
 // latest is the build the hub hands out for name ("pusher" or "tray"); nil when it hands out none.
 func latest(c config, name string) (*release, error) {
-	req, _ := http.NewRequest("GET", c.Hub+"/api/codex-hub/"+name, nil)
+	req, _ := http.NewRequest("GET", c.Hub+"/api/codex-hub/"+name+"?platform="+platform, nil)
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	res, err := client.Do(req)
 	if err != nil {
@@ -79,7 +91,7 @@ func latest(c config, name string) (*release, error) {
 func download(c config, name string, want *release, dest string) (string, error) {
 	next := dest + ".new"
 	os.Remove(next)
-	req, _ := http.NewRequest("GET", c.Hub+"/api/codex-hub/"+name+"/download", nil)
+	req, _ := http.NewRequest("GET", c.Hub+"/api/codex-hub/"+name+"/download?platform="+platform, nil)
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	long := &http.Client{Timeout: 15 * time.Minute}
 	res, err := long.Do(req)
