@@ -532,19 +532,22 @@ describe('disable({ forget: true }) connected branches', () => {
 
 // ── updateAppearance connected branch (pushes over the network) ────────────────────────────
 describe('updateAppearance while enabled + connected', () => {
-  test('pushes the new appearance to the remote doc', async () => {
+  test('pushes the new appearance to the remote doc once the debounce settles', async () => {
     await signInAs('appearance-pusher')
     await enable()
     server.docPostCalls = 0
 
     await updateAppearance({ theme: 'system' })
+    // Not posted at once: the engine coalesces changes for its debounce window (800 ms). No
+    // pushNow() from here on, or this would test pushNow, which has its own test above.
     expect(server.docPostCalls).toBe(0)
-    await pushNow()
+    const deadline = Date.now() + 10_000
+    while (server.docPostCalls === 0 && Date.now() < deadline) await Bun.sleep(25)
 
     expect(syncStatus().appearance).toEqual({ theme: 'system' })
     expect(server.docPostCalls).toBe(1)
     expect(server.settings.appearance).toEqual({ theme: 'system' })
-  })
+  }, 15_000)
 })
 
 // ── token refresh-on-expiry across the locker call ──────────────────────────────────────────

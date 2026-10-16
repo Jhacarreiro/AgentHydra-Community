@@ -143,6 +143,6 @@ describe('list_rate_limited_sessions', () => {
   test('says plainly that it is Claude-only', () => {
     // An empty result must not be readable as "no session on this machine ever hit a limit" when
     // what it really means is "this detector does not cover the provider you asked about".
-    expect(tool('list_rate_limited_sessions')?.description ?? '').toContain('Claude')
+    expect(tool('list_rate_limited_sessions')?.description ?? '').toContain('Claude sessions only')
   })
 })
