@@ -7,8 +7,8 @@
 // of the tooling every other session on that machine had. It looked healthy and was quietly blind.
 //
 // What the seed must NOT do is the other half of the contract: logins are the user's (an OAuth flow
-// an AI must never perform) and folder trust is `ensureProjectTrusted`'s deliberate per-folder job.
-// So the seeded file carries `mcpServers` and nothing else.
+// an AI must never perform) and folder trust is the person's own answer, per folder, in the CLI's
+// dialog. So the seeded file carries `mcpServers` and nothing else.
 //
 // `os.homedir()` reads USERPROFILE/HOME at call time, so each test points it at a scratch home and
 // restores it. CONFIG_DIR is already redirected to a temp dir by tests/setup.ts.

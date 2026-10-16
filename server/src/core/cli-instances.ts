@@ -78,8 +78,8 @@ function userHome(): string {
  *
  * Only `mcpServers` is copied here. CLAUDE.md and skills are NOT copied by this seed: they are synced
  * by syncOwnerClaude (climayte-owner-sync.ts), which launchCliInstance runs before every launch.
- * NOT logins, NOT `projects` trust (that is `ensureProjectTrusted`'s job,
- * per-folder and deliberate), NOT onboarding state — login stays the user's step. Best-effort by
+ * NOT logins, NOT `projects` trust (the person answers that per folder, in the CLI's own
+ * dialog), NOT onboarding state — login stays the user's step. Best-effort by
  * design: a machine with no `~/.claude.json`, or an unreadable one, just yields an unseeded instance,
  * which is exactly today's behaviour.
  */

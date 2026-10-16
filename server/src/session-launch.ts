@@ -26,12 +26,6 @@
 //                       discipline every other token path here keeps) and passed as
 //                       CLAUDE_CODE_OAUTH_TOKEN/-_SCOPES in the child's environment only.
 //                       Never persisted, logged, or returned to any caller.
-//
-// THE PROMPT RIDES IN A FILE, not on the command line. Handoff prompts are long, multiline,
-// and full of quoting hazards; a temp file plus `Get-Content -Raw` / `$(cat …)` delivers the
-// exact bytes where cmd/bash quoting would mangle them. The file holds a task description,
-// never a secret, and is left for the OS temp cleaner (deleting it too early would race the
-// terminal still starting up).
 
 import {
   copyFileSync,
@@ -110,153 +104,6 @@ export function bundledClaudeExe(instanceDir: string): string | null {
     return existsSync(exe) ? exe : null
   } catch {
     return null
-  }
-}
-
-export interface TerminalLaunchPlan {
-  /** What to spawn. Empty when this platform has no known way to open a terminal. */
-  argv: string[]
-  /** A copyable equivalent, for the caller/UI when the spawn cannot work. */
-  command: string
-}
-
-/** Pure and platform-parameterised, like session-resume's buildResumePlan, so tests can pin
- *  every platform from one machine. `promptFile` carries the initial prompt's exact bytes. */
-export function buildTerminalLaunchPlan(
-  platform: NodeJS.Platform,
-  exe: string,
-  promptFile: string,
-  model: string | null,
-  effort: string | null = null,
-  resumeSessionId: string | null = null,
-  permissionMode: string | null = null,
-): TerminalLaunchPlan {
-  // With resumeSessionId, the window CONTINUES an existing thread (--resume) with the prompt as
-  // its next turn — the visible alternative to a headless queue resume, per the owner's standing
-  // rule that nothing runs headless: work happens where it can be watched.
-  // An UNATTENDED window must not stop on a per-command approval prompt, because nobody is
-  // there to answer it. Opt-in: a caller that does not ask keeps the CLI's own default.
-  const modelArgs = `${resumeSessionId ? ` --resume ${resumeSessionId}` : ''}${model ? ` --model ${model}` : ''}${effort ? ` --effort ${effort}` : ''}${permissionMode ? ` --permission-mode ${permissionMode}` : ''}`
-  if (platform === 'win32') {
-    // PowerShell (not cmd) runs the claude line: `Get-Content -Raw` hands the multiline prompt
-    // over as ONE argv element, which cmd cannot do. -NoExit keeps the window (and any startup
-    // error) on screen, the same reason session-resume uses `cmd /k`.
-    const ps = `& '${exe.replaceAll("'", "''")}'${modelArgs} (Get-Content -Raw '${promptFile.replaceAll("'", "''")}')`
-    return {
-      argv: ['cmd', '/c', 'start', '', 'powershell', '-NoExit', '-Command', ps],
-      command: ps,
-    }
-  }
-  const sh = `"${exe}"${modelArgs} "$(cat '${promptFile}')"`
-  if (platform === 'darwin') {
-    const script = `tell application "Terminal" to do script ${JSON.stringify(sh)}`
-    return { argv: ['osascript', '-e', script], command: sh }
-  }
-  if (platform === 'linux') {
-    return { argv: ['x-terminal-emulator', '-e', 'bash', '-lc', `${sh}; exec bash`], command: sh }
-  }
-  return { argv: [], command: sh }
-}
-
-/*
- * Is `cwd` trusted for the CLI config at `configDir` (null = the ambient ~/.claude.json), and
- * if it is trusted under a DIFFERENT spelling of the same path, mirror it onto the spelling
- * that is missing so the launch does not stop on a dialog.
- *
- * The CLI keys `projects` by the literal cwd string, so `D:\\PublicProjects` and
- * `D:/PublicProjects` are two records of one folder and can disagree. On this machine they DO:
- * one true, one false, which is how a launch into a long-trusted folder hangs on the trust
- * prompt. Mirroring an existing YES is a normalization, not a new grant.
- *
- * It deliberately does NOT trust a folder nobody has trusted. A launcher that answered the
- * security question on the owner's behalf would be worse than a launcher that hangs, because
- * the hang is at least visible. Returns why, so the caller can say so instead of opening a
- * window that dies quietly.
- */
-/**
- * The nearest ANCESTOR of `cwd` this account has already trusted, or null.
- *
- * Pure enough to pin: walks upward one segment at a time and asks the same trust question the
- * pre-flight asks, so it can never accept a directory the CLI would still prompt about. Never
- * returns `cwd` itself - the caller has already established that one is not trusted.
- */
-export function nearestTrustedAncestor(
-  cwd: string,
-  configDir: string | null,
-  isTrusted: (p: string, c: string | null) => boolean = (p, c) =>
-    ensureProjectTrusted(p, c).trusted,
-): string | null {
-  const parts = cwd.replace(/[\\/]+$/, '').split(/[\\/]/)
-  // Rejoin with the separator the caller used, not the host's: a Windows path walked on the
-  // ubuntu CI leg came back as 'D:/PublicProjects/...' and matched nothing (CI, 2026-09-02).
-  const joiner = cwd.includes('\\') ? '\\' : '/'
-  // Stop before the bare drive/root: 'D:' is not a project anybody meant to work in, and
-  // starting a session at a drive root is its own hazard.
-  for (let i = parts.length - 1; i >= 2; i--) {
-    const candidate = parts.slice(0, i).join(joiner)
-    if (isTrusted(candidate, configDir)) return candidate
-  }
-  return null
-}
-
-export function ensureProjectTrusted(
-  cwd: string,
-  configDir: string | null,
-): { trusted: boolean; mirrored: boolean; reason?: string } {
-  const file = join(configDir ?? homedir(), '.claude.json')
-  let cfg: Record<string, unknown>
-  try {
-    cfg = JSON.parse(readFileSync(file, 'utf8'))
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT' || code === 'ENOTDIR')
-      return { trusted: false, mirrored: false, reason: 'no-cli-config' }
-    return { trusted: false, mirrored: false, reason: 'cli-config-unreadable' }
-  }
-  const projects = (cfg.projects ?? {}) as Record<string, Record<string, unknown>>
-  // Same folder, any spelling: slashes normalized, case-folded (Windows paths are
-  // case-insensitive), trailing separators dropped.
-  const canon = (p: string) =>
-    p
-      .replace(/[\\/]+/g, '/')
-      .replace(/\/+$/, '')
-      .toLowerCase()
-  const target = canon(cwd)
-  const siblings = Object.keys(projects).filter((k) => canon(k) === target)
-  // Both spellings must already say yes before this can claim there is nothing to do. Checking
-  // only the caller's spelling is what let the original version return 'trusted, nothing to
-  // mirror' for a folder whose forward-slash key did not exist, and then hang on the dialog.
-  const forwardKey = cwd.replace(/\\/g, '/')
-  const backslashKey = cwd.replace(/\//g, '\\')
-  const yes = (k: string) => projects[k]?.hasTrustDialogAccepted === true
-  if (yes(cwd) && yes(forwardKey) && yes(backslashKey)) return { trusted: true, mirrored: false }
-  const trustedElsewhere = siblings.find((k) => projects[k]?.hasTrustDialogAccepted === true)
-  if (!trustedElsewhere)
-    return {
-      trusted: false,
-      mirrored: false,
-      reason: siblings.length ? 'folder-not-trusted' : 'folder-unknown',
-    }
-  // Mirror the YES onto every spelling of this folder, INCLUDING the two it may not have yet.
-  // Writing only the keys that already exist is not enough and was the bug in the first cut of
-  // this: measured on the owner's config, every forward-slash key is false and every backslash
-  // key is true, because the CLI resolves cwd to FORWARD slashes and reads trust under that
-  // key while something else wrote the backslash form. A folder recorded only with backslashes
-  // therefore has no forward-slash key, the mirror skipped it, and the dialog kept appearing.
-  // Adding that one key by hand turned a launch that had hung three times into one that
-  // registered in seven seconds.
-  try {
-    const donor = projects[trustedElsewhere]
-    const forward = cwd.replace(/\\/g, '/')
-    const backslash = cwd.replace(/\//g, '\\')
-    for (const k of new Set([...siblings, cwd, forward, backslash])) {
-      projects[k] = { ...(projects[k] ?? donor), hasTrustDialogAccepted: true }
-    }
-    cfg.projects = projects
-    writeFileSync(file, JSON.stringify(cfg, null, 2))
-    return { trusted: true, mirrored: true }
-  } catch {
-    return { trusted: false, mirrored: false, reason: 'cli-config-unwritable' }
   }
 }
 
@@ -380,8 +227,8 @@ export function alreadyRendersIn(
   return norm(rendered.path).startsWith(`${norm(instanceDir)}\\`)
 }
 
-/** Pure and platform-parameterised, like the launch plan above. `binary` is the desktop
- *  binary ('Claude' is the darwin open -na marker resolveLaunchBinary returns). */
+/** Pure and platform-parameterised, like session-resume's buildResumePlan. `binary` is the
+ *  desktop binary ('Claude' is the darwin open -na marker resolveLaunchBinary returns). */
 export function buildImportPlan(
   platform: NodeJS.Platform,
   binary: string,
