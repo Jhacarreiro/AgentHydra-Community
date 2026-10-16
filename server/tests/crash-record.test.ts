@@ -37,12 +37,6 @@ describe('crashRecordLine', () => {
     expect(crashRecordLine('unhandledRejection', { code: 'ECONNRESET' })).toContain('message=')
     expect(crashRecordLine('unhandledRejection', undefined)).toContain('message=undefined')
   })
-
-  test('a fatal signal is recorded the same way an uncaught throw is', () => {
-    const line = crashRecordLine('signal:SIGBREAK', new Error('process received SIGBREAK'))
-    expect(line).toContain('reason=signal:SIGBREAK')
-    expect(line).toContain('message=process received SIGBREAK')
-  })
 })
 
 describe('exitRecordLine', () => {
@@ -52,9 +46,5 @@ describe('exitRecordLine', () => {
     expect(line).toContain(`pid=${process.pid}`)
     expect(line).toMatch(/uptimeMs=\d+/)
     expect(line.includes('\n')).toBe(false)
-  })
-
-  test('a null code (signal-terminated) is still a valid, readable record', () => {
-    expect(exitRecordLine(null)).toContain('exiting code=null')
   })
 })

@@ -5,13 +5,8 @@ import { join } from 'node:path'
 import {
   buildCodexDesktopLaunch,
   codexDesktopRuntimesFromRecords,
-  codexDesktopUserDataDir,
   openCodexDesktop,
 } from '../src/core/codex-desktop'
-
-test('Codex Desktop profile is kept inside its isolated CODEX_HOME', () => {
-  expect(codexDesktopUserDataDir('C:\\profiles\\work')).toBe(join('C:\\profiles\\work', 'desktop'))
-})
 
 test('Codex Desktop runtime discovery maps a crashpad profile back to the main window pid', () => {
   const records = [

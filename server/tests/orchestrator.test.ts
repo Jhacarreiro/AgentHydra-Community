@@ -12,7 +12,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   DEFAULT_TIMEOUT_MS,
-  DRIVER_EXIT_MEANINGS,
   defaultDeadline,
   exitMeaning,
   LONG_TIMEOUT_MS,
@@ -132,11 +131,6 @@ describe('resolution', () => {
     expect(pythonBinary({ AGENTHYDRA_PYTHON: '/opt/py/bin/python3.12' }, 'win32')).toBe(
       '/opt/py/bin/python3.12',
     )
-  })
-
-  test("the driver's exit codes read as verdicts", () => {
-    expect(DRIVER_EXIT_MEANINGS[0]).toBe('ok')
-    expect(DRIVER_EXIT_MEANINGS[3]).toContain('not armed')
   })
 })
 

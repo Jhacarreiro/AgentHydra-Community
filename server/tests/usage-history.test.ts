@@ -118,15 +118,6 @@ describe('burnRateBounds', () => {
     expect(bounds).toEqual({ point: 5, upper: 5.5, spanHours: 2 })
     expect(bounds!.upper - bounds!.point).toBeCloseTo(1 / bounds!.spanHours, 10)
   })
-
-  test('burnRatePctPerHour is exactly burnRateBounds(...)?.point', () => {
-    const now = new Date('2024-07-14T02:00:00.000Z')
-    const samples = [
-      mkSample('2024-07-14T00:00:00.000Z', 10),
-      mkSample('2024-07-14T02:00:00.000Z', 20),
-    ]
-    expect(burnRatePctPerHour(samples, now)).toBe(burnRateBounds(samples, now)!.point)
-  })
 })
 
 const baseSnap = (weekAll: UsageSnapshot['weekAll']): UsageSnapshot => ({

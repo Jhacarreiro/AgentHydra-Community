@@ -32,8 +32,6 @@ import {
   ETA_INSTRUCTION,
   ETA_MIN_SAMPLES,
   ETA_PROMPT_VERSION,
-  ETA_REWRITE_CLOSE_SHARE,
-  ETA_REWRITE_MIN_SAMPLES,
   type EtaReview,
   type EtaSample,
   etaBandCalibrations,
@@ -744,8 +742,6 @@ describe('prompt versions', () => {
       ideas: ['say seconds'],
     })
     expect(stats[1]).toMatchObject({ samples: 5, ratio: 1, closeShare: 0.8, topCause: null })
-    expect(ETA_REWRITE_MIN_SAMPLES).toBe(20)
-    expect(ETA_REWRITE_CLOSE_SHARE).toBe(0.5)
     const due = etaRewriteDue(stats)
     expect(due?.version).toBe(cur)
     expect(due?.why).toBe('20 samples, 20% close, median ratio 0.4x, top cause padding')

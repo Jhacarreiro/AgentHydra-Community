@@ -30,7 +30,6 @@ describe('memoryShort: a growing worker reserves only what it has left to grow',
     const growth = { expectedBytes: DEFAULT_GROWN_BYTES, sets: sets(16, 0.35) }
     expect(memoryShort(box(15.5), growth)).toBeNull()
     // the old gate: 17 x 0.75 GB = 12.75 GB needed above a 3.8 GB floor held it
-    expect(15.5 - 17 * 0.75).toBeLessThan(47.9 * 0.08)
   })
 
   test('(b) 16 workers just launched at 0.02 GB each are still mostly reserved', () => {

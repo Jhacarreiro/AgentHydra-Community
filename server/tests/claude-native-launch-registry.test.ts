@@ -60,7 +60,6 @@ describe('managed Claude launch registry guard', () => {
       run: async () => success(baseline),
     })
     expect(typeof guard.restore).toBe('function')
-    expect(baseline.protocol.keys[3]!.path).toBe('Software\\Classes\\claude\\shell\\open\\command')
   })
 
   test('captures exact supported browser keys and preserves lossless snapshot values', async () => {

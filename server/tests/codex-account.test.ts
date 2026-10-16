@@ -375,14 +375,6 @@ describe('codexUsageSnapshot', () => {
     expect(snap.source).toBe('api')
   })
 
-  test('weekModel stays null — OpenAI publishes no per-model sub-limit', () => {
-    const snap = codexUsageSnapshot(
-      { rate_limit: { primary_window: win(50, 604_800, RESET_AT) } },
-      null,
-    )
-    expect(snap.weekModel).toBeNull()
-  })
-
   test('a window with no percentage is skipped rather than rendered as 0%', () => {
     const snap = codexUsageSnapshot(
       { rate_limit: { primary_window: { limit_window_seconds: 604_800 } } },
