@@ -86,15 +86,26 @@ test('each platform gets its own file, named for the platform', async () => {
   }
 })
 
-test('an unknown platform is refused, and a known one with no build is a 404', async () => {
-  for (const platform of ['solaris-sparc', 'linux', 'win32-x64', '..%2F..%2Fetc%2Fpasswd']) {
+test('an unknown or empty platform is refused, and a known one with no build is a 404', async () => {
+  // An empty one is not "no platform": a PC that meant to name its own never gets the Windows build.
+  writeFileSync(PUSHER_EXE, 'win pusher')
+  writeFileSync(TRAY_EXE, 'win tray')
+  for (const query of [
+    ...['solaris-sparc', 'linux', 'win32-x64', '..%2F..%2Fetc%2Fpasswd', ''].map(
+      (platform) => `?platform=${platform}`,
+    ),
+    '?platform',
+  ]) {
     for (const path of ['pusher', 'pusher/download', 'tray', 'tray/download']) {
-      const res = await get(`/api/codex-hub/${path}?platform=${platform}`)
+      const res = await get(`/api/codex-hub/${path}${query}`)
       expect(res.status).toBe(400)
       expect((res.body as { error: string }).error).toContain('windows-x64')
     }
   }
   expect(hubBuildFile('pusher', 'freebsd-x64')).toBeNull()
+  expect(hubBuildFile('pusher', '')).toBeNull()
+  expect(hubBuildFile('pusher')).toBe(PUSHER_EXE)
+  rmSync(TRAY_EXE)
 
   writeFileSync(PUSHER_EXE, 'win pusher')
   for (const path of [

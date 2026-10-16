@@ -857,8 +857,9 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, as `bun build --target=bun-<platform>` names
   them); a Mac or Linux build sits beside the Windows one as `codex-hub-push-<platform>`, with no
   extension, and the tray's builds (`/api/codex-hub/tray`) the same way as `codex-hub-tray.exe` and
-  `codex-hub-tray-<platform>`. A request without a platform is Windows, as the first pushers ask; a
-  platform the hub has no build for answers 404, and the PC keeps what it has. Only a build named
+  `codex-hub-tray-<platform>`. A request without a platform is Windows, as the first pushers ask; an
+  empty or unknown one is a 400. A platform the hub has no build for answers 404, and the PC keeps what
+  it has. Only a build named
   `codex-hub-push`, `codex-hub-push.exe` or `codex-hub-push-<platform>` updates itself. A different build
   is downloaded beside it, checked against that hash, and started once with `--version`; only a build
   that starts replaces the running one, leaving the previous file as `.old` until the next start. The

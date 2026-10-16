@@ -401,11 +401,12 @@ export const HUB_PLATFORMS = [
 
 /**
  * The file the hub hands out for one build and platform, or null for a platform it does not know. No platform is
- * windows-x64: the pushers and trays installed before there were other builds ask without one. The Windows builds
- * keep their first names (PUSHER_EXE, TRAY_EXE); every other is `codex-hub-push-<platform>`, with no extension.
+ * windows-x64: the pushers and trays installed before there were other builds ask without one. An empty one is not:
+ * a PC that meant to name its platform is refused, not handed the Windows build. The Windows builds keep their
+ * first names (PUSHER_EXE, TRAY_EXE); every other is `codex-hub-push-<platform>`, with no extension.
  */
 export function hubBuildFile(name: 'pusher' | 'tray', platform?: string): string | null {
-  const p = platform || 'windows-x64'
+  const p = platform ?? 'windows-x64'
   if (!(HUB_PLATFORMS as readonly string[]).includes(p)) return null
   if (p === 'windows-x64') return name === 'pusher' ? PUSHER_EXE : TRAY_EXE
   return join(CODEX_HUB_DIR, '.pusher', `codex-hub-${name === 'pusher' ? 'push' : 'tray'}-${p}`)
