@@ -41,6 +41,8 @@ const candidateKeys = (query: string) => searchIndexCandidates(query)?.keys ?? n
 // future change to dedupeKey's shape cannot silently desync the assertions from the code.
 const claudeKey = (id: string) => dedupeKey({ source: 'claude', session_id: id, path: '' })
 
+// The index the rest of the suite uses: put back after this file, whose last scratch path is deleted.
+const sharedIndexPath = searchIndexPath()
 const dirs: string[] = []
 function scratch(): string {
   const dir = mkdtempSync(join(os.tmpdir(), 'agh-search-index-'))
@@ -49,6 +51,7 @@ function scratch(): string {
 }
 afterAll(() => {
   dropSearchIndex()
+  setSearchIndexPathForTests(sharedIndexPath)
   for (const d of dirs) rmSync(d, { recursive: true, force: true })
 })
 
