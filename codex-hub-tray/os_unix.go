@@ -58,12 +58,12 @@ func singleInstance() bool {
 	return false
 }
 
-// startup clears what a previous run left and makes the tray start at log in.
+// startup clears what a previous run left, and on macOS writes the LaunchAgent again (refreshAutostart).
 func startup() {
 	// A pusher left by a tray that was killed (on Linux the parent-death signal has usually ended it already).
 	killStale(pidPath(), pusherExe)
 	os.Remove(pidPath())
-	if err := writeAutostart(); err != nil {
+	if err := refreshAutostart(); err != nil {
 		log.Println("autostart:", err)
 	}
 	log.Printf("tray: started, pid %d", os.Getpid())

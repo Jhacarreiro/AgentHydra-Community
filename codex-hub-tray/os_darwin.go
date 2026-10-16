@@ -39,6 +39,10 @@ func writeAutostart() error {
 	return writeFileIfChanged(launchAgentPath(), launchAgentPlist(bundleID, trayExe))
 }
 
+// refreshAutostart writes the LaunchAgent again at each start, as Windows writes its Run key: turning it off in
+// System Settings (Login Items) is kept by macOS outside the file, so this does not undo it.
+func refreshAutostart() error { return writeAutostart() }
+
 // install puts the app bundle this program is in (or, for a bare build, a bundle made around it) at
 // ~/Applications/Codex Hub.app, replacing a running tray, and has launchd start it now and at each log in.
 func install(from string) {

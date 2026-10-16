@@ -182,6 +182,7 @@ PUSH2=$(pusher_pid)
 echo "== self-update"
 wait_for 10 test -n "$(last_item)"
 ITEM=$(last_item)
+sed -i 's/^X-GNOME-Autostart-enabled=true$/X-GNOME-Autostart-enabled=false/' "$DESKTOP" # turned off by the user
 cp "$T/next" "$T/hub/codex-hub-tray-$P"
 kill -USR1 "$PID2" # check the hub now
 check "the new build is swapped in" wait_for 30 has_sha "$TRAY" "$V2"
@@ -194,6 +195,7 @@ check "  ...holding the lock" test "$(tray_pid)" = "$PID2"
 check "  ...really" locked
 check "  ...and showing its icon again" wait_for 15 bash -c "i=\$(grep -o 'item [^ ]* icon 32x32 visible [1-9]' '$T/sni.log' | tail -1 | cut -d' ' -f2); [ -n \"\$i\" ] && [ \"\$i\" != '$ITEM' ]"
 check "no .new is left" test ! -e "$TRAY.new"
+check "autostart turned off stays off after the restart" grep -qx "X-GNOME-Autostart-enabled=false" "$DESKTOP"
 check "the old pusher was stopped" wait_for 10 dead "$PUSH2"
 check "a pusher runs again" wait_for 20 bash -c "p=\$(tr -dc 0-9 2>/dev/null <'$APP/pusher.pid'); [ -n \"\$p\" ] && [ \"\$p\" != '$PUSH2' ] && kill -0 \$p"
 PUSH3=$(pusher_pid)
@@ -215,7 +217,7 @@ check "a tray starts" wait_for 10 has_tray
 PID3=$(tray_pid)
 check "  ...and a pusher" wait_for 20 bash -c "p=\$(tr -dc 0-9 2>/dev/null <'$APP/pusher.pid'); [ \"\$p\" != '$OTHER' ] && kill -0 \$p"
 check "a pidfile naming another program does not kill it" alive "$OTHER"
-check "the autostart entry is written again at start" grep -qx "Exec=$TRAY" "$DESKTOP"
+check "an autostart entry the user removed is not written again at start" test ! -e "$DESKTOP"
 PUSH4=$(pusher_pid)
 kill -TERM "$PID3"
 check "SIGTERM stops the tray" wait_for 10 dead "$PID3"

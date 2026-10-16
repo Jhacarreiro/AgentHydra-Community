@@ -34,6 +34,10 @@ func writeAutostart() error {
 	return writeFileIfChanged(autostartPath(), desktopEntry(trayExe))
 }
 
+// refreshAutostart leaves the autostart entry to install: once it is there it is the user's, and turning it off
+// (X-GNOME-Autostart-enabled=false from GNOME, Hidden=true or removing it from KDE) has to survive the next start.
+func refreshAutostart() error { return nil }
+
 // install copies a downloaded build to its place, replacing a running tray, adds the autostart entry and starts it.
 func install(from string) {
 	first := !exists(trayExe)
