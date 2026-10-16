@@ -5,7 +5,7 @@
 // Only /api/codex-hub/ is meant to be reachable from other machines (the PCs). Desk's end of a relay is
 // /api/codex-relay/, outside it, so a proxy that exposes the hub's prefix never exposes a way to drive a PC.
 import type { Context, Next } from 'hono'
-import { upgradeWebSocket } from 'hono/bun'
+import { upgradeWebSocket, websocket } from 'hono/bun'
 import {
   acceptCodexHubPush,
   codexHubHomes,
@@ -26,6 +26,13 @@ import { app } from '../http-app'
 
 /** WebSocket close reasons are capped at 123 bytes. */
 const reason = (why: string): string => why.slice(0, 120)
+
+/** A relay frame is one JSON-RPC line, and one line can carry a whole chat (thread/read) or a pasted image: far past
+ *  Bun's 16 MiB default, which drops the socket with 1006. The same ceiling as desk2/server/src/host/serve.ts. */
+const RELAY_MAX_FRAME = 512 * 1024 * 1024
+
+/** Bun.serve's `websocket` for the daemon (index.ts): the relay sockets below are the only ones it serves. */
+export const relayWebSocket = { ...websocket, maxPayloadLength: RELAY_MAX_FRAME }
 
 async function requireHubToken(c: Context, next: Next) {
   const token = codexHubToken()

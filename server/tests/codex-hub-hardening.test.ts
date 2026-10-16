@@ -1,14 +1,18 @@
-// server/tests/codex-hub-hardening.test.ts — what the Codex hub refuses.
+// server/tests/codex-hub-hardening.test.ts — what the Codex hub refuses, and the frames its relay carries.
 //
 // A push comes from any PC holding the token: a rollout that unpacks to too much, or a time no Date can print,
-// is refused before anything is written.
+// is refused before anything is written. A relay frame carries one JSON-RPC line, and a whole chat runs past
+// 16 MiB.
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { acceptCodexHubPush, CODEX_HUB_DIR, hubPcKey } from '../src/core/codex-hub'
+import type { CodexHubPushConfig } from '../src/core/codex-hub-push'
+import { relayPcs } from '../src/core/codex-hub-relay'
+import { type AppServerProcess, startCodexHubRelay } from '../src/core/codex-hub-relay-pc'
 import { app } from '../src/http-app'
-import '../src/routes/codex-hub'
+import { relayWebSocket } from '../src/routes/codex-hub'
 
 // A copy with its own router: a request through the shared app would build its matcher and stop
 // every later test file from registering routes.
@@ -27,6 +31,14 @@ afterAll(() => {
   if (previousToken === undefined) delete process.env.AGENTHYDRA_CODEX_HUB_TOKEN
   else process.env.AGENTHYDRA_CODEX_HUB_TOKEN = previousToken
 })
+
+async function until(ok: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (!ok()) {
+    if (Date.now() > deadline) throw new Error('timed out')
+    await Bun.sleep(20)
+  }
+}
 
 const rolloutPath = (id: string) => `sessions/2026/10/14/rollout-2026-10-14T10-00-00-${id}.jsonl`
 const gz = (data: string | Uint8Array<ArrayBuffer>) =>
@@ -151,5 +163,86 @@ test('a push whose updatedAt is no time is refused with 400, and the stored copy
     expect(readFileSync(join(PC_DIR, 'manifest.json'), 'utf8')).toBe(manifest)
     expect(readFileSync(join(PC_DIR, 'session_index.jsonl'), 'utf8')).toBe(index)
     expect(existsSync(join(PC_DIR, ...rolloutPath('late').split('/')))).toBe(false)
+  }
+})
+
+// --- relay frames past 16 MiB -----------------------------------------------------------------
+
+test('the relay carries frames past the 16 MiB Bun allows by default, both ways, and the PC stays on', async () => {
+  const BIG = 17 * 1024 * 1024
+  const relayPc = `Big-PC-${crypto.randomUUID().slice(0, 6)}`
+  const key = hubPcKey(relayPc)!
+  const server = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch: (req, srv) => http.fetch(req, srv),
+    websocket: relayWebSocket,
+  })
+  const codexGot: string[] = []
+  // A `codex app-server` whose thread/read answers with a whole long chat.
+  const fakeAppServer = async (): Promise<AppServerProcess> => {
+    let onLine: (line: string) => void = () => {}
+    return {
+      write(line) {
+        codexGot.push(line)
+        const msg = JSON.parse(line) as { id?: unknown; method?: string }
+        const answer =
+          msg.method === 'initialize'
+            ? { id: msg.id, result: {} }
+            : msg.method === 'thread/read'
+              ? { id: msg.id, result: { thread: { id: 't', preview: 'y'.repeat(BIG) } } }
+              : null
+        if (answer) queueMicrotask(() => onLine(JSON.stringify(answer)))
+      },
+      onLine: (f) => {
+        onLine = f
+      },
+      onExit: () => {},
+      end: () => {},
+    }
+  }
+  const cfg: CodexHubPushConfig = {
+    url: `http://127.0.0.1:${server.port}`,
+    token: TOKEN,
+    pc: relayPc,
+    headers: {},
+    intervalMs: 60_000,
+  }
+  const relay = startCodexHubRelay(cfg, {
+    spawnAppServer: fakeAppServer,
+    codexHome: '/nowhere',
+    mode: 'ask',
+  })!
+  try {
+    await until(() => relayPcs().has(key))
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/codex-relay/${key}/app-server`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    } as unknown as string[])
+    const got: string[] = []
+    ws.addEventListener('message', (e) => got.push(String(e.data)))
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener('open', () => resolve())
+      ws.addEventListener('error', () => reject(new Error('could not connect')))
+    })
+    ws.send(JSON.stringify({ id: 1, method: 'initialize', params: {} }))
+    ws.send(JSON.stringify({ method: 'initialized' }))
+    ws.send(JSON.stringify({ id: 2, method: 'thread/read', params: { threadId: 't' } }))
+    // PC -> hub: the answer, one line of over 17 MiB.
+    await until(() => got.some((m) => m.length > BIG))
+    expect((JSON.parse(got.find((m) => m.length > BIG)!) as { id: number }).id).toBe(2)
+
+    // Desk -> hub: a turn with a long pasted input.
+    const turn = JSON.stringify({
+      id: 3,
+      method: 'turn/start',
+      params: { threadId: 't', input: [{ type: 'text', text: 'z'.repeat(BIG) }] },
+    })
+    ws.send(turn)
+    await until(() => codexGot.includes(turn))
+    expect(relayPcs().has(key)).toBe(true)
+    ws.close()
+  } finally {
+    relay.stop()
+    server.stop(true)
   }
 })
