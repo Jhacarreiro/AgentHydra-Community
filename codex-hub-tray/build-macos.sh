@@ -44,6 +44,13 @@ for arch in arm64 amd64; do
 	CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "$LDFLAGS" -o "$OUT/codex-hub-tray-darwin-$name" .
 done
 
+# The build prints its own Info.plist, the one it also writes when it installs the app. It is made outside the
+# bundle: the first run of a newly signed program, writing into its own bundle's Info.plist, leaves that file empty.
+host=arm64
+[ "$(uname -m)" = x86_64 ] && host=x64
+"$OUT/codex-hub-tray-darwin-$host" --info-plist >"$OUT/Info.plist"
+plutil -lint "$OUT/Info.plist" >/dev/null
+
 APP="$OUT/Codex Hub.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
@@ -51,8 +58,7 @@ BIN="$APP/Contents/MacOS/codex-hub-tray"
 lipo -create -output "$BIN" "$OUT/codex-hub-tray-darwin-arm64" "$OUT/codex-hub-tray-darwin-x64"
 chmod 755 "$BIN"
 codesign --force --sign - --identifier "$BUNDLE_ID" "$BIN"
-"$BIN" --info-plist >"$APP/Contents/Info.plist"
-plutil -lint "$APP/Contents/Info.plist" >/dev/null
+mv "$OUT/Info.plist" "$APP/Contents/Info.plist"
 codesign --force --sign - "$APP"
 codesign --verify --strict "$APP"
 
