@@ -1,8 +1,9 @@
 // server/tests/codex-hub-hardening.test.ts — what the Codex hub refuses, and the frames its relay carries.
 //
-// A push comes from any PC holding the token: a rollout that unpacks to too much, or a time no Date can print,
-// is refused before anything is written. A relay frame carries one JSON-RPC line, and a whole chat runs past
-// 16 MiB; the line behind such a frame arrives too, or the session it was for ends.
+// The pairing page hands out the hub token, so a page that is not the hub's own must not read it. A push comes
+// from any PC holding the token: a rollout that unpacks to too much, or a time no Date can print, is refused
+// before anything is written. A relay frame carries one JSON-RPC line, and a whole chat runs past 16 MiB; the
+// line behind such a frame arrives too, or the session it was for ends.
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -43,6 +44,52 @@ async function until(ok: () => boolean): Promise<void> {
 const rolloutPath = (id: string) => `sessions/2026/10/14/rollout-2026-10-14T10-00-00-${id}.jsonl`
 const gz = (data: string | Uint8Array<ArrayBuffer>) =>
   Buffer.from(Bun.gzipSync(data)).toString('base64')
+
+// --- the pairing page -------------------------------------------------------------------------
+
+const PAIR = `http://127.0.0.1/codex-hub/pair?port=49152&state=${'a'.repeat(32)}`
+const pair = (headers: Record<string, string>) => http.fetch(new Request(PAIR, { headers }))
+
+test('the pairing page refuses a DNS-rebinding Host, and a cross-site fetch, without the token', async () => {
+  const refused: Record<string, string>[] = [
+    // rebind.example.test resolved to 127.0.0.1: the browser still names it in Host.
+    { host: 'rebind.example.test:7787' },
+    { host: 'rebind.example.test:7787', 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors' },
+    // A navigation is let through Sec-Fetch-Site, never through Host.
+    { host: 'rebind.example.test', 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' },
+    { host: '10.0.0.20:7787' },
+    // Another site's fetch, through the hub's own address.
+    { host: '127.0.0.1:7787', 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'cors' },
+    { host: '127.0.0.1:7787', origin: 'https://attacker.example.test' },
+  ]
+  for (const headers of refused) {
+    const res = await pair(headers)
+    expect({ headers, status: res.status }).toEqual({ headers, status: 403 })
+    expect(await res.text()).not.toContain(TOKEN)
+  }
+})
+
+test('the pairing page answers a loopback Host, and the sign-in proxy forwarding a navigation', async () => {
+  const answered: Record<string, string>[] = [
+    { host: '127.0.0.1:7787' },
+    { host: 'localhost' },
+    { host: '[::1]:7787' },
+    // The inbox's proxy: Host 127.0.0.1:7787, Origin cleared, and the browser arrived from the
+    // sign-in's redirect, which it marks cross-site.
+    {
+      host: '127.0.0.1:7787',
+      'sec-fetch-site': 'cross-site',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-dest': 'document',
+    },
+    { host: '127.0.0.1:7787', 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' },
+  ]
+  for (const headers of answered) {
+    const res = await pair(headers)
+    expect({ headers, status: res.status }).toEqual({ headers, status: 200 })
+    expect(await res.text()).toContain(`value="${TOKEN}"`)
+  }
+})
 
 // --- unpacking pushed rollouts ----------------------------------------------------------------
 

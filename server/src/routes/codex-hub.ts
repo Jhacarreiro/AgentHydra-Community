@@ -34,6 +34,7 @@ import {
   relayPcs,
 } from '../core/codex-hub-relay'
 import { app } from '../http-app'
+import { evaluateRequest } from '../loopback-guard.mjs'
 
 /** WebSocket close reasons are capped at 123 bytes. */
 const reason = (why: string): string => why.slice(0, 120)
@@ -107,7 +108,22 @@ for (const [name, file] of [
 // /api/codex-hub/: serve it only behind the operator's sign-in (the inbox's proxy), never to the home network.
 const escapeHtml = (s: string): string => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
 
-app.get('/codex-hub/pair', (c) => {
+// The page is outside /api/*, so it runs the /api/* guard's check (loopback-guard.mjs) itself: a Host that is not
+// loopback is a DNS-rebinding page reading the token, an Origin that is not loopback a cross-site fetch.
+// Sec-Fetch-Site counts for a fetch but not for a navigation, which the sign-in's redirect makes cross-site. The
+// inbox's proxy forwards the page with Host 127.0.0.1 and no Origin.
+async function pairGuard(c: Context, next: Next) {
+  const navigation = c.req.header('sec-fetch-mode') === 'navigate'
+  const verdict = evaluateRequest({
+    secFetchSite: navigation ? undefined : c.req.header('sec-fetch-site'),
+    origin: c.req.header('origin'),
+    host: c.req.header('host'),
+  })
+  if (!verdict.ok) return c.text(`forbidden: ${verdict.reason}`, 403)
+  await next()
+}
+
+app.get('/codex-hub/pair', pairGuard, (c) => {
   const token = codexHubToken()
   if (!token) return c.text('The Codex hub is off (AGENTHYDRA_CODEX_HUB_TOKEN is not set).', 404)
   const port = Number(c.req.query('port'))
