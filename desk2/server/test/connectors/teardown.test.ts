@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ConnectorStatus } from '../../../shared/connectors'
@@ -49,9 +49,14 @@ const def = () => factory({ home })
 const sharedUrl = () => `http://127.0.0.1:${daemon?.port}/api/mcp/shared/teardown`
 const status = (over: Partial<ConnectorStatus>): ConnectorStatus => ({ id: 'teardown', state: 'running', url: null, version: null, enabled: true, givesChats: true, checkedAt: 0, ...over })
 
+/** A rea command on PATH: npm's shim on Windows (found through PATHEXT), an executable script elsewhere. */
 function putRea(dir: string): void {
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'rea.cmd'), '@echo off\r\n')
+  if (process.platform === 'win32') writeFileSync(join(dir, 'rea.cmd'), '@echo off\r\n')
+  else {
+    writeFileSync(join(dir, 'rea'), '#!/bin/sh\n')
+    chmodSync(join(dir, 'rea'), 0o755)
+  }
 }
 
 describe('detect', () => {
@@ -60,8 +65,7 @@ describe('detect', () => {
     expect(await def().detect()).toEqual({ state: 'running', url: sharedUrl(), version: null })
   })
 
-  // The rea on PATH is npm's Windows shim, rea.cmd, which only Windows finds through PATHEXT.
-  test.skipIf(process.platform !== 'win32')('running as stdio when a rea command is on PATH and the hub serves nothing', async () => {
+  test('running as stdio when a rea command is on PATH and the hub serves nothing', async () => {
     putRea(join(root, 'empty'))
     expect(await def().detect()).toEqual({ state: 'running', url: null, version: null })
   })
