@@ -2,7 +2,7 @@
 // messages, a new model or folder mid-task) and a task judged by its check, against the fake CLI.
 // Split from climayte.test.ts on 2026-10-08 to keep each file under the Architect's 2,500-line gate.
 
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -25,6 +25,7 @@ import {
   SENT_NOW_PREFIX,
   setCliMayteAccountsProvider,
   setCliMayteClaudeCommand,
+  setCliMayteQuietTickForTests,
   startCliMayte,
   VERDICT_NOTE_MAX,
 } from '../src/climayte'
@@ -39,8 +40,11 @@ describe('integration: steering a running worker (field notes 10 and 11)', () =>
   const root = mkdtempSync(join(tmpdir(), 'ah-climayte-steer-'))
   const cwd = join(root, 'work')
   const slowDir = join(root, 'acct-slow')
-  for (const d of [cwd, slowDir]) mkdirSync(d, { recursive: true })
+  // A first turn that only has to outlast a few synchronous calls, not a stop: 10 s, not 30.
+  const shortDir = join(root, 'acct-short')
+  for (const d of [cwd, slowDir, shortDir]) mkdirSync(d, { recursive: true })
   writeFileSync(join(slowDir, 'fake-slow'), '')
+  writeFileSync(join(shortDir, 'fake-slow'), '10')
   const groups: string[] = []
 
   afterAll(async () => {
@@ -51,10 +55,10 @@ describe('integration: steering a running worker (field notes 10 and 11)', () =>
     rmSync(root, { recursive: true, force: true })
   })
 
-  const start = async (title: string, account: string) => {
+  const start = async (title: string, account: string, configDir = slowDir) => {
     setCliMayteClaudeCommand([process.execPath, join(import.meta.dir, 'mocks', 'fake-claude.ts')])
     setCliMayteAccountsProvider(() => [
-      { id: account, num: 7, name: 'slow', configDir: slowDir, sessionPct: 0, weekPct: 0 },
+      { id: account, num: 7, name: 'slow', configDir, sessionPct: 0, weekPct: 0 },
     ])
     startCliMayte()
     // One known setting, so a follow-up's switch shows against it (auto may try Haiku).
@@ -119,7 +123,8 @@ describe('integration: steering a running worker (field notes 10 and 11)', () =>
   test(
     'cancel a held message: it is taken back, is never run, and a second cancel finds nothing',
     async () => {
-      const id = await start('cancel-held', 'slow-1')
+      // Nothing here stops the first turn: the held message runs after it ends by itself.
+      const id = await start('cancel-held', 'short-1', shortDir)
       climayteSend(id, 'first held')
       climayteSend(id, 'taken back')
       expect(climayteCancelHeld('no-such-worker', 'x')).toMatchObject({ ok: false })
@@ -343,9 +348,12 @@ describe('integration: a task with a check is judged by it', () => {
   for (const d of [cwd, acct]) mkdirSync(d, { recursive: true })
   const groups: string[] = []
 
+  // A worker whose check runs is read on the quiet tick, 3 s apart in the daemon: 1 s here.
+  beforeAll(() => setCliMayteQuietTickForTests(1_000))
   afterAll(async () => {
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
+    setCliMayteQuietTickForTests()
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })

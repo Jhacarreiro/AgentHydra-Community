@@ -3,7 +3,7 @@
 // five-minute rule, against the fake CLI. Split from climayte.test.ts on 2026-10-08 to keep each
 // file under the Architect's 2,500-line gate.
 
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +18,7 @@ import {
   killsLanded,
   setCliMayteAccountsProvider,
   setCliMayteClaudeCommand,
+  setCliMayteQuietTickForTests,
   startCliMayte,
 } from '../src/climayte'
 import { setSpendKit, workers } from '../src/climayte-core'
@@ -39,9 +40,12 @@ describe('sizing (owner, 2026-10-01): too big for a window is split, one that fi
   let factor = 1
   let resetAt = Date.now() + 2 * 3_600_000
 
+  // A task waiting for room is looked at again on the quiet tick, 3 s apart in the daemon: 1 s here.
+  beforeAll(() => setCliMayteQuietTickForTests(1_000))
   afterAll(async () => {
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
+    setCliMayteQuietTickForTests()
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })

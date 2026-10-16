@@ -19,6 +19,7 @@ import {
   killsLanded,
   setCliMayteAccountsProvider,
   setCliMayteClaudeCommand,
+  setCliMayteQuietTickForTests,
   startCliMayte,
 } from '../src/climayte'
 import { workers as liveWorkers, setSpendKit } from '../src/climayte-core'
@@ -841,6 +842,8 @@ describe('integration: the daemon judges a wave by command, a manager costs wake
     git('checkout', '-q', '-b', 'side')
     sha.off = commit('src/c.ts')
     git('checkout', '-q', branch)
+    // A manager held for its wave waits on the quiet tick (3 s in the daemon): 1 s here.
+    setCliMayteQuietTickForTests(1_000)
     setCliMayteClaudeCommand(fake)
     setCliMayteAccountsProvider(() => [
       { id: 'judge-1', num: 1, name: 'judge', configDir: acct, sessionPct: 0, weekPct: 0 },
@@ -853,6 +856,7 @@ describe('integration: the daemon judges a wave by command, a manager costs wake
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
     forgetManagers()
+    setCliMayteQuietTickForTests()
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })
@@ -1143,6 +1147,9 @@ describe('a wave is judged wherever it is stored, not only on the account its ta
     mkdirSync(acctA, { recursive: true })
     mkdirSync(acctB, { recursive: true })
     execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true })
+    // Several tests here wait for the tick after nothing is active, 15 s apart in the daemon: 1 s here,
+    // the pace it already ticks at while a worker runs.
+    setCliMayteQuietTickForTests(1_000)
     setCliMayteClaudeCommand(fake)
     setCliMayteAccountsProvider(() => [
       { id: 'two-a', num: 1, name: 'a', configDir: acctA, sessionPct: 0, weekPct: 0 },
@@ -1154,6 +1161,7 @@ describe('a wave is judged wherever it is stored, not only on the account its ta
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
     forgetManagers()
+    setCliMayteQuietTickForTests()
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })
@@ -1192,7 +1200,7 @@ describe('a wave is judged wherever it is stored, not only on the account its ta
     const wave = oneTask('wv-missed', id)
     writeWave(acctA, wave)
     ;(liveWorkers.get(id) as CliMayteWorker).wave = wave.id
-    // Nothing is active, so climayteWait returns at once: sleep for the idle tick (15 s) to come.
+    // Nothing is active, so climayteWait returns at once: sleep for the idle tick (1 s here) to come.
     const deadline = Date.now() + 40_000
     while (readWave(acctA, wave.id)?.tasks[0]?.state === 'running' && Date.now() < deadline)
       await new Promise((r) => setTimeout(r, 500))
@@ -1258,7 +1266,7 @@ describe('a wave is judged wherever it is stored, not only on the account its ta
     ;(wave.tasks[0] as CliMayteWave['tasks'][0]).state = 'passed'
     writeWave(acctA, wave)
     ;(liveWorkers.get(mid) as CliMayteWorker).wave = wave.id
-    // Nothing is active, so climayteWait returns at once: sleep for the idle tick (15 s) to come.
+    // Nothing is active, so climayteWait returns at once: sleep for the idle tick (1 s here) to come.
     const deadline = Date.now() + 40_000
     while (readWave(acctA, wave.id)?.status === 'running' && Date.now() < deadline)
       await new Promise((r) => setTimeout(r, 500))

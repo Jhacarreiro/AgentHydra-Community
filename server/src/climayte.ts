@@ -597,13 +597,27 @@ ${code === null ? '' : output.trim()}${sev.others ? "\nThe failing files are not
 /** When the tick last looked for attempts whose spend the kit had not caught up with (every 5 s). */
 let lastSettle = 0
 
+/** Tests: the tick's pace while no worker runs, in place of 3 s (one queued or waiting) and 15 s
+ *  (none), and how often the tick reconciles waves, in place of 5 s (WAVE_RECONCILE_MS), so a test
+ *  of what the next such tick does is not a 15 s wait. */
+let quietTickMs: number | null = null
+
+/** Tests: set the quiet tick's pace; called with nothing, the production one. A running worker's
+ *  tick stays 1 s either way. */
+export function setCliMayteQuietTickForTests(ms?: number): void {
+  quietTickMs = ms ?? null
+}
+
 function schedule(delay?: number): void {
   if (timer) clearTimeout(timer)
   // poll() runs every tick, so the overage stop is only as fast as the tick, and each second of
   // overage bills the owner: 1 s while a worker runs, 3 s while one is queued or waiting.
   const all = [...workers.values()]
   const next =
-    delay ?? (all.some((w) => w.status === 'running') ? 1_000 : all.some(isActive) ? 3_000 : 15_000)
+    delay ??
+    (all.some((w) => w.status === 'running')
+      ? 1_000
+      : (quietTickMs ?? (all.some(isActive) ? 3_000 : 15_000)))
   timer = setTimeout(
     () => void tick().catch((err) => console.error('[climayte] tick failed:', err)),
     next,
@@ -1716,7 +1730,7 @@ function reconcileWaveTasks(id: string, now: number): void {
  *  ends its task `failed`. A pass stays provisional until the orchestrator accepts the wave. */
 function reconcileWaves(now: number): void {
   if (now < nextWaveReconcile) return
-  nextWaveReconcile = now + WAVE_RECONCILE_MS
+  nextWaveReconcile = now + (quietTickMs ?? WAVE_RECONCILE_MS)
   // Most workers never belong to a wave: read no wave file unless a finished one does. A wave seen
   // past `running` never runs again, so it is not read again.
   const ended = [...workers.values()].filter(endedInWave)

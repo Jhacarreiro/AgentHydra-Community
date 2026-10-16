@@ -32,8 +32,8 @@ const line = (ev: unknown) => `${JSON.stringify(ev)}\n`
 // How long a turn on a fake-overage or fake-near-limit account runs on when nobody stops it: the seconds its
 // marker names, else 6. A test that expects the stop names more than a stop takes on a loaded box (3-5 s
 // from the daemon's decision to the CLI's end, measured 2026-10-11), so the stop decides, not a race.
-const leftAloneMs = (marker: string) =>
-  (Number(/\d+/.exec(readFileSync(join(configDir, marker), 'utf8'))?.[0]) || 6) * 1000
+const leftAloneMs = (marker: string, seconds = 6) =>
+  (Number(/\d+/.exec(readFileSync(join(configDir, marker), 'utf8'))?.[0]) || seconds) * 1000
 const readJson =(path: string | null): Record<string, unknown> | null => {
   try {
     return path ? JSON.parse(readFileSync(path, 'utf8')) : null
@@ -317,8 +317,8 @@ if (existsSync(join(configDir, 'fake-winddown'))) {
   process.exit(0)
 }
 
-// `fake-slow`: a first turn that runs 30 s (long enough to be steered or cancelled mid-run); a
-// resumed turn answers at once, saying whether it was given the steering message.
+// `fake-slow`: a first turn that runs 30 s, or the seconds the marker names (long enough to be steered or
+// cancelled mid-run); a resumed turn answers at once, saying whether it was given the steering message.
 if (existsSync(join(configDir, 'fake-slow'))) {
   let file = findTranscript()
   if (!file) {
@@ -330,7 +330,7 @@ if (existsSync(join(configDir, 'fake-slow'))) {
   init()
   if (!resume) {
     emit({ type: 'assistant', session_id: sessionId, message: { role: 'assistant', model: 'fake-model', content: [{ type: 'text', text: 'Working slowly.' }] } })
-    await Bun.sleep(30_000)
+    await Bun.sleep(leftAloneMs('fake-slow', 30))
   }
   const answer = prompt.includes('STEER NOW') ? 'STEERED' : 'SLOW DONE'
   emit({ type: 'result', subtype: 'success', is_error: false, result: answer, session_id: sessionId, total_cost_usd: 0.01, num_turns: 1 })

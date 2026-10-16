@@ -1,5 +1,5 @@
 // Where CliMayte starts a task so it can finish there (climayte-placement.ts).
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +13,7 @@ import {
   setCliMayteClaudeCommand,
   setCliMayteCpuReader,
   setCliMayteMemoryReader,
+  setCliMayteQuietTickForTests,
   startCliMayte,
 } from '../src/climayte'
 import { resetCpuRing } from '../src/climayte-cpu'
@@ -431,9 +432,12 @@ describe('a task waits for memory, and starts on the first tick with room', () =
   for (const d of [cwd, acctDir]) mkdirSync(d, { recursive: true })
   let group: string | null = null
 
+  // The held task is looked at again on the quiet tick, 3 s apart in the daemon: 1 s here.
+  beforeAll(() => setCliMayteQuietTickForTests(1_000))
   afterAll(async () => {
     if (group) climayteCancel({ group })
     await killsLanded()
+    setCliMayteQuietTickForTests()
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     setCliMayteMemoryReader(null)
@@ -698,9 +702,12 @@ describe('a reading over 10 minutes old is read again before a task starts there
   for (const d of [cwd, oldDir, busyDir]) mkdirSync(d, { recursive: true })
   let group: string | null = null
 
+  // Each aTick() below is two quiet ticks, 3 s apart in the daemon: 1 s here.
+  beforeAll(() => setCliMayteQuietTickForTests(1_000))
   afterAll(async () => {
     if (group) climayteCancel({ group })
     await killsLanded()
+    setCliMayteQuietTickForTests()
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })
