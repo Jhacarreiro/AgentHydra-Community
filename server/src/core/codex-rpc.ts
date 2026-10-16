@@ -52,7 +52,7 @@ export async function connectCodexRpc(
       return spawn(command[0]!, command.slice(1), {
         env: { ...process.env, CODEX_HOME: codexHome },
         cwd: codexHome,
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       })
     } catch (error) {
@@ -85,11 +85,32 @@ export async function connectCodexRpc(
     }
     pending.clear()
   }
-  // Do not forward app-server stderr or raw responses: they can contain private session data.
+  // Do not forward raw responses, or stderr once the handshake has answered: they can contain private session
+  // data. Before that app-server has read no chat, and the last lines of its stderr say why it did not start (its
+  // config, its login, a CLI too old for app-server). They are kept until then; later output is read and dropped.
+  let started = false
+  let startupStderr = ''
+  child.stderr.on('data', (chunk: Buffer) => {
+    if (!started) startupStderr = (startupStderr + chunk.toString()).slice(-4096)
+  })
   child.on('error', () =>
     fail(new Error('Could not start Codex. Check the Codex CLI installation.')),
   )
-  child.on('exit', () => fail(new Error('Codex app-server exited before the operation completed.')))
+  child.on('exit', () => {
+    if (started) fail(new Error('Codex app-server exited before the operation completed.'))
+  })
+  // Before the handshake, wait for its pipes to close: the stderr that says why may still be in them.
+  child.on('close', (code) => {
+    if (started) return
+    const said = startupStderr
+      .split(/\r?\n/)
+      .map((line) => line.trim().slice(0, 300))
+      .filter(Boolean)
+      .slice(-5)
+    const exit = code === null ? '' : ` (exit code ${code})`
+    const why = said.length ? `: ${said.join(' / ')}` : '.'
+    fail(new Error(`Codex app-server exited before it started${exit}${why}`))
+  })
   child.stdin.on('error', () => fail(new Error('Codex app-server connection closed.')))
   lines.on('line', (line) => {
     let message: { id?: number; method?: string; result?: unknown; error?: { message?: string } }
@@ -142,6 +163,8 @@ export async function connectCodexRpc(
       capabilities: { experimentalApi: true },
     })
     child.stdin.write(`${JSON.stringify({ method: 'initialized' })}\n`)
+    started = true
+    startupStderr = ''
     return rpc
   } catch (error) {
     await rpc.close()

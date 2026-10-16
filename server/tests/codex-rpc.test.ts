@@ -24,7 +24,7 @@ function fixture() {
       if (message.method === 'initialized') { initialized = true; return }
       if (message.method === 'initialize') { send({id:message.id,result:{}}); return }
       if (message.method === 'hang') return
-      if (message.method === 'exit') { process.exit(0); return }
+      if (message.method === 'exit') { process.stderr.write('session text\\n'); process.exit(0); return }
       if (message.method === 'fail') { send({id:message.id,error:{code:1,message:'Request rejected'}}); return }
       send({method:'notification',params:{}})
       send({id:message.id,result:{initialized,home:process.env.CODEX_HOME}})
@@ -62,10 +62,29 @@ test('Codex RPC rejects pending work when the child exits', async () => {
       (error: Error) => error.message,
     )
     expect(error).toContain('exited')
+    // Once it has started, what app-server writes to stderr can be a chat's, and never reaches the error.
+    expect(error).not.toContain('session text')
   } finally {
     await rpc.close()
   }
 }, 20_000) // a child bun's start: 0.6-4.2 s in four suite runs on a box at ~90% CPU (2026-10-11)
+
+test('a Codex app-server that exits before it starts says why', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codex-rpc-'))
+  roots.push(home)
+  const script = join(home, 'broken.ts')
+  writeFileSync(
+    script,
+    "for (let i = 1; i <= 7; i++) console.error('line ' + i)\nprocess.exit(3)\n",
+  )
+  const error = await connectCodexRpc(home, { command: [process.execPath, script] }).then(
+    () => '',
+    (error: Error) => error.message,
+  )
+  expect(error).toBe(
+    'Codex app-server exited before it started (exit code 3): line 3 / line 4 / line 5 / line 6 / line 7',
+  )
+}, 20_000)
 
 // The per-call timeout also bounds the initialize handshake, which waits on the child bun starting:
 // about 0.3 s here (2026-10-04), but 0.3-4.4 s on a box at ~90% CPU (2026-10-11), where 2 s failed in
