@@ -157,6 +157,24 @@ func TestPairHandler(t *testing.T) {
 	}
 }
 
+func TestExeSystem(t *testing.T) {
+	for head, want := range map[string]string{
+		"MZ\x90\x00":       "windows",
+		"\x7fELF\x02":      "linux",
+		"\xcf\xfa\xed\xfe": "darwin", // arm64 and x64
+		"\xfe\xed\xfa\xce": "darwin",
+		"\xca\xfe\xba\xbe": "darwin", // universal
+		"#!/bin/sh":        "",
+		"MZ":               "windows",
+		"\x7fEL":           "",
+		"":                 "",
+	} {
+		if got := exeSystem([]byte(head)); got != want {
+			t.Errorf("exeSystem(%q) = %q, want %q", head, got, want)
+		}
+	}
+}
+
 // The supervisor and the updater both show a status, so two goroutines ask for icons at once (go test -race).
 func TestIconsFromTwoGoroutines(t *testing.T) {
 	var wg sync.WaitGroup

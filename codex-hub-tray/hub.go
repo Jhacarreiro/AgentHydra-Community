@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,7 +87,29 @@ func latest(c config, name string) (*release, error) {
 	}
 }
 
+// badBuild: the hub's build fails its checks here (a program for another system, not the build the hub announced,
+// or it does not start), and would fail them the same way if it were fetched again.
+type badBuild struct{ error }
+
+// exeSystem is the system a program is for, by its first bytes: windows (MZ), linux (ELF) or darwin (Mach-O, one
+// architecture or universal); "" for anything else, such as a script.
+func exeSystem(head []byte) string {
+	switch {
+	case bytes.HasPrefix(head, []byte("MZ")):
+		return "windows"
+	case bytes.HasPrefix(head, []byte("\x7fELF")):
+		return "linux"
+	case len(head) >= 4:
+		switch binary.BigEndian.Uint32(head) {
+		case 0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe:
+			return "darwin"
+		}
+	}
+	return ""
+}
+
 // download saves the hub's build of name at dest+".new", executable, once it matches want and starts with --version.
+// A program for another system (what a hub that ignores ?platform= hands out) is refused from its first bytes.
 func download(c config, name string, want *release, dest string) (string, error) {
 	next := dest + ".new"
 	os.Remove(next)
@@ -99,11 +124,16 @@ func download(c config, name string, want *release, dest string) (string, error)
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("downloading %s: the hub answered %d", name, res.StatusCode)
 	}
+	body := bufio.NewReader(res.Body)
+	head, _ := body.Peek(4)
+	if sys := exeSystem(head); sys != "" && sys != runtime.GOOS {
+		return "", badBuild{fmt.Errorf("the hub's %s build is a %s program, not one for %s", name, sys, platform)}
+	}
 	f, err := os.OpenFile(next, os.O_RDWR|os.O_CREATE|os.O_TRUNC, exeMode)
 	if err != nil {
 		return "", err
 	}
-	n, err := io.Copy(f, res.Body)
+	n, err := io.Copy(f, body)
 	f.Close()
 	if err != nil {
 		os.Remove(next)
@@ -111,11 +141,11 @@ func download(c config, name string, want *release, dest string) (string, error)
 	}
 	if sum, _ := sha256File(next); n != want.Size || sum != want.SHA256 {
 		os.Remove(next)
-		return "", fmt.Errorf("the downloaded %s does not match the hub's hash", name)
+		return "", badBuild{fmt.Errorf("the downloaded %s does not match the hub's hash", name)}
 	}
 	if out, err := runVersion(next); err != nil || !strings.HasPrefix(strings.TrimSpace(out), "codex-hub-") {
 		os.Remove(next)
-		return "", fmt.Errorf("the new %s build does not start: %v", name, err)
+		return "", badBuild{fmt.Errorf("the new %s build does not start: %v", name, err)}
 	}
 	return next, nil
 }

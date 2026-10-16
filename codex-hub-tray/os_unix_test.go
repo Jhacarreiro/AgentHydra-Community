@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image/png"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -88,8 +90,8 @@ func TestDownload(t *testing.T) {
 		}
 		next, err := download(cfg, "pusher", rel, dest)
 		if !c.ok {
-			if err == nil {
-				t.Errorf("%s: download took it", c.name)
+			if !errors.As(err, new(badBuild)) {
+				t.Errorf("%s: download took it, or not as a bad build: %v", c.name, err)
 			}
 			if exists(dest + ".new") {
 				t.Errorf("%s: left %s.new", c.name, dest)
@@ -106,6 +108,68 @@ func TestDownload(t *testing.T) {
 		if st.Mode().Perm()&0o100 == 0 {
 			t.Errorf("%s: %s is not executable (%v)", c.name, next, st.Mode())
 		}
+	}
+}
+
+// A build that fails its checks is fetched once, not at every check, until the hub hands out another; a download that
+// fails on the way is tried again.
+func TestABrokenBuildIsFetchedOnce(t *testing.T) {
+	var mu sync.Mutex
+	var body []byte
+	status, downloads := http.StatusOK, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		b, code := body, status
+		if r.URL.Path == "/api/codex-hub/pusher/download" {
+			downloads++
+		}
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/api/codex-hub/pusher":
+			fmt.Fprintf(w, `{"sha256":%q,"size":%d}`, sumOf(b), len(b))
+		case "/api/codex-hub/pusher/download":
+			w.WriteHeader(code)
+			w.Write(b)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { os.Remove(configPath); os.Remove(pusherExe) })
+	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp()
+	for _, step := range []struct {
+		what      string
+		body      []byte
+		status    int
+		downloads int // in all, after two checks
+		installed bool
+	}{
+		{"a build that does not start", []byte("#!/bin/sh\nexit 3\n"), http.StatusOK, 1, false},
+		{"a Windows program", append([]byte("MZ\x90\x00"), make([]byte, 1<<20)...), http.StatusOK, 2, false},
+		{"a download the hub fails", []byte(fakePusher), http.StatusServiceUnavailable, 4, false},
+		{"the same build, served", []byte(fakePusher), http.StatusOK, 5, true},
+	} {
+		mu.Lock()
+		body, status = step.body, step.status
+		mu.Unlock()
+		a.updateOnce()
+		a.updateOnce()
+		mu.Lock()
+		got := downloads
+		mu.Unlock()
+		if got != step.downloads {
+			t.Errorf("%s: %d downloads in all, want %d", step.what, got, step.downloads)
+		}
+		if exists(pusherExe) != step.installed || exists(pusherExe+".new") {
+			t.Errorf("%s: pusher in place %v (want %v), .new left %v", step.what, exists(pusherExe), step.installed,
+				exists(pusherExe+".new"))
+		}
+	}
+	if have, _ := sha256File(pusherExe); have != sumOf([]byte(fakePusher)) {
+		t.Error("the build that works is not the one in place")
 	}
 }
 

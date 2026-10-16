@@ -35,6 +35,8 @@ type app struct {
 	check   chan struct{}
 	pairing pairing
 	paired  bool // pairing was opened once this run on its own
+	// The updater's: per build ("pusher", "tray"), the hash of the hub's build that failed its checks here.
+	refused map[string]string
 
 	status, restart *systray.MenuItem // nil when there is no tray to show them (Linux without a desktop session)
 	shown           string
@@ -42,7 +44,7 @@ type app struct {
 
 func newApp() *app {
 	sum, _ := sha256File(trayExe)
-	return &app{selfSHA: sum, wake: make(chan struct{}, 1), check: make(chan struct{}, 1)}
+	return &app{selfSHA: sum, wake: make(chan struct{}, 1), check: make(chan struct{}, 1), refused: map[string]string{}}
 }
 
 // kick restarts the pusher now and runs an update check (after pairing, or from the menu).
@@ -296,7 +298,7 @@ func (a *app) updateOnce() {
 		log.Println("update: pusher:", err)
 		return
 	}
-	if rel != nil {
+	if rel != nil && a.refused["pusher"] != rel.SHA256 {
 		if have, _ := sha256File(pusherExe); have != rel.SHA256 {
 			if err := a.swapPusher(cfg, rel); err != nil {
 				log.Println("update: pusher:", err)
@@ -306,13 +308,13 @@ func (a *app) updateOnce() {
 		}
 	}
 	rel, err = latest(cfg, "tray")
-	if err != nil || rel == nil || rel.SHA256 == a.selfSHA {
+	if err != nil || rel == nil || rel.SHA256 == a.selfSHA || a.refused["tray"] == rel.SHA256 {
 		if err != nil {
 			log.Println("update: tray:", err)
 		}
 		return
 	}
-	next, err := download(cfg, "tray", rel, trayExe)
+	next, err := a.fetch(cfg, "tray", rel, trayExe)
 	if err != nil {
 		log.Println("update: tray:", err)
 		return
@@ -320,8 +322,19 @@ func (a *app) updateOnce() {
 	a.replaceSelf(next, rel)
 }
 
+// fetch downloads the hub's build of name. One that fails its checks is not fetched again until the hub hands out
+// another: it would fail the same way, and a PC without a pusher checks every minute (a pusher build is 60-90 MB).
+func (a *app) fetch(cfg config, name string, rel *release, dest string) (string, error) {
+	next, err := download(cfg, name, rel, dest)
+	if errors.As(err, new(badBuild)) {
+		a.refused[name] = rel.SHA256
+		return "", fmt.Errorf("%w (not fetched again until the hub has another %s build)", err, name)
+	}
+	return next, err
+}
+
 func (a *app) swapPusher(cfg config, rel *release) error {
-	next, err := download(cfg, "pusher", rel, pusherExe)
+	next, err := a.fetch(cfg, "pusher", rel, pusherExe)
 	if err != nil {
 		return err
 	}

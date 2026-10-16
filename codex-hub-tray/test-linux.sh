@@ -232,6 +232,34 @@ PID4=$(tray_pid)
 kill -TERM "$PID4" 2>/dev/null
 wait_for 10 dead "$PID4"
 
+echo "== a pusher build that cannot run here"
+cp "$T/hub/codex-hub-push-$P" "$T/push-good"
+rm -f "$PUSH"
+{ printf 'MZ\220\0'; head -c 4000000 /dev/zero; } >"$T/hub/codex-hub-push-$P" # what a hub without ?platform= sends
+downloads() { grep -c "GET /api/codex-hub/pusher/download" "$T/hub.log"; }
+checks() { grep -c "GET /api/codex-hub/pusher platform=$P 200" "$T/hub.log"; }
+D0=$(downloads)
+C0=$(checks)
+"$TRAY" >/dev/null 2>&1 &
+check "a tray starts" wait_for 10 has_tray
+PID6=$(tray_pid)
+check "  ...and refuses the Windows build" wait_for 10 log_has "the hub's pusher build is a windows program"
+for i in 1 2 3; do
+	kill -USR1 "$PID6"
+	sleep 1
+done
+check "  ...asking the hub again at each check" test $(($(checks) - C0)) -ge 3
+check "  ...but fetching that build only once" test $(($(downloads) - D0)) -eq 1
+check "  ...and putting nothing in place" test ! -e "$PUSH" -a ! -e "$PUSH.new"
+cp "$T/push-good" "$T/hub/codex-hub-push-$P"
+kill -USR1 "$PID6"
+check "the hub's next build is fetched" wait_for 20 has_sha "$PUSH" "$PUSHSUM"
+check "  ...and runs" wait_for 20 has_pusher
+PUSH6=$(pusher_pid)
+kill -TERM "$PID6"
+wait_for 10 dead "$PID6"
+wait_for 10 dead "$PUSH6"
+
 echo "== no session bus"
 mkdir -p "$T/run-empty"
 (
