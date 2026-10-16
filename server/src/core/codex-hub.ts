@@ -178,8 +178,8 @@ export function acceptCodexHubPush(
   if (!Array.isArray(push?.threads))
     return { ok: false, status: 400, error: 'threads must be a list' }
   const threads = push.threads.map(cleanThread).filter((t): t is HubThread => t !== null)
-  // Each is printed as an ISO time below and in the chat list (codex-chat-list.ts), and toISOString
-  // throws for a time no Date can hold: refused before anything is written.
+  // Each is printed as an ISO time, in the index below and in the chat list (codex-chat-list.ts),
+  // and toISOString throws for a time no Date can hold: refused before anything is written.
   const badThread = threads.find((t) => !isTime(t.updatedAt))
   if (badThread)
     return {
@@ -187,6 +187,17 @@ export function acceptCodexHubPush(
       status: 400,
       error: `thread ${badThread.id}: updatedAt ${badThread.updatedAt} is not a time in Unix seconds`,
     }
+  // Titles where the transcript index looks for them (transcript.ts parseCodexSessionIndex), built
+  // before anything is written: a new manifest is never left beside the old index.
+  const index = threads
+    .filter((t) => t.name)
+    .map((t) =>
+      JSON.stringify({
+        id: t.id,
+        thread_name: t.name,
+        updated_at: new Date(t.updatedAt * 1000).toISOString(),
+      }),
+    )
 
   const incoming: { rel: string; updatedAt: number; bytes: Buffer }[] = []
   let unpacked = 0
@@ -248,16 +259,6 @@ export function acceptCodexHubPush(
 
   const manifest: HubManifest = { pc, pushedAt: new Date().toISOString(), threads, files }
   writeAtomic(join(dir, MANIFEST), JSON.stringify(manifest))
-  // Titles where the transcript index looks for them (transcript.ts parseCodexSessionIndex).
-  const index = threads
-    .filter((t) => t.name)
-    .map((t) =>
-      JSON.stringify({
-        id: t.id,
-        thread_name: t.name,
-        updated_at: new Date(t.updatedAt * 1000).toISOString(),
-      }),
-    )
   writeAtomic(join(dir, 'session_index.jsonl'), index.length ? `${index.join('\n')}\n` : '')
   return { ok: true, pc, stored, want }
 }
