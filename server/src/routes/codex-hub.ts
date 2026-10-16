@@ -4,6 +4,7 @@
 //
 // Only /api/codex-hub/ is meant to be reachable from other machines (the PCs). Desk's end of a relay is
 // /api/codex-relay/, outside it, so a proxy that exposes the hub's prefix never exposes a way to drive a PC.
+import type { ServerWebSocket } from 'bun'
 import type { Context, Next } from 'hono'
 import { upgradeWebSocket, websocket } from 'hono/bun'
 import {
@@ -31,8 +32,20 @@ const reason = (why: string): string => why.slice(0, 120)
  *  Bun's 16 MiB default, which drops the socket with 1006. The same ceiling as desk2/server/src/host/serve.ts. */
 const RELAY_MAX_FRAME = 512 * 1024 * 1024
 
-/** Bun.serve's `websocket` for the daemon (index.ts): the relay sockets below are the only ones it serves. */
-export const relayWebSocket = { ...websocket, maxPayloadLength: RELAY_MAX_FRAME }
+/**
+ * Bun.serve's `websocket` for the daemon (index.ts): the relay sockets below are the only ones it serves. Bun drops a
+ * frame sent while more than backpressureLimit (16 MiB by default) waits to go out, so one big frame to a peer on the
+ * WAN cost the lines behind it: room for two of the biggest. One that still does not fit ends its socket (below).
+ */
+export const relayWebSocket = {
+  ...websocket,
+  maxPayloadLength: RELAY_MAX_FRAME,
+  backpressureLimit: 2 * RELAY_MAX_FRAME,
+}
+
+/** Bun's send gives 0 for a frame it dropped. */
+const dropped = (ws: { raw?: unknown }, data: string): boolean =>
+  (ws.raw as ServerWebSocket<unknown>).send(data) === 0
 
 async function requireHubToken(c: Context, next: Next) {
   const token = codexHubToken()
@@ -79,10 +92,15 @@ app.get(
     return {
       onOpen(_event, ws) {
         if (!key) return ws.close(4400, 'pc is required')
-        link = {
-          send: (msg) => ws.send(JSON.stringify(msg)),
+        const pcLink: PcLink = {
+          // A dropped line leaves an app-server on the PC waiting for it: every session on this socket ends instead.
+          send: (msg) => {
+            if (dropped(ws, JSON.stringify(msg)))
+              relayPcGone(key, pcLink, 'The hub could not keep up sending to the PC.')
+          },
           close: (why) => ws.close(1000, reason(why)),
         }
+        link = pcLink
         relayPcConnected(key, link)
       },
       onMessage(event) {
@@ -105,7 +123,10 @@ app.get(
     return {
       onOpen(_event, ws) {
         session = openRelaySession(key, {
-          line: (line) => ws.send(line),
+          // A dropped line is an answer or an event Desk waits for: the session ends instead.
+          line: (line) => {
+            if (dropped(ws, line)) ws.close(4000, 'The hub could not keep up sending to Desk.')
+          },
           closed: (why) => ws.close(4000, reason(why)),
         })
         if (!session) ws.close(4004, 'That PC is not connected to the Codex hub now.')

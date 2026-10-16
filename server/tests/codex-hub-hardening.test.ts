@@ -2,7 +2,7 @@
 //
 // A push comes from any PC holding the token: a rollout that unpacks to too much, or a time no Date can print,
 // is refused before anything is written. A relay frame carries one JSON-RPC line, and a whole chat runs past
-// 16 MiB.
+// 16 MiB; the line behind such a frame arrives too, or the session it was for ends.
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -168,37 +168,48 @@ test('a push whose updatedAt is no time is refused with 400, and the stored copy
 
 // --- relay frames past 16 MiB -----------------------------------------------------------------
 
-test('the relay carries frames past the 16 MiB Bun allows by default, both ways, and the PC stays on', async () => {
-  const BIG = 17 * 1024 * 1024
+const BIG = 24 * 1024 * 1024
+
+/** The hub's routes on a port of their own, with one PC's relay connected to them. */
+async function relayRig(websocket: typeof relayWebSocket) {
   const relayPc = `Big-PC-${crypto.randomUUID().slice(0, 6)}`
   const key = hubPcKey(relayPc)!
   const server = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
     fetch: (req, srv) => http.fetch(req, srv),
-    websocket: relayWebSocket,
+    websocket,
   })
   const codexGot: string[] = []
-  // A `codex app-server` whose thread/read answers with a whole long chat.
+  let ended = 0
+  // A `codex app-server` whose thread/read answers with a whole long chat, and says at once that
+  // the thread changed.
   const fakeAppServer = async (): Promise<AppServerProcess> => {
     let onLine: (line: string) => void = () => {}
     return {
       write(line) {
         codexGot.push(line)
         const msg = JSON.parse(line) as { id?: unknown; method?: string }
-        const answer =
-          msg.method === 'initialize'
-            ? { id: msg.id, result: {} }
-            : msg.method === 'thread/read'
-              ? { id: msg.id, result: { thread: { id: 't', preview: 'y'.repeat(BIG) } } }
-              : null
-        if (answer) queueMicrotask(() => onLine(JSON.stringify(answer)))
+        if (msg.method === 'initialize')
+          queueMicrotask(() => onLine(JSON.stringify({ id: msg.id, result: {} })))
+        if (msg.method === 'thread/read')
+          queueMicrotask(() => {
+            onLine(
+              JSON.stringify({
+                id: msg.id,
+                result: { thread: { id: 't', preview: 'y'.repeat(BIG) } },
+              }),
+            )
+            onLine(JSON.stringify({ method: 'thread/status/changed', params: { threadId: 't' } }))
+          })
       },
       onLine: (f) => {
         onLine = f
       },
       onExit: () => {},
-      end: () => {},
+      end: () => {
+        ended++
+      },
     }
   }
   const cfg: CodexHubPushConfig = {
@@ -213,36 +224,104 @@ test('the relay carries frames past the 16 MiB Bun allows by default, both ways,
     codexHome: '/nowhere',
     mode: 'ask',
   })!
+  const stop = () => {
+    relay.stop()
+    server.stop(true)
+  }
   try {
     await until(() => relayPcs().has(key))
+  } catch (error) {
+    stop()
+    throw error
+  }
+
+  /** Desk's end of one app-server on that PC, initialized. */
+  const desk = async () => {
     const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/codex-relay/${key}/app-server`, {
       headers: { authorization: `Bearer ${TOKEN}` },
     } as unknown as string[])
     const got: string[] = []
+    let closed: { code: number; reason: string } | null = null
     ws.addEventListener('message', (e) => got.push(String(e.data)))
+    ws.addEventListener('close', (e) => {
+      closed = { code: e.code, reason: e.reason }
+    })
     await new Promise<void>((resolve, reject) => {
       ws.addEventListener('open', () => resolve())
       ws.addEventListener('error', () => reject(new Error('could not connect')))
     })
     ws.send(JSON.stringify({ id: 1, method: 'initialize', params: {} }))
     ws.send(JSON.stringify({ method: 'initialized' }))
-    ws.send(JSON.stringify({ id: 2, method: 'thread/read', params: { threadId: 't' } }))
-    // PC -> hub: the answer, one line of over 17 MiB.
-    await until(() => got.some((m) => m.length > BIG))
-    expect((JSON.parse(got.find((m) => m.length > BIG)!) as { id: number }).id).toBe(2)
+    await until(() => got.length > 0)
+    return { ws, got, closed: () => closed }
+  }
+  const turn = JSON.stringify({
+    id: 3,
+    method: 'turn/start',
+    params: { threadId: 't', input: [{ type: 'text', text: 'z'.repeat(BIG) }] },
+  })
+  const interrupt = JSON.stringify({
+    id: 4,
+    method: 'turn/interrupt',
+    params: { threadId: 't', turnId: 'u' },
+  })
+  return { key, codexGot, ended: () => ended, desk, turn, interrupt, stop }
+}
 
-    // Desk -> hub: a turn with a long pasted input.
-    const turn = JSON.stringify({
-      id: 3,
-      method: 'turn/start',
-      params: { threadId: 't', input: [{ type: 'text', text: 'z'.repeat(BIG) }] },
-    })
-    ws.send(turn)
-    await until(() => codexGot.includes(turn))
-    expect(relayPcs().has(key)).toBe(true)
+const isNotice = (m: string) => m.includes('"thread/status/changed"')
+
+test('the relay carries frames past 16 MiB both ways, and the line sent right after one', async () => {
+  const rig = await relayRig(relayWebSocket)
+  try {
+    const { ws, got } = await rig.desk()
+    ws.send(JSON.stringify({ id: 2, method: 'thread/read', params: { threadId: 't' } }))
+    // PC -> hub -> Desk: the answer, one line of over 24 MiB, and the notification behind it. Bun
+    // drops a frame while 16 MiB wait to be sent, unless the relay lets more wait.
+    await until(() => got.some(isNotice))
+    const answer = got.findIndex((m) => m.length > BIG)
+    expect((JSON.parse(got[answer]!) as { id: number }).id).toBe(2)
+    expect(got.findIndex(isNotice)).toBeGreaterThan(answer)
+
+    // Desk -> hub -> PC: a turn with a long pasted input, and the interrupt right after it.
+    ws.send(rig.turn)
+    ws.send(rig.interrupt)
+    await until(() => rig.codexGot.includes(rig.interrupt))
+    expect(rig.codexGot.indexOf(rig.turn)).toBeGreaterThan(-1)
+    expect(rig.codexGot.indexOf(rig.turn)).toBeLessThan(rig.codexGot.indexOf(rig.interrupt))
+    expect(relayPcs().has(rig.key)).toBe(true)
     ws.close()
   } finally {
-    relay.stop()
-    server.stop(true)
+    rig.stop()
+  }
+})
+
+test('a line the relay cannot queue ends the session it was for, not just that line', async () => {
+  // Past backpressureLimit Bun drops a frame and keeps the socket open. The relay's own limit is
+  // more than a test should fill, so it is lowered here.
+  const rig = await relayRig({ ...relayWebSocket, backpressureLimit: 64 * 1024 })
+  try {
+    // To Desk: the answer waits to be sent and the notification cannot. Desk's socket closes, so
+    // Desk stops waiting, and the PC ends that app-server.
+    const reader = await rig.desk()
+    reader.ws.send(JSON.stringify({ id: 2, method: 'thread/read', params: { threadId: 't' } }))
+    await until(() => reader.closed() !== null)
+    expect(reader.got.some(isNotice)).toBe(false)
+    await until(() => rig.ended() === 1)
+    expect(relayPcs().has(rig.key)).toBe(true)
+
+    // To the PC: the turn waits to be sent and the interrupt cannot. The PC's socket is ended,
+    // and Desk is told why.
+    const writer = await rig.desk()
+    writer.ws.send(rig.turn)
+    writer.ws.send(rig.interrupt)
+    await until(() => writer.closed() !== null)
+    expect(writer.closed()).toEqual({
+      code: 4000,
+      reason: expect.stringContaining('sending to the PC'),
+    })
+    expect(relayPcs().has(rig.key)).toBe(false)
+    expect(rig.codexGot).not.toContain(rig.interrupt)
+  } finally {
+    rig.stop()
   }
 })
