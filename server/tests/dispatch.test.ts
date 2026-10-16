@@ -380,17 +380,6 @@ test('a reattach onto a dead runner never adopts its stale child pid', async () 
 // "sail through" and allow_headless used to be honoured; both are now refused, because an override
 // that defeats "never" is not an override. Everything still funnels through the one chokepoint in
 // dispatchItem, which is why one check can hold all five call sites.
-//
-// Note these run with the escape hatch OFF, unlike the pipeline tests above, which turn it on to
-// have any pipeline to test at all.
-
-/** Run `fn` with the ban actually in force, whatever the pipeline tests left set. */
-async function withHeadlessBanned(fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn()
-  } finally {
-  }
-}
 
 /** Write the desktop metadata file that makes a session "resident" in an instance's sidebar. */
 function makeDesktopResident(sessionId: string): void {
@@ -415,67 +404,62 @@ function makeDesktopResidentByContent(cliSessionId: string): void {
   invalidateSessionMetaCache()
 }
 
-test('a chat CREATED in the app (id only inside the file) is refused too, not just imported ones', () =>
-  withHeadlessBanned(async () => {
-    const item = makeItem({ new_chat: false })
-    makeDesktopResidentByContent(item.session_id)
-    await dispatch.dispatchItem(item)
-    expect(statusOf(item.id)?.status).toBe('failed')
-    expect(dispatch.getRunEvents(item.id).some((e) => e.text.includes('no-headless'))).toBe(true)
-  }))
+test('a chat CREATED in the app (id only inside the file) is refused too, not just imported ones', async () => {
+  const item = makeItem({ new_chat: false })
+  makeDesktopResidentByContent(item.session_id)
+  await dispatch.dispatchItem(item)
+  expect(statusOf(item.id)?.status).toBe('failed')
+  expect(dispatch.getRunEvents(item.id).some((e) => e.text.includes('no-headless'))).toBe(true)
+})
 
-test('a headless resume of a DESKTOP-resident chat is refused at the dispatch chokepoint', () =>
-  withHeadlessBanned(async () => {
-    const item = makeItem({ new_chat: false })
-    makeDesktopResident(item.session_id)
-    await dispatch.dispatchItem(item)
-    // Refused BEFORE any spawn: failed, and the reason names the law rather than looking like a crash.
-    expect(statusOf(item.id)?.status).toBe('failed')
-    const events = dispatch.getRunEvents(item.id)
-    expect(events.some((e) => e.text.includes('no-headless'))).toBe(true)
-    expect(events.some((e) => e.text.includes('cannot see'))).toBe(true)
-  }))
+test('a headless resume of a DESKTOP-resident chat is refused at the dispatch chokepoint', async () => {
+  const item = makeItem({ new_chat: false })
+  makeDesktopResident(item.session_id)
+  await dispatch.dispatchItem(item)
+  // Refused BEFORE any spawn: failed, and the reason names the law rather than looking like a crash.
+  expect(statusOf(item.id)?.status).toBe('failed')
+  const events = dispatch.getRunEvents(item.id)
+  expect(events.some((e) => e.text.includes('no-headless'))).toBe(true)
+  expect(events.some((e) => e.text.includes('cannot see'))).toBe(true)
+})
 
-test('new_chat is NOT a way past the law', () =>
-  withHeadlessBanned(async () => {
-    // Under the old surface-purity guard this mattered a great deal: the create route accepts a
-    // caller-supplied session_id even when new_chat is true, so a request LABELLED "new chat" but
-    // pointed at an existing desktop chat wrote headless turns straight into it. The label was
-    // never trustworthy. Under the wider law the question does not even arise, which is the point:
-    // there is no id, label or route that produces an invisible chat.
-    const liar = makeItem({ new_chat: true })
-    makeDesktopResident(liar.session_id)
-    await dispatch.dispatchItem(liar)
-    expect(statusOf(liar.id)?.status).toBe('failed')
-    expect(dispatch.getRunEvents(liar.id).some((e) => e.text.includes('no-headless'))).toBe(true)
-  }))
+test('new_chat is NOT a way past the law', async () => {
+  // Under the old surface-purity guard this mattered a great deal: the create route accepts a
+  // caller-supplied session_id even when new_chat is true, so a request LABELLED "new chat" but
+  // pointed at an existing desktop chat wrote headless turns straight into it. The label was
+  // never trustworthy. Under the wider law the question does not even arise, which is the point:
+  // there is no id, label or route that produces an invisible chat.
+  const liar = makeItem({ new_chat: true })
+  makeDesktopResident(liar.session_id)
+  await dispatch.dispatchItem(liar)
+  expect(statusOf(liar.id)?.status).toBe('failed')
+  expect(dispatch.getRunEvents(liar.id).some((e) => e.text.includes('no-headless'))).toBe(true)
+})
 
 // THE TEST THAT CHANGED SIDES. It used to be called "the guard spares a NEW chat and honours the
 // owner explicit allow_headless override" and asserted both of those runs COMPLETED. Both are
 // refusals now. A genuinely new chat was the largest hole the narrow guard left, because a fresh
 // uuid has no desktop entry and so nothing could object to it, and allow_headless was a documented
 // way to ask for the banned thing by name.
-test('a brand-new chat and an explicit allow_headless override are BOTH refused now', () =>
-  withHeadlessBanned(async () => {
-    const fresh = makeItem({ new_chat: true })
-    await dispatch.dispatchItem(fresh)
-    expect(statusOf(fresh.id)?.status).toBe('failed')
-    expect(dispatch.getRunEvents(fresh.id).some((e) => e.text.includes('no-headless'))).toBe(true)
+test('a brand-new chat and an explicit allow_headless override are BOTH refused now', async () => {
+  const fresh = makeItem({ new_chat: true })
+  await dispatch.dispatchItem(fresh)
+  expect(statusOf(fresh.id)?.status).toBe('failed')
+  expect(dispatch.getRunEvents(fresh.id).some((e) => e.text.includes('no-headless'))).toBe(true)
 
-    const forced = makeItem({ new_chat: false, allow_headless: true })
-    makeDesktopResident(forced.session_id)
-    await dispatch.dispatchItem(forced)
-    expect(statusOf(forced.id)?.status).toBe('failed')
-    expect(dispatch.getRunEvents(forced.id).some((e) => e.text.includes('no-headless'))).toBe(true)
-  }))
+  const forced = makeItem({ new_chat: false, allow_headless: true })
+  makeDesktopResident(forced.session_id)
+  await dispatch.dispatchItem(forced)
+  expect(statusOf(forced.id)?.status).toBe('failed')
+  expect(dispatch.getRunEvents(forced.id).some((e) => e.text.includes('no-headless'))).toBe(true)
+})
 
-test('nothing is spawned when a run is refused', () =>
-  withHeadlessBanned(async () => {
-    // dispatchItem() has no spawn code path left at all - the headless-policy refusal is the last
-    // statement in the function (see its doc comment in dispatch.ts). This pins that regression: no
-    // run-log file ever appears for a refused item.
-    const item = makeItem({ new_chat: true })
-    await dispatch.dispatchItem(item)
-    expect(statusOf(item.id)?.status).toBe('failed')
-    expect(existsSync(join(RUN_LOG_DIR, `${item.id}.log`))).toBe(false)
-  }))
+test('nothing is spawned when a run is refused', async () => {
+  // dispatchItem() has no spawn code path left at all - the headless-policy refusal is the last
+  // statement in the function (see its doc comment in dispatch.ts). This pins that regression: no
+  // run-log file ever appears for a refused item.
+  const item = makeItem({ new_chat: true })
+  await dispatch.dispatchItem(item)
+  expect(statusOf(item.id)?.status).toBe('failed')
+  expect(existsSync(join(RUN_LOG_DIR, `${item.id}.log`))).toBe(false)
+})

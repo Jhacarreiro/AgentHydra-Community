@@ -39,24 +39,25 @@ describe('instanceModeShortcutSpec', () => {
   })
 })
 
-test('creates a Windows .lnk in an explicitly selected Desktop folder', async () => {
-  if (process.platform !== 'win32') return
+test.skipIf(process.platform !== 'win32')(
+  'creates a Windows .lnk in an explicitly selected Desktop folder',
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agenthydra-instance-shortcut-'))
+    cleanup.push(root)
+    const desktopDir = join(root, 'Desktop')
+    const fakeExe = join(root, 'agenthydra.exe')
+    writeFileSync(fakeExe, '')
 
-  const root = mkdtempSync(join(tmpdir(), 'agenthydra-instance-shortcut-'))
-  cleanup.push(root)
-  const desktopDir = join(root, 'Desktop')
-  const fakeExe = join(root, 'agenthydra.exe')
-  writeFileSync(fakeExe, '')
+    const result = await createInstanceModeShortcut({
+      appRoot: root,
+      compiled: true,
+      desktopDir,
+      execPath: fakeExe,
+      platform: 'win32',
+    })
 
-  const result = await createInstanceModeShortcut({
-    appRoot: root,
-    compiled: true,
-    desktopDir,
-    execPath: fakeExe,
-    platform: 'win32',
-  })
-
-  expect(result.ok).toBe(true)
-  expect(result.data?.path).toBe(join(desktopDir, 'AgentHydra Instances.lnk'))
-  expect(existsSync(join(desktopDir, 'AgentHydra Instances.lnk'))).toBe(true)
-})
+    expect(result.ok).toBe(true)
+    expect(result.data?.path).toBe(join(desktopDir, 'AgentHydra Instances.lnk'))
+    expect(existsSync(join(desktopDir, 'AgentHydra Instances.lnk'))).toBe(true)
+  },
+)
