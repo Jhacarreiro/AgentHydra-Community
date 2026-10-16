@@ -55,6 +55,13 @@ function forgetManagers(): void {
   for (const [id, w] of liveWorkers) if (w.kind === 'manage') liveWorkers.delete(id)
 }
 
+// Finished workers stay in the map too, and the scheduler sizes the next task from what they cost:
+// left behind, they make climayte-login-wall.test.ts place its task on another account.
+function forgetGroups(groups: Iterable<string>): void {
+  const gone = new Set(groups)
+  for (const [id, w] of liveWorkers) if (gone.has(w.group)) liveWorkers.delete(id)
+}
+
 describe('wave store', () => {
   let tempDir: string
 
@@ -856,7 +863,7 @@ describe('integration: the daemon judges a wave by command, a manager costs wake
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
     forgetManagers()
-    setCliMayteQuietTickForTests()
+    forgetGroups(groups)
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })
@@ -1161,7 +1168,7 @@ describe('a wave is judged wherever it is stored, not only on the account its ta
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
     forgetManagers()
-    setCliMayteQuietTickForTests()
+    forgetGroups(groups)
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })
@@ -1437,6 +1444,7 @@ describe('the orchestrator starts and verifies a wave (piece 7)', () => {
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
     forgetManagers()
+    forgetGroups(groups)
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
     rmSync(root, { recursive: true, force: true })
