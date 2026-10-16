@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { SessionSummary, TitleSource } from '../src/types'
 
 // scripts/screenshots/page-fixtures.js is evaluated as a browser script, not imported as a module
 // (see its own header comment) — it replaces `window.fetch` before the SPA boots. To exercise it
@@ -21,42 +22,57 @@ function loadFixtureFetch(): typeof fetch {
   return fakeWindow.fetch
 }
 
-// TitleSource, server/src/types.ts ~line 238.
-const ALLOWED_TITLE_SOURCES = ['custom', 'ai', 'store', 'envelope', 'message', 'id']
+/** The keys of T that are not optional (a `T | null` property is still required). */
+type RequiredKey<T> = { [K in keyof T]-?: object extends Pick<T, K> ? never : K }[keyof T]
 
-// SessionSummary, server/src/types.ts ~lines 120-216 — every field below is required there (no `?`
-// on any of them; the nullable ones are typed `T | null`, which is still a required property). This
-// is AH-41: the fixture omitted `title_source`, session-labels.ts's i18n lookup threw on the
-// missing key, and the built UI rendered no session list at all.
-const REQUIRED_SESSION_FIELDS = [
-  'session_id',
-  'source',
-  'tool',
-  'locator',
-  'title',
-  'cwd',
-  'project',
-  'git_branch',
-  'message_count',
-  'created_at',
-  'last_activity_at',
-  'last_role',
-  'last_text_preview',
-  'size_bytes',
-  'transcript_path',
-  'queue_status',
-  'instance',
-  'archived',
-  'done',
-  'subagent_count',
-  'dispatched',
-  'limit_stop',
-  'title_source',
-  'title_tag',
-  'copy_index',
-  'copy_count',
-  'ended_because',
-] as const
+// Both lists are checked by the compiler against the types, both ways: a member added to the type
+// without an entry here, or an entry the type no longer has, fails typecheck. The hand-copied
+// field list this replaces went stale while staying green: SessionSummary gained instance_ref,
+// instance_num, model and effort, the fixture rows carried none of them, and nothing failed.
+const ALLOWED_TITLE_SOURCES = Object.keys({
+  custom: true,
+  ai: true,
+  store: true,
+  envelope: true,
+  message: true,
+  id: true,
+} satisfies Record<TitleSource, true>)
+
+// AH-41: the fixture omitted `title_source`, session-labels.ts's i18n lookup threw on the missing
+// key, and the built UI rendered no session list at all.
+const REQUIRED_SESSION_FIELDS = Object.keys({
+  session_id: true,
+  source: true,
+  tool: true,
+  locator: true,
+  title: true,
+  cwd: true,
+  project: true,
+  git_branch: true,
+  message_count: true,
+  created_at: true,
+  last_activity_at: true,
+  last_role: true,
+  last_text_preview: true,
+  size_bytes: true,
+  transcript_path: true,
+  queue_status: true,
+  instance: true,
+  instance_ref: true,
+  instance_num: true,
+  archived: true,
+  done: true,
+  subagent_count: true,
+  dispatched: true,
+  limit_stop: true,
+  title_source: true,
+  title_tag: true,
+  copy_index: true,
+  copy_count: true,
+  ended_because: true,
+  model: true,
+  effort: true,
+} satisfies Record<RequiredKey<SessionSummary>, true>)
 
 test('every fixture session row carries every field SessionSummary requires', async () => {
   const fetchStub = loadFixtureFetch()
