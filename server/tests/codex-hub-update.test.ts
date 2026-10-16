@@ -39,6 +39,8 @@ const deps = (over: Parameters<typeof updateOnce>[1] = {}) => ({
   run: () => ({ status: 0, stdout: 'codex-hub-push\n' }),
   relaunch: (path: string) => void relaunched.push(path),
   log: () => {},
+  // The hub's file here is its Windows build (PUSHER_EXE), whatever OS the suite runs on.
+  platform: 'windows-x64',
   ...over,
 })
 
@@ -76,7 +78,7 @@ test('a build that does not start, or does not match the hub hash, never replace
 
   // The download is cut short or altered on the way: its hash differs from the one the hub announced.
   const tampered: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) =>
-    String(input).endsWith('/download')
+    new URL(String(input)).pathname.endsWith('/download')
       ? new Response('new buil')
       : toHub(input, init)) as typeof fetch
   expect(await updateOnce(cfg, deps({ fetch: tampered }))).toBe('failed')

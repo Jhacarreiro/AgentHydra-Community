@@ -2,7 +2,8 @@
 //
 // A PC that pushes its Codex chats runs codex-hub-push.exe from a scheduled task. Reinstalling it on every PC for
 // each change does not scale past one PC, so the hub hands out the current build (GET /api/codex-hub/pusher, its
-// SHA-256, and /download) and the pusher compares it with its own file at start and every few hours. A different
+// SHA-256, and /download, each with `?platform=` naming this build's platform) and the pusher compares it with its
+// own file at start and every few hours. A different
 // build is downloaded beside it, checked against the hash, and started once with --version before it replaces the
 // running one: a build that does not start is dropped and the old one keeps running. Windows lets a running exe be
 // renamed but not overwritten, so the old file moves to `.old` (removed at the next start) and the new one takes its
@@ -35,11 +36,24 @@ export interface UpdateDeps {
   /** Starts the new build in this one's place, then this process exits. */
   relaunch?: (exe: string) => void
   log?: (line: string) => void
+  /** The platform whose build is asked for; this build's own by default. */
+  platform?: string
 }
 
-/** True for the compiled codex-hub-push.exe; false under bun from a checkout. */
+/**
+ * True for the compiled pusher: codex-hub-push.exe, or a build named for its platform as the hub names them
+ * (codex-hub-push-linux-x64); false under bun from a checkout.
+ */
 export function isCompiledPusher(execPath = process.execPath): boolean {
-  return /codex-hub-push(?:\.exe)?$/i.test(execPath)
+  return /codex-hub-push(?:-[a-z0-9]+)*(?:\.exe)?$/i.test(execPath)
+}
+
+/** This build's platform as the hub names its builds (codex-hub.ts HUB_PLATFORMS): windows-x64, darwin-arm64, ... */
+export function buildPlatform(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): string {
+  return `${platform === 'win32' ? 'windows' : platform}-${arch}`
 }
 
 /** Whether this pusher follows the hub's build: compiled, and not turned off on this PC. */
@@ -81,7 +95,8 @@ export async function updateOnce(
   const exe = deps.exePath ?? process.execPath
   const log = deps.log ?? ((line: string) => console.log(`[codex-hub] ${line}`))
   const headers = { ...cfg.headers, authorization: `Bearer ${cfg.token}` }
-  const meta = await doFetch(`${cfg.url}/api/codex-hub/pusher`, { headers })
+  const query = `?platform=${encodeURIComponent(deps.platform ?? buildPlatform())}`
+  const meta = await doFetch(`${cfg.url}/api/codex-hub/pusher${query}`, { headers })
   if (meta.status === 404) return 'none'
   if (!meta.ok) throw new Error(`the hub answered ${meta.status} for its pusher build`)
   const want = (await meta.json()) as { sha256?: string; size?: number }
@@ -94,7 +109,7 @@ export async function updateOnce(
     log(`kept this build: ${why}`)
     return 'failed'
   }
-  const res = await doFetch(`${cfg.url}/api/codex-hub/pusher/download`, { headers })
+  const res = await doFetch(`${cfg.url}/api/codex-hub/pusher/download${query}`, { headers })
   if (!res.ok) return drop(`the download answered ${res.status}`)
   await Bun.write(next, res)
   if (statSync(next).size !== want.size || (await sha256File(next)) !== want.sha256)

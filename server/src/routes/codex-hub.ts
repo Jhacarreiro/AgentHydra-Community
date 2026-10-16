@@ -13,15 +13,15 @@ import {
   codexHubHomes,
   codexHubToken,
   HUB_INSTALL_HEADER,
+  HUB_PLATFORMS,
+  hubBuildFile,
   hubInstallId,
   hubNameRefused,
   hubNameTaken,
   hubPcKey,
   hubTokenMatches,
-  PUSHER_EXE,
   pusherRelease,
   ROLLOUT_UNPACKED_MAX,
-  TRAY_EXE,
 } from '../core/codex-hub'
 import {
   openRelaySession,
@@ -87,16 +87,19 @@ app.post('/api/codex-hub/push', requireHubToken, async (c) => {
 })
 
 // The builds PCs keep themselves at: the pusher (core/codex-hub-update.ts) and the tray app that runs it
-// (codex-hub-tray/). Each: its hash, then the file.
-for (const [name, file] of [
-  ['pusher', PUSHER_EXE],
-  ['tray', TRAY_EXE],
-] as const) {
+// (codex-hub-tray/). Each: its hash, then the file, for the platform in `?platform=` (none is Windows). A platform
+// with no build here is a 404 like a hub with none, which the PC takes as nothing to update.
+const badPlatform = `platform must be one of ${HUB_PLATFORMS.join(', ')}`
+for (const name of ['pusher', 'tray'] as const) {
   app.get(`/api/codex-hub/${name}`, requireHubToken, async (c) => {
+    const file = hubBuildFile(name, c.req.query('platform'))
+    if (!file) return c.json({ error: badPlatform }, 400)
     const release = await pusherRelease(file)
     return release ? c.json(release) : c.json({ error: `this hub hands out no ${name} build` }, 404)
   })
   app.get(`/api/codex-hub/${name}/download`, requireHubToken, async (c) => {
+    const file = hubBuildFile(name, c.req.query('platform'))
+    if (!file) return c.json({ error: badPlatform }, 400)
     if (!(await pusherRelease(file)))
       return c.json({ error: `this hub hands out no ${name} build` }, 404)
     return new Response(Bun.file(file), { headers: { 'content-type': 'application/octet-stream' } })

@@ -384,10 +384,32 @@ export function codexHubHomes(root: string = CODEX_HUB_DIR): CodexHubHome[] {
 /**
  * The pusher build this hub hands out (codex-hub-update.ts): each PC's pusher fetches it when its own differs, so a
  * PC is installed once. `.pusher` can never be a PC's folder: hubPcKey makes no dots. Absent: PCs keep what they have.
+ * This is the Windows build; hubBuildFile names the others.
  */
 export const PUSHER_EXE = join(CODEX_HUB_DIR, '.pusher', 'codex-hub-push.exe')
 /** The Windows tray app that keeps the pusher running and both builds current (codex-hub-tray/). */
 export const TRAY_EXE = join(CODEX_HUB_DIR, '.pusher', 'codex-hub-tray.exe')
+
+/** The platforms a build is handed out for, named as `bun build --compile --target=bun-<platform>` names them. */
+export const HUB_PLATFORMS = [
+  'windows-x64',
+  'linux-x64',
+  'linux-arm64',
+  'darwin-x64',
+  'darwin-arm64',
+] as const
+
+/**
+ * The file the hub hands out for one build and platform, or null for a platform it does not know. No platform is
+ * windows-x64: the pushers and trays installed before there were other builds ask without one. The Windows builds
+ * keep their first names (PUSHER_EXE, TRAY_EXE); every other is `codex-hub-push-<platform>`, with no extension.
+ */
+export function hubBuildFile(name: 'pusher' | 'tray', platform?: string): string | null {
+  const p = platform || 'windows-x64'
+  if (!(HUB_PLATFORMS as readonly string[]).includes(p)) return null
+  if (p === 'windows-x64') return name === 'pusher' ? PUSHER_EXE : TRAY_EXE
+  return join(CODEX_HUB_DIR, '.pusher', `codex-hub-${name === 'pusher' ? 'push' : 'tray'}-${p}`)
+}
 
 const pusherHashes = new Map<string, { mtimeMs: number; size: number; sha256: string }>()
 

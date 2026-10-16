@@ -853,12 +853,19 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   server/src/codex-hub-push-main.ts`, `codex-hub-push.exe`), and that build follows the hub's: put the new
   build at `<config dir>/codex-hub/.pusher/codex-hub-push.exe` on the hub, and each pusher compares its own
   file with it (`GET /api/codex-hub/pusher`, its SHA-256 and size; `/download`, the file; same token) when it
-  starts and every six hours. A different build is downloaded beside it, checked against that hash, and
-  started once with `--version`; only a build that starts replaces the running one, leaving the previous file
-  as `.old` until the next start. The pusher then exits and the new build takes over: started with the same
-  arguments, or on Windows by the scheduled task that runs the pusher, so that task should repeat every few
-  minutes with one instance at a time. The PC trusts the hub with its
-  build as it already does with relay turns; `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
+  starts and every six hours. Each pusher asks for its own platform (`?platform=` one of `windows-x64`,
+  `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, as `bun build --target=bun-<platform>` names
+  them); a Mac or Linux build sits beside the Windows one as `codex-hub-push-<platform>`, with no
+  extension, and the tray's builds (`/api/codex-hub/tray`) the same way as `codex-hub-tray.exe` and
+  `codex-hub-tray-<platform>`. A request without a platform is Windows, as the first pushers ask; a
+  platform the hub has no build for answers 404, and the PC keeps what it has. Only a build named
+  `codex-hub-push`, `codex-hub-push.exe` or `codex-hub-push-<platform>` updates itself. A different build
+  is downloaded beside it, checked against that hash, and started once with `--version`; only a build
+  that starts replaces the running one, leaving the previous file as `.old` until the next start. The
+  pusher then exits and the new build takes over: started with the same arguments, or on Windows by the
+  scheduled task that runs the pusher, so that task should repeat every few minutes with one instance at a
+  time. The PC trusts the hub with its build as it already does with relay turns;
+  `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 
