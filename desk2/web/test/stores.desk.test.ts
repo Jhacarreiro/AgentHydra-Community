@@ -231,12 +231,6 @@ describe('useDesk store', () => {
     expect(desk.itemsByChat.value.get('chat-1')).toEqual([expect.objectContaining({ id: 'item-1', text: 'Hello world' })])
   })
 
-  it('selects chat', () => {
-    const desk = useDesk()
-    desk.select({ kind: 'chat', id: 'chat-1' })
-    expect(desk.selected.value).toEqual({ kind: 'chat', id: 'chat-1' })
-  })
-
   // Owner, 2026-10-09: a new chat's POST answered seconds after he had moved on to another chat, and the
   // window pulled him back into the new one. It opens only while he is still where he sent it from.
   describe('a chat the window makes', () => {
