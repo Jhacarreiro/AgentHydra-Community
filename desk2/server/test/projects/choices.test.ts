@@ -50,7 +50,8 @@ describe('subfolders', () => {
   })
 })
 
-describe('withPath and withoutPath', () => {
+// Folder case is ignored on Windows only (folderKey), and only there is C:/Work/App an absolute path.
+describe.skipIf(process.platform !== 'win32')('withPath and withoutPath', () => {
   test('adds a folder once, whatever its case', () => {
     const list = withPath(['C:/Work/App'], 'c:/work/app')
     expect(list).toEqual(['C:/Work/App'])

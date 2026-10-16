@@ -60,7 +60,8 @@ describe('detect', () => {
     expect(await def().detect()).toEqual({ state: 'running', url: sharedUrl(), version: null })
   })
 
-  test('running as stdio when a rea command is on PATH and the hub serves nothing', async () => {
+  // The rea on PATH is npm's Windows shim, rea.cmd, which only Windows finds through PATHEXT.
+  test.skipIf(process.platform !== 'win32')('running as stdio when a rea command is on PATH and the hub serves nothing', async () => {
     putRea(join(root, 'empty'))
     expect(await def().detect()).toEqual({ state: 'running', url: null, version: null })
   })

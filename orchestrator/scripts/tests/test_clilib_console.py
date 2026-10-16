@@ -49,6 +49,9 @@ class RunTextTest(unittest.TestCase):
         self.assertIn("archived", r.stdout)
         self.assertIn("done", r.stdout)
 
+    # Windows reads a child's pipes on reader threads, and that thread is what dies. Elsewhere
+    # communicate() decodes in the caller, so the old read raises there and prints no GOT: at all.
+    @unittest.skipUnless(sys.platform == "win32", "only Windows reads a child's pipes on threads")
     def test_the_old_way_really_does_lose_it_here(self):
         # The proof that the test above is testing something: the same child, read the old way,
         # in UTF-8 mode. It must NOT come back intact - if this ever passes, the environment has
