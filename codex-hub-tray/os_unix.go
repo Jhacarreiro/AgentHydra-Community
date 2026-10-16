@@ -99,8 +99,9 @@ func run() {
 	systray.Run(onReady, onExit)
 }
 
-// quitTray stops the pusher and ends the tray. It stops the pusher itself because on macOS systray.Quit ends the
-// process without calling onExit, and nothing else would: the pusher is in a process group of its own.
+// quitTray stops the pusher and ends the tray. Without a tray (headless) nothing else would stop it: there is no
+// systray.Run to call onExit, and the pusher is in a process group of its own. With one, systray.Quit calls onExit
+// (on macOS from applicationWillTerminate), which then finds the pusher stopped already.
 func quitTray() {
 	if a := current.Load(); a != nil {
 		a.stopPusher(true)
