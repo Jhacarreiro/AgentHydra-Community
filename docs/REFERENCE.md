@@ -549,7 +549,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HOME` | `~/.codex` | default Codex rollout store to scan |
 | `AGENTHYDRA_MCP_MAX_RESULT_BYTES` | `80000` | per-answer byte cap for MCP tool results (floor 4096); over it an answer is cut with notes, see [Asking for less](#asking-for-less-jmespath-and-the-size-cap) |
 | `AGENTHYDRA_CLAUDE_PATH` | npm-global install / `claude` | Claude CLI executable for every spawn (usage probe, keepalive, launches); point it at `server/tests/mocks/bin/claude(.cmd)` to replay a recording |
-| `AGENTHYDRA_CODEX_PATH` | auto-detected / `codex` | Codex executable used by managed Codex instances |
+| `AGENTHYDRA_CODEX_PATH` | auto-detected / `codex` | Codex executable used by managed Codex instances; on a Mac or Linux PC `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin` and the npm prefix are checked before PATH |
 | `AGENTHYDRA_CODEX_DESKTOP_PATH` | auto-detected | Codex Desktop GUI executable; useful for nonstandard installs |
 | `AGENTHYDRA_CODEX_HUB_TOKEN` | unset | turns this daemon into a [Codex hub](#codex-chats-from-other-pcs-codex-hub) and is the bearer token every push must carry; on a pushing PC, the same token |
 | `AGENTHYDRA_CODEX_HUB_URL` | unset | the hub this PC pushes its Codex chats to (`https://hub.example.test`); with the token set, the daemon pushes every interval |

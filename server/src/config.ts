@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, posix } from 'node:path'
 import rootPkg from '../../package.json'
 
 const HOME = homedir()
@@ -501,11 +501,14 @@ export const CLAUDE_PROBE_NO_MCP_ARGS = [
 
 /**
  * Resolve the Codex CLI. The Microsoft Store/Desktop install keeps version-addressed helper
- * binaries below LocalAppData, while npm/homebrew installs normally put `codex` on PATH.
+ * binaries below LocalAppData, while npm/homebrew installs normally put `codex` on PATH. Off
+ * Windows those install places are checked by path first (posixCodexCandidates).
  */
 export function resolveCodexExe(): string {
   const configured = appEnv('CODEX_PATH')?.trim()
   if (configured) return configured
+  if (process.platform !== 'win32')
+    return posixCodexCandidates().find((path) => existsSync(path)) ?? 'codex'
 
   const desktopBin = join(LOCALAPPDATA, 'OpenAI', 'Codex', 'bin')
   if (existsSync(desktopBin)) {
@@ -524,4 +527,27 @@ export function resolveCodexExe(): string {
     if (existsSync(candidate)) return candidate
   }
   return 'codex'
+}
+
+/**
+ * Where a Mac or Linux install puts `codex`, in the order resolveCodexExe tries them: Homebrew
+ * (Apple silicon, then Intel), a user's own bin, npm's and bun's global bins, and the npm prefix
+ * named in the environment. launchd and systemd start a service with a PATH that has few of these,
+ * so a bare `codex` there finds nothing. The Codex desktop app's bundle is not searched: no CLI
+ * location inside it is known here; AGENTHYDRA_CODEX_PATH can point at one.
+ */
+export function posixCodexCandidates(
+  home: string = HOME,
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  const candidates = [
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
+    posix.join(home, '.local', 'bin', 'codex'),
+    posix.join(home, '.npm-global', 'bin', 'codex'),
+    posix.join(home, '.bun', 'bin', 'codex'),
+  ]
+  const npmPrefix = (env.npm_config_prefix ?? env.NPM_CONFIG_PREFIX)?.trim()
+  if (npmPrefix) candidates.push(posix.join(npmPrefix, 'bin', 'codex'))
+  return candidates
 }
