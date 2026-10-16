@@ -302,11 +302,20 @@ function writeEntry(key: string, entry: AccountEntry): void {
 }
 
 /** Every turn's kit cost (billed where known, else list) since `sinceMs`, as a cumulative-cost lookup over any interval. */
-async function intervalCostFrom(sinceMs: number, configDirs: string[]): Promise<IntervalCost> {
+async function intervalCostFrom(
+  sinceMs: number,
+  configDirs: string[],
+  now: Date,
+): Promise<IntervalCost> {
   const turns: { ts: number; usd: number; unpriced: boolean }[] = []
-  await forEachCallSince(new Date(sinceMs), configDirs, (ts, _byModel, cost) => {
-    turns.push({ ts, ...cost })
-  })
+  await forEachCallSince(
+    new Date(sinceMs),
+    configDirs,
+    (ts, _byModel, cost) => {
+      turns.push({ ts, ...cost })
+    },
+    { now: now.getTime() },
+  )
   turns.sort((a, b) => a.ts - b.ts)
   const cum: number[] = [0]
   const unpricedCum: number[] = [0]
@@ -355,7 +364,7 @@ export async function calibrateQuotaDollars(
     const grouped = groupedReadings(samples)
     const scanFrom = pruneToScanFloor(grouped, entry.windows)
     const cost: IntervalCost = Number.isFinite(scanFrom)
-      ? await intervalCostFrom(scanFrom, configDirs)
+      ? await intervalCostFrom(scanFrom, configDirs, now)
       : () => ({ usd: 0, unpriced: false })
     const windows = foldWindows(grouped, cost, entry.windows)
 

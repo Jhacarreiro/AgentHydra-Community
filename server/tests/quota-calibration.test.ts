@@ -156,7 +156,14 @@ describe('calibrateQuotaDollars (disk-backed)', () => {
         },
       ]
       const key = 'test:quota-dollars'
-      const d = await calibrateQuotaDollars(key, snap(40), samples, [defaultConfigDir()])
+      // The walk runs up to `now`: the suite's clock, not the real one, keeps it to the readings.
+      const d = await calibrateQuotaDollars(
+        key,
+        snap(40),
+        samples,
+        [defaultConfigDir()],
+        new Date(T0 + 3 * HOUR),
+      )
       expect(d.weekly.usdPerPct).toBeCloseTo(3, 6)
       expect(d.weekly.capacityUsd).toBeCloseTo(300, 6)
       expect(d.weekly.dollarsLeft).toBeCloseTo(180, 6)

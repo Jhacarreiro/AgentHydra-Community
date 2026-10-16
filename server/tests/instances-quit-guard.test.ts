@@ -81,10 +81,14 @@ test('an isolated instance dir is NOT refused by the external guard', async () =
 
 // 2026-09-25 (owner: "why is Agent Hydra so friggin slow at closing instances"): the grace period
 // is for the MAIN process. The wait used to hold for every pid, so one lingering helper kept the
-// close waiting the full 5s. The "main" here is pid 6: Windows only assigns multiples of 4 and
-// rounds a pid down when opening it, so 6 lands on System (pid 4), which no user process may signal
-// or kill - it reads as gone and the graceful taskkill reaches nothing real. The lingering helper
-// is our own sleeper.
+// close waiting the full 5s. The "main" is a pid that reads as gone. On Windows that is 6: Windows
+// only assigns multiples of 4 and rounds a pid down when opening it, so 6 lands on System (pid 4),
+// which no user process may signal or kill - it reads as gone and the graceful taskkill reaches
+// nothing real. Elsewhere pid 6 is a kernel thread that root may signal, so a run as root (a
+// container) saw it alive for the whole grace; there the pid is one past Linux's highest pid_max.
+// The lingering helper is our own sleeper.
+const GONE_MAIN_PID = process.platform === 'win32' ? 6 : 4_194_305
+
 test('a helper that outlives the main process is forced after a short settle, not the full grace', async () => {
   const dir = path.join(os.tmpdir(), 'ah-quit-settle')
   const helper = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 60000)'], {
@@ -99,7 +103,7 @@ test('a helper that outlives the main process is forced after a short settle, no
     const result = await quitInstance(dir, {
       gracefulTimeoutMs: 60_000,
       listProcesses: async () => [
-        { pid: 6, cmdline: 'fixture', dir, isMain: true },
+        { pid: GONE_MAIN_PID, cmdline: 'fixture', dir, isMain: true },
         { pid: helper.pid, cmdline: 'fixture --type=renderer', dir, isMain: false },
       ],
     })
@@ -128,7 +132,7 @@ test('the network service (it owns the login cookies) keeps the whole grace afte
     const result = await quitInstance(dir, {
       gracefulTimeoutMs: 3_000,
       listProcesses: async () => [
-        { pid: 6, cmdline: 'fixture', dir, isMain: true },
+        { pid: GONE_MAIN_PID, cmdline: 'fixture', dir, isMain: true },
         {
           pid: helper.pid,
           cmdline: 'Claude.exe --type=utility --utility-sub-type=network.mojom.NetworkService',
