@@ -400,7 +400,13 @@ create table if not exists session_stats (
 )
 `)
 db.exec('create index if not exists session_stats_last_ts on session_stats(last_ts)')
-db.exec('create index if not exists session_stats_gone on session_stats(gone_at)')
+// No index on gone_at: nothing reads by it (see the version-1 step below). This line used to create
+// session_stats_gone on every start, so the version-1 step's drop held only until a file's second
+// start. It is dropped here, on every start, and not in a new versioned step, because a build from
+// before this fix that opens the same file puts it back without touching user_version: a step that
+// already ran would leave it there for good. With no such index the drop is a no-op that takes no
+// write lock.
+db.exec('drop index if exists session_stats_gone')
 
 // The recent-edits feed. Its own table, and the only unbounded-per-session list in the tier, so it
 // carries a GLOBAL row cap (analytics.ts pruneEdits) rather than growing with the store.
