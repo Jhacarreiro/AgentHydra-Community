@@ -9,6 +9,7 @@ escape hatch (a person's own --force) without naming which scripts reach it. Thi
 the catalog against the two things that must never be able to drift from it again: the actual
 files on disk, and lib/armlib's own gated-script set."""
 
+import ast
 import json
 import sys
 import subprocess
@@ -135,6 +136,19 @@ class ArmlibAgreementTest(unittest.TestCase):
             src = (SCRIPTS / f"{name}.py").read_text(encoding="utf-8")
             self.assertNotIn("armlib.refuse_unless_armed", src,
                               f"{name} is catalogued direct but calls armlib.refuse_unless_armed")
+
+    def test_gated_scripts_do_call_refuse_unless_armed(self):
+        # The other direction of the same cross-check. GATED_SCRIPTS is hand-maintained, so a gated
+        # script that lost its call would still be catalogued "both" while it acts with the tray
+        # down. A real call, not a mention: unblock_prompts.py also names the function in prose.
+        for name in sorted(armlib.GATED_SCRIPTS):
+            tree = ast.parse((SCRIPTS / f"{name}.py").read_text(encoding="utf-8"))
+            calls = [n for n in ast.walk(tree)
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                     and n.func.attr == "refuse_unless_armed"
+                     and isinstance(n.func.value, ast.Name) and n.func.value.id == "armlib"]
+            self.assertTrue(calls, f"{name} is in armlib.GATED_SCRIPTS but never calls "
+                                   "armlib.refuse_unless_armed")
 
     def test_migrate_chat_is_still_the_documented_direct_exception(self):
         # The one exception AH-25 was told never to change: migrate_chat.py stays reachable
