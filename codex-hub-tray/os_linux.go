@@ -12,6 +12,9 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
+// localHostName: only a Mac has a Bonjour name to prefer (pcName).
+func localHostName() string { return "" }
+
 func osPaths() (dir, tray, pusher string) {
 	dir = filepath.Join(xdgDir("XDG_DATA_HOME", ".local/share"), "codex-hub")
 	return dir, filepath.Join(dir, "codex-hub-tray"), filepath.Join(dir, "codex-hub-push")

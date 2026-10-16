@@ -29,6 +29,15 @@ func osPaths() (dir, tray, pusher string) {
 
 func bundleDir() string { return filepath.Join(homeDir(), "Applications", bundleName) }
 
+// localHostName is the Mac's Bonjour name (Sharing's "Local hostname"), "" if it cannot be read.
+func localHostName() string {
+	out, err := exec.Command("/usr/sbin/scutil", "--get", "LocalHostName").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func launchAgentPath() string {
 	return filepath.Join(homeDir(), "Library", "LaunchAgents", bundleID+".plist")
 }

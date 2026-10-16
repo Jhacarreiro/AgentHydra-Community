@@ -110,6 +110,33 @@ func TestTokenUsable(t *testing.T) {
 	}
 }
 
+// The pairing page names the PC as the pusher does (defaultPcName in server/src/core/codex-hub-push.ts).
+func TestPcNameFrom(t *testing.T) {
+	bonjour := func() string { return "Example-Mac" }
+	none := func() string { return "" }
+	for _, c := range []struct {
+		host, goos string
+		bonjour    func() string
+		want       string
+	}{
+		{"Example-Mac.lan", "darwin", bonjour, "Example-Mac"},
+		{"Example-Mac.fritz.box", "darwin", none, "Example-Mac"},
+		{"Example-PC.local", "linux", none, "Example-PC"},
+		{"example-pc.home.lan", "linux", none, "example-pc"},
+		{"build.example.test", "linux", none, "build.example.test"},
+		{"EXAMPLE-PC", "windows", none, "EXAMPLE-PC"},
+		{".local", "linux", none, ".local"},
+	} {
+		if got := pcNameFrom(c.host, c.goos, c.bonjour); got != c.want {
+			t.Errorf("pcNameFrom(%q, %s) = %q, want %q", c.host, c.goos, got, c.want)
+		}
+	}
+	t.Setenv("AGENTHYDRA_CODEX_HUB_PC", "Named-PC")
+	if got := pcName(); got != "Named-PC" {
+		t.Errorf("pcName() with AGENTHYDRA_CODEX_HUB_PC = %q", got)
+	}
+}
+
 func TestPairHandler(t *testing.T) {
 	// Short, with a space and not ASCII: the hub takes such a token, so the tray does too.
 	const good = "Hub tökén ~!"

@@ -32,6 +32,9 @@ const exeMode = 0o666
 
 const quitHint = "Stops pushing until Windows starts again"
 
+// localHostName: only a Mac has a Bonjour name to prefer (pcName).
+func localHostName() string { return "" }
+
 func osPaths() (dir, tray, pusher string) {
 	dir = filepath.Join(os.Getenv("LOCALAPPDATA"), "codex-hub")
 	return dir, filepath.Join(dir, "codex-hub-tray.exe"), filepath.Join(dir, "codex-hub-push.exe")

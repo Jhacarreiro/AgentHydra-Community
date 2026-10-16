@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -61,11 +63,10 @@ func (a *app) pair() {
 	b := make([]byte, 16)
 	rand.Read(b)
 	state := hex.EncodeToString(b)
-	pc, _ := os.Hostname()
 	q := url.Values{
 		"port":  {fmt.Sprint(ln.Addr().(*net.TCPAddr).Port)},
 		"state": {state},
-		"pc":    {pc},
+		"pc":    {pcName()},
 	}
 	a.pairing.link = pairURL + "?" + q.Encode()
 
@@ -128,6 +129,36 @@ func (a *app) pairHandler(state string, finish func()) http.HandlerFunc {
 		finish()
 		a.kick()
 	}
+}
+
+// pcName is what the pairing page calls this PC: the name its pusher is listed under in the inbox (defaultPcName in
+// server/src/core/codex-hub-push.ts), so the two agree.
+func pcName() string {
+	if n := strings.TrimSpace(os.Getenv("AGENTHYDRA_CODEX_HUB_PC")); n != "" {
+		return n
+	}
+	host, _ := os.Hostname()
+	return pcNameFrom(host, runtime.GOOS, localHostName)
+}
+
+var hostSuffix = regexp.MustCompile(`(?i)(?:\.(?:local|lan|home|localdomain))+$`)
+
+// pcNameFrom: a Mac's Bonjour name, which stays the same on every network, else its hostname's first label; elsewhere
+// the hostname less a trailing .local, .lan, .home or .localdomain.
+func pcNameFrom(host, goos string, bonjour func() string) string {
+	if goos == "darwin" {
+		if n := bonjour(); n != "" {
+			return n
+		}
+		if first, _, _ := strings.Cut(host, "."); first != "" {
+			return first
+		}
+		return host
+	}
+	if n := hostSuffix.ReplaceAllString(host, ""); n != "" {
+		return n
+	}
+	return host
 }
 
 func page(w http.ResponseWriter, status int, text string) {
