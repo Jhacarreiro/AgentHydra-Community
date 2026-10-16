@@ -96,6 +96,8 @@ interface InFlightRun {
   deadline: number
   /** realSpawn's kill switch, used defensively when reaping a stale entry. */
   kill?: () => void
+  /** This run moves chats: a restart can stop it half-way (movesChats). */
+  moves?: boolean
 }
 const inFlight = new Map<string, InFlightRun>()
 
@@ -299,7 +301,15 @@ async function waitForLockToClear(
 
 /** The scripts a restart can stop half-way through a move: the chat imported onto its new account
  *  and still unarchived on the old one, which nothing repairs until `migrate_reconcile --finish`. */
-const MOVE_SCRIPTS = ['migrate_batch', 'migrate_chat'] as const
+const MOVE_SCRIPTS: readonly string[] = ['migrate_batch', 'migrate_chat']
+
+/** Whether this invocation moves chats. `chats --move-to <account> --yes` moves them too: it runs
+ *  migrate_chat's main in its own process (chats.py), one chat at a time, so a restart cuts it the
+ *  same way. Without --yes it only plans. */
+export function movesChats(script: string, args: readonly string[]): boolean {
+  if (MOVE_SCRIPTS.includes(script)) return true
+  return script === 'chats' && args.includes('--move-to') && args.includes('--yes')
+}
 
 /**
  * Why a restart must wait, or null. `force` is a person's word to restart anyway.
@@ -311,10 +321,10 @@ const MOVE_SCRIPTS = ['migrate_batch', 'migrate_chat'] as const
  */
 export function moveRestartRefusal(force: boolean, now = Date.now()): string | null {
   if (force) return null
-  const moves = MOVE_SCRIPTS.flatMap((script) => {
-    const run = liveRun(script)
-    return run
-      ? [`${script} (started ${Math.max(0, Math.round((now - run.started) / 60_000))} min ago)`]
+  const moves = [...inFlight.keys()].flatMap((key) => {
+    const run = liveRun(key)
+    return run?.moves
+      ? [`${key} (started ${Math.max(0, Math.round((now - run.started) / 60_000))} min ago)`]
       : []
   })
   if (moves.length === 0) return null
@@ -1258,7 +1268,13 @@ export async function runOrchestrator(
 
   const started = Date.now()
   const entry: InFlightRun | null =
-    lockKey !== null ? { started, deadline: started + timeoutMs + STALE_LOCK_GRACE_MS } : null
+    lockKey !== null
+      ? {
+          started,
+          deadline: started + timeoutMs + STALE_LOCK_GRACE_MS,
+          moves: movesChats(script, args),
+        }
+      : null
   if (lockKey !== null && entry) inFlight.set(lockKey, entry)
   try {
     const r = await spawn(command, dir, timeoutMs, {

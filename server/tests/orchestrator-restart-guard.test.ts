@@ -50,3 +50,29 @@ test('a toolbox run that moves nothing does not hold a restart', async () => {
 
   expect(moveRestartRefusal(false)).toBeNull()
 })
+
+// chats.py moves through migrate_chat's main in its own process, so a restart cuts `chats --move-to --yes`
+// half-way just as it cuts migrate_chat; without --yes it only plans.
+test('chats --move-to --yes holds a restart, and its plan without --yes does not', async () => {
+  void runOrchestrator(
+    { script: 'chats', args: ['--instance', 'temp2', '--move-to', 'work'], timeoutMs: 600_000 },
+    { dir: fakeOrchestratorDir(), spawn: never },
+  )
+  await Bun.sleep(10)
+  expect(moveRestartRefusal(false)).toBeNull()
+  resetOrchestratorOperationsForTests()
+
+  void runOrchestrator(
+    {
+      script: 'chats',
+      args: ['--instance', 'temp2', '--move-to', 'work', '--yes'],
+      timeoutMs: 600_000,
+    },
+    { dir: fakeOrchestratorDir(), spawn: never },
+  )
+  await Bun.sleep(10)
+  const why = moveRestartRefusal(false)
+  expect(why).toContain('chats')
+  expect(why).toContain('migrate_reconcile --finish')
+  expect(moveRestartRefusal(true)).toBeNull()
+})
