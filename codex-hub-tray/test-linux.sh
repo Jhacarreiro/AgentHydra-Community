@@ -284,6 +284,12 @@ kill -TERM "$PID5"
 check "SIGTERM stops the headless tray" wait_for 10 dead "$PID5"
 check "  ...and its pusher" wait_for 10 dead "$PUSH5"
 
+echo "== the fake hub"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=")
+check "it refuses an empty platform (400), as the hub does" test "$code" = 400
+code=$(curl -s -o "$T/none.json" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher")
+check "no platform is windows-x64 (no build of it here: 404)" bash -c "[ '$code' = 404 ] && grep -q windows-x64 '$T/none.json'"
+
 echo
 if [ "$failures" -eq 0 ]; then
 	echo "All checks passed."

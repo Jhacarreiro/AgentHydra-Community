@@ -1,8 +1,8 @@
 // Command fakehub stands in for the hub in test-linux.sh and test-macos.sh. It serves the builds in a folder the way
 // the hub does, for one token: GET /api/codex-hub/{pusher,tray}[?platform=P] answers {"sha256","size"} and
-// .../download the file. No platform means windows-x64; an unknown one is a 400; a platform with no build, a 404.
-// Files are read on each request, so a test can put a new build in place while the tray runs. Each request is
-// logged to stdout.
+// .../download the file. No platform means windows-x64; an empty or unknown one is a 400; a platform with no build,
+// a 404. Files are read on each request, so a test can put a new build in place while the tray runs. Each request
+// is logged to stdout.
 //
 //	fakehub -dir builds -token T -addr-file hub.addr
 package main
@@ -70,12 +70,13 @@ func serve(w http.ResponseWriter, r *http.Request, dir, token string) int {
 	if r.Header.Get("Authorization") != "Bearer "+token {
 		return fail(http.StatusUnauthorized, "unauthorized")
 	}
-	platform := r.URL.Query().Get("platform")
-	if platform == "" {
+	q := r.URL.Query()
+	platform := q.Get("platform")
+	if _, named := q["platform"]; !named { // the trays and pushers from before there were other builds
 		platform = "windows-x64"
 	}
 	if !platforms[platform] {
-		return fail(http.StatusBadRequest, "unknown platform "+platform)
+		return fail(http.StatusBadRequest, fmt.Sprintf("unknown platform %q", platform))
 	}
 	b, err := os.ReadFile(filepath.Join(dir, file(name, platform)))
 	if err != nil {
