@@ -35,6 +35,9 @@ export async function takeHomeTurn(codexHome: string): Promise<() => void> {
   }
 }
 
+/** How long a failed start waits for app-server's last stderr once it has exited. */
+const STARTUP_STDERR_WAIT_MS = 250
+
 /** Short-lived, local app-server connection. It never starts a model turn. */
 export interface CodexRpc {
   call<T>(method: string, params?: Record<string, unknown>): Promise<T>
@@ -61,13 +64,21 @@ export async function connectCodexRpc(
     }
   })()
   // The home stays held while the process is alive, and is released only once it has closed, not when close() is called: a refresh it started
-  // can still be writing auth.json while it shuts down.
-  child.once('close', releaseHome)
+  // can still be writing auth.json while it shuts down. Closed here is exited with its stdout at an end, not the
+  // child's 'close', which waits for stderr too: a process app-server started can keep that open after it is gone.
+  const exited = Promise.all([
+    new Promise<void>((resolve) => {
+      child.once('exit', () => resolve())
+      child.once('error', () => resolve())
+    }),
+    new Promise<void>((resolve) => child.stdout.once('close', () => resolve())),
+  ]).then(() => undefined)
+  void exited.then(releaseHome)
   child.once('error', releaseHome)
+  const stderrClosed = new Promise<void>((resolve) => child.stderr.once('close', () => resolve()))
   let nextId = 0
   let closed = false
   let closing = false
-  const exited = new Promise<void>((resolve) => child.once('close', () => resolve()))
   const pending = new Map<
     number,
     {
@@ -96,12 +107,11 @@ export async function connectCodexRpc(
   child.on('error', () =>
     fail(new Error('Could not start Codex. Check the Codex CLI installation.')),
   )
-  child.on('exit', () => {
-    if (started) fail(new Error('Codex app-server exited before the operation completed.'))
-  })
-  // Before the handshake, wait for its pipes to close: the stderr that says why may still be in them.
-  child.on('close', (code) => {
-    if (started) return
+  // Before the handshake, the stderr that says why may still be in its pipe: wait for the pipe to close, or a
+  // moment when a process app-server started holds it open.
+  child.on('exit', async (code) => {
+    if (!started) await Promise.race([stderrClosed, Bun.sleep(STARTUP_STDERR_WAIT_MS)])
+    if (started) return fail(new Error('Codex app-server exited before the operation completed.'))
     const said = startupStderr
       .split(/\r?\n/)
       .map((line) => line.trim().slice(0, 300))
@@ -151,6 +161,9 @@ export async function connectCodexRpc(
         closing = true
         fail(new Error('Codex operation stopped or timed out. Refresh before retrying.'))
         lines.close()
+        // readline pauses stdout as it closes, and on Bun 1.4.3 a paused pipe of a process that has exited never
+        // reports an end that comes later, from a process app-server started: `exited` waited forever, CPU spinning.
+        child.stdout.resume()
         child.stdin.end()
         child.kill()
       }

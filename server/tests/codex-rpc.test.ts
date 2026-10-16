@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { connectCodexRpc } from '../src/core/codex-rpc'
@@ -85,6 +85,99 @@ test('a Codex app-server that exits before it starts says why', async () => {
     'Codex app-server exited before it started (exit code 3): line 3 / line 4 / line 5 / line 6 / line 7',
   )
 }, 20_000)
+
+// A process app-server starts (a tool, an MCP server) can inherit its stdout or stderr and outlive it. These stand-ins
+// start one that sleeps `holdMs` holding one of the two, and write its pid where the test can stop it. Measured on
+// Linux only, so the Windows leg skips them.
+const posixOnly = test.skipIf(process.platform === 'win32')
+function holdingFixture(pipe: 'stdout' | 'stderr', holdMs: number, body: string) {
+  const home = mkdtempSync(join(tmpdir(), 'codex-rpc-'))
+  roots.push(home)
+  const script = join(home, 'server.ts')
+  const pidFile = join(home, 'holder.pid')
+  const stdio =
+    pipe === 'stdout' ? ['ignore', 'inherit', 'ignore'] : ['ignore', 'ignore', 'inherit']
+  writeFileSync(
+    script,
+    `
+    import {spawn} from 'node:child_process'
+    import {writeFileSync} from 'node:fs'
+    import {createInterface} from 'node:readline'
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, ${holdMs})'], {stdio: ${JSON.stringify(stdio)}})
+    writeFileSync(${JSON.stringify(pidFile)}, String(holder.pid))
+    holder.unref()
+    ${body}
+  `,
+  )
+  const stopHolder = () => {
+    try {
+      process.kill(Number(readFileSync(pidFile, 'utf8')))
+    } catch {
+      // Gone already, or never started.
+    }
+  }
+  return { home, command: [process.execPath, script], stopHolder }
+}
+const ANSWERS_INITIALIZE = `createInterface({input: process.stdin}).on('line', (line) => {
+      const message = JSON.parse(line)
+      if (message.id !== undefined) process.stdout.write(JSON.stringify({id: message.id, result: {}}) + '\\n')
+    })`
+
+posixOnly(
+  'a process app-server started that holds its stderr does not hold close()',
+  async () => {
+    const f = holdingFixture('stderr', 30_000, ANSWERS_INITIALIZE)
+    try {
+      const rpc = await connectCodexRpc(f.home, { command: f.command })
+      const started = performance.now()
+      await rpc.close()
+      // The holder sleeps 30 s; close() waits for app-server only.
+      expect(performance.now() - started).toBeLessThan(10_000)
+    } finally {
+      f.stopHolder()
+    }
+  },
+  30_000,
+)
+
+posixOnly(
+  'a start that fails says why at once, though a process it started holds stderr',
+  async () => {
+    const f = holdingFixture('stderr', 30_000, "console.error('bad config'); process.exit(2)")
+    try {
+      const started = performance.now()
+      const error = await connectCodexRpc(f.home, { command: f.command }).then(
+        () => '',
+        (error: Error) => error.message,
+      )
+      expect(error).toBe('Codex app-server exited before it started (exit code 2): bad config')
+      // A child bun's start is most of it (see above); the holder sleeps 30 s.
+      expect(performance.now() - started).toBeLessThan(15_000)
+    } finally {
+      f.stopHolder()
+    }
+  },
+  30_000,
+)
+
+// readline pauses stdout as it closes, and on Bun 1.4.3 a paused pipe of a process that has exited never reports its
+// end when that comes later: close() waited forever, the CPU spinning, while a process app-server started held stdout.
+posixOnly(
+  'a start that fails returns once a process holding stdout has gone',
+  async () => {
+    const f = holdingFixture('stdout', 3_000, "console.error('bad config'); process.exit(2)")
+    try {
+      const error = await connectCodexRpc(f.home, { command: f.command }).then(
+        () => '',
+        (error: Error) => error.message,
+      )
+      expect(error).toBe('Codex app-server exited before it started (exit code 2): bad config')
+    } finally {
+      f.stopHolder()
+    }
+  },
+  30_000,
+)
 
 // The per-call timeout also bounds the initialize handshake, which waits on the child bun starting:
 // about 0.3 s here (2026-10-04), but 0.3-4.4 s on a box at ~90% CPU (2026-10-11), where 2 s failed in
