@@ -15,6 +15,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { db, getSetting, setSetting } from '../server/src/db'
 import {
+  closedLandingEligible,
   getMonitorSettings,
   listMonitorAccounts,
   type MonitorDeps,
@@ -521,5 +522,61 @@ describe('landing instance pick', () => {
       pickLandingInstance(null, [inst('desktop:x', 1, false)], [use('desktop:x', 85, true)]),
     ).toBe(null)
     expect(pickLandingInstance(null, [], [])).toBe(null)
+  })
+
+  // The gate in front of every automated boot of a closed app. Owner law, 2026-08-29: "You're
+  // only supposed to open an account if you absolutely MUST. Bc all open ones aren't accessible."
+  // MUST means proof: a FRESH reading at or past the 85% line, on either window, for EVERY open
+  // candidate. Unknown or stale is not proof (monitor.ts, THE OVERFLOW RULE).
+  test('a closed app may open only when every open one is provably at the line', () => {
+    const at = (ref: string, weeklyPct: number, sessionPct: number, stale = false) => ({
+      ref,
+      weeklyPct,
+      sessionPct,
+      stale,
+    })
+    const open = [{ ref: 'desktop:a' }, { ref: 'desktop:b' }]
+    // One at the line on the weekly window, the other on the 5-hour one.
+    expect(closedLandingEligible(open, [at('desktop:a', 85, 10), at('desktop:b', 20, 97)])).toBe(
+      true,
+    )
+    // One open account still has room, so it takes the chat and nothing is opened.
+    expect(closedLandingEligible(open, [at('desktop:a', 99, 99), at('desktop:b', 84, 84)])).toBe(
+      false,
+    )
+    // A stale reading or none at all is not proof, however high it was.
+    expect(
+      closedLandingEligible(open, [at('desktop:a', 99, 99), at('desktop:b', 99, 99, true)]),
+    ).toBe(false)
+    expect(closedLandingEligible(open, [at('desktop:a', 99, 99)])).toBe(false)
+    // Nothing open at all: a chat that needs a home may open one (owner ruling, 2026-08-30).
+    expect(closedLandingEligible([], [])).toBe(true)
+    // Slash style must not hide an open account's reading.
+    const BS = String.fromCharCode(92)
+    expect(
+      closedLandingEligible([{ ref: `desktop:C:${BS}i${BS}a` }], [at('desktop:C:/i/a', 90, 0)]),
+    ).toBe(true)
+  })
+
+  test('with every open account at the line, a closed one under it is picked and must be opened', () => {
+    const closed = inst('desktop:closed', 2, false)
+    // An aged cache (past the 5h window) is the session-side proof a closed app carries.
+    const closedUse = { ref: 'desktop:closed', weeklyPct: 30, stale: true, ageMins: 999 }
+    expect(
+      pickLandingInstance(
+        null,
+        [inst('desktop:open', 1), closed],
+        [use('desktop:open', 92), closedUse],
+      ),
+    ).toEqual({ ref: 'desktop:closed', num: 2, mustOpen: true })
+    // At 84 the open account is under the line: it keeps the chat, however much more room the
+    // closed one has.
+    expect(
+      pickLandingInstance(
+        null,
+        [inst('desktop:open', 1), closed],
+        [use('desktop:open', 84), closedUse],
+      ),
+    ).toEqual({ ref: 'desktop:open', num: 1, mustOpen: false })
   })
 })
