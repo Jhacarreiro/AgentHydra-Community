@@ -23,7 +23,8 @@ import (
 
 const pairFor = 20 * time.Minute
 
-var tokenShape = regexp.MustCompile(`^[0-9a-f]{32,128}$`)
+// The hub takes any token its operator set; this only refuses what cannot be one (printable ASCII, no spaces).
+var tokenShape = regexp.MustCompile(`^[!-~]{16,512}$`)
 
 type pairing struct {
 	mu   sync.Mutex
