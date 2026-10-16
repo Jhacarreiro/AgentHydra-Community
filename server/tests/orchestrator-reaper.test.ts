@@ -31,10 +31,19 @@ import {
   pythonBinary,
   resetOrchestratorOperationsForTests,
   runOrchestrator,
+  setDrainGraceMsForTests,
   startOrchestratorOperation,
 } from '../src/orchestrator'
 
 afterEach(() => resetOrchestratorOperationsForTests())
+
+/** Until the watchdog has closed the operation (its declared deadline plus grace: 1.3 s in the tests
+ *  below), or 10 s. */
+async function closedByWatchdog(id: string): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (getOrchestratorOperation(id)?.status === 'running' && Date.now() < deadline)
+    await Bun.sleep(20)
+}
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agenthydra-orch-reaper-root-'))
 afterAll(() => {
@@ -86,10 +95,15 @@ test.skipIf(!hasPython)(
       'print("phase 1 done")',
       'sys.exit(1)',
     ])
+    // The child's exit starts the drain grace (5 s in the daemon); the grandchild then holds the
+    // pipe until it runs out. 1 s here: what the reaper proves is the exit starting it, not its length.
+    const grace = setDrainGraceMsForTests(1_000)
     const t0 = Date.now()
     // 10 minutes — a perfectly ordinary declaration for a batch, and the thing that used to
     // become the floor on noticing a crash.
-    const r = await runOrchestrator({ script: 'chats', timeoutMs: 600_000 }, { dir })
+    const r = await runOrchestrator({ script: 'chats', timeoutMs: 600_000 }, { dir }).finally(() =>
+      setDrainGraceMsForTests(grace),
+    )
     const took = Date.now() - t0
     if (!('stdout' in r)) throw new Error(`unexpected: ${JSON.stringify(r)}`)
     expect(took).toBeLessThan(30_000)
@@ -164,7 +178,7 @@ test('the registry closes an operation whose run never settles, past its declare
     },
   )
   expect(getOrchestratorOperation(op.id)?.status).toBe('running')
-  await Bun.sleep(2_000)
+  await closedByWatchdog(op.id)
   const closed = getOrchestratorOperation(op.id)
   expect(closed?.status).toBe('failed')
   expect(closed?.finishedAt).not.toBeNull()
@@ -194,7 +208,7 @@ test('a run that settles after the watchdog closed it does not reopen the record
       },
     },
   )
-  await Bun.sleep(2_000)
+  await closedByWatchdog(op.id)
   expect(getOrchestratorOperation(op.id)?.status).toBe('failed')
   const closedAt = getOrchestratorOperation(op.id)?.finishedAt
   release()
