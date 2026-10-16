@@ -48,6 +48,17 @@ const WORK_DIR = join(DATA_DIR, 'cli-limit-reset')
 /** The driver bounds every wait it makes (about 85 s from the CLI's start to its close); a worker
  *  still running past this is stuck, and is ended so the account is not held forever. */
 const WORKER_BOUND_MS = 4 * 60_000
+/** How long the CLI's start screen is let draw before `/limit-reset` is typed: it keeps drawing for
+ *  a few seconds, and keys typed before that are lost. */
+let START_SCREEN_MS = 6000
+
+/** Test seam: a stand-in CLI that draws no start screen need not be waited on for six seconds a run.
+ *  Returns the previous value. */
+export function setLimitResetStartScreenMsForTests(ms: number): number {
+  const was = START_SCREEN_MS
+  START_SCREEN_MS = ms
+  return was
+}
 
 /** One run, as plain data: what the worker needs, resolved on the daemon's thread. */
 interface ResetJob {
@@ -60,6 +71,8 @@ interface ResetJob {
   confirm: boolean
   /** When the run started: every result carries it. */
   at: number
+  /** START_SCREEN_MS, as the daemon's thread read it. */
+  startScreenMs: number
 }
 
 /** What the driver says while it runs, before its result. */
@@ -79,6 +92,8 @@ interface ResetRun {
   proc: ReturnType<typeof Bun.spawn>
   /** What the terminal has written since it was last cleared. */
   out: { raw: string }
+  /** How long the start screen is let draw (ResetJob). */
+  startScreenMs: number
 }
 
 interface ResetAnswer {
@@ -268,7 +283,7 @@ function resetDriver(fsx: DriverFs) {
   /** Type `/limit-reset` and press Enter. The reason the CLI did not take it, or null. */
   async function sendResetCommand(run: ResetRun): Promise<string | null> {
     // Its start screen keeps drawing for a few seconds; keys typed before that are lost.
-    await Bun.sleep(6000)
+    await Bun.sleep(run.startScreenMs)
     run.out.raw = ''
     for (const ch of '/limit-reset') {
       typeInto(run, ch)
@@ -401,7 +416,13 @@ function resetDriver(fsx: DriverFs) {
     // The overall deadline bounds getting TO the command; the answer, once the command is sent, gets
     // its own full wait. Cutting that short after a confirmed reset would report "no answer" for a
     // reset that may already be spent, and invite a second one.
-    const run: ResetRun = { at, deadline: at + TOTAL_MS, proc, out }
+    const run: ResetRun = {
+      at,
+      deadline: at + TOTAL_MS,
+      proc,
+      out,
+      startScreenMs: job.startScreenMs,
+    }
     let result: LimitResetResult
     try {
       result = await driveReset(run, job.confirm, note)
@@ -479,6 +500,7 @@ export async function runCliLimitReset(
       env: resetEnv(configDir),
       confirm: opts.confirm !== false,
       at: Date.now(),
+      startScreenMs: START_SCREEN_MS,
     })
   } finally {
     running.delete(key)

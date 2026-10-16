@@ -9,7 +9,12 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { classifyLimitResetScreen, dateAfter, runCliLimitReset } from '../src/core/cli-limit-reset'
+import {
+  classifyLimitResetScreen,
+  dateAfter,
+  runCliLimitReset,
+  setLimitResetStartScreenMsForTests,
+} from '../src/core/cli-limit-reset'
 
 test('the real space-less "not available" screen maps to unavailable with a clean sentence', () => {
   const hit = classifyLimitResetScreen(
@@ -33,14 +38,15 @@ test('a reset that went through maps to reset', () => {
 })
 
 // Whole runs use a stand-in CLI on a real pseudo-terminal. The stand-in shows a prompt, echoes what is typed, answers `/limit-reset` with the banked reset's
-// question, and writes which answer it got ("yes" or "no") to a file. Each run waits out the real
-// CLI's six-second start screen, so these take about eight seconds apiece.
+// question, and writes which answer it got ("yes" or "no") to a file. It draws no start screen, so a
+// run waits 0.5 s for one instead of the real CLI's six seconds, and takes three to four seconds.
 // Like the real CLI (2.1.295) on a PC with the Chrome extension, it opens on a "Claude in Chrome
 // extension detected" question in place of the prompt unless started with --no-chrome: that
 // question failed every hourly check on 36 of 37 accounts (2026-10-11).
 
 const root = mkdtempSync(join(tmpdir(), 'ah-limit-reset-'))
 const claudeWas = process.env.AGENTHYDRA_CLAUDE_PATH
+let startScreenWas = 0
 
 const STAND_IN = `
 const { appendFileSync } = require('node:fs')
@@ -98,9 +104,11 @@ async function standInCli(): Promise<string> {
 }
 
 beforeAll(async () => {
+  startScreenWas = setLimitResetStartScreenMsForTests(500)
   process.env.AGENTHYDRA_CLAUDE_PATH = await standInCli()
 }, 60_000)
 afterAll(() => {
+  setLimitResetStartScreenMsForTests(startScreenWas)
   if (claudeWas === undefined) delete process.env.AGENTHYDRA_CLAUDE_PATH
   else process.env.AGENTHYDRA_CLAUDE_PATH = claudeWas
 })
