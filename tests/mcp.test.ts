@@ -1,6 +1,9 @@
-// MCP stdio server tests — engine handshake, tool catalog, and a tool call against a stubbed
-// HTTP backend (no live daemon required). Modeled on RepoYeti's tests/mcp.test.ts.
+// MCP stdio server tests — engine handshake, tool catalog, and tool calls against a stubbed
+// HTTP backend (no live daemon required), or against the daemon's own route where the stub would
+// decide the answer. Modeled on RepoYeti's tests/mcp.test.ts.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { db } from '../server/src/db'
+import { app } from '../server/src/http-app'
 import {
   daemonBase,
   SERVER_INFO,
@@ -9,23 +12,34 @@ import {
   withUnlistedTools,
 } from '../server/src/mcp.ts'
 import { handleRpc } from '../server/src/mcp-stdio.mjs'
+import '../server/src/routes/queue'
 
 const ctx = { serverInfo: SERVER_INFO, tools: withUnlistedTools(TOOLS, UNLISTED_TOOLS) }
+
+// The daemon's own registered routes, on a copy with its own router so the shared app stays open
+// for later files (queue-patch-guard.test.ts says why). Built from the app's constructor because
+// `hono` resolves from server/, not from this folder.
+const DaemonApp = app.constructor as new () => typeof app
+const daemon = new DaemonApp().route('/', app)
 
 const originalFetch = global.fetch
 let calls: Array<{ url: string; init?: RequestInit }> = []
 let stubResponse: unknown = {}
 let stubOk = true
 let stubStatus = 200
+/** When set, a request is answered by the daemon's real route instead of the canned stub. */
+let realRoutes = false
 
 beforeEach(() => {
   calls = []
   stubResponse = {}
   stubOk = true
   stubStatus = 200
+  realRoutes = false
   // @ts-expect-error test stub, narrower than the real fetch signature
   global.fetch = async (url: string, init?: RequestInit) => {
     calls.push({ url: String(url), init })
+    if (realRoutes) return daemon.request(String(url).slice(daemonBase().length), init)
     return {
       ok: stubOk,
       status: stubStatus,
@@ -187,9 +201,23 @@ describe('tools/call', () => {
     expect(calls[0]!.url).toBe(`${daemonBase()}/api/sessions?limit=5`)
   })
 
-  test('add_queue_item POSTs the body to /api/queue', async () => {
-    stubResponse = { id: 'q1', title: 'Test run' }
-    const args = { title: 'Test run', cwd: 'D:\\some\\repo', prompt: 'do the thing' }
+  // add_queue_item is a `refuses` tool: a queued run is a headless claude -p, and the daemon's
+  // POST /api/queue answers every one 409 (headless-policy.ts, routes/queue.ts). This test used to
+  // stub a 200 and assert the item was created, the one answer the daemon never gives; the real
+  // route answers it now.
+  test('add_queue_item POSTs the body to /api/queue and the daemon refuses it: 409, nothing queued', async () => {
+    realRoutes = true
+    const queued = () =>
+      (db.query('select count(*) as n from queue_items').get() as { n: number }).n
+    const before = queued()
+    // new_chat, so the request passes the route's own checks (a resume needs a session_id) and
+    // reaches the refusal.
+    const args = {
+      title: 'Test run',
+      cwd: 'D:\\some\\repo',
+      prompt: 'do the thing',
+      new_chat: true,
+    }
     const res = (await handleRpc(
       {
         jsonrpc: '2.0',
@@ -200,12 +228,13 @@ describe('tools/call', () => {
       ctx,
     )) as { result: { content: Array<{ text: string }>; isError?: boolean } }
 
-    expect(res.result.isError).toBeUndefined()
     expect(calls[0]!.url).toBe(`${daemonBase()}/api/queue`)
     expect(calls[0]!.init?.method).toBe('POST')
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual(args)
-    const payload = JSON.parse(res.result.content[0]!.text) as { id: string }
-    expect(payload.id).toBe('q1')
+    expect(res.result.isError).toBe(true)
+    expect(res.result.content[0]!.text).toContain('409')
+    expect(res.result.content[0]!.text).toContain('no-headless')
+    expect(queued()).toBe(before)
   })
 
   test('a non-ok HTTP response comes back as an MCP isError result', async () => {
