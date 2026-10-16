@@ -7,13 +7,10 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 )
-
-var configPath = filepath.Join(appDir, "tray.json")
 
 type config struct {
 	Hub   string `json:"hub,omitempty"`
@@ -87,7 +84,7 @@ func latest(c config, name string) (*release, error) {
 	}
 }
 
-// download saves the hub's build of name at dest+".new" once it matches want and starts with --version.
+// download saves the hub's build of name at dest+".new", executable, once it matches want and starts with --version.
 func download(c config, name string, want *release, dest string) (string, error) {
 	next := dest + ".new"
 	os.Remove(next)
@@ -102,7 +99,7 @@ func download(c config, name string, want *release, dest string) (string, error)
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("downloading %s: the hub answered %d", name, res.StatusCode)
 	}
-	f, err := os.Create(next)
+	f, err := os.OpenFile(next, os.O_RDWR|os.O_CREATE|os.O_TRUNC, exeMode)
 	if err != nil {
 		return "", err
 	}

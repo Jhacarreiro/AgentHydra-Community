@@ -64,7 +64,27 @@ func (a *app) pair() {
 	var once sync.Once
 	finish := func() { once.Do(func() { close(done) }) }
 	mux := http.NewServeMux()
-	mux.HandleFunc("/paired", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/paired", a.pairHandler(state, finish))
+	srv.Handler = mux
+	go srv.Serve(ln)
+	go func() {
+		select {
+		case <-done:
+			time.Sleep(2 * time.Second)
+		case <-time.After(pairFor):
+		}
+		srv.Close()
+		a.pairing.mu.Lock()
+		a.pairing.link = ""
+		a.pairing.mu.Unlock()
+	}()
+	openURL(a.pairing.link)
+}
+
+// pairHandler takes the hub page's post of the token for this pairing's state, checks the token with the hub and
+// saves it.
+func (a *app) pairHandler(state string, finish func()) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			page(w, http.StatusMethodNotAllowed, "Open the hub's pairing page from the Codex Hub menu.")
 			return
@@ -93,21 +113,7 @@ func (a *app) pair() {
 		}
 		finish()
 		a.kick()
-	})
-	srv.Handler = mux
-	go srv.Serve(ln)
-	go func() {
-		select {
-		case <-done:
-			time.Sleep(2 * time.Second)
-		case <-time.After(pairFor):
-		}
-		srv.Close()
-		a.pairing.mu.Lock()
-		a.pairing.link = ""
-		a.pairing.mu.Unlock()
-	}()
-	openURL(a.pairing.link)
+	}
 }
 
 func page(w http.ResponseWriter, status int, text string) {

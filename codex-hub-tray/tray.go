@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/systray"
@@ -34,7 +36,8 @@ type app struct {
 	pairing pairing
 	paired  bool // pairing was opened once this run on its own
 
-	status, restart *systray.MenuItem
+	status, restart *systray.MenuItem // nil when there is no tray to show them (Linux without a desktop session)
+	shown           string
 }
 
 func newApp() *app {
@@ -55,7 +58,9 @@ func (a *app) kick() {
 func onReady() {
 	a := newApp()
 	systray.SetIcon(icon(grey))
-	systray.SetTitle("Codex Hub")
+	if runtime.GOOS != "darwin" { // on macOS the title would sit next to the icon in the menu bar
+		systray.SetTitle("Codex Hub")
+	}
 	systray.SetTooltip("Codex Hub: starting")
 	a.status = systray.AddMenuItem("Starting", "")
 	a.status.Disable()
@@ -70,7 +75,7 @@ func onReady() {
 	a.restart = systray.AddMenuItem("Restart the pusher", "")
 	logs := systray.AddMenuItem("Show the log", "")
 	systray.AddSeparator()
-	quit := systray.AddMenuItem("Quit", "Stops pushing until Windows starts again")
+	quit := systray.AddMenuItem("Quit", quitHint)
 
 	go func() {
 		for {
@@ -85,25 +90,35 @@ func onReady() {
 			case <-logs.ClickedCh:
 				openURL(filepath.Join(appDir, "pusher.log"))
 			case <-quit.ClickedCh:
-				systray.Quit()
+				quitTray()
 			}
 		}
 	}()
-	current = a
+	current.Store(a)
 	go a.supervise()
 	go a.updates()
 }
 
-var current *app
+var current atomic.Pointer[app]
 
 func onExit() {
-	if current != nil {
-		current.stopPusher(true)
+	if a := current.Load(); a != nil {
+		a.stopPusher(true)
 	}
 }
 
-// show sets the icon and the status line; the tooltip carries the same text.
+// show sets the icon and the status line; the tooltip carries the same text. Without a tray it goes to the log.
 func (a *app) show(c rgb, text string) {
+	if a.status == nil {
+		a.mu.Lock()
+		changed := a.shown != text
+		a.shown = text
+		a.mu.Unlock()
+		if changed {
+			log.Println("status:", text)
+		}
+		return
+	}
 	systray.SetIcon(icon(c))
 	systray.SetTooltip("Codex Hub: " + text)
 	a.status.SetTitle(text)
@@ -164,6 +179,7 @@ func (a *app) supervise() {
 		a.refresh()
 		started := time.Now()
 		err = cmd.Wait()
+		pusherGone()
 		a.mu.Lock()
 		a.cmd = nil
 		a.mu.Unlock()
@@ -216,13 +232,13 @@ func (a *app) startPusher(cfg config) (*exec.Cmd, error) {
 		"AGENTHYDRA_CODEX_HUB_UPDATE=off",
 	)
 	cmd.Stdout, cmd.Stderr = out, out
-	cmd.SysProcAttr = hiddenAttr()
+	cmd.SysProcAttr = pusherAttr()
 	if err := cmd.Start(); err != nil {
 		out.Close()
 		return nil, err
 	}
 	out.Close() // the child has its own handle
-	joinJob(cmd.Process)
+	adoptPusher(cmd.Process)
 	a.cmd, a.since = cmd, time.Now()
 	return cmd, nil
 }
@@ -234,7 +250,7 @@ func (a *app) stopPusher(hold bool) {
 		a.hold = true
 	}
 	if a.cmd != nil && a.cmd.Process != nil {
-		a.cmd.Process.Kill()
+		killPusher(a.cmd.Process)
 	}
 	a.mu.Unlock()
 	for i := 0; i < 50; i++ {
@@ -301,25 +317,7 @@ func (a *app) updateOnce() {
 		log.Println("update: tray:", err)
 		return
 	}
-	// A running exe can be renamed but not overwritten: this one moves to .old (the new build removes it), the new
-	// one takes its name and starts, waiting on the mutex until this one has exited.
-	os.Remove(trayExe + ".old")
-	if err := os.Rename(trayExe, trayExe+".old"); err != nil {
-		log.Println("update: tray:", err)
-		os.Remove(next)
-		return
-	}
-	if err := os.Rename(next, trayExe); err != nil {
-		os.Rename(trayExe+".old", trayExe)
-		log.Println("update: tray:", err)
-		return
-	}
-	if err := startDetached(trayExe); err != nil {
-		log.Println("update: tray: start:", err)
-		return
-	}
-	log.Println("update: tray now", short(rel.SHA256))
-	systray.Quit()
+	a.replaceSelf(next, rel)
 }
 
 func (a *app) swapPusher(cfg config, rel *release) error {

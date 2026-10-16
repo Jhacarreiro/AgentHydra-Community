@@ -1,12 +1,29 @@
-// Codex Hub tray app for Windows: one exe that installs itself for this user, starts with Windows, keeps
-// codex-hub-push.exe (server/src/codex-hub-push-main.ts) running, and keeps both builds at the ones the hub hands
-// out (GET /api/codex-hub/pusher and /api/codex-hub/tray). A PC is set up by opening the exe once; the hub token
-// comes from the hub's pairing page in the browser (pair.go), so nothing is typed or copied.
+// Codex Hub tray app for Windows, Linux and macOS: one program that installs itself for this user, starts when the
+// user logs in, keeps the pusher (server/src/codex-hub-push-main.ts) running, and keeps both builds at the ones the
+// hub hands out for this platform (GET /api/codex-hub/pusher?platform=P and /api/codex-hub/tray?platform=P). A PC is
+// set up by opening the program once; the hub token comes from the hub's pairing page in the browser (pair.go), so
+// nothing is typed or copied. What differs per system is in os_windows.go, os_unix.go (Linux and macOS),
+// os_linux.go and os_darwin.go.
 //
 // Build (the addresses are the operator's, given at build time):
 //
-//	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H=windowsgui -X main.hubURL=http://hub:18788 \
-//	  -X main.pairURL=https://inbox.example/codex-hub/pair -X main.inboxURL=https://inbox.example" -o codex-hub-tray.exe .
+//	FLAGS="-X main.hubURL=http://hub:18788 -X main.pairURL=https://inbox.example/codex-hub/pair \
+//	  -X main.inboxURL=https://inbox.example"
+//
+// Windows: one exe; the Run key starts it.
+//
+//	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H=windowsgui $FLAGS" -o codex-hub-tray.exe .
+//
+// Linux, x64 or arm64, needs no C compiler; an autostart entry starts it, and GNOME shows its icon only with the
+// AppIndicator extension. The hub serves it as codex-hub-tray-linux-x64 or codex-hub-tray-linux-arm64.
+//
+//	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w $FLAGS" -o codex-hub-tray-linux-x64 .
+//
+// macOS needs cgo and the Xcode command line tools, so it is built on a Mac: build-macos.sh (the same flags, from
+// HUB_URL, PAIR_URL, INBOX_URL and BUNDLE_ID) makes "Codex Hub.app", which a LaunchAgent starts, and the hub's
+// codex-hub-tray-darwin-arm64 and codex-hub-tray-darwin-x64.
+//
+// test-linux.sh and test-macos.sh run the app end to end against a fake hub.
 package main
 
 import (
@@ -14,12 +31,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
-
-	"fyne.io/systray"
-	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 // Set with -ldflags -X at build time.
@@ -27,29 +38,32 @@ var (
 	hubURL   = ""
 	pairURL  = ""
 	inboxURL = ""
+	// macOS: the app bundle's identifier, which also names its LaunchAgent.
+	bundleID = "com.example.codex-hub-tray"
 )
 
 // Printed by --version: how an update checks that a downloaded build starts before it takes this one's place.
 const banner = "codex-hub-tray"
 
-const (
-	runKey    = `Software\Microsoft\Windows\CurrentVersion\Run`
-	runValue  = "Codex Hub"
-	mutexName = `Local\CodexHubTray`
-	// The scheduled task an earlier setup (install-codex-hub.ps1) made; the tray takes its place.
-	oldTask = "Codex hub push"
-)
+// appDir holds the config, the logs and the pusher; trayExe is where the tray runs once installed.
+var appDir, trayExe, pusherExe, configPath string
 
-var (
-	appDir    = filepath.Join(os.Getenv("LOCALAPPDATA"), "codex-hub")
-	trayExe   = filepath.Join(appDir, "codex-hub-tray.exe")
-	pusherExe = filepath.Join(appDir, "codex-hub-push.exe")
-)
+func init() { setPaths() }
+
+func setPaths() {
+	appDir, trayExe, pusherExe = osPaths()
+	configPath = filepath.Join(appDir, "tray.json")
+}
 
 func main() {
 	for _, a := range os.Args[1:] {
 		if a == "--version" {
 			fmt.Println(banner)
+			return
+		}
+		// The Info.plist of this build's app bundle (build-macos.sh).
+		if a == "--info-plist" {
+			fmt.Print(infoPlist(bundleID))
 			return
 		}
 	}
@@ -62,57 +76,13 @@ func main() {
 		install(self)
 		return
 	}
-	if !takeMutex() {
+	if !singleInstance() {
 		return
 	}
 	os.Remove(trayExe + ".old")
 	os.Remove(trayExe + ".new")
-	// A pusher left by a tray that was killed, or by the earlier scheduled task.
-	hidden("taskkill", "/F", "/IM", "codex-hub-push.exe")
-	if k, _, err := registry.CreateKey(registry.CURRENT_USER, runKey, registry.SET_VALUE); err == nil {
-		k.SetStringValue(runValue, `"`+trayExe+`"`)
-		k.Close()
-	}
-	systray.Run(onReady, onExit)
-}
-
-// install copies a downloaded exe to its place, replacing a running tray and the earlier scheduled-task setup,
-// and starts it there.
-func install(from string) {
-	first := !exists(trayExe)
-	hidden("taskkill", "/F", "/IM", "codex-hub-tray.exe", "/FI", fmt.Sprintf("PID ne %d", os.Getpid()))
-	hidden("taskkill", "/F", "/IM", "codex-hub-push.exe")
-	hidden("schtasks", "/Delete", "/TN", oldTask, "/F")
-	time.Sleep(time.Second)
-	os.Remove(trayExe + ".old")
-	if exists(trayExe) {
-		os.Rename(trayExe, trayExe+".old")
-	}
-	if err := copyFile(from, trayExe); err != nil {
-		fatal("Could not install to " + trayExe + ": " + err.Error())
-	}
-	if err := startDetached(trayExe); err != nil {
-		fatal("Could not start Codex Hub: " + err.Error())
-	}
-	if first {
-		message("Codex Hub is installed and starts with Windows. It sits in the system tray, next to the clock.\n\nIf the browser opens the hub's pairing page, choose Connect there to link this PC.")
-	}
-}
-
-// takeMutex makes this the only tray; a build that just replaced the previous one waits for it to exit.
-func takeMutex() bool {
-	name, _ := windows.UTF16PtrFromString(mutexName)
-	for i := 0; i < 40; i++ {
-		h, err := windows.CreateMutex(nil, false, name)
-		if err == nil {
-			return true
-		}
-		if h != 0 {
-			windows.CloseHandle(h)
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return false
+	startup()
+	run()
 }
 
 func openLog() {
@@ -125,31 +95,7 @@ func openLog() {
 	}
 }
 
-func samePath(a, b string) bool {
-	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
-}
-
 func exists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
-}
-
-func message(text string) {
-	t, _ := windows.UTF16PtrFromString(text)
-	c, _ := windows.UTF16PtrFromString("Codex Hub")
-	windows.MessageBox(0, t, c, windows.MB_OK|windows.MB_ICONINFORMATION)
-}
-
-func fatal(text string) {
-	log.Println(text)
-	t, _ := windows.UTF16PtrFromString(text)
-	c, _ := windows.UTF16PtrFromString("Codex Hub")
-	windows.MessageBox(0, t, c, windows.MB_OK|windows.MB_ICONERROR)
-	os.Exit(1)
-}
-
-func openURL(u string) {
-	verb, _ := windows.UTF16PtrFromString("open")
-	target, _ := windows.UTF16PtrFromString(u)
-	windows.ShellExecute(0, verb, target, nil, nil, windows.SW_SHOWNORMAL)
 }
