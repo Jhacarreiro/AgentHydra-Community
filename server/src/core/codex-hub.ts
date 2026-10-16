@@ -27,6 +27,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { gunzipSync } from 'node:zlib'
 import { appEnv, CONFIG_DIR } from '../config'
 
 /** One chat as the PC's app-server listed it (the subset of its `Thread` the hub keeps). */
@@ -69,6 +70,14 @@ const MANIFEST = 'manifest.json'
 const PC_MAX = 63
 /** Only paths a rollout can have: under sessions/, no `..`, a .jsonl file. */
 const ROLLOUT_PATH = /^sessions\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.jsonl$/
+/**
+ * What one push's rollouts may unpack to, alone or together. A long chat's rollout runs to tens
+ * of MB, and the pusher sends up to 6 MiB of them per push or one bigger file on its own, so only
+ * a gzip bomb comes near this.
+ */
+export const ROLLOUT_UNPACKED_MAX = 256 * 1024 * 1024
+/** The year 10000 in Unix seconds: a chat's time is from 1970 up to here. */
+const TIME_END = 253_402_300_800
 
 export function codexHubToken(): string | null {
   return appEnv('CODEX_HUB_TOKEN')?.trim() || null
@@ -120,6 +129,19 @@ function writeAtomic(path: string, data: string | Uint8Array): void {
   renameSync(tmp, path)
 }
 
+const isTime = (t: number): boolean => Number.isFinite(t) && t >= 0 && t < TIME_END
+
+/** The rollout unpacked, or null when it would pass `room` bytes. Throws on what is not gzip. */
+function gunzipWithin(gz: Buffer, room: number): Buffer | null {
+  try {
+    const bytes = gunzipSync(gz, { maxOutputLength: Math.max(room, 1) })
+    return bytes.length <= room ? bytes : null
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ERR_BUFFER_TOO_LARGE') return null
+    throw error
+  }
+}
+
 function cleanThread(raw: unknown): HubThread | null {
   const t = raw as Partial<HubThread> | null
   if (!t || typeof t.id !== 'string' || !t.id.trim() || typeof t.updatedAt !== 'number') return null
@@ -136,14 +158,19 @@ function cleanThread(raw: unknown): HubThread | null {
 
 export type HubPushResult =
   | { ok: true; pc: string; stored: number; want: string[] }
-  | { ok: false; status: 400; error: string }
+  | { ok: false; status: 400 | 413; error: string }
 
 /**
  * Takes one PC's push: its whole chat list (which replaces the last one) and any rollouts it sent.
  * Answers the rollout paths the hub still lacks at the version listed, so the PC sends those next;
  * a rollout no listed chat names any more (archived or deleted there) is removed here.
+ * A refused push writes nothing: every time is checked and every rollout unpacked first.
  */
-export function acceptCodexHubPush(body: unknown, root: string = CODEX_HUB_DIR): HubPushResult {
+export function acceptCodexHubPush(
+  body: unknown,
+  root: string = CODEX_HUB_DIR,
+  maxUnpacked: number = ROLLOUT_UNPACKED_MAX,
+): HubPushResult {
   const push = body as Partial<HubPush> | null
   const pc = typeof push?.pc === 'string' ? push.pc.trim() : ''
   const key = pc ? hubPcKey(pc) : null
@@ -151,26 +178,57 @@ export function acceptCodexHubPush(body: unknown, root: string = CODEX_HUB_DIR):
   if (!Array.isArray(push?.threads))
     return { ok: false, status: 400, error: 'threads must be a list' }
   const threads = push.threads.map(cleanThread).filter((t): t is HubThread => t !== null)
+  // Each is printed as an ISO time below and in the chat list (codex-chat-list.ts), and toISOString
+  // throws for a time no Date can hold: refused before anything is written.
+  const badThread = threads.find((t) => !isTime(t.updatedAt))
+  if (badThread)
+    return {
+      ok: false,
+      status: 400,
+      error: `thread ${badThread.id}: updatedAt ${badThread.updatedAt} is not a time in Unix seconds`,
+    }
+
+  const incoming: { rel: string; updatedAt: number; bytes: Buffer }[] = []
+  let unpacked = 0
+  for (const f of Array.isArray(push.files) ? push.files : []) {
+    const rel = relativeRolloutPath(f?.path)
+    if (!rel || typeof f.gz !== 'string' || typeof f.updatedAt !== 'number') continue
+    if (!isTime(f.updatedAt))
+      return {
+        ok: false,
+        status: 400,
+        error: `${rel}: updatedAt ${f.updatedAt} is not a time in Unix seconds`,
+      }
+    let bytes: Buffer | null
+    try {
+      bytes = gunzipWithin(Buffer.from(f.gz, 'base64'), maxUnpacked - unpacked)
+    } catch {
+      continue
+    }
+    // 413, as for a body over the limit: the pusher then sends one file per push, and leaves out
+    // one that is too big on its own.
+    if (!bytes)
+      return {
+        ok: false,
+        status: 413,
+        error: unpacked
+          ? `${rel} takes this push's rollouts past ${maxUnpacked} bytes unpacked; send it on its own`
+          : `${rel} unpacks to more than ${maxUnpacked} bytes, more than the hub keeps of one rollout`,
+      }
+    unpacked += bytes.length
+    incoming.push({ rel, updatedAt: f.updatedAt, bytes })
+  }
 
   const dir = join(root, key)
   const previous = readCodexHubManifest(dir)
   const files: Record<string, number> = { ...(previous?.files ?? {}) }
 
   // Rollouts first, so a manifest never names a file that is not there yet.
-  let stored = 0
-  for (const f of Array.isArray(push.files) ? push.files : []) {
-    const rel = relativeRolloutPath(f?.path)
-    if (!rel || typeof f.gz !== 'string' || typeof f.updatedAt !== 'number') continue
-    let bytes: Uint8Array
-    try {
-      bytes = Bun.gunzipSync(Buffer.from(f.gz, 'base64'))
-    } catch {
-      continue
-    }
-    writeAtomic(join(dir, ...rel.split('/')), bytes)
-    files[rel] = f.updatedAt
-    stored++
+  for (const f of incoming) {
+    writeAtomic(join(dir, ...f.rel.split('/')), f.bytes)
+    files[f.rel] = f.updatedAt
   }
+  const stored = incoming.length
 
   // A rollout of each listed version per path: an older row for the same file never asks for it again.
   const listed = new Map<string, number>()
