@@ -159,7 +159,22 @@ test('a push without the hub token is refused', async () => {
   expect(res.status).toBe(401)
 })
 
-test("a Mac's network suffix is left out of its default name, so it stays one PC", () => {
+test("a Mac's default name is the same on every network, so it stays one PC", () => {
+  // A Mac: its Bonjour name, whatever the network made of its hostname; with none read, the hostname's first label.
+  const bonjour = () => 'Example-Mac'
+  for (const host of [
+    'Example-Mac.local',
+    'Example-Mac.lan',
+    'Example-Mac.home.arpa',
+    'Example-Mac.fritz.box',
+    'Example-Mac.attlocal.net',
+  ]) {
+    expect(defaultPcName(host, 'darwin', bonjour)).toBe('Example-Mac')
+    expect(defaultPcName(host, 'darwin', () => undefined)).toBe('Example-Mac')
+  }
+  expect(defaultPcName('dhcp-10-0-0-7.example.test', 'darwin', bonjour)).toBe('Example-Mac')
+
+  // Elsewhere, a trailing network suffix is left out.
   for (const host of [
     'Example-Mac.local',
     'Example-Mac.lan',
@@ -168,12 +183,12 @@ test("a Mac's network suffix is left out of its default name, so it stays one PC
     'Example-Mac.localdomain',
     'Example-Mac.lan.local',
   ])
-    expect(defaultPcName(host)).toBe('Example-Mac')
+    expect(defaultPcName(host, 'linux')).toBe('Example-Mac')
   // A Windows computer name has no such suffix: the PCs already on a hub keep their key.
-  expect(defaultPcName('DESKTOP-EXAMPLE1')).toBe('DESKTOP-EXAMPLE1')
+  expect(defaultPcName('DESKTOP-EXAMPLE1', 'win32')).toBe('DESKTOP-EXAMPLE1')
   // Only those suffixes: a domain name, or a name that merely ends in one of the words, is kept.
   for (const host of ['build.example.test', 'homelab', 'my-local', 'box.local.example.test'])
-    expect(defaultPcName(host)).toBe(host)
+    expect(defaultPcName(host, 'linux')).toBe(host)
 
   // The pusher uses it when AGENTHYDRA_CODEX_HUB_PC is unset; a name that is set is sent as given.
   const saved = {

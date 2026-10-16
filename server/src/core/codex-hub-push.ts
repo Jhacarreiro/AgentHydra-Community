@@ -38,13 +38,30 @@ export interface CodexHubPushConfig {
 /** A push request's rollouts stay under this many raw bytes, well inside the hub's 16 MiB body limit. */
 const BATCH_BYTES = 6 * 1024 * 1024
 
+/** A Mac's Bonjour name (Sharing's "Local hostname"), which stays the same on every network; undefined if unread. */
+function macLocalHostName(): string | undefined {
+  try {
+    const r = Bun.spawnSync(['/usr/sbin/scutil', '--get', 'LocalHostName'], { stderr: 'ignore' })
+    return (r.success && r.stdout.toString().trim()) || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
- * The name a PC is listed under when AGENTHYDRA_CODEX_HUB_PC is unset: this computer's name, less a trailing
- * `.local`, `.lan`, `.home` or `.localdomain`. A Mac's hostname carries one, and it changes with the network
- * (`Mac.lan` at home, `Mac.local` elsewhere); hubPcKey keeps it (`mac-lan`), so one Mac showed up as two PCs.
- * A Windows computer name has no such suffix, so the PCs already on a hub keep their key.
+ * The name a PC is listed under when AGENTHYDRA_CODEX_HUB_PC is unset. A Mac's hostname changes with the network
+ * (`Mac.lan` at home, `Mac.local` elsewhere, `Mac.home.arpa`, `Mac.fritz.box`, or whatever name the network's DNS
+ * has for it), and hubPcKey keeps all of it (`mac-lan`), so one Mac showed up as two PCs: on a Mac it is the
+ * Bonjour name (`scutil --get LocalHostName`), else the hostname's first label. Elsewhere it is the computer's name
+ * less a trailing `.local`, `.lan`, `.home` or `.localdomain`; a Windows computer name has none, so the PCs already
+ * on a hub keep their key.
  */
-export function defaultPcName(host: string = hostname()): string {
+export function defaultPcName(
+  host: string = hostname(),
+  platform: string = process.platform,
+  localHostName: () => string | undefined = macLocalHostName,
+): string {
+  if (platform === 'darwin') return localHostName() || host.split('.')[0] || host
   return host.replace(/(?:\.(?:local|lan|home|localdomain))+$/i, '') || host
 }
 
