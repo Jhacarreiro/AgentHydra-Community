@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
-import { resolveCodexExe } from '../config'
+import { codexSpawnEnv, resolveCodexExe } from '../config'
 
 // ONE APP-SERVER PER CODEX HOME AT A TIME. A Codex login is <codexHome>/auth.json, and its refresh
 // token ROTATES: each refresh spends the old token and saves a new one. Two app-servers on one home
@@ -50,7 +50,7 @@ export async function connectCodexRpc(
   const child = (() => {
     try {
       return spawn(command[0]!, command.slice(1), {
-        env: { ...process.env, CODEX_HOME: codexHome },
+        env: { ...codexSpawnEnv(command[0]!), CODEX_HOME: codexHome },
         cwd: codexHome,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,

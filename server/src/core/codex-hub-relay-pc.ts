@@ -15,7 +15,7 @@
 
 import { type ChildProcess, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { appEnv, CODEX_HOME, resolveCodexExe } from '../config'
+import { appEnv, CODEX_HOME, codexSpawnEnv, resolveCodexExe } from '../config'
 import type { CodexHubPushConfig } from './codex-hub-push'
 import type { RelayFromPc, RelayToPc } from './codex-hub-relay'
 import { type CodexRpc, takeHomeTurn } from './codex-rpc'
@@ -84,8 +84,9 @@ async function spawnLocalAppServer(codexHome: string): Promise<AppServerProcess>
   const release = await takeHomeTurn(codexHome)
   let child: ChildProcess
   try {
-    child = spawn(resolveCodexExe(), ['app-server'], {
-      env: { ...process.env, CODEX_HOME: codexHome },
+    const exe = resolveCodexExe()
+    child = spawn(exe, ['app-server'], {
+      env: { ...codexSpawnEnv(exe), CODEX_HOME: codexHome },
       cwd: codexHome,
       stdio: ['pipe', 'pipe', 'ignore'],
       windowsHide: true,

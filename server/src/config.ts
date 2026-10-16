@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -502,13 +503,16 @@ export const CLAUDE_PROBE_NO_MCP_ARGS = [
 /**
  * Resolve the Codex CLI. The Microsoft Store/Desktop install keeps version-addressed helper
  * binaries below LocalAppData, while npm/homebrew installs normally put `codex` on PATH. Off
- * Windows those install places are checked by path first (posixCodexCandidates).
+ * Windows a PATH with no `codex` (launchd's, systemd's) has the install places checked by path
+ * (posixCodexCandidates); a codex found there starts with codexSpawnEnv.
  */
 export function resolveCodexExe(): string {
   const configured = appEnv('CODEX_PATH')?.trim()
   if (configured) return configured
-  if (process.platform !== 'win32')
+  if (process.platform !== 'win32') {
+    if (Bun.which('codex')) return 'codex'
     return posixCodexCandidates().find((path) => existsSync(path)) ?? 'codex'
+  }
 
   const desktopBin = join(LOCALAPPDATA, 'OpenAI', 'Codex', 'bin')
   if (existsSync(desktopBin)) {
@@ -529,25 +533,72 @@ export function resolveCodexExe(): string {
   return 'codex'
 }
 
+/** Where Homebrew puts its bins: Apple silicon, Intel Macs (and node's own installer), Linux. */
+const BREW_BINS = ['/opt/homebrew/bin', '/usr/local/bin', '/home/linuxbrew/.linuxbrew/bin']
+
+/** The bins of the node versions nvm installed, newest first. */
+function nvmBins(home: string, env: Record<string, string | undefined>): string[] {
+  const root = posix.join(env.NVM_DIR?.trim() || posix.join(home, '.nvm'), 'versions', 'node')
+  let versions: string[]
+  try {
+    versions = readdirSync(root)
+  } catch {
+    return []
+  }
+  return versions
+    .filter((version) => /^v\d+\.\d+\.\d+$/.test(version))
+    .sort((a, b) => Bun.semver.order(b, a))
+    .map((version) => posix.join(root, version, 'bin'))
+}
+
 /**
- * Where a Mac or Linux install puts `codex`, in the order resolveCodexExe tries them: Homebrew
- * (Apple silicon, then Intel), a user's own bin, npm's and bun's global bins, and the npm prefix
- * named in the environment. launchd and systemd start a service with a PATH that has few of these,
- * so a bare `codex` there finds nothing. The Codex desktop app's bundle is not searched: no CLI
- * location inside it is known here; AGENTHYDRA_CODEX_PATH can point at one.
+ * Where a Mac or Linux install puts `codex`, in the order resolveCodexExe tries them when PATH
+ * has none: Homebrew, a user's own bin, npm's, bun's and Volta's global bins, nvm's node versions
+ * (newest first), and the npm prefix named in the environment. launchd and systemd start a service
+ * with a PATH that has few of these, so a bare `codex` there finds nothing. The Codex desktop
+ * app's bundle is not searched: no CLI location inside it is known here; AGENTHYDRA_CODEX_PATH
+ * can point at one.
  */
 export function posixCodexCandidates(
   home: string = HOME,
   env: Record<string, string | undefined> = process.env,
 ): string[] {
-  const candidates = [
-    '/opt/homebrew/bin/codex',
-    '/usr/local/bin/codex',
-    posix.join(home, '.local', 'bin', 'codex'),
-    posix.join(home, '.npm-global', 'bin', 'codex'),
-    posix.join(home, '.bun', 'bin', 'codex'),
+  const bins = [
+    ...BREW_BINS,
+    posix.join(home, '.local', 'bin'),
+    posix.join(home, '.npm-global', 'bin'),
+    posix.join(home, '.bun', 'bin'),
+    posix.join(home, '.volta', 'bin'),
+    ...nvmBins(home, env),
   ]
   const npmPrefix = (env.npm_config_prefix ?? env.NPM_CONFIG_PREFIX)?.trim()
-  if (npmPrefix) candidates.push(posix.join(npmPrefix, 'bin', 'codex'))
-  return candidates
+  if (npmPrefix) bins.push(posix.join(npmPrefix, 'bin'))
+  return bins.map((bin) => posix.join(bin, 'codex'))
+}
+
+/**
+ * The environment to start the Codex at `exe` in. npm's `codex` (bun's too) is a script that
+ * starts `#!/usr/bin/env node`, and a PATH like launchd's has no node, so a codex found by
+ * posixCodexCandidates exited 127 there. Off Windows, for a codex named by path, the folder it is
+ * in goes ahead of PATH, since an npm install keeps its node in the same bin, and so does the
+ * folder of the file it links to; the places node itself is installed (Homebrew, Volta, the newest
+ * nvm) go after PATH. A folder PATH already has keeps its place.
+ */
+export function codexSpawnEnv(
+  exe: string,
+  env: Record<string, string | undefined> = process.env,
+  home: string = HOME,
+): Record<string, string | undefined> {
+  if (process.platform === 'win32' || !posix.isAbsolute(exe)) return env
+  const path = (env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(Boolean)
+  let real = exe
+  try {
+    real = realpathSync(exe)
+  } catch {
+    // Not there: the spawn says so.
+  }
+  const before = [posix.dirname(exe), posix.dirname(real)]
+  const after = [...BREW_BINS, posix.join(home, '.volta', 'bin'), ...nvmBins(home, env).slice(0, 1)]
+  const added = (dirs: string[]) => dirs.filter((dir) => !path.includes(dir))
+  return { ...env, PATH: [...new Set([...added(before), ...path, ...added(after)])].join(':') }
 }
