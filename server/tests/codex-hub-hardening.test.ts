@@ -69,7 +69,7 @@ test('the pairing page refuses a DNS-rebinding Host, and a cross-site fetch, wit
   }
 })
 
-test('the pairing page answers a loopback Host, and the sign-in proxy forwarding a navigation', async () => {
+test('the pairing page answers a loopback Host and the sign-in proxy, never with a CORS header', async () => {
   const answered: Record<string, string>[] = [
     { host: '127.0.0.1:7787' },
     { host: 'localhost' },
@@ -78,15 +78,25 @@ test('the pairing page answers a loopback Host, and the sign-in proxy forwarding
     // sign-in's redirect, which it marks cross-site.
     {
       host: '127.0.0.1:7787',
+      origin: '',
       'sec-fetch-site': 'cross-site',
       'sec-fetch-mode': 'navigate',
       'sec-fetch-dest': 'document',
     },
     { host: '127.0.0.1:7787', 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' },
+    // A page on another loopback port: answered, as /api/* answered it before its exact-origin
+    // mode, and unreadable there without a CORS header.
+    {
+      host: '127.0.0.1:7787',
+      origin: 'http://127.0.0.1:5173',
+      'sec-fetch-site': 'same-site',
+      'sec-fetch-mode': 'cors',
+    },
   ]
   for (const headers of answered) {
     const res = await pair(headers)
     expect({ headers, status: res.status }).toEqual({ headers, status: 200 })
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
     expect(await res.text()).toContain(`value="${TOKEN}"`)
   }
 })

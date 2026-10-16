@@ -108,10 +108,12 @@ for (const [name, file] of [
 // /api/codex-hub/: serve it only behind the operator's sign-in (the inbox's proxy), never to the home network.
 const escapeHtml = (s: string): string => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
 
-// The page is outside /api/*, so it runs the /api/* guard's check (loopback-guard.mjs) itself: a Host that is not
-// loopback is a DNS-rebinding page reading the token, an Origin that is not loopback a cross-site fetch.
+// The page is outside /api/*, so it runs the loopback guard's check (loopback-guard.mjs) itself, in the default
+// any-loopback-port mode rather than the exact-origin one /api/* uses: a Host that is not loopback is a DNS-rebinding
+// page reading the token, an Origin that is not loopback a cross-site fetch. A fetch from another loopback port is
+// answered, but with no CORS header, so that page cannot read it, and frame-ancestors keeps it out of a frame.
 // Sec-Fetch-Site counts for a fetch but not for a navigation, which the sign-in's redirect makes cross-site. The
-// inbox's proxy forwards the page with Host 127.0.0.1 and no Origin.
+// inbox's proxy forwards the page with Host 127.0.0.1 and an empty Origin.
 async function pairGuard(c: Context, next: Next) {
   const navigation = c.req.header('sec-fetch-mode') === 'navigate'
   const verdict = evaluateRequest({
