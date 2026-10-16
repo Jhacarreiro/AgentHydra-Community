@@ -93,7 +93,9 @@ class _Fake:
                 self._send(404, {})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        # close()'s shutdown() waits for serve_forever to see its stop flag, once per poll_interval: the default 0.5 s
+        # was half a second at the end of every test here. Requests are answered as they arrive either way.
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
 
     @property
     def url(self):

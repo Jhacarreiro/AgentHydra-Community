@@ -99,7 +99,8 @@ class _Fake:
                 self.wfile.write(data)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        # A short poll_interval, so close()'s shutdown() returns at once instead of after the default 0.5 s.
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
 
     def batch(self):
         # A list of replies answers each sent message in turn: a tool task's thread is several messages long.
