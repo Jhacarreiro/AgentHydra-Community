@@ -386,6 +386,8 @@ export function codexHubHomes(root: string = CODEX_HUB_DIR): CodexHubHome[] {
  * PC is installed once. `.pusher` can never be a PC's folder: hubPcKey makes no dots. Absent: PCs keep what they have.
  */
 export const PUSHER_EXE = join(CODEX_HUB_DIR, '.pusher', 'codex-hub-push.exe')
+/** The Windows tray app that keeps the pusher running and both builds current (codex-hub-tray/). */
+export const TRAY_EXE = join(CODEX_HUB_DIR, '.pusher', 'codex-hub-tray.exe')
 
 const pusherHashes = new Map<string, { mtimeMs: number; size: number; sha256: string }>()
 

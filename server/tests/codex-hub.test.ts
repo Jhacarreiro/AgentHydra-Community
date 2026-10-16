@@ -260,3 +260,22 @@ test('a file path that leaves sessions/ is never written', () => {
   expect(existsSync(join(root, '..', 'outside.jsonl'))).toBe(false)
   rmSync(root, { recursive: true, force: true })
 })
+
+test("the pairing page posts the hub token only to the tray's own loopback port", async () => {
+  const state = 'a'.repeat(32)
+  const res = await http.fetch(
+    new Request(`http://127.0.0.1/codex-hub/pair?port=49152&state=${state}&pc=<b>PC</b>`),
+  )
+  expect(res.status).toBe(200)
+  const page = await res.text()
+  expect(page).toContain('action="http://127.0.0.1:49152/paired"')
+  expect(page).toContain(`value="${TOKEN}"`)
+  expect(page).not.toContain('<b>PC</b>')
+  expect(res.headers.get('content-security-policy')).toContain(
+    'form-action http://127.0.0.1:49152/paired',
+  )
+  for (const bad of ['port=80', 'port=example.test', `port=49152&state=xyz`])
+    expect((await http.fetch(new Request(`http://127.0.0.1/codex-hub/pair?${bad}`))).status).toBe(
+      400,
+    )
+})

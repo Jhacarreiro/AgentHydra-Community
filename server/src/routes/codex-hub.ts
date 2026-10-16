@@ -21,6 +21,7 @@ import {
   PUSHER_EXE,
   pusherRelease,
   ROLLOUT_UNPACKED_MAX,
+  TRAY_EXE,
 } from '../core/codex-hub'
 import {
   openRelaySession,
@@ -84,17 +85,56 @@ app.post('/api/codex-hub/push', requireHubToken, async (c) => {
   return c.json({ pc: result.pc, stored: result.stored, want: result.want })
 })
 
-// The pusher build PCs update themselves to (core/codex-hub-update.ts): its hash, then the file.
-app.get('/api/codex-hub/pusher', requireHubToken, async (c) => {
-  const release = await pusherRelease()
-  return release ? c.json(release) : c.json({ error: 'this hub hands out no pusher build' }, 404)
-})
-
-app.get('/api/codex-hub/pusher/download', requireHubToken, async (c) => {
-  if (!(await pusherRelease())) return c.json({ error: 'this hub hands out no pusher build' }, 404)
-  return new Response(Bun.file(PUSHER_EXE), {
-    headers: { 'content-type': 'application/octet-stream' },
+// The builds PCs keep themselves at: the pusher (core/codex-hub-update.ts) and the tray app that runs it
+// (codex-hub-tray/). Each: its hash, then the file.
+for (const [name, file] of [
+  ['pusher', PUSHER_EXE],
+  ['tray', TRAY_EXE],
+] as const) {
+  app.get(`/api/codex-hub/${name}`, requireHubToken, async (c) => {
+    const release = await pusherRelease(file)
+    return release ? c.json(release) : c.json({ error: `this hub hands out no ${name} build` }, 404)
   })
+  app.get(`/api/codex-hub/${name}/download`, requireHubToken, async (c) => {
+    if (!(await pusherRelease(file)))
+      return c.json({ error: `this hub hands out no ${name} build` }, 404)
+    return new Response(Bun.file(file), { headers: { 'content-type': 'application/octet-stream' } })
+  })
+}
+
+// A PC's tray app (codex-hub-tray/) gets the hub token here, so a PC is set up without copying it. The tray listens
+// on its own loopback port and opens this page; one click posts the token to that port and nowhere else. Outside
+// /api/codex-hub/: serve it only behind the operator's sign-in (the inbox's proxy), never to the home network.
+const escapeHtml = (s: string): string => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
+
+app.get('/codex-hub/pair', (c) => {
+  const token = codexHubToken()
+  if (!token) return c.text('The Codex hub is off (AGENTHYDRA_CODEX_HUB_TOKEN is not set).', 404)
+  const port = Number(c.req.query('port'))
+  const state = c.req.query('state') ?? ''
+  if (!Number.isInteger(port) || port < 1024 || port > 65535 || !/^[0-9a-f]{32}$/.test(state))
+    return c.text('Open this page from the Codex Hub app on the PC (Connect this PC).', 400)
+  const pc = escapeHtml((c.req.query('pc') ?? 'this PC').slice(0, 64))
+  const target = `http://127.0.0.1:${port}/paired`
+  c.header('cache-control', 'no-store')
+  c.header('referrer-policy', 'no-referrer')
+  c.header('x-frame-options', 'DENY')
+  c.header(
+    'content-security-policy',
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${target}; frame-ancestors 'none'`,
+  )
+  return c.html(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect ${pc}</title>
+<style>body{font:16px system-ui,sans-serif;margin:0;padding:48px 16px;background:#f6f6f4;color:#222}
+main{max-width:440px;margin:auto}button{font:inherit;padding:10px 22px;border:0;border-radius:8px;background:#2d6a4f;
+color:#fff;cursor:pointer}p{line-height:1.5}small{color:#666}
+@media (prefers-color-scheme:dark){body{background:#1b1b1a;color:#eee}small{color:#aaa}}</style></head>
+<body><main><h1>Connect ${pc}</h1>
+<p>The Codex Hub app on ${pc} gets this hub's token, then keeps that PC's Codex chats here.</p>
+<form method="post" action="${target}"><input type="hidden" name="state" value="${state}">
+<input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Connect</button></form>
+<p><small>Only use this when you opened it from the Codex Hub app on your own PC.</small></p></main></body></html>`)
 })
 
 // Which PCs have pushed and when, and which have a relay open now (their chats can be continued).
