@@ -5,11 +5,17 @@
 // keeps a Codex home per PC that the chat list and transcript index read like a local one.
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { listCodexChats } from '../src/core/codex-chat-list'
 import { acceptCodexHubPush, CODEX_HUB_DIR, hubPcKey } from '../src/core/codex-hub'
-import { type CodexHubPushConfig, pushCodexHubOnce } from '../src/core/codex-hub-push'
+import {
+  type CodexHubPushConfig,
+  codexHubPushConfig,
+  defaultPcName,
+  pushCodexHubOnce,
+} from '../src/core/codex-hub-push'
 import type { CodexRpc } from '../src/core/codex-rpc'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
@@ -151,6 +157,43 @@ test('a push without the hub token is refused', async () => {
     }),
   )
   expect(res.status).toBe(401)
+})
+
+test("a Mac's network suffix is left out of its default name, so it stays one PC", () => {
+  for (const host of [
+    'Example-Mac.local',
+    'Example-Mac.lan',
+    'Example-Mac.LAN',
+    'Example-Mac.home',
+    'Example-Mac.localdomain',
+    'Example-Mac.lan.local',
+  ])
+    expect(defaultPcName(host)).toBe('Example-Mac')
+  // A Windows computer name has no such suffix: the PCs already on a hub keep their key.
+  expect(defaultPcName('DESKTOP-EXAMPLE1')).toBe('DESKTOP-EXAMPLE1')
+  // Only those suffixes: a domain name, or a name that merely ends in one of the words, is kept.
+  for (const host of ['build.example.test', 'homelab', 'my-local', 'box.local.example.test'])
+    expect(defaultPcName(host)).toBe(host)
+
+  // The pusher uses it when AGENTHYDRA_CODEX_HUB_PC is unset; a name that is set is sent as given.
+  const saved = {
+    url: process.env.AGENTHYDRA_CODEX_HUB_URL,
+    pc: process.env.AGENTHYDRA_CODEX_HUB_PC,
+  }
+  try {
+    process.env.AGENTHYDRA_CODEX_HUB_URL = 'https://hub.example.test'
+    delete process.env.AGENTHYDRA_CODEX_HUB_PC
+    expect(codexHubPushConfig()?.pc).toBe(defaultPcName(hostname()))
+    process.env.AGENTHYDRA_CODEX_HUB_PC = 'Example-Mac.local'
+    expect(codexHubPushConfig()?.pc).toBe('Example-Mac.local')
+  } finally {
+    for (const [name, value] of [
+      ['AGENTHYDRA_CODEX_HUB_URL', saved.url],
+      ['AGENTHYDRA_CODEX_HUB_PC', saved.pc],
+    ] as const)
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+  }
 })
 
 test('a file path that leaves sessions/ is never written', () => {

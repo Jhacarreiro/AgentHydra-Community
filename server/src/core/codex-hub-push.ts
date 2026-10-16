@@ -38,6 +38,16 @@ export interface CodexHubPushConfig {
 /** A push request's rollouts stay under this many raw bytes, well inside the hub's 16 MiB body limit. */
 const BATCH_BYTES = 6 * 1024 * 1024
 
+/**
+ * The name a PC is listed under when AGENTHYDRA_CODEX_HUB_PC is unset: this computer's name, less a trailing
+ * `.local`, `.lan`, `.home` or `.localdomain`. A Mac's hostname carries one, and it changes with the network
+ * (`Mac.lan` at home, `Mac.local` elsewhere); hubPcKey keeps it (`mac-lan`), so one Mac showed up as two PCs.
+ * A Windows computer name has no such suffix, so the PCs already on a hub keep their key.
+ */
+export function defaultPcName(host: string = hostname()): string {
+  return host.replace(/(?:\.(?:local|lan|home|localdomain))+$/i, '') || host
+}
+
 export function codexHubPushConfig(): CodexHubPushConfig | null {
   const url = appEnv('CODEX_HUB_URL')?.trim()
   const token = appEnv('CODEX_HUB_TOKEN')?.trim()
@@ -57,7 +67,7 @@ export function codexHubPushConfig(): CodexHubPushConfig | null {
   return {
     url: url.replace(/\/+$/, ''),
     token,
-    pc: appEnv('CODEX_HUB_PC')?.trim() || hostname(),
+    pc: appEnv('CODEX_HUB_PC')?.trim() || defaultPcName(),
     headers,
     intervalMs: Math.max(1, Number.isFinite(minutes) ? minutes : 2) * 60_000,
   }

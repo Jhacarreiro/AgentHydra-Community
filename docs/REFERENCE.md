@@ -553,7 +553,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_DESKTOP_PATH` | auto-detected | Codex Desktop GUI executable; useful for nonstandard installs |
 | `AGENTHYDRA_CODEX_HUB_TOKEN` | unset | turns this daemon into a [Codex hub](#codex-chats-from-other-pcs-codex-hub) and is the bearer token every push must carry; on a pushing PC, the same token |
 | `AGENTHYDRA_CODEX_HUB_URL` | unset | the hub this PC pushes its Codex chats to (`https://hub.example.test`); with the token set, the daemon pushes every interval |
-| `AGENTHYDRA_CODEX_HUB_PC` | the computer's name | the name this PC's chats are listed under on the hub |
+| `AGENTHYDRA_CODEX_HUB_PC` | the computer's name, less a `.local`, `.lan`, `.home` or `.localdomain` suffix | the name this PC's chats are listed under on the hub |
 | `AGENTHYDRA_CODEX_HUB_HEADERS` | unset | JSON object of extra headers for each push, e.g. a Cloudflare Access service token in front of the hub |
 | `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes |
 | `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, `full` also without them (Desk's bypass mode), `off` keeps the relay closed |
