@@ -14,11 +14,15 @@ const DAY = 86_400_000
 const temps: string[] = []
 const servers: DeskServer[] = []
 const fakes: FakeHydra[] = []
+// boot() points HYDRA_DESK_HOME at a home this hook removes: put back what the run had.
+const savedHome = process.env.HYDRA_DESK_HOME
 
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.stop()
   for (const f of fakes.splice(0)) await f.stop()
   for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true })
+  if (savedHome === undefined) delete process.env.HYDRA_DESK_HOME
+  else process.env.HYDRA_DESK_HOME = savedHome
 })
 
 /** A desk server whose only plugin is the bridge, pointed at hydraUrl. */

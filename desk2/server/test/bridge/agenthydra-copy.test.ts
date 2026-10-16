@@ -12,10 +12,14 @@ import { deadUrl } from './fake-hydra'
 const PLUGINS = join(import.meta.dir, '..', '..', 'src', 'plugins')
 const temps: string[] = []
 const stops: (() => unknown)[] = []
+// boot() points HYDRA_DESK_HOME at a home this hook removes: put back what the run had.
+const savedHome = process.env.HYDRA_DESK_HOME
 
 afterEach(async () => {
   for (const stop of stops.splice(0)) await stop()
   for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true })
+  if (savedHome === undefined) delete process.env.HYDRA_DESK_HOME
+  else process.env.HYDRA_DESK_HOME = savedHome
 })
 
 interface Seen {

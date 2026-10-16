@@ -6,8 +6,10 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 
 // Point the db at a scratch dir BEFORE importing anything that touches it — db.ts opens the file on
-// import, so the env has to be in place first.
+// import, so the env has to be in place first. Put back in afterAll: the scratch is removed there, and
+// a later file in the same process would otherwise get a home that no longer exists.
 const scratch = `${process.env.TEMP ?? '/tmp'}/agenthydra-notify-settings-test-${crypto.randomUUID()}`
+const savedHome = process.env.AGENTHYDRA_HOME
 process.env.AGENTHYDRA_HOME = scratch
 
 const { getSetting, setSetting } = await import('../src/db')
@@ -38,6 +40,8 @@ beforeEach(() => {
 })
 
 afterAll(() => {
+  if (savedHome === undefined) delete process.env.AGENTHYDRA_HOME
+  else process.env.AGENTHYDRA_HOME = savedHome
   try {
     require('node:fs').rmSync(scratch, { recursive: true, force: true })
   } catch {
