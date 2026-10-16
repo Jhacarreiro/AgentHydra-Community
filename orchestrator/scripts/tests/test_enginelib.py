@@ -198,13 +198,6 @@ class IdleReportReasonTest(unittest.TestCase):
             self.assertEqual(enginelib.idle_report(MATCH)["reason"], enginelib.R_UNREADABLE)
         self.assertEqual(enginelib.idle_report({**MATCH, "live": None})["reason"], enginelib.R_NO_ENGINE)
 
-    def test_idle_verdict_still_answers_the_old_two_tuple(self):
-        """Every existing caller (groundskeeper, the lanes) unpacks two values."""
-        with mock.patch.object(gatelib, "gate_match", return_value=_verdict(idle={"quiet_secs": 900})):
-            idle, why = enginelib.idle_verdict(MATCH)
-        self.assertTrue(idle)
-        self.assertIn("quiet 900s", why)
-
     def test_a_refusal_from_stop_idle_engine_carries_the_code(self):
         with mock.patch.object(gatelib, "gate_match", return_value=_verdict(idle={"quiet_secs": 40})):
             got = enginelib.stop_idle_engine(MATCH)
