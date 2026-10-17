@@ -10,10 +10,12 @@
 // history or file, instructions, a folder for the turn, an input read from a file here), is refused here without
 // reaching Codex; resume's folder is left out instead, so the thread keeps its own. initialize goes on with the
 // experimental API off, which is where history and path live. A turn that would run without approvals or outside
-// the sandbox (Desk's bypass mode) is refused unless this PC allows it (AGENTHYDRA_CODEX_HUB_RELAY=full); granular
-// approvals, an outside sandbox and more writable folders, which Desk never asks for, are refused in either mode. A
-// line that is not one JSON object is dropped, and so is an answer to anything but a request Codex asked of Desk
-// and Desk has not answered yet. AGENTHYDRA_CODEX_HUB_RELAY=off keeps the socket closed: chats are pushed only.
+// the sandbox (Desk's bypass mode) is refused unless this PC allows it (AGENTHYDRA_CODEX_HUB_RELAY=full), and so is
+// a resume or turn that does not say its approvals and sandbox, which Codex would take from this PC's config or the
+// thread's last turn; granular approvals, an outside sandbox and more writable folders, which Desk never asks for,
+// are refused in either mode. A line that is not one JSON object is dropped, and so is an answer to anything but a
+// request Codex asked of Desk and Desk has not answered yet. AGENTHYDRA_CODEX_HUB_RELAY=off keeps the socket
+// closed: chats are pushed only.
 //
 // While Desk holds an app-server here, the pusher lists chats through it (localRpc) rather than starting a second
 // one on the same home, whose refresh token rotates (codex-rpc.ts). A turn's end pushes at once, so the copy on
@@ -42,6 +44,15 @@ class Refused extends Error {
 /** Why 'ask' mode refuses Desk's bypass: approvalPolicy never, or no sandbox. */
 const BYPASS =
   'This PC lets the Codex hub run turns only with approvals and the sandbox on. Use another permission mode, or set AGENTHYDRA_CODEX_HUB_RELAY=full on the PC.'
+
+/**
+ * What 'ask' mode needs a request to say. Left out, Codex takes it from this PC's config.toml or the thread's last
+ * turn, which may be no approvals and no sandbox. Desk always sends them (policy() in its runtime).
+ */
+const ASK_NEEDS: Record<string, string[]> = {
+  'thread/resume': ['approvalPolicy', 'sandbox'],
+  'turn/start': ['approvalPolicy', 'sandboxPolicy'],
+}
 
 /** One param the hub may send: what Codex is sent for it (undefined leaves it out), or a throw of Refused. */
 type Param = (value: unknown, mode: RelayMode) => unknown
@@ -185,6 +196,11 @@ export function relayRequest(
   try {
     const kept = pick(params ?? {}, RELAY_PARAMS[method]!, mode)
     if (method === 'initialize') kept.capabilities = { experimentalApi: false }
+    const unsaid = mode === 'full' ? undefined : ASK_NEEDS[method]?.find((name) => !(name in kept))
+    if (unsaid)
+      return {
+        refused: `This PC lets the Codex hub run turns only with approvals and the sandbox on, so ${method} must send ${unsaid}.`,
+      }
     return { params: kept }
   } catch (error) {
     if (!(error instanceof Refused)) throw error

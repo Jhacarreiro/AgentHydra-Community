@@ -140,7 +140,7 @@ test('Desk drives the PC app-server through the hub: a turn, its approval asked 
     JSON.stringify({
       id: 2,
       method: 'thread/resume',
-      params: { threadId: 'thread-1', approvalPolicy: 'on-request' },
+      params: { threadId: 'thread-1', approvalPolicy: 'on-request', sandbox: 'workspace-write' },
     }),
   )
   d.ws.send(
@@ -192,11 +192,22 @@ test('the PC refuses what continuing a chat does not need, and a turn without ap
     }),
   )
   d.ws.send(JSON.stringify({ id: 4, method: 'config/value/write', params: {} }))
-  await until(() => [2, 3, 4].every((id) => d.got.some((m) => m.id === id)))
+  // A turn that does not say its approvals and sandbox would take the PC's config or the thread's last turn.
+  d.ws.send(
+    JSON.stringify({
+      id: 5,
+      method: 'turn/start',
+      params: { threadId: 't', input: [{ type: 'text', text: 'go on', text_elements: [] }] },
+    }),
+  )
+  await until(() => [2, 3, 4, 5].every((id) => d.got.some((m) => m.id === id)))
   expect((d.got.find((m) => m.id === 2)!.error as { message: string }).message).toMatch(
     /thread\/start/,
   )
   expect((d.got.find((m) => m.id === 3)!.error as { message: string }).message).toMatch(/approvals/)
+  expect((d.got.find((m) => m.id === 5)!.error as { message: string }).message).toMatch(
+    /approvalPolicy/,
+  )
   expect(codexGot.slice(seen).map((m) => m.method)).toEqual(['initialized'])
   d.ws.close()
 })
@@ -304,9 +315,10 @@ test('a config override, another thread or file, a folder for the turn or instru
       })
     }
   // A null is no override, so it is left out rather than refused.
-  expect(
-    relayRequest('thread/resume', { threadId: 't', config: null, history: null }, 'ask'),
-  ).toEqual({ params: { threadId: 't' } })
+  const said = { threadId: 't', approvalPolicy: 'on-request', sandbox: 'read-only' }
+  expect(relayRequest('thread/resume', { ...said, config: null, history: null }, 'ask')).toEqual({
+    params: said,
+  })
   expect(relayRequest('turn/start', [], 'full')).toEqual({ refused: expect.any(String) })
 })
 
@@ -372,6 +384,33 @@ test("'ask' runs turns only with approvals and Desk's sandbox; 'full' adds Desk'
   })
 })
 
+test("'ask' refuses a resume or turn that leaves its approvals or sandbox to the PC; 'full' lets it", () => {
+  // Left out, or null, Codex takes them from this PC's config.toml or the thread's last turn, which may be no
+  // approvals and no sandbox. Desk always sends them.
+  const unsaid: [string, string][] = [
+    ['thread/resume', 'approvalPolicy'],
+    ['thread/resume', 'sandbox'],
+    ['turn/start', 'approvalPolicy'],
+    ['turn/start', 'sandboxPolicy'],
+  ]
+  for (const [method, name] of unsaid) {
+    const { [name]: _, ...without } = base(method)
+    const { cwd: _cwd, ...kept } = without
+    for (const params of [without, { ...without, [name]: null }]) {
+      expect(relayRequest(method, params, 'ask')).toEqual({
+        refused: expect.stringMatching(new RegExp(`approvals and the sandbox on.*${name}`)),
+      })
+      expect(relayRequest(method, params, 'full')).toEqual({ params: kept })
+    }
+  }
+  expect(relayRequest('thread/resume', { threadId: 'thread-1' }, 'ask')).toEqual({
+    refused: expect.stringMatching(/approvals and the sandbox on/),
+  })
+  expect(
+    relayRequest('turn/start', { threadId: 'thread-1', input: turn(DESK.edits).input }, 'ask'),
+  ).toEqual({ refused: expect.stringMatching(/approvals and the sandbox on/) })
+})
+
 test('Codex is written only rebuilt requests, and only answers to what it asked and Desk has not answered', async () => {
   const d = await desk()
   const seen = codexGot.length
@@ -424,10 +463,12 @@ test('Codex is written only rebuilt requests, and only answers to what it asked 
   // Codex's question is answered once: a second answer to it is dropped.
   d.ws.send(JSON.stringify({ id: 900, result: { decision: 'accept' }, extra: 1 }))
   d.ws.send(JSON.stringify({ id: 900, result: { decision: 'acceptForSession' } }))
-  d.ws.send(JSON.stringify({ id: 8, method: 'thread/resume', params: { threadId: 'thread-2' } }))
+  const other: Record<string, unknown> = { ...resume(DESK.plan), threadId: 'thread-2' }
+  d.ws.send(JSON.stringify({ id: 8, method: 'thread/resume', params: other }))
   await until(() => d.got.some((m) => m.id === 8))
 
   const { cwd: _, ...resumed } = resume(DESK.edits)
+  const { cwd: _cwd, ...otherResumed } = other
   expect(codexGot.slice(seen)).toEqual([
     {
       id: 1,
@@ -438,7 +479,7 @@ test('Codex is written only rebuilt requests, and only answers to what it asked 
     { id: 6, method: 'thread/resume', params: resumed },
     { id: 7, method: 'turn/start', params: turn(DESK.edits) },
     { id: 900, result: { decision: 'accept' } },
-    { id: 8, method: 'thread/resume', params: { threadId: 'thread-2' } },
+    { id: 8, method: 'thread/resume', params: otherResumed },
   ])
   d.ws.close()
 })

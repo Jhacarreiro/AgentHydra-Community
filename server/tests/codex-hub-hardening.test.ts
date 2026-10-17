@@ -258,7 +258,12 @@ async function relayRig(websocket: typeof relayWebSocket) {
   const turn = JSON.stringify({
     id: 3,
     method: 'turn/start',
-    params: { threadId: 't', input: [{ type: 'text', text: 'z'.repeat(BIG) }] },
+    params: {
+      threadId: 't',
+      input: [{ type: 'text', text: 'z'.repeat(BIG) }],
+      approvalPolicy: 'on-request',
+      sandboxPolicy: { type: 'readOnly' },
+    },
   })
   const interrupt = JSON.stringify({
     id: 4,

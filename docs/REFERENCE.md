@@ -556,7 +556,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HUB_PC` | the computer's name: on a Mac its Bonjour name (`scutil --get LocalHostName`), which no network changes; elsewhere less a `.local`, `.lan`, `.home` or `.localdomain` suffix | the name this PC's chats are listed under on the hub. A Mac or Linux PC that already pushed under a longer name (`mac-lan`) is listed once more under the new one: delete its old `<config dir>/codex-hub/<pc>/` folder on the hub, or set this to the old name |
 | `AGENTHYDRA_CODEX_HUB_HEADERS` | unset | JSON object of extra headers for each push, e.g. a Cloudflare Access service token in front of the hub |
 | `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes |
-| `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, `full` also without them (Desk's bypass mode), `off` keeps the relay closed |
+| `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, and only when each resume and turn says so; `full` also without them (Desk's bypass mode); `off` keeps the relay closed |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
 | `AGENTHYDRA_BOOT_DEADLINE_MS` | `120000` (full daemon) / `30000` (`--instances`) | startup-liveness watchdog deadline; if boot hasn't reached a bound port by then, the process logs its last-known phase and exits `87` for the supervisor to restart it (see `server/src/boot-watchdog.ts`) |
@@ -810,11 +810,12 @@ rebuilds each request from the params Desk sends with it and refuses one that ca
 read from a file on the PC. Resume's `cwd` is left out, so the thread keeps its own folder, and `initialize`
 goes on with `experimentalApi` off. By default it also refuses a turn without approvals or outside the
 sandbox (`AGENTHYDRA_CODEX_HUB_RELAY`): `approvalPolicy` `never`, `sandbox` `danger-full-access` or
-`sandboxPolicy` `dangerFullAccess`. Granular approvals, `externalSandbox` and extra `writableRoots` are
-refused in every mode. A line from the hub that is not one JSON object is dropped, and so is an answer to
-anything but a request the PC's Codex asked and still waits on. A turn that ends is pushed at once. The Codex
-app on the PC holds a chat it has open, so close it there first. Nothing
-on the hub can rename or archive a chat on its PC.
+`sandboxPolicy` `dangerFullAccess`, and a resume without `approvalPolicy` and `sandbox` or a turn without
+`approvalPolicy` and `sandboxPolicy`, which Codex would take from the PC's `config.toml` or the thread's last
+turn. Granular approvals, `externalSandbox` and extra `writableRoots` are refused in every mode. A line from
+the hub that is not one JSON object is dropped, and so is an answer to anything but a request the PC's Codex
+asked and still waits on. A turn that ends is pushed at once. The Codex app on the PC holds a chat it has open,
+so close it there first. Nothing on the hub can rename or archive a chat on its PC.
 
 - **Hub:** set `AGENTHYDRA_CODEX_HUB_TOKEN`. `POST /api/codex-hub/push` takes a PC's list and the rollouts
   it lacks (`Authorization: Bearer <token>`), and `GET /api/codex-hub/relay?pc=<name>` is the PC's relay
