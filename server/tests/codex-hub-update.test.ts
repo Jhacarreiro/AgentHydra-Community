@@ -98,6 +98,46 @@ test('a build that starts but prints another banner, such as the tray in the pus
   ).toBe('updated')
 })
 
+test('a hub build that failed its checks is not fetched again until the hub has another', async () => {
+  let downloads = 0
+  const counting: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).pathname.endsWith('/download')) downloads++
+    return toHub(input, init)
+  }) as typeof fetch
+  const refused = new Set<string>()
+  const broken = deps({ fetch: counting, refused, run: () => ({ status: 1, stdout: '' }) })
+  expect(await updateOnce(cfg, broken)).toBe('failed')
+  expect(await updateOnce(cfg, broken)).toBe('failed')
+  expect(downloads).toBe(1)
+  writeFileSync(PUSHER_EXE, 'newer build')
+  expect(await updateOnce(cfg, deps({ fetch: counting, refused }))).toBe('updated')
+  expect(downloads).toBe(2)
+  expect(readFileSync(exe, 'utf8')).toBe('newer build')
+})
+
+test.skipIf(process.platform === 'win32')(
+  "a downloaded build's --version runs without the hub's address and token",
+  async () => {
+    // A build that does not know --version would run as this PC's pusher; this one writes down what it was given.
+    writeFileSync(PUSHER_EXE, '#!/bin/sh\nenv > "$0.env"\necho codex-hub-push\n')
+    const names = [
+      'AGENTHYDRA_CODEX_HUB_URL',
+      'CCMANAGERUI_CODEX_HUB_URL',
+      'CCMANAGERUI_CODEX_HUB_TOKEN',
+    ]
+    for (const name of names) process.env[name] = 'from-the-pusher'
+    try {
+      expect(await updateOnce(cfg, deps({ run: undefined }))).toBe('updated')
+    } finally {
+      for (const name of names) delete process.env[name]
+    }
+    const env = readFileSync(`${exe}.new.env`, 'utf8')
+    expect(env).not.toContain('CODEX_HUB_URL=')
+    expect(env).not.toContain('CODEX_HUB_TOKEN=')
+    expect(env).toContain('PATH=')
+  },
+)
+
 test('a hub with no build to hand out, and a request without the token, change nothing', async () => {
   rmSync(PUSHER_EXE)
   expect(await updateOnce(cfg, deps())).toBe('none')

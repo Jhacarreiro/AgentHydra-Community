@@ -38,6 +38,8 @@ export interface UpdateDeps {
   log?: (line: string) => void
   /** The platform whose build is asked for; this build's own by default. */
   platform?: string
+  /** The hashes of hub builds that failed their checks here; startSelfUpdate keeps one for its checks. */
+  refused?: Set<string>
 }
 
 /**
@@ -70,11 +72,24 @@ export function removeOldBuild(exePath = process.execPath): void {
   }
 }
 
+/**
+ * The environment a downloaded build's --version runs with: this one's without the hub's address and token. A build
+ * that does not know --version (one from before it, or another program) would otherwise run as this PC's pusher
+ * until the timeout, taking its relay link from this one; without them it stops at its own check.
+ */
+export function probeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out = { ...env }
+  for (const prefix of ['AGENTHYDRA_', 'CCMANAGERUI_'])
+    for (const name of ['CODEX_HUB_URL', 'CODEX_HUB_TOKEN']) delete out[`${prefix}${name}`]
+  return out
+}
+
 const runVersion = (exe: string) =>
   spawnSync(exe, ['--version'], {
     encoding: 'utf8',
     timeout: VERSION_TIMEOUT_MS,
     windowsHide: true,
+    env: probeEnv(),
   })
 
 function relaunchSelf(exe: string): void {
@@ -101,7 +116,10 @@ export async function updateOnce(
   if (!meta.ok) throw new Error(`the hub answered ${meta.status} for its pusher build`)
   const want = (await meta.json()) as { sha256?: string; size?: number }
   if (typeof want.sha256 !== 'string') throw new Error('the hub sent no hash for its pusher build')
-  if ((await sha256File(exe)) === want.sha256) return 'current'
+  const sha256 = want.sha256
+  if ((await sha256File(exe)) === sha256) return 'current'
+  // A build that failed its checks here fails them again: it is not fetched until the hub hands out another.
+  if (deps.refused?.has(sha256)) return 'failed'
 
   const next = `${exe}.new`
   const drop = (why: string): UpdateOutcome => {
@@ -109,18 +127,22 @@ export async function updateOnce(
     log(`kept this build: ${why}`)
     return 'failed'
   }
+  const refuse = (why: string): UpdateOutcome => {
+    deps.refused?.add(sha256)
+    return drop(`${why} (not fetched again until the hub has another build)`)
+  }
   const res = await doFetch(`${cfg.url}/api/codex-hub/pusher/download${query}`, { headers })
   if (!res.ok) return drop(`the download answered ${res.status}`)
   await Bun.write(next, res)
-  if (statSync(next).size !== want.size || (await sha256File(next)) !== want.sha256)
-    return drop('the download does not match the hub hash')
+  if (statSync(next).size !== want.size || (await sha256File(next)) !== sha256)
+    return refuse('the download does not match the hub hash')
   if (process.platform !== 'win32') chmodSync(next, 0o755)
   const tried = (deps.run ?? runVersion)(next)
-  if (tried.status !== 0) return drop('the new build did not start')
+  if (tried.status !== 0) return refuse('the new build did not start')
   // The tray's build starts too: only a build whose first line is the pusher's banner is the pusher.
   const [banner = ''] = String(tried.stdout ?? '').split('\n', 1)
   if (banner.trim() !== PUSHER_BANNER)
-    return drop(`the new build is another program (it printed ${JSON.stringify(banner.trim())})`)
+    return refuse(`the new build is another program (it printed ${JSON.stringify(banner.trim())})`)
 
   removeOldBuild(exe)
   renameSync(exe, `${exe}.old`)
@@ -130,19 +152,23 @@ export async function updateOnce(
     renameSync(`${exe}.old`, exe)
     return drop(`could not put it in place (${error instanceof Error ? error.message : error})`)
   }
-  log(`updated to the hub build ${want.sha256.slice(0, 12)}; restarting`)
+  log(`updated to the hub build ${sha256.slice(0, 12)}; restarting`)
   ;(deps.relaunch ?? relaunchSelf)(exe)
   return 'updated'
 }
 
-/** Checks now and every few hours until stopped. A failed check is logged and tried again at the next one. */
+/**
+ * Checks now and every few hours until stopped. A failed check is logged and tried again at the next one; a hub build
+ * that failed its checks is remembered by its hash and not fetched again (a build is 60-90 MB).
+ */
 export function startSelfUpdate(cfg: CodexHubPushConfig, deps: UpdateDeps = {}): () => void {
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  const each = { ...deps, refused: deps.refused ?? new Set<string>() }
   const check = async () => {
     try {
       removeOldBuild(deps.exePath)
-      await updateOnce(cfg, deps)
+      await updateOnce(cfg, each)
     } catch (error) {
       console.error(
         '[codex-hub] update check failed:',

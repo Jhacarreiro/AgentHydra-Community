@@ -863,10 +863,12 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   `codex-hub-push`, `codex-hub-push.exe` or `codex-hub-push-<platform>` updates itself. A different build
   is downloaded beside it, checked against that hash, and started once with `--version`; only a build
   that starts and prints its own name (`codex-hub-push`; the tray's, `codex-hub-tray`) replaces the
-  running one, leaving the previous file as `.old` until the next start. The
-  pusher then exits and the new build takes over: started with the same arguments, or on Windows by the
-  scheduled task that runs the pusher, so that task should repeat every few minutes with one instance at a
-  time. The PC trusts the hub with its build as it already does with relay turns;
+  running one, leaving the previous file as `.old` until the next start. That `--version` run gets no
+  hub address or token, so a build that does not know the flag stops at once instead of pushing, and a
+  build that fails a check is not fetched again until the hub hands out another. The pusher then exits
+  and the new build takes over: started with the same arguments, or on Windows by the scheduled task
+  that runs the pusher, so that task should repeat every few minutes with one instance at a time. The
+  PC trusts the hub with its build as it already does with relay turns;
   `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
 
 ### Usage across PCs (`POST /api/kit/sync`)
