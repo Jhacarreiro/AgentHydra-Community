@@ -248,10 +248,16 @@ test("a Codex chat its Codex app holds open waits, in a sentence, and is never s
 
 const OTHER_PC = 'hub:other-pc'
 
-/** The Codex hub's directory: this machine's accounts (alpha), then another PC behind the hub, its relay open while `online()`. */
-const hubDirectory = (online: () => boolean, own: AhCodexInstance[] = [ALPHA]): CodexDirectory =>
+/**
+ * The Codex hub's directory: this machine's accounts (alpha), then another PC behind the hub, its relay open while
+ * `online()`. While `answering()` is false AgentHydra itself does not answer.
+ */
+const hubDirectory = (online: () => boolean, own: AhCodexInstance[] = [ALPHA], answering = () => true): CodexDirectory =>
   codexDirectory({
-    codexInstances: async () => own,
+    codexInstances: async () => {
+      if (!answering()) throw new Error('fetch failed')
+      return own
+    },
     codexUsage: async () => ({ snapshot: { session: { pct: 10 }, weekAll: { pct: 5 } } }),
     codexRelayPcs: async () => [{ id: OTHER_PC, pc: 'OTHER-PC', pushedAt: '', chats: 1, relay: online() }],
   })
@@ -290,12 +296,17 @@ test("Pin service counts only this machine's Codex accounts: another PC's Codex 
   expect((await hubOnly.services()).find((s) => s.kind === 'codex')).toMatchObject({ ready: false, accounts: 0, why: 'No Codex account is signed in.' })
 })
 
-/** A hub chat imported while its PC's relay was open; `offline()` closes that relay before the test sends. */
+/**
+ * A hub chat imported while its PC's relay was open; `offline()` closes that relay before the test sends, `down()`
+ * stops AgentHydra answering.
+ */
 async function hubImport(o: { resumeError?: string } = {}) {
   const threadId = '0f0f0f0f-1111-4222-8333-777777777777'
   const cwd = 'C:\\Users\\me\\work\\ledger'
   let online = true
-  const { m, fake } = await setup({ external: [hubChat(threadId, cwd)], items: { [threadId]: [] }, codex: hubDirectory(() => online), resumeError: o.resumeError })
+  let answering = true
+  const codex = hubDirectory(() => online, [ALPHA], () => answering)
+  const { m, fake } = await setup({ external: [hubChat(threadId, cwd)], items: { [threadId]: [] }, codex, resumeError: o.resumeError })
   const chat = await m.importSession({ sessionId: threadId, cwd })
   const bound = { accountId: OTHER_PC, label: 'OTHER-PC', threadId }
   expect(chat.serviceThreads?.codex).toEqual(bound)
@@ -306,7 +317,7 @@ async function hubImport(o: { resumeError?: string } = {}) {
     expect(fake.turnStarts().every((t) => t.home === relayHome(OTHER_PC))).toBe(true)
     expect(m.get(chat.id).serviceThreads?.codex).toEqual(bound)
   }
-  return { m, fake, chat, stayed, offline: () => (online = false) }
+  return { m, fake, chat, stayed, offline: () => (online = false), down: () => (answering = false) }
 }
 
 const resultOf = (m: ChatManager, chatId: string) => m.listItems(chatId).find((i) => i.kind === 'result')
@@ -317,6 +328,16 @@ test("another PC's Codex chat whose PC went off says so on the next send, and ne
   await m.send(chat.id, 'Carry on')
   await waitFor(() => !!resultOf(m, chat.id))
   expect(resultOf(m, chat.id)).toMatchObject({ ok: false, error: 'OTHER-PC is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.' })
+  expect(fake.opening()).toBe(0)
+  stayed()
+})
+
+test("another PC's Codex chat says AgentHydra is not answering when it is not, not that the PC is off", async () => {
+  const { m, fake, chat, stayed, down } = await hubImport()
+  down()
+  await m.send(chat.id, 'Carry on')
+  await waitFor(() => !!resultOf(m, chat.id))
+  expect(resultOf(m, chat.id)).toMatchObject({ ok: false, error: 'AgentHydra is not answering, so Desk cannot see the Codex accounts.' })
   expect(fake.opening()).toBe(0)
   stayed()
 })

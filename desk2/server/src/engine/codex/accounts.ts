@@ -27,6 +27,9 @@ export type CodexPick = { account: CodexAccount } | { why: string }
 /** Another PC's Codex behind the hub: its id is the hub's `hub:<pc>`, which no account of this machine has. */
 export const isRelayAccount = (id: string): boolean => id.startsWith('hub:')
 
+/** Why no Codex account can be read: AgentHydra, which lists them, does not answer. */
+export const NOT_ANSWERING = 'AgentHydra is not answering, so Desk cannot see the Codex accounts.'
+
 /** Why a chat on another PC's Codex cannot go on now: that PC's relay is not open. */
 export const notConnected = (pc: string): string =>
   `${pc} is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.`
@@ -78,7 +81,7 @@ export async function pickCodexAccount(dir: CodexDirectory, avoid: ReadonlySet<s
   try {
     instances = await dir.instances()
   } catch {
-    return { why: 'AgentHydra is not answering, so Desk cannot see the Codex accounts.' }
+    return { why: NOT_ANSWERING }
   }
   // Another PC's Codex only goes on with that PC's own chats: a new thread never starts there.
   const signedIn = instances.filter((i) => i.loggedIn && !i.relay)

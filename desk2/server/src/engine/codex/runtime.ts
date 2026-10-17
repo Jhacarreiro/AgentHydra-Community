@@ -22,7 +22,10 @@ export interface CodexRuntimeDeps extends ServiceRuntimeDeps {
   open?: OpenAppServer
   /** The account a new thread starts on; `avoid`: accounts this message already hit a limit on. */
   pickAccount(avoid: ReadonlySet<string>): Promise<CodexPick>
-  /** The account the chat's thread is on, as AgentHydra lists it now; null when it is gone or signed out. */
+  /**
+   * The account the chat's thread is on, as AgentHydra lists it now; null when it is gone or signed out (another
+   * PC's: its relay is not open). Throws when AgentHydra does not answer, so that is never taken for either.
+   */
   findAccount(id: string): Promise<CodexAccount | null>
   /**
    * What the message `sentId` starts with: a condensed handoff of what was said since the chat was last on Codex
