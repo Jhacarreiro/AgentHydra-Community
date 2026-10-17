@@ -1,11 +1,13 @@
-// Guardrail for the break that shipped v0.6.0 with red CI (2026-07-16): a kit sync wrote both
-// src/portable-window.mjs and its hand-maintained sibling src/portable-window.d.mts, but only the
-// .mjs got committed. The author's working tree still held the .d.mts, so THEIR typecheck was
-// green (94cf131's message says so in good faith); CI's clean checkout had a runtime module
-// exporting appWindowPlacementKey + hasRememberedBounds whose declarations did not exist, and went
-// red for three commits until someone read the log.
+// Guardrail for a break in another app, RepoYeti, which shipped v0.6.0 with red CI (2026-07-16)
+// back when these libs were still copied between apps: a sync wrote both src/portable-window.mjs
+// and its hand-maintained sibling src/portable-window.d.mts, but only the .mjs got committed. The
+// author's working tree still held the .d.mts, so THEIR typecheck was green (RepoYeti's 94cf131
+// says so in good faith); CI's clean checkout had a runtime module exporting
+// appWindowPlacementKey + hasRememberedBounds whose declarations did not exist, and went red for
+// three commits until someone read the log. The same slip is possible here whenever a .mjs is
+// edited or committed without its .d.mts.
 //
-// THE RULE: for every vendored lib, the `.mjs` (what runs) and the `.d.mts` (what TypeScript
+// THE RULE: for every kit lib, the `.mjs` (what runs) and the `.d.mts` (what TypeScript
 // believes) MUST agree on their VALUE exports, in BOTH directions. The two directions fail very
 // differently:
 //   · .mjs exports X, .d.mts omits it  -> TS cannot see X. Loud IF something imports it (TS2305,
@@ -26,7 +28,7 @@
 // skipping it, because for a drift check the dangerous failure is a SILENT miss (a value dropped
 // from one side would read as agreement). We do not import `typescript`: agenthydra has none at
 // its root (it lives in the web/ and server/ workspaces), so an import there would not resolve, and
-// this check is meant to run identically in all four consumers with zero install.
+// this check is meant to run with zero install.
 //
 // Self-contained (same rationale as this repo's other guardrails): imports only node builtins, so
 // it runs standalone in CI with no runner and no network.
@@ -213,12 +215,12 @@ function declaredValueExports(file) {
 
 export const audit = {
   id: "kit-lib-type-drift",
-  title: "A vendored lib's .mjs and .d.mts must agree on value exports",
+  title: "A kit lib's .mjs and .d.mts must agree on value exports",
   category: "custom",
   domain: "code",
   requires: {},
-  // Gating: this is the check that exists BECAUSE a kit sync once shipped a runtime export with no
-  // matching declaration and CI went red for three commits before anyone read the log (see header).
+  // Gating: this is the check that exists BECAUSE a runtime export once shipped with no matching
+  // declaration and CI went red for three commits before anyone read the log (see header).
   // A non-gating drift check would have let that exact regression back in silently.
   gating: true,
   run({ root = process.cwd() } = {}) {
@@ -252,7 +254,7 @@ export const audit = {
       if (undeclared.length) {
         findings.push({
           file: rel(dts),
-          message: `${basename(mjs)} exports ${undeclared.map((n) => `\`${n}\``).join(", ")}, but ${basename(dts)} does not declare ${undeclared.length === 1 ? "it" : "them"}. TypeScript cannot see ${undeclared.length === 1 ? "it" : "them"} (TS2305 on import). Did a kit sync land the .mjs without its .d.mts?`,
+          message: `${basename(mjs)} exports ${undeclared.map((n) => `\`${n}\``).join(", ")}, but ${basename(dts)} does not declare ${undeclared.length === 1 ? "it" : "them"}. TypeScript cannot see ${undeclared.length === 1 ? "it" : "them"} (TS2305 on import). Was the .mjs changed or committed without its .d.mts?`,
         });
       }
       if (phantom.length) {
@@ -267,7 +269,7 @@ export const audit = {
     const report = failed
       ? `Found ${findings.length} .mjs/.d.mts export disagreement(s):\n` +
         findings.map((f) => `- ${f.file}: ${f.message}`).join("\n")
-      : `Every vendored lib's .mjs and .d.mts agree on value exports (${checked.length} pair${checked.length === 1 ? "" : "s"} checked). ✓`;
+      : `Every kit lib's .mjs and .d.mts agree on value exports (${checked.length} pair${checked.length === 1 ? "" : "s"} checked). ✓`;
 
     return { failed, findings, report };
   },
