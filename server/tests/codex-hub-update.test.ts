@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { PUSHER_EXE } from '../src/core/codex-hub'
 import type { CodexHubPushConfig } from '../src/core/codex-hub-push'
-import { updateOnce } from '../src/core/codex-hub-update'
+import { RESTART_EXIT_CODE, restartPlan, updateOnce } from '../src/core/codex-hub-update'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
 
@@ -146,3 +146,61 @@ test('a hub with no build to hand out, and a request without the token, change n
   expect(res.status).toBe(401)
   expect(readFileSync(exe, 'utf8')).toBe('old build')
 })
+
+test('off Windows a service manager starts the new build; anywhere else the pusher does', () => {
+  expect(restartPlan({}, 'win32')).toBe('task')
+  expect(restartPlan({ INVOCATION_ID: 'x' }, 'win32')).toBe('task')
+  expect(restartPlan({}, 'linux')).toBe('spawn')
+  expect(restartPlan({ INVOCATION_ID: '0123abcd' }, 'linux')).toBe('exit')
+  expect(restartPlan({ XPC_SERVICE_NAME: 'com.example.codex-hub-push' }, 'darwin')).toBe('exit')
+  // Terminal, and an app the Finder opened, are not jobs that start the pusher again.
+  expect(restartPlan({ XPC_SERVICE_NAME: '0' }, 'darwin')).toBe('spawn')
+  expect(restartPlan({ XPC_SERVICE_NAME: 'application.com.example.Term.1' }, 'darwin')).toBe(
+    'spawn',
+  )
+  expect(restartPlan({ AGENTHYDRA_CODEX_HUB_RESTART: 'exit' }, 'linux')).toBe('exit')
+  expect(restartPlan({ AGENTHYDRA_CODEX_HUB_RESTART: 'spawn', INVOCATION_ID: 'x' }, 'linux')).toBe(
+    'spawn',
+  )
+})
+
+test.skipIf(process.platform === 'win32')(
+  'the new build started in its place writes where the pusher did, and a supervised pusher exits 75',
+  async () => {
+    const next = join(dir, 'codex-hub-push-next')
+    writeFileSync(next, '#!/bin/sh\necho "the new build started with: $*"\n', { mode: 0o755 })
+    const child = join(dir, 'relaunch.ts')
+    const module = join(import.meta.dir, '..', 'src', 'core', 'codex-hub-update.ts')
+    writeFileSync(
+      child,
+      `import { relaunchSelf } from ${JSON.stringify(module)}\nrelaunchSelf(${JSON.stringify(next)})\n`,
+    )
+    const relaunch = async (env: Record<string, string>) => {
+      const clean = { ...process.env }
+      for (const name of ['INVOCATION_ID', 'XPC_SERVICE_NAME', 'AGENTHYDRA_CODEX_HUB_RESTART'])
+        delete clean[name]
+      const proc = Bun.spawn([process.execPath, child, '--once'], {
+        env: { ...clean, ...env },
+        stdout: 'pipe',
+        stderr: 'inherit',
+      })
+      // Read to the end: the new build holds the same output until it exits.
+      const out = await new Response(proc.stdout).text()
+      return { status: await proc.exited, out }
+    }
+
+    const own = await relaunch({})
+    expect(own.status).toBe(0)
+    expect(own.out).toContain('the new build started with: --once')
+
+    for (const env of [
+      { INVOCATION_ID: '0123abcd' } as Record<string, string>,
+      { XPC_SERVICE_NAME: 'com.example.codex-hub-push' },
+      { AGENTHYDRA_CODEX_HUB_RESTART: 'exit' },
+    ]) {
+      const supervised = await relaunch(env)
+      expect(supervised.status).toBe(RESTART_EXIT_CODE)
+      expect(supervised.out).not.toContain('the new build started')
+    }
+  },
+)

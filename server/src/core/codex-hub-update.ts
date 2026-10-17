@@ -7,7 +7,8 @@
 // build is downloaded beside it, checked against the hash, and started once with --version before it replaces the
 // running one: a build that does not start is dropped and the old one keeps running. Windows lets a running exe be
 // renamed but not overwritten, so the old file moves to `.old` (removed at the next start) and the new one takes its
-// name; the old process exits and the new build starts in its place (relaunchSelf).
+// name; the old process exits and the new build starts in its place: started from here, or by the scheduled task or
+// service manager that runs the pusher (restartPlan).
 //
 // Only a compiled pusher updates itself: a checkout running under bun is updated with git. The PC trusts the hub
 // with its build as it already does with relay turns (codex-hub-relay-pc.ts); AGENTHYDRA_CODEX_HUB_UPDATE=off keeps
@@ -92,12 +93,44 @@ const runVersion = (exe: string) =>
     env: probeEnv(),
   })
 
-function relaunchSelf(exe: string): void {
-  // On Windows the scheduled task that runs the pusher (install-codex-hub.ps1, every few minutes, one at a time)
-  // starts the new build: a process started from here would stay in the task's job, which may end with this one.
-  // In a compiled bun program argv is [bun, <script>, ...the arguments it was started with].
-  if (process.platform !== 'win32')
-    spawn(exe, process.argv.slice(2), { detached: true, stdio: 'ignore' }).unref()
+/** How a pusher under a service manager asks it to start the new build: EX_TEMPFAIL, a failure to restart on. */
+export const RESTART_EXIT_CODE = 75
+
+/**
+ * Who starts the new build once it is in place. On Windows the scheduled task that runs the pusher
+ * (install-codex-hub.ps1, every few minutes, one at a time): a process started from here would stay in the task's
+ * job, which may end with this one. Under a service manager the manager (`exit`): systemd kills what is left in the
+ * unit when its main process exits 0, and launchd starts the job again beside a copy started from here, so the
+ * pusher exits with RESTART_EXIT_CODE for Restart=on-failure or KeepAlive to start the new file. systemd sets
+ * INVOCATION_ID in a unit's environment and launchd XPC_SERVICE_NAME to the job's label; Terminal sets it to "0" and
+ * an app launched from the Finder to `application.<id>`, which are not jobs that restart. AGENTHYDRA_CODEX_HUB_RESTART
+ * says it outright: `exit`, or `spawn` for a pusher that starts its new build itself (the default anywhere else).
+ */
+export function restartPlan(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): 'task' | 'exit' | 'spawn' {
+  if (platform === 'win32') return 'task'
+  const said = (env.AGENTHYDRA_CODEX_HUB_RESTART ?? env.CCMANAGERUI_CODEX_HUB_RESTART)?.trim()
+  if (said === 'exit' || said === 'spawn') return said
+  const job = env.XPC_SERVICE_NAME ?? ''
+  if (env.INVOCATION_ID || (job && job !== '0' && !job.startsWith('application.'))) return 'exit'
+  return 'spawn'
+}
+
+/** Starts the new build in this one's place (restartPlan) and exits. */
+export function relaunchSelf(exe: string): void {
+  const plan = restartPlan()
+  if (plan === 'exit') {
+    console.log(
+      `[codex-hub] exiting with ${RESTART_EXIT_CODE} for the service manager to start the new build`,
+    )
+    process.exit(RESTART_EXIT_CODE)
+  }
+  // In a compiled bun program argv is [bun, <script>, ...the arguments it was started with]. The new build writes
+  // where this one did (a log file, a terminal); in a session of its own, it outlives this one and its terminal.
+  if (plan === 'spawn')
+    spawn(exe, process.argv.slice(2), { detached: true, stdio: 'inherit' }).unref()
   process.exit(0)
 }
 

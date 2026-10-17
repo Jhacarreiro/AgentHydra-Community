@@ -558,6 +558,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes, at most 480 (eight hours); the [Codex hub](#codex-chats-from-other-pcs-codex-hub) holds this PC's name for three of them after each push |
 | `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, and only when each resume and turn says so; `full` also without them (Desk's bypass mode); `off` keeps the relay closed |
 | `AGENTHYDRA_CODEX_HUB_UPDATE` | on | on a PC running the compiled pusher: `off` keeps the installed build instead of following the hub's |
+| `AGENTHYDRA_CODEX_HUB_RESTART` | `exit` under systemd or launchd, else `spawn` | on a Mac or Linux PC, how the compiled pusher hands over to a build it updated to: `exit` ends it with code 75 for the service manager to start the new file, `spawn` starts the new file itself |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
 | `AGENTHYDRA_BOOT_DEADLINE_MS` | `120000` (full daemon) / `30000` (`--instances`) | startup-liveness watchdog deadline; if boot hasn't reached a bound port by then, the process logs its last-known phase and exits `87` for the supervisor to restart it (see `server/src/boot-watchdog.ts`) |
@@ -866,9 +867,12 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   running one, leaving the previous file as `.old` until the next start. That `--version` run gets no
   hub address or token, so a build that does not know the flag stops at once instead of pushing, and a
   build that fails a check is not fetched again until the hub hands out another. The pusher then exits
-  and the new build takes over: started with the same arguments, or on Windows by the scheduled task
-  that runs the pusher, so that task should repeat every few minutes with one instance at a time. The
-  PC trusts the hub with its build as it already does with relay turns;
+  and the new build takes over: on Windows started by the scheduled task that runs the pusher, so that
+  task should repeat every few minutes with one instance at a time. On a Mac or Linux PC a pusher that
+  systemd or launchd runs (`INVOCATION_ID` is set, or `XPC_SERVICE_NAME` names a job) exits with 75,
+  for `Restart=on-failure` or `KeepAlive` to start the new file; any other starts it itself, with the
+  same arguments and writing to the same output. `AGENTHYDRA_CODEX_HUB_RESTART` says which: `exit` or
+  `spawn`. The PC trusts the hub with its build as it already does with relay turns;
   `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
 
 ### Usage across PCs (`POST /api/kit/sync`)
