@@ -253,8 +253,8 @@ def start(quiet: bool = False) -> int:
     if holder:
         # Say it and stop: bun would only die on EADDRINUSE and leave a log line to decode.
         print(f"port {port} is held by {holder}, which is not the orchestrator gateway. Free it, or move "
-              f"the gateway: package.json config.remotePort, then remote_tunnel.py --provision for both "
-              f"tunnels.", file=sys.stderr)
+              f"the gateway: package.json config.remotePort, then remote_tunnel.py --provision for every "
+              f"named tunnel.", file=sys.stderr)
         return 4
     bun = _bun()
     if not bun:

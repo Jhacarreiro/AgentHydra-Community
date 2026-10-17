@@ -381,52 +381,43 @@ bun run remote                          # the same gateway, in the foreground
 bun run remote:test                     # the gateway's own tests (auth gate, CSRF guard, relay, switch)
 ```
 
-### The permanent addresses
+### A permanent address: a named tunnel on your own zone
 
-Each machine gets ONE named Cloudflare tunnel on `lunarwerx.com`, provisioned by
-`orchestrator/scripts/remote_tunnel.py`. Named, not quick: the hostname never rotates, it resolves on
-networks that DNS-block `trycloudflare.com`, and sign-in completes on the daemon's own
-`/oauth/callback` with no relay hop.
+`orchestrator/scripts/remote_tunnel.py` provisions ONE named Cloudflare tunnel per machine on a
+zone you own. Named, not quick: the hostname never rotates, it resolves on networks that
+DNS-block `trycloudflare.com`, and sign-in completes on the gateway's own `/oauth/callback` with
+no relay hop. Nothing about the account or zone is built in; every Cloudflare call takes them
+from the environment:
 
-| machine | address | tunnel |
-| --- | --- | --- |
-| the other owner | `https://orch-<name>.lunarwerx.com` | `orch-<name>` |
-| the owner | `https://orch-<other>.lunarwerx.com` | `orch-<other>` |
+| variable | what it is |
+| --- | --- |
+| `CF_ACCOUNT_ID` | the Cloudflare account that holds the tunnels |
+| `CF_ZONE_ID` | the zone the hostnames live on |
+| `CF_ZONE_NAME` | that zone's name, e.g. `example.com` |
+| `CLOUDFLARE_API_TOKEN` (or `CF_API_TOKEN`) | a token with Account:Cloudflare Tunnel:Edit and Zone:DNS:Edit on that zone |
 
-```sh
-python scripts/remote_tunnel.py --status                          # what this machine is set to
-```
-
-**Setting up the second machine, start to finish.** Both tunnels and both DNS records already
-exist, and both callbacks are already registered on the OAuth app, so nothing here touches
-Cloudflare's configuration - the machine only needs its own connector credential.
+A command that needs one of them and finds it missing says which and exits 2. `--status`,
+`--import-token` and `--edge-interface` need none.
 
 ```sh
-git clone https://github.com/LunarWerxs/AgentHydra.git && cd AgentHydra/app
-bun install && bun run --cwd orchestrator remote:build
-cd orchestrator
-python scripts/remote_tunnel.py --install-token --name orch-<other>   # needs CLOUDFLARE_API_TOKEN
-powershell -File scripts\tray.ps1 -InstallShortcut -Startup         # the icon, and at every login
+python scripts/remote_tunnel.py --status                              # what this machine is set to
+python scripts/remote_tunnel.py --provision --name orch-<machine> --dry-run
+python scripts/remote_tunnel.py --provision --name orch-<machine>     # tunnel, ingress, DNS, token
+powershell -File scripts\tray.ps1 -InstallShortcut -Startup             # the icon, and at every login
 ```
 
-(The orchestrator is a folder of the AgentHydra repo since 2026-09-03; a machine that still has
-the old standalone checkout follows "Moving a machine off the standalone checkout" above instead
-of cloning anything.)
+`--provision` creates (or reuses) the tunnel, points its ingress at the gateway's port, creates
+the proxied `orch-<machine>.<your zone>` CNAME, and stores the connector token here. Add
+`https://orch-<machine>.<your zone>/oauth/callback` to your OAuth client's redirect URIs, turn
+Remote access on from the icon, and claim the install with a sign-in at the machine
+(`http://127.0.0.1:7794`). Until a connector runs the hostname answers Cloudflare 530, which is
+the correct "provisioned, nobody home" state and not a fault.
 
-`--install-token` needs a Cloudflare API token in the environment (Account:Cloudflare Tunnel:Edit).
-Through the Connections MCP it can be leased without anyone seeing it:
-
-```sh
-connections_execute { local: true, tool_name: "shell", params: {
-  command: "python scripts/remote_tunnel.py --install-token --name orch-<other>",
-  secrets: [{ service: "cloudflare", as: "CLOUDFLARE_API_TOKEN" }] } }
-```
-
-With no Cloudflare access on that machine, run `--export-token <file> --name orch-<other>` here,
-hand the file over out of band, and `--import-token <file>` there - it shreds the file after
-reading it. Then start the icon and sign in at `https://orch-<other>.lunarwerx.com`; the first
-verified sign-in claims that install. Until a connector runs there the hostname answers
-Cloudflare 530, which is the correct "provisioned, nobody home" state and not a fault.
+**Another machine's tunnel.** `--provision --name orch-<other> --no-install` sets up a tunnel
+without fetching its token, so it cannot take over that machine's own config; on that machine
+`--install-token --name orch-<other>` fetches it. With no Cloudflare access there, run
+`--export-token <file> --name orch-<other>` here, hand the file over out of band, and
+`--import-token <file>` there - it shreds the file after reading it.
 
 **Behind a full-tunnel VPN** the hostname can stay at 530 with the gateway up: cloudflared reaches
 Cloudflare's edge on port 7844 (QUIC, then HTTP/2), and a VPN that drops it leaves every dial timing
@@ -435,16 +426,15 @@ connector to that network card: the gateway binds cloudflared to the card's curr
 every start (it follows DHCP), so the tunnel goes out the card while everything else stays on the VPN.
 `--edge-interface off` undoes it; `--status` shows it.
 
-⛔ **One label only.** `lunarwerx.com` is on Cloudflare's free plan, whose Universal SSL
-certificate covers `lunarwerx.com` and `*.lunarwerx.com` and nothing deeper (verified: those are
-the cert's only SANs). `<name>.orch.lunarwerx.com` would resolve and then fail the TLS
-handshake in every browser, which reads as "the site is broken". `remote_tunnel.py` refuses a
-two-level name rather than shipping one that cannot serve.
+⛔ **One label only.** Cloudflare's Universal SSL certificate, the one every plan gets, covers
+`example.com` and `*.example.com` and nothing deeper. `<name>.orch.example.com` would resolve and
+then fail the TLS handshake in every browser, which reads as "the site is broken".
+`remote_tunnel.py` refuses a two-level name rather than shipping one that cannot serve.
 
 ⛔ **One connector per tunnel.** Two machines running the same tunnel is a load-balanced pair,
 not a failover - Cloudflare splits requests between them and half the dashboard hits land on the
-wrong computer. That is why each brother gets his own tunnel and `--provision --no-install`
-exists for setting up the other machine's without stealing its token.
+wrong computer. That is why each machine gets its own tunnel and `--provision --no-install`
+exists for setting up another machine's without stealing its token.
 
 The connector token is a credential and never leaves the machine that runs it: `remote_tunnel.py`
 fetches it inside its own process, writes it to the gitignored, ACL-restricted
@@ -510,7 +500,7 @@ in `state/remote/config.json` (or `CF_TUNNEL_TOKEN` in the env), and add
 serves loopback only. The port is written once, in `package.json` `config.remotePort` (7794;
 7793 is HSwarm's shared MCP server and 7790 was ZSwarm's, retired 2026-10-03), and
 `ORCH_REMOTE_PORT` overrides it for one run. Moving it means re-running
-`scripts/remote_tunnel.py --provision` for both named tunnels, whose Cloudflare ingress names the
+`scripts/remote_tunnel.py --provision` for every named tunnel, whose Cloudflare ingress names the
 port. A connector token that leaked (a log, a chat, a file that went somewhere) is retired with
 `scripts/remote_tunnel.py --rotate --name <tunnel>`: a new tunnel secret, so the old token stops
 working, and the new token stored here.

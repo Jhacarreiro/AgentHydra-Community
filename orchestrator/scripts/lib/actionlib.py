@@ -472,7 +472,7 @@ CATALOG: dict[str, dict] = {
         "invocation": "direct",
         "platforms": "any",
         "guards": (),
-        "result": "0 ok - 1 a Cloudflare call failed - 2 no API token in the environment - 3 bad arguments - 4 nothing configured yet",
+        "result": "0 ok - 1 a Cloudflare call failed - 2 the API token or CF_ACCOUNT_ID, CF_ZONE_ID or CF_ZONE_NAME missing from the environment - 3 bad arguments - 4 nothing configured yet",
         "availability": "available",
         "summary": "act (machine config): THE PERMANENT ADDRESS - provision, inspect or",
     },

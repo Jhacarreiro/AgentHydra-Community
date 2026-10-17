@@ -6,7 +6,7 @@ that never changes.
 WHY A NAMED TUNNEL AND NOT THE QUICK ONE. A Quick Tunnel gets a fresh
 `*.trycloudflare.com` name on every start, so the gateway has to announce itself to a relay
 just to be findable, and trycloudflare is widely DNS-blocked (abuse), so a phone on a filtered
-network cannot reach it at all. A named tunnel is a hostname on a zone we own: stable across
+network cannot reach it at all. A named tunnel is a hostname on a zone you own: stable across
 restarts, resolvable everywhere, and it completes the OAuth dance on its OWN /oauth/callback
 with no relay in the path.
 
@@ -18,25 +18,26 @@ prefix of the token so two machines can be compared without either side revealin
 
 ⛔ ONE TUNNEL PER MACHINE. Two connectors on one tunnel is a load-balanced pair, not a
 failover - Cloudflare will split requests between them and half your dashboard hits land on
-the wrong computer. Each owner gets their own tunnel and their own hostname.
+the wrong computer. Each machine gets its own tunnel and its own hostname.
 
-AUTHENTICATION: a Cloudflare API token in CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) with
-Account:Cloudflare Tunnel:Edit and Zone:DNS:Edit on the target zone. Through the Connections
-MCP the credential can be leased value-blind:
-    connections_execute { local: true, tool_name: "shell", params: {
-      command: "python scripts/remote_tunnel.py --provision --name orch-<name>",
-      secrets: [{ service: "cloudflare", as: "CLOUDFLARE_API_TOKEN" }] } }
+YOUR ACCOUNT AND ZONE, FROM THE ENVIRONMENT. Nothing is built in; every Cloudflare call needs
+    CF_ACCOUNT_ID         the Cloudflare account that holds the tunnels
+    CF_ZONE_ID            the zone the hostnames live on
+    CF_ZONE_NAME          that zone's name, e.g. example.com
+and a Cloudflare API token in CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) with
+Account:Cloudflare Tunnel:Edit and Zone:DNS:Edit on that zone. --status, --import-token and
+--edge-interface need none of them.
 
 Usage: python scripts/remote_tunnel.py --status
        python scripts/remote_tunnel.py --provision --name orch-<name> [--hostname H] [--dry-run]
-       python scripts/remote_tunnel.py --provision --name orch-<other> --no-install   (the sibling's)
+       python scripts/remote_tunnel.py --provision --name orch-<other> --no-install   (another machine's)
        python scripts/remote_tunnel.py --install-token --name orch-<name>
        python scripts/remote_tunnel.py --rotate --name orch-<name> [--no-install]   (a leaked token)
        python scripts/remote_tunnel.py --export-token <file> --name orch-<other>
        python scripts/remote_tunnel.py --import-token <file>
        python scripts/remote_tunnel.py --edge-interface Ethernet | off   (a VPN blocks the edge)
-Exit:  0 ok - 1 a Cloudflare call failed - 2 no API token in the environment -
-       3 bad arguments - 4 nothing configured yet.
+Exit:  0 ok - 1 a Cloudflare call failed - 2 the API token or CF_ACCOUNT_ID, CF_ZONE_ID or
+       CF_ZONE_NAME missing from the environment - 3 bad arguments - 4 nothing configured yet.
 
 --export-token writes ONE credential to ONE file for hand-delivery to the other machine. It
 refuses any path inside this repo that git does not ignore, so a token cannot land somewhere a
@@ -68,27 +69,27 @@ from remote import gateway_port
 
 REPO = Path(__file__).resolve().parents[1]
 
-# The LunarWerx zone the internal tools live on. Both are non-secret identifiers.
-DEFAULT_ACCOUNT_ID = "36d7c731fd0352ef08ea7e46d2d20793"
-DEFAULT_ZONE_ID = "2b92ad2039f113c2bdf96f2e6208631e"
-DEFAULT_ZONE_NAME = "lunarwerx.com"
 API = "https://api.cloudflare.com/client/v4"
 
 # The gateway's local port - the tunnel's only ingress target. Read from the one place it is
 # written (package.json config.remotePort), so moving the port and re-running --provision for
-# both tunnels is the whole job.
+# every tunnel is the whole job.
 GATEWAY_PORT = gateway_port()
 
-# ⛔ ONE LABEL ONLY. lunarwerx.com is on Cloudflare's FREE plan, whose Universal SSL
-# certificate covers `lunarwerx.com` and `*.lunarwerx.com` - ONE level. A two-level name like
-# `<name>.orch.lunarwerx.com` resolves and then fails the TLS handshake in every browser,
-# which reads as "the site is broken" rather than "you need Advanced Certificate Manager".
-# Refuse it here instead of shipping a hostname that cannot serve.
+# ⛔ ONE LABEL ONLY. Cloudflare's Universal SSL certificate, the one every plan gets, covers
+# `example.com` and `*.example.com` - ONE level. A two-level name like `<name>.orch.example.com`
+# resolves and then fails the TLS handshake in every browser, which reads as "the site is broken"
+# rather than "you need Advanced Certificate Manager". Refuse it here instead of shipping a
+# hostname that cannot serve.
 HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class CfError(RuntimeError):
     pass
+
+
+class NotConfigured(RuntimeError):
+    """A setting every Cloudflare call needs is missing from the environment (exit 2)."""
 
 
 def _state_dir() -> Path:
@@ -105,11 +106,9 @@ def _token() -> str:
         v = (os.environ.get(var) or "").strip()
         if v:
             return v
-    raise SystemExit(
-        "no Cloudflare API token in the environment (CLOUDFLARE_API_TOKEN).\n"
-        "  Through the Connections MCP, lease it value-blind:\n"
-        '    shell { command: "python scripts/remote_tunnel.py ...",\n'
-        '            secrets: [{ service: "cloudflare", as: "CLOUDFLARE_API_TOKEN" }] }'
+    raise NotConfigured(
+        "no Cloudflare API token in the environment (CLOUDFLARE_API_TOKEN or CF_API_TOKEN), with\n"
+        "  Account:Cloudflare Tunnel:Edit and Zone:DNS:Edit on your zone"
     )
 
 
@@ -145,16 +144,23 @@ def _api(method: str, path: str, body: dict | None = None) -> dict:
     return payload
 
 
+def _setting(var: str, what: str) -> str:
+    v = (os.environ.get(var) or "").strip()
+    if not v:
+        raise NotConfigured(f"{var} is not set: {what}")
+    return v
+
+
 def _account() -> str:
-    return (os.environ.get("CF_ACCOUNT_ID") or DEFAULT_ACCOUNT_ID).strip()
+    return _setting("CF_ACCOUNT_ID", "the id of the Cloudflare account that holds the tunnels")
 
 
 def _zone() -> str:
-    return (os.environ.get("CF_ZONE_ID") or DEFAULT_ZONE_ID).strip()
+    return _setting("CF_ZONE_ID", "the id of the zone the hostnames live on")
 
 
 def _zone_name() -> str:
-    return (os.environ.get("CF_ZONE_NAME") or DEFAULT_ZONE_NAME).strip()
+    return _setting("CF_ZONE_NAME", "the name of that zone, e.g. example.com")
 
 
 def fingerprint(value: str) -> str:
@@ -284,8 +290,8 @@ def cmd_status() -> int:
     cfg = load_config()
     t = cfg.get("tunnel") or {}
     if not t.get("hostname"):
-        print("no named tunnel configured on this machine - the gateway falls back to a")
-        print("rotating Quick Tunnel plus the relay's permanent address.")
+        print("no named tunnel configured on this machine - with sign-in configured, the gateway falls")
+        print("back to a rotating Quick Tunnel plus your relay's permanent address.")
         print("  provision one:  python scripts/remote_tunnel.py --provision --name orch-<you>")
         return 4
     print(f"named tunnel: {t.get('tunnelName') or '?'}")
@@ -316,10 +322,10 @@ def cmd_edge_interface(card: str) -> int:
 
 
 def cmd_provision(name: str, hostname: str | None, dry_run: bool, install: bool = True) -> int:
-    """`install=False` provisions a tunnel THIS machine will not run - the sibling's. It creates
+    """`install=False` provisions a tunnel THIS machine will not run - another machine's. It creates
     the tunnel, its ingress and its DNS record and stops there, deliberately never fetching the
-    connector token, so provisioning one owner's address from the other's desk cannot overwrite
-    that owner's own tunnel config (one connector per tunnel: two would load-balance the hostname
+    connector token, so provisioning one machine's address from another's desk cannot overwrite
+    that machine's own tunnel config (one connector per tunnel: two would load-balance the hostname
     across both computers and half the dashboard hits would land on the wrong one)."""
     label = name if hostname is None else hostname.split(".")[0]
     if not HOSTNAME_RE.match(label):
@@ -328,8 +334,8 @@ def cmd_provision(name: str, hostname: str | None, dry_run: bool, install: bool 
     host = hostname or f"{name}.{_zone_name()}"
     if host.count(".") != _zone_name().count(".") + 1:
         print(f"⛔ {host} is not a ONE-LEVEL subdomain of {_zone_name()}.", file=sys.stderr)
-        print("   The zone is on Cloudflare's free plan, whose Universal SSL certificate covers", file=sys.stderr)
-        print("   only one level. A deeper name resolves and then fails the TLS handshake.", file=sys.stderr)
+        print("   Cloudflare's Universal SSL certificate covers only one level. A deeper name", file=sys.stderr)
+        print("   resolves and then fails the TLS handshake.", file=sys.stderr)
         return 3
     if dry_run:
         print("DRY RUN - nothing was created.")
@@ -366,7 +372,7 @@ def cmd_provision(name: str, hostname: str | None, dry_run: bool, install: bool 
     print(f"  token stored in {_config_path()}  (sha256:{fingerprint(tok)}, never printed)")
     print()
     print(f"PERMANENT ADDRESS: https://{host}")
-    print("  Add it to the OAuth app's redirect URIs as https://" + host + "/oauth/callback,")
+    print("  Add it to your OAuth client's redirect URIs as https://" + host + "/oauth/callback,")
     print("  then restart the gateway (the tray icon's 'Restart remote access').")
     return 0
 
@@ -388,7 +394,7 @@ def cmd_rotate(name: str, install: bool = True) -> int:
     """A new tunnel secret, so every copy of the old connector token stops working: the command for
     a token that leaked (a log, a chat transcript, an export file that went somewhere). Cloudflare
     drops connectors still holding the old token, so the machine that runs the tunnel takes the new
-    one here (`--no-install` for the sibling's tunnel: that machine runs --install-token)."""
+    one here (`--no-install` for another machine's tunnel: that machine runs --install-token)."""
     tunnel = find_tunnel(name)
     if not tunnel:
         print(f"no tunnel named {name!r} on this account - run --provision first", file=sys.stderr)
@@ -563,6 +569,12 @@ def main(argv: list[str]) -> int:
     except CfError as err:
         print(f"Cloudflare: {err}", file=sys.stderr)
         return 1
+    except NotConfigured as err:
+        print(f"{err}.", file=sys.stderr)
+        print("  This script takes your Cloudflare account and zone from the environment: CF_ACCOUNT_ID,",
+              file=sys.stderr)
+        print("  CF_ZONE_ID, CF_ZONE_NAME and CLOUDFLARE_API_TOKEN (see --help).", file=sys.stderr)
+        return 2
     print("nothing to do - see --help", file=sys.stderr)
     return 3
 
