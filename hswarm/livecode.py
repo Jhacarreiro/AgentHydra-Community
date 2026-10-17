@@ -31,9 +31,9 @@ PACKAGE = Path(__file__).resolve().parent
 MARKER = ".hswarm-code.json"  # written last into a copy: a folder without it is an export that never finished
 KEEP = 3  # copies kept besides the current one and the running one (prune)
 # Every module a server loads before it binds its port (the same list a copy is checked against before it is served):
-# `hswarm mcp --http` goes through cli (clihelp, commands, install), fleetstats, then serve()'s mcp_server, verdict and
-# console (settings, ledger).
-START_IMPORTS = "import hswarm.cli, hswarm.fleetstats, hswarm.mcp_server, hswarm.verdict, hswarm.console"
+# `hswarm mcp --http` goes through cli (clihelp, commands, install), then serve()'s mcp_server, verdict and console
+# (settings, ledger).
+START_IMPORTS = "import hswarm.cli, hswarm.mcp_server, hswarm.verdict, hswarm.console"
 # config._BOOTSTRAP's command, spelled here because this module imports no other: run the hswarm package found in
 # argv[1] as `python -m hswarm`, whatever the working folder.
 BOOTSTRAP = ("import sys,runpy;sys.path.insert(0,sys.argv[1]);sys.argv[1:2]=[];"

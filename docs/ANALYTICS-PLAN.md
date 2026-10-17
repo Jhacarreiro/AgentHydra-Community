@@ -60,7 +60,6 @@ All storage sizes are on this PC.
 - `context-size.ts` is referenced only by its own test, so it is dead in production.
 - `rate-limit-*.ts` classifies limit stops.
 - `extra-usage.ts` is a guard that kills sessions; it records nothing.
-- `fleetstats.py` sends anonymous pings and stores nothing locally.
 - `session-keepalive.ts` reads the CLI's `total_cost_usd` for keepalive notes only.
 
 ### 1.3 Price tables (four)

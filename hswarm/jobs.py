@@ -1699,14 +1699,6 @@ class JobManager:
         await asyncio.to_thread(survival.score_due)
         job.save()
         job._done.set()
-        from . import fleetstats  # counts only: how many tasks, how many came back ok (fleetstats.py)
-
-        fleetstats.send(
-            "job_done",
-            tasks=len(job.results),
-            ok=sum(1 for r in job.results.values() if getattr(r, "status", "") == "ok"),
-            state=job.state,
-        )
 
     # ---- query ----------------------------------------------------------------
 
