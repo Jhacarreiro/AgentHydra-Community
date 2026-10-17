@@ -1,8 +1,7 @@
 /**
  * Persistent daemon log — tees console output to <configDir>/logs/daemon.log.
  *
- * SHARED LunarWerx server-lib (source of truth: lunarwerx-ui/src/server-lib/log-file.mjs; synced
- * into each app's server root by sync.mjs, alongside instance-pointer/find-free-port/etc.). The
+ * A server lib maintained in this repository, alongside instance-pointer/find-free-port/etc. The
  * config dir is passed IN by the caller — each app computes its own (REPOYETI_HOME / DEVWEBUI_HOME
  * / REDESIGN_HOME / AGENTHYDRA_HOME, else ~/.<app>) — so this file stays app-agnostic and depends
  * on nothing but node builtins. That matters: it must run as the very FIRST thing at startup,

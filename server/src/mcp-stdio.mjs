@@ -1,6 +1,6 @@
 // LunarWerx shared MCP engine, the canonical JSON-RPC 2.0 / MCP dispatch + newline-delimited
-// stdio loop, shared by every sibling app's MCP server (RepoYeti, Reimagine, ...). Synced verbatim
-// into each app's server tree by sync.mjs; edit HERE, never the synced copies.
+// stdio loop, written to be shared by every sibling app's MCP server (RepoYeti, Reimagine, ...).
+// Maintained in this repository.
 //
 // Zero dependencies and runtime-agnostic (runs identically under Bun and Node): it touches only
 // `process.stdin` / `process.stdout` and, indirectly, whatever the caller's tools do. Each app

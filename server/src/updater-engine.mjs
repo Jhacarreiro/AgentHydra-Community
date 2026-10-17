@@ -14,8 +14,8 @@
  *   run               optional; runs each command instead of the engine's own spawn (an app whose
  *                     daemon serves every route on one thread passes an off-thread runner)
  *
- * runtime-agnostic (Bun + Node): node:child_process spawn runs in both. Part of the
- * shared kit, keep it app-agnostic.
+ * runtime-agnostic (Bun + Node): node:child_process spawn runs in both. Maintained in
+ * this repository; keep it app-agnostic, the app specifics are the parameters above.
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";

@@ -1,6 +1,6 @@
 # AgentHydra system-tray host (Windows). THIN ADAPTER over the shared LunarWerx
-# tray-host engine (misc\Tray-Host.ps1, kit-synced — DO NOT EDIT THAT FILE HERE; edit
-# lunarwerx-ui/src/tray-host/Tray-Host.ps1 and run `node sync.mjs`). This file's only job
+# tray-host engine (misc\Tray-Host.ps1, maintained in this repository; keep it app-agnostic
+# and put AgentHydra's specifics here). This file's only job
 # is to declare what makes AgentHydra different from its siblings (ReDesign/RepoYeti/
 # DevWebUI) — mutex name, daemon start command, shutdown protocol, icon, etc. — as a
 # $TrayConfig hashtable, then hand off to the engine. See Tray-Host.ps1's header comment
@@ -114,7 +114,7 @@ $TrayConfig = @{
   WorkerWaitSec        = 15
 }
 
-# Dot-source the shared engine (kit-synced copy — never edit in-place) and hand off.
+# Dot-source the shared engine (app-agnostic: AgentHydra's specifics stay above) and hand off.
 . (Join-Path $scriptDir "Tray-Host.ps1")
 
 if ($SelfTest) {

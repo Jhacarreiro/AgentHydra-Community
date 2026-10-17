@@ -6,8 +6,8 @@
  * a dev Vite proxy can follow it too. Best-effort throughout: a write/read failure
  * never blocks the daemon.
  *
- * Runtime-agnostic (Bun + Node). Synced from the shared kit, do not edit in an
- * app; the `.d.mts` sibling types the import for the TypeScript apps.
+ * Runtime-agnostic (Bun + Node). Maintained in this repository; the `.d.mts`
+ * sibling types the import for TypeScript.
  *
  * Per-app knobs:
  *   configDir    resolved dir that holds runtime.json (each app keeps its own

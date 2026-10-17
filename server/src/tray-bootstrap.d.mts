@@ -1,5 +1,6 @@
 // Types for tray-bootstrap.mjs — the shared "this build HAS a tray, and it is running" primitive.
-// Hand-written so the TypeScript apps get a typed import without depending on the kit's toolchain.
+// Hand-written so TypeScript callers get a typed import; maintained beside the .mjs in this
+// repository.
 
 /** The tray host's exe for one app, `<App>-Tray.exe`, paired with that app's `<App>-Tray.json`. */
 export function trayHostExeFor(configFile: string): string;

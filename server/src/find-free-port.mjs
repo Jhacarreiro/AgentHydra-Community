@@ -5,8 +5,8 @@
  * dies on a busy port; it just moves over. Promoted verbatim from DevWebUI's
  * server/src/ports.ts; RepoYeti's inline Bun.serve bind-loop adopts it too.
  *
- * Runtime-agnostic (Bun + Node). Synced from the shared kit, do not edit in
- * an app. (Reimagine intentionally does NOT use this: its launcher force-kills the
+ * Runtime-agnostic (Bun + Node). Maintained in this repository. (Reimagine
+ * intentionally does NOT use this: its launcher force-kills the
  * old instance and retries the SAME port, see the comment in its server.js.)
  */
 import net from "node:net";

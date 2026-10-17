@@ -1,7 +1,7 @@
 /**
  * Types for crash-sentinel.mjs - a per-launch run file that reveals an unclean previous exit, and
  * the safe-mode switch a relaunch uses to start without auto-start work. See the .mjs for why.
- * Synced from the shared kit, do not edit in an app.
+ * Maintained in this repository beside the .mjs; change both together.
  */
 
 export const SAFE_MODE_FLAG: "--safe-mode";

@@ -1,5 +1,5 @@
-// Running-instance pointer — thin per-app adapter over the shared kit factory
-// (`createInstancePointer`, synced in as `./instance-pointer.mjs`). The daemon records the
+// Running-instance pointer — thin per-app adapter over the shared factory
+// (`createInstancePointer` in `./instance-pointer.mjs`). The daemon records the
 // port it ACTUALLY bound in <CONFIG_DIR>/runtime.json so the tray launcher and the
 // /api/health probe can find it and enforce single-instance. Best-effort throughout.
 import { connect } from 'node:net'

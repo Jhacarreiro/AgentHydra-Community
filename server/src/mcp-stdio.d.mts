@@ -1,5 +1,5 @@
-// Types for the shared MCP engine (mcp-stdio.mjs). Hand-written so the TypeScript apps
-// (RepoYeti, DevWebUI) get a typed import without depending on bun-types/@types from the kit.
+// Types for the shared MCP engine (mcp-stdio.mjs). Hand-written so TypeScript callers get a
+// typed import without depending on bun-types/@types.
 
 /** One MCP tool as the engine consumes it: metadata for `tools/list` + a `run` for `tools/call`.
  *  Each app builds these as thin proxies to its own HTTP API (binding any backend into `run`). */

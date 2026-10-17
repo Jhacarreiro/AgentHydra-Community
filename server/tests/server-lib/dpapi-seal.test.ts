@@ -1,8 +1,5 @@
-// Tests for the shared DPAPI token-sealing lib (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/dpapi-seal.test.ts, synced by sync.mjs into each opting app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/dpapi-seal.mjs` import resolves only from that synced location — sync.mjs validates
-// the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared DPAPI token-sealing lib (server/src/dpapi-seal.mjs), which is maintained in
+// this repository.
 //
 // These pin the at-rest contract for the Connections refresh token: on Windows the token value is
 // DPAPI-sealed (opaque, machine+user-bound); everywhere else it degrades to a documented plaintext

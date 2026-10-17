@@ -1,9 +1,5 @@
-// Tests for the shared MCP stdio engine (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/mcp-stdio.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir). Imports the lib as "../../src/mcp-stdio.mjs",
-// so it is synced ONLY to apps whose `serverLib` === `serverRoot` (mcp-stdio sits at the server
-// root there); RepoYeti keeps its MCP engine in a `src/mcp/` subdir, so `../../src/mcp-stdio.mjs`
-// would not resolve and sync.mjs deliberately skips it there. NOT runnable inside the kit repo.
+// Tests for the shared MCP stdio engine (server/src/mcp-stdio.mjs), which is maintained in this
+// repository.
 //
 // Exercises the PURE dispatch surface (handleRpc / processLine / parseErrorResponse) plus, since
 // AH-10, the `runMcpStdio` concurrency/cancellation loop itself — driven against in-memory
@@ -199,8 +195,8 @@ async function waitUntil(check: () => boolean, what = "condition", timeoutMs = 1
 // the element really is missing, fail with "cannot read properties of undefined", which
 // says nothing about which index or how many there were. This says both.
 //
-// The kit repo has no tsconfig and never typechecks this file, so nothing here catches
-// that class of error before it reaches a consumer. See the note in sync.mjs.
+// server/tsconfig.json does not set that flag, so this repository's typecheck would not
+// catch that class of error either; the helper keeps the file clean under it all the same.
 function at<T>(arr: readonly T[], i: number, what: string): T {
   const v = arr[i];
   if (v === undefined) throw new Error(`${what}[${i}] is missing (length ${arr.length})`);

@@ -1,8 +1,5 @@
-// Tests for the shared self-update engine (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/updater-engine.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/updater-engine.mjs` import resolves only from that synced location — sync.mjs
-// validates the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared self-update engine (server/src/updater-engine.mjs), which is maintained in
+// this repository.
 //
 // Exercises the real engine against a scratch git remote + clone (no mocking of git/spawn) so the
 // stage-then-swap / rollback-on-failure path around applyUpdate() is verified against actual repo
@@ -21,7 +18,7 @@ import { createUpdater } from "../../src/updater-engine.mjs";
 // Every scratch dir (git remotes, clones, and per-test log/count dirs) is tracked here and
 // removed in afterEach — each run otherwise leaks 9 full git repos into the temp dir, which
 // accumulates unbounded on a long-lived CI runner. Mirrors the tempDir/tempHome + rmSync
-// pattern the sibling kit tests use.
+// pattern the sibling server-lib tests use.
 const dirs: string[] = [];
 function scratchDir(prefix: string): string {
   const d = mkdtempSync(join(tmpdir(), prefix));
@@ -34,7 +31,7 @@ function scratchDir(prefix: string): string {
 // a loaded machine it crosses bun's 5s default, and bun reports a hook timeout as
 // `(fail) (unnamed)` with no file and no hook name, which is the least actionable red a suite
 // can print. Hooks DO honour setDefaultTimeout() as well (measured on bun 1.4.0), but this file
-// is kit-synced into apps that may not set one, so it carries its own.
+// does not rely on a preload setting one, so it carries its own.
 afterEach(() => {
   for (const d of dirs.splice(0)) {
     try {
@@ -161,7 +158,7 @@ test("checkForUpdate + applyUpdate happy path: pulls, installs, builds, HEAD adv
   expect(after.dirty).toBe(false);
   // REAL git pull + install + build in a scratch repo: ~5s locally, and it repeatedly hit the 5s
   // default on a cold Windows CI runner (2026-07-16), then the 30s that replaced it under load
-  // (2026-10-03). See REAL_GIT_TEST_MS. (Push upstream to the kit source.)
+  // (2026-10-03). See REAL_GIT_TEST_MS.
 }, REAL_GIT_TEST_MS);
 
 // An app whose daemon serves every route on one thread passes `run`, its own off-thread runner
@@ -427,10 +424,9 @@ test("a diverged checkout is reported as an update that cannot fast-forward, and
   expect((await $`git -C ${local} rev-parse HEAD`.text()).trim()).toBe(headBefore);
   expect(existsSync(logPath)).toBe(false); // install/build never ran
   // real git — same widened timeout every spawning test in this file carries. ⛔ These last two
-  // tests shipped without it (2026-09-11): the kit has no repo-wide `bun test --timeout`, so the
-  // omission was invisible here and turned DevWebUI's "subprocess tests must set an explicit
-  // timeout" guardrail red the moment a sync carried them downstream. The kit is less strict than
-  // its consumers, and that asymmetry is exactly what sync.mjs warns about.
+  // tests shipped without it (2026-09-11), where no repo-wide `bun test --timeout` made the
+  // omission visible, and turned DevWebUI's "subprocess tests must set an explicit timeout"
+  // guardrail red the moment they were copied there. Each spawning test states its own bound.
 }, REAL_GIT_TEST_MS);
 
 test("a local branch with no remote counterpart follows the remote's HEAD branch, and apply pulls THAT branch", async () => {

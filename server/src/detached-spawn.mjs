@@ -2,11 +2,11 @@
  * Shared "detached launch" primitive for the LunarWerx daemons — the ONE place that knows how to
  * spawn a child process so it OUTLIVES the daemon (survives a tray Quit or an auto-update relaunch).
  *
- * WHY every kit app needs this: the shared tray host (lunarwerx-ui/src/tray-host/Tray-Host.ps1)
- * Quits by force tree-killing the daemon's whole process tree (`taskkill /PID <daemon> /T /F`), and
- * an auto-update relaunch kills+respawns the daemon the same way. So ANY child the daemon spawns
- * that is meant to keep running past that (a launched app instance, an external editor, a portable
- * chromeless window) must NOT be a descendant of the daemon.
+ * WHY the daemon needs this: the tray host (misc/Tray-Host.ps1, and the native host built from
+ * misc/tray-host-native) Quits by force tree-killing the daemon's whole process tree
+ * (`taskkill /PID <daemon> /T /F`), and an auto-update relaunch kills+respawns the daemon the same
+ * way. So ANY child the daemon spawns that is meant to keep running past that (a launched app
+ * instance, an external editor, a portable chromeless window) must NOT be a descendant of the daemon.
  *
  * The catch (all empirically verified 2026-07-12): on Windows neither `.unref()` nor Node/Bun
  * `detached:true` removes a child from the parent's process tree — a direct spawn is still reaped by
@@ -58,7 +58,7 @@
  * spawn plus whether to pass `detached:true` to the spawn call — always a fresh array, never the
  * caller's input. Pure + exported so the per-OS detach contract is locked by unit tests
  * (detached-spawn.test.ts). Runtime-agnostic (Bun + Node); the `.d.mts` sibling types the import for
- * the TypeScript apps. Synced from the shared kit — do not edit in an app.
+ * TypeScript. Maintained in this repository.
  */
 
 /**

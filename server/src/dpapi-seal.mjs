@@ -1,5 +1,5 @@
-// SHARED LunarWerx server-lib — source of truth: lunarwerx-ui/src/server-lib/dpapi-seal.mjs,
-// synced by sync.mjs into each opting app's server tree (edit HERE, then `node sync.mjs`).
+// Server lib maintained in this repository, typed by dpapi-seal.d.mts beside it and tested by
+// server/tests/server-lib/dpapi-seal.test.ts.
 //
 // DPAPI seal/unseal for the Connections OAuth refresh token AT REST (Windows).
 //

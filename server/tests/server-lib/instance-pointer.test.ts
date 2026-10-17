@@ -1,8 +1,5 @@
-// Tests for the shared running-instance pointer (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/instance-pointer.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/instance-pointer.mjs` import resolves only from that synced location — sync.mjs
-// validates the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared running-instance pointer (server/src/instance-pointer.mjs), which is
+// maintained in this repository.
 //
 // The daemon records the port it ACTUALLY bound in <configDir>/runtime.json so launchers can
 // reconnect. These tests pin the file round-trip, the core-fields-win merge rule, the update /

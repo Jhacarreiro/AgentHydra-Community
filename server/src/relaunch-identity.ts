@@ -118,10 +118,10 @@ export function applyRelaunchIdentity(
 }
 
 /**
- * The full argv of a relaunch successor: the shared kit's relaunch argv (runtime, script, user
- * flags, the port actually served, the relaunch flag) plus this daemon's identity. The identity is
- * appended here, outside buildRelaunchArgv, because that builder is synced from a kit and is not
- * edited in an app.
+ * The full argv of a relaunch successor: relaunch-argv.mjs's argv (runtime, script, user flags,
+ * the port actually served, the relaunch flag) plus this daemon's identity. The identity is
+ * appended here, outside buildRelaunchArgv, because that builder is app-agnostic and knows nothing
+ * of this daemon's store, home or config paths.
  */
 export function planRelaunchSuccessor(opts: {
   argv: readonly string[]

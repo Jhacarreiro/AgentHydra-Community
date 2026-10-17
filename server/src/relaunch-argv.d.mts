@@ -1,7 +1,7 @@
 /**
  * Types for relaunch-argv.mjs — the argv that relaunches this build of a daemon, pinned to the
  * port it is actually serving on. See the .mjs for the three failure modes it exists to prevent.
- * Synced from the shared kit, do not edit in an app.
+ * Maintained in this repository beside the .mjs; change both together.
  */
 
 export interface RelaunchArgvOptions {

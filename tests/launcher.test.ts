@@ -2,8 +2,8 @@
 // when run, boots the daemon and raises the system-tray icon (Open / Rebuild & Restart /
 // Restart / Quit). Windows-gated. Mirrors the sibling apps' launcher tests.
 //
-// AgentHydra-Tray.ps1 is now a THIN ADAPTER over the shared kit engine (misc/Tray-Host.ps1,
-// kit-synced — never edited here). Assertions are split accordingly:
+// AgentHydra-Tray.ps1 is now a THIN ADAPTER over the shared tray engine (misc/Tray-Host.ps1,
+// which stays app-agnostic). Assertions are split accordingly:
 //   - engine-invariant behavior (NotifyIcon-before-daemon ordering, mutex loser branch,
 //     hideTrayIcon gating/live-sync, Open-AppUi/portable-window plumbing) is asserted against
 //     Tray-Host.ps1, since that's what actually implements it now.
@@ -14,16 +14,16 @@
 // No assertion's INTENT was dropped in the split — see the per-test comments below for where
 // each pre-adapter assertion now lives.
 //
-// The launch chain itself is ALSO now kit-shared: the old per-app AgentHydra.vbs is DELETED
+// The launch chain itself is ALSO now shared: the old per-app AgentHydra.vbs is DELETED
 // in favor of the shared, zero-config Tray-Launch.vbs (auto-discovers the sibling *-Tray.ps1
 // adapter), and Create-Shortcut.ps1 is now a THIN ADAPTER that dot-sources the shared
-// New-TrayShortcut.ps1 engine. Both kit files are kit-synced — never edited here. Assertions
-// below were updated in place (not dropped) to target the new files/shape:
+// New-TrayShortcut.ps1 engine. Both engines stay app-agnostic. Assertions below were updated in
+// place (not dropped) to target the new files/shape:
 //   - "the .vbs launches the tray script" -> "Tray-Launch.vbs auto-discovers the tray adapter"
 //     (was a literal filename check against the deleted per-app .vbs; the shared launcher has
 //     no per-app filename in it by design, so the assertion now proves the discovery rule).
-//   - a new test proves the shared Tray-Launch.vbs + New-TrayShortcut.ps1 carry the kit-synced
-//     DO-NOT-EDIT header, mirroring the existing Tray-Host.ps1 header check.
+//   - a new test proves New-TrayShortcut.ps1 defines the entry point Create-Shortcut.ps1 calls,
+//     mirroring the Tray-Host.ps1 entry-point check.
 //   - a new test proves Create-Shortcut.ps1 dot-sources New-TrayShortcut.ps1 rather than
 //     re-inlining the shortcut-creation logic.
 //   - "the desktop shortcut points at wscript + the .vbs + the icon" still runs
@@ -40,9 +40,9 @@ const MISC = join(REPO_ROOT, 'misc')
 const APP = REPO_ROOT
 
 const TRAY = join(MISC, 'AgentHydra-Tray.ps1') // the adapter
-const ENGINE = join(MISC, 'Tray-Host.ps1') // the kit-synced shared tray engine
-const VBS = join(MISC, 'Tray-Launch.vbs') // the kit-synced shared launcher (replaces AgentHydra.vbs)
-const SHORTCUT_ENGINE = join(MISC, 'New-TrayShortcut.ps1') // the kit-synced shared shortcut engine
+const ENGINE = join(MISC, 'Tray-Host.ps1') // the shared tray engine
+const VBS = join(MISC, 'Tray-Launch.vbs') // the shared launcher (replaces AgentHydra.vbs)
+const SHORTCUT_ENGINE = join(MISC, 'New-TrayShortcut.ps1') // the shared shortcut engine
 const CREATE_SHORTCUT = join(MISC, 'Create-Shortcut.ps1') // the app's thin adapter over it
 const INSTANCE_VBS = join(MISC, 'Instance-Launch.vbs')
 const ICO = join(MISC, 'AgentHydra.ico')
@@ -64,9 +64,9 @@ function icoHasSmallFrame(path: string): boolean {
 
 describe.skipIf(!win)('tray launcher', () => {
   test('the launcher chain files all exist (adapter + shared engines + vbs + icon + daemon entry)', () => {
-    // was: TRAY/VBS/ICO/entry existence. Now also requires the kit-synced tray engine the
-    // adapter dot-sources, the kit-synced shared vbs launcher (replaces the deleted per-app
-    // .vbs), the kit-synced shortcut engine, and this app's thin Create-Shortcut.ps1 adapter —
+    // was: TRAY/VBS/ICO/entry existence. Now also requires the shared tray engine the
+    // adapter dot-sources, the shared vbs launcher (replaces the deleted per-app
+    // .vbs), the shared shortcut engine, and this app's thin Create-Shortcut.ps1 adapter —
     // a missing file anywhere in the chain means the shortcut can't be (re)built or run.
     expect(existsSync(TRAY)).toBe(true)
     expect(existsSync(ENGINE)).toBe(true)

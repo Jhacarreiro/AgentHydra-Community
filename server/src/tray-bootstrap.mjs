@@ -213,11 +213,11 @@ export async function trayHostProcessState({ spawnProbe, configFile }) {
         // ⛔ BOUNDED (2026-09-18). This probe had NO deadline of any kind: it awaited the stdout
         // drain and then `proc.exited`, and a drain ends when the PIPE closes, not when the child
         // does - so anything the probe spawned that inherited this handle held it open for as long
-        // as IT lived, and `trayHostProcessState` never returned. It is kit-shared, so that one
-        // unbounded await was copied into every product that vendors this file.
+        // as IT lived, and `trayHostProcessState` never returned. The file was shared then, so that
+        // one unbounded await had been copied into every product that vendored it.
         //
-        // Self-contained on purpose: this file ships into several apps and cannot import any one
-        // of their helpers. The race always settles, and the child is killed on the way out.
+        // Self-contained on purpose: this file imports none of the daemon's helpers, so it stays
+        // app-agnostic. The race always settles, and the child is killed on the way out.
         let timer
         const out = await Promise.race([
           new Response(proc.stdout).text(),

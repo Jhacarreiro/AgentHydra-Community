@@ -40,7 +40,7 @@
  * most once. `safeMode: true` relaunches quiet (crash-sentinel.mjs), `false` is "Restart
  * normally", and leaving it unset carries the current mode across an update relaunch.
  *
- * Runtime-agnostic (Bun + Node) and pure. Synced from the shared kit, do not edit in an app.
+ * Runtime-agnostic (Bun + Node) and pure. Maintained in this repository.
  */
 
 /**

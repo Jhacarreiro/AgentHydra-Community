@@ -136,7 +136,7 @@ export async function resolveMiscAsset(
       reason: 'missing',
       error:
         `${onDisk} is missing from this checkout. It is not a compiled build, so there is no ` +
-        'embedded copy to fall back to - restore the file (the kit syncs misc\\, see lunarwerx-ui).',
+        'embedded copy to fall back to - restore the file into misc\\ (it is tracked in git).',
     }
 
   const embedded = deps.embedded !== undefined ? deps.embedded : embeddedMiscFiles()

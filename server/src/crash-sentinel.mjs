@@ -29,7 +29,7 @@
  *
  * Runtime-agnostic (Bun + Node), synchronous (runs once at startup over a few tiny files), and it
  * never throws: a sentinel that cannot be written must not stop the daemon from starting.
- * Synced from the shared kit, do not edit in an app.
+ * Maintained in this repository.
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";

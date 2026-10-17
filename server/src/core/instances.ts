@@ -368,12 +368,12 @@ export interface InstanceLaunch {
  * is NOT a descendant of this daemon, so quitting AgentHydra can't take the instance with it.
  *
  * WHY this matters: the Windows tray host quits by tree-killing the daemon's whole process tree
- * (`taskkill /PID <daemon> /T /F`, see lunarwerx-ui/src/tray-host/Tray-Host.ts). A Claude Desktop
+ * (`taskkill /PID <daemon> /T /F`, see misc/Tray-Host.ps1). A Claude Desktop
  * launched as a direct child of the daemon (plain `Bun.spawn([binary, ...args]).unref()`) is IN
  * that tree, so Quit drags the whole instance down with it.
  *
- * The Windows `cmd /c start ""` hand-off and the POSIX `detached:true` are the shared kit primitive
- * (buildDetachedSpawn — see server-lib/detached-spawn.mjs, which documents why `.unref()` /
+ * The Windows `cmd /c start ""` hand-off and the POSIX `detached:true` are the shared primitive
+ * (buildDetachedSpawn — see server/src/detached-spawn.mjs, which documents why `.unref()` /
  * `detached:true` don't break the Windows tree). The ONE app-specific twist here is darwin: we hand
  * the launch to LaunchServices via `open` (which locates + launches Claude Desktop itself, never as
  * our child) instead of spawning the resolved binary — so darwin is handled here and everything else

@@ -1444,7 +1444,7 @@ function relaunchDaemon(): Promise<boolean> {
 
 function spawnRelaunchSuccessor(): void {
   // In a compiled binary process.argv is ['bun', '<virtual embedded path>', ...realArgs] — a
-  // placeholder pair, NOT respawnable. The shared kit builder handles that, pins the port we are
+  // placeholder pair, NOT respawnable. The shared builder handles that, pins the port we are
   // actually SERVING on (never the preferred one), and keeps the argv a fixed point so it cannot
   // grow by two tokens on every update. No `command` here: main.ts's daemon mode takes no verb.
   // The identity (store, home, config paths) rides there too, as `--handoff-env`: a side-run's

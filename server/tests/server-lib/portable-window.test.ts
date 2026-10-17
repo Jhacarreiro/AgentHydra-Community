@@ -1,8 +1,5 @@
-// Tests for the shared portable-window opener (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/portable-window.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/portable-window.mjs` import resolves only from that synced location — sync.mjs
-// validates the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared portable-window opener (server/src/portable-window.mjs), which is maintained
+// in this repository.
 //
 // Scope note: openPortableWindow SPAWNS a real, detached browser window — an intolerable side
 // effect in an automated run — so it is deliberately NOT exercised here. Only the pure,

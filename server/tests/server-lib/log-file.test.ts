@@ -1,8 +1,5 @@
-// Tests for the shared daemon self-log (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/log-file.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/log-file.mjs` import resolves only from that synced location — sync.mjs validates
-// the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared daemon self-log (server/src/log-file.mjs), which is maintained in this
+// repository.
 //
 // The daemon self-logs its console output to <CONFIG_DIR>/logs/daemon.log so a crash reason
 // survives the (hidden-console) process. These tests pin the two things that make it useful:

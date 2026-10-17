@@ -13,7 +13,7 @@ import { createUpdater, type UpdateApplyResult, type UpdateStatus } from './upda
 
 export type { UpdateApplyResult, UpdateStatus }
 
-// Pre-rename override kept working. The shared kit engine takes a SINGLE env-var name, so mirror
+// Pre-rename override kept working. The shared engine takes a SINGLE env-var name, so mirror
 // the legacy spelling forward here rather than fork updater-engine.mjs for one alias.
 if (!process.env.AGENTHYDRA_UPDATE_REPO && process.env.CCMANAGERUI_UPDATE_REPO) {
   process.env.AGENTHYDRA_UPDATE_REPO = process.env.CCMANAGERUI_UPDATE_REPO
@@ -46,7 +46,7 @@ const gitUpdater = createUpdater({
 /** `fresh` bypasses the compiled path's 5-minute result cache, for a check a PERSON asked for.
  *  It is only meaningful there: the source path shells out to git on every call and holds no
  *  cache, so it is already as fresh as it can be and the flag is silently irrelevant rather than
- *  ignored. The shared kit engine's signature is untouched either way. */
+ *  ignored. The shared engine's signature is untouched either way. */
 export function checkForUpdate(opts: { fresh?: boolean } = {}): Promise<UpdateStatus> {
   return IS_RELEASE ? ghCheckForUpdate(opts) : gitUpdater.checkForUpdate()
 }
@@ -55,8 +55,8 @@ export async function applyUpdate(): Promise<UpdateApplyResult> {
   // The compiled path publishes its own fine-grained progress (it owns the download loop).
   if (IS_RELEASE) return ghApplyUpdate()
 
-  // The source path cannot: git pull / `bun install` / the web build all run inside the shared kit
-  // engine, which is synced and not ours to instrument. So report the phase honestly and say why it
+  // The source path cannot: git pull / `bun install` / the web build all run inside the shared
+  // engine, which reports no progress of its own. So report the phase honestly and say why it
   // is slow, rather than leaving a mute spinner over several minutes of real work — that silence is
   // the whole complaint. Coarse and true beats precise and invented.
   beginUpdateProgress('Starting the update…')

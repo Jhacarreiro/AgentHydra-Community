@@ -2,7 +2,7 @@
  * Shared cross-site (CSRF) guard for the LunarWerx loopback daemons. Rejects browser cross-site
  * requests (Sec-Fetch-Site: cross-site, a present non-loopback Origin/Host) while letting
  * same-origin, same-site (dev), and non-browser (curl/tray/MCP) requests through. Wiring is
- * app-local — see loopback-guard.mjs. Synced from the shared kit; do not edit in an app.
+ * app-local — see loopback-guard.mjs. Maintained beside it in this repository.
  */
 import type { MiddlewareHandler } from "hono";
 

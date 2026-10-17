@@ -17,9 +17,10 @@
 //    part worth reporting; resurrecting a stale "downloading 40%" after a relaunch would be a lie.
 //
 // The compiled path can be specific (it owns its own download loop, so it reports real bytes). The
-// source path cannot: `git pull` / `bun install` / the web build run inside the shared kit engine
-// (updater-engine.mjs, synced — not ours to edit), so it reports the coarse phase it is in and an
-// honest note about why that phase can take minutes. Coarse and true beats precise and invented.
+// source path cannot: `git pull` / `bun install` / the web build run inside the shared engine
+// (updater-engine.mjs, which reports no progress of its own), so it reports the coarse phase it is
+// in and an honest note about why that phase can take minutes. Coarse and true beats precise and
+// invented.
 
 /** Where an apply currently is. `idle` means nothing has run since the daemon booted. */
 export type UpdatePhase =

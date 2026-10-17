@@ -4,7 +4,7 @@
 // AGENTHYDRA_URL / AGENTHYDRA_PORT.
 //
 // The JSON-RPC 2.0 / MCP protocol + the stdio loop live in the SHARED, zero-dependency engine
-// `./mcp-stdio.mjs` (part of the shared kit — edit it there, never here). This file is only the
+// `./mcp-stdio.mjs`, which knows no AgentHydra tool. This file is only the
 // app-specific part: an HTTP client + a tool table, each tool a thin proxy over an existing
 // /api/* route from index.ts. Beyond the sessions/queue/accounts/scheduler/instances/update tools,
 // this also exposes the usage-check subsystem (check_usage / check_my_usage — any agent can read
@@ -2506,8 +2506,8 @@ export const RENAMED_TOOLS: Readonly<Record<string, string>> = Object.fromEntrie
   ]),
 )
 
-/** `tools` with old names answered: the stdio engine (shared server-lib mcp-stdio.mjs, synced from
- *  the kit, so not edited here) lists `tools` with `map` and looks a call up with `find(predicate)`;
+/** `tools` with old names answered: the stdio engine (mcp-stdio.mjs, which stays app-agnostic and
+ *  knows nothing of renames) lists `tools` with `map` and looks a call up with `find(predicate)`;
  *  this array's `find` tries each old name against the predicate when no current tool matches, so a
  *  renamed tool is answered by its old name and listed only once. mcp-renamed-tools.test.ts drives
  *  it through the engine itself, so a change there that bypasses `find` fails a test. */

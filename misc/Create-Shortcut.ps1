@@ -1,6 +1,6 @@
 # Creates / refreshes the "AgentHydra" shortcut in the project root. THIN ADAPTER over the
-# shared LunarWerx shortcut engine (misc\New-TrayShortcut.ps1, kit-synced — DO NOT EDIT THAT
-# FILE HERE; edit lunarwerx-ui/src/tray-host/New-TrayShortcut.ps1 and run `node sync.mjs`).
+# shared LunarWerx shortcut engine (misc\New-TrayShortcut.ps1, maintained in this repository;
+# keep it app-agnostic and put AgentHydra's specifics here).
 # The shortcut launches the native tray host and carries the icon, so the root has one nice
 # clickable entry. Re-run this if you move or rename the folder.
 #
@@ -15,8 +15,8 @@ $root = Split-Path -Parent $scriptDir
 
 . (Join-Path $scriptDir "New-TrayShortcut.ps1")
 
-# The main shortcut runs the NATIVE tray host (misc\AgentHydra-Tray.exe; source vendored beside it in
-# misc\tray-host-native\, kit source lunarwerx-ui/src/tray-host-native), not wscript +
+# The main shortcut runs the NATIVE tray host (misc\AgentHydra-Tray.exe; its source is beside it in
+# misc\tray-host-native\), not wscript +
 # Tray-Launch.vbs + AgentHydra-Tray.ps1. Measured on the author's machine, alternating runs: the
 # PowerShell chain started the daemon at +475ms and was serving at +745-1115ms; the native host
 # starts it at +25ms and serves at ~400ms through the real shortcut. Almost all of the difference is

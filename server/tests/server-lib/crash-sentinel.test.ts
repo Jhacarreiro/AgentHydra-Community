@@ -1,8 +1,5 @@
-// Tests for the shared crash sentinel (SHARED LunarWerx server-lib - source of truth:
-// lunarwerx-ui/src/server-lib/crash-sentinel.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/crash-sentinel.mjs` import resolves only from that synced location, so this file is
-// NOT runnable inside the kit repo itself.
+// Tests for the shared crash sentinel (server/src/crash-sentinel.mjs), which is maintained in this
+// repository.
 //
 // What is pinned: an unclosed run is reported by exactly one later launch, a closed run and a run
 // whose owner is still alive are never reported, and safe mode is read from both the flag and the

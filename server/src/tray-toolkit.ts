@@ -8,8 +8,8 @@
 // fired a toast telling the person to download a different artifact. And the same was true of
 // RepoYeti, DevWebUI and ReDesign, each of which had written it into its README as a limitation.
 //
-// So the MECHANISM lives in the kit (lunarwerx-ui/src/server-lib/tray-bootstrap.mjs, vendored here
-// as ./tray-bootstrap.mjs) and is shared by all four apps. THIS file is only what is AgentHydra's:
+// So the MECHANISM lives in ./tray-bootstrap.mjs, app-agnostic, as it was written to serve all four
+// apps. THIS file is only what is AgentHydra's:
 // the names of its config and icon, and the global its own release entrypoint writes.
 
 import {

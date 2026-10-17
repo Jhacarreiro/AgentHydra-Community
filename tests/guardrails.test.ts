@@ -355,8 +355,8 @@ const FIXTURES_BY_FILE: Record<string, { broken: string[]; fixed: string[] }> = 
       Bun.spawn(['explorer', dir], { stdin: 'ignore' })
       `,
       // A spawn named only in PROSE. The scan is textual, so before comments were blanked this was
-      // a finding: the shared kit's detached-spawn.mjs header explains which shell
-      // spawn("powershell") resolves to, and syncing that comment in turned the whole suite red
+      // a finding: server/src/detached-spawn.mjs's header explains which shell
+      // spawn("powershell") resolves to, and landing that comment turned the whole suite red
       // against a file that contains no spawn call at all (2026-08-09).
       `
       // Windows PowerShell (powershell.exe, which spawn("powershell") resolves to) space-joins

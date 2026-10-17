@@ -1,7 +1,6 @@
 /**
  * Shared cross-site (CSRF) guard for the LunarWerx loopback daemons — the single audited copy
- * that agenthydra / RepoYeti / ReDesign / DevWebUI all vendor. Synced from the shared kit, do
- * not edit in an app (change it here + re-sync).
+ * that agenthydra / RepoYeti / ReDesign / DevWebUI all vendored. Maintained in this repository.
  *
  * THE THREAT (classic local-daemon CSRF — the Jupyter/Selenium/dev-server CVE class): each app is
  * a Bun+Hono daemon binding `127.0.0.1:<port>` with a REST API that, on the local path, is

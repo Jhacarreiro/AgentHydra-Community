@@ -1,12 +1,9 @@
-// Tests for the shared detached-spawn primitive (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/detached-spawn.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/detached-spawn.mjs` import resolves only from that synced location — sync.mjs
-// validates the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared detached-spawn primitive (server/src/detached-spawn.mjs), which is
+// maintained in this repository.
 //
-// This is the ONE regression guard for the kit-wide Windows-detach contract: every kit app whose
-// daemon spawns a child meant to survive a tray Quit (taskkill /T on the daemon) routes that launch
-// through buildDetachedSpawn. Two properties must hold on win32 and each has already regressed once:
+// This is the ONE regression guard for the Windows-detach contract: every child the daemon spawns
+// that is meant to survive a tray Quit (taskkill /T on the daemon) is launched through
+// buildDetachedSpawn. Two properties must hold on win32 and each has already regressed once:
 //   1. DETACH — a direct spawn, even with detached:true, stays in the daemon's tree and gets reaped
 //      (verified 2026-07-12). The launch must be handed to another process creator.
 //   2. NO HANDLE INHERITANCE — `cmd /c start` detached fine but CreateProcess inherits handles, so

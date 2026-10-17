@@ -1,6 +1,6 @@
-// Types for dpapi-seal.mjs (SHARED LunarWerx server-lib). Synced beside the .mjs by sync.mjs.
+// Types for dpapi-seal.mjs, maintained beside it in this repository; change both together.
 
-/** The @cnct/connect ConnectStore contract, re-declared here so the kit lib carries no
+/** The @cnct/connect ConnectStore contract, re-declared here so this lib carries no
  *  dependency on the SDK's types. get/set/remove may each be sync or async. */
 export interface ConnectStoreLike {
   get(key: string): string | null | Promise<string | null>;

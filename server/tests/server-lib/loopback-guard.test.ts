@@ -1,8 +1,7 @@
 /**
  * Shared cross-site CSRF defense — the pure `evaluateRequest`/`isLoopbackOrigin` decision logic
- * (src/loopback-guard.mjs). Every LunarWerx loopback daemon vendors this test. The app-LOCAL
- * wiring (loopback-only vs tunnel-aware vs per-route) is exercised by each app's own integration
- * test, not here. Synced from the shared kit; do not edit in an app.
+ * (src/loopback-guard.mjs), maintained in this repository. The app-LOCAL wiring (loopback-only vs
+ * tunnel-aware vs per-route) is exercised by the app's own integration tests, not here.
  */
 import { describe, expect, test } from "bun:test";
 import { evaluateRequest, isLoopbackOrigin } from "../../src/loopback-guard.mjs";

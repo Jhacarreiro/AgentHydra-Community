@@ -17,8 +17,8 @@
  * fallback), which starts the browser OUTSIDE the tree; POSIX uses `detached:true` (a
  * real setsid detach).
  *
- * Runtime-agnostic (Bun + Node). Synced from the shared kit, do not edit in an
- * app; the `.d.mts` sibling types the import for the TypeScript apps.
+ * Runtime-agnostic (Bun + Node). Maintained in this repository; the `.d.mts`
+ * sibling types the import for TypeScript.
  */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, delimiter } from "node:path";
@@ -81,9 +81,9 @@ export function resolveChromiumBrowser() {
  * Build the `(command, args, detached)` to spawn `browserPath` with `browserArgs` so the window
  * process ESCAPES the daemon's process tree (see the file header: it must survive an auto-update
  * relaunch or tray Quit, both of which tree-kill the daemon). The per-OS detach is the shared
- * kit primitive (buildDetachedSpawn: win32 → WMI `Win32_Process.Create` as the primary hand-off,
+ * primitive (buildDetachedSpawn: win32 → WMI `Win32_Process.Create` as the primary hand-off,
  * with a PowerShell `Start-Process` only as a fallback if WMI is unavailable (the older `cmd /c
- * start ""` hand-off leaked the daemon's listening socket, see the shared kit's own header for the
+ * start ""` hand-off leaked the daemon's listening socket, see detached-spawn.mjs's header for the
  * story), POSIX → `detached:true` setsid); this only adapts its flat `argv` into the
  * `{ command, args }` split that node's `spawn(command, args)` takes below. Pure + exported so the
  * split adapter is unit-tested.

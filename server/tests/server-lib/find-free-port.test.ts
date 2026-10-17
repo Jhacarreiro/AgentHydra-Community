@@ -1,8 +1,5 @@
-// Tests for the shared free-port finder (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/find-free-port.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir, which is a `server-lib/` subdir next to the app's server tree). The
-// `../../src/find-free-port.mjs` import resolves only from that synced location — sync.mjs
-// validates the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared free-port finder (server/src/find-free-port.mjs), which is maintained in
+// this repository.
 import { afterEach, expect, test } from "bun:test";
 import { createServer } from "node:net";
 import type { AddressInfo, Server } from "node:net";

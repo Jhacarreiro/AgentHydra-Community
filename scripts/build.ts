@@ -80,7 +80,7 @@ function trayToolkitPaths(embedTray: boolean): string[] {
     if (!existsSync(path))
       throw new Error(
         `cannot build: ${path} is missing. A build without the tray toolkit ships an app that can ` +
-          'never show its icon - fix the file (the kit syncs misc\\, see lunarwerx-ui) or say so here.',
+          'never show its icon - restore the file in misc\\ or say so here.',
       )
     return path
   })
@@ -100,9 +100,9 @@ function runtimeMiscPaths(): string[] {
     if (!existsSync(path))
       throw new Error(
         `cannot build: ${path} is missing. A build without it ships a daemon that can never ` +
-          'run it (server/src/misc-assets.ts says what each one is for) - fix the file (the kit ' +
-          'syncs misc\\, see lunarwerx-ui; the CliMayte runner is built by ' +
-          'misc/climayte-runner-native/build.ps1) or take it out of RUNTIME_MISC_FILES.',
+          'run it (server/src/misc-assets.ts says what each one is for) - restore the file in ' +
+          'misc\\ (the CliMayte runner is built by misc/climayte-runner-native/build.ps1) or take ' +
+          'it out of RUNTIME_MISC_FILES.',
       )
     return path
   })

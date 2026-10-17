@@ -1,8 +1,5 @@
-// Tests for the shared tray-bootstrap primitive (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/tray-bootstrap.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/tray-bootstrap.mjs` import resolves only from that synced location — sync.mjs
-// validates the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared tray-bootstrap primitive (server/src/tray-bootstrap.mjs), which is
+// maintained in this repository.
 //
 // ⛔ TWO REGRESSIONS THIS GUARDS, both found live on 2026-09-11 in a freshly compiled AgentHydra
 // that showed no tray icon at all:

@@ -1,8 +1,5 @@
-// Tests for the shared relaunch-argv builder (SHARED LunarWerx server-lib — source of truth:
-// lunarwerx-ui/src/server-lib/relaunch-argv.test.ts, synced by sync.mjs into each app's
-// `serverTests` dir under a `server-lib/` subdir next to the app's server tree). The
-// `../../src/relaunch-argv.mjs` import resolves only from that synced location — sync.mjs
-// validates the placement — so this file is NOT runnable inside the kit repo itself.
+// Tests for the shared relaunch-argv builder (server/src/relaunch-argv.mjs), which is maintained in
+// this repository.
 //
 // Every failure locked down here is SILENT in production: spawn() succeeds, the SUCCESSOR dies in
 // another process milliseconds later, and the caller's "never shut down without a successor" guard
