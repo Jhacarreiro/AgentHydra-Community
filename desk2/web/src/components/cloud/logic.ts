@@ -274,9 +274,16 @@ export const codexHubRow = (r: { fromPc?: string | null; source?: string; codexA
 /** Cloud off: another PC's chat is not there (owner, 2026-10-10); the one rule deskOnPcs and the search hits share. */
 export const otherPc = (r: Pick<CloudSession, 'fromPc'>, thisPc: string): boolean => !!r.fromPc && r.fromPc !== thisPc
 
-/** Search hits (they carry no PC) without the chats of another PC, known by session id from the rows that name their PC. */
-export function hitsOnThisPc<H extends { sessionId: string }>(hits: H[], rows: readonly (Pick<CloudSession, 'id' | 'fromPc'>)[], thisPc: string): H[] {
-  const away = new Set(rows.filter((r) => otherPc(r, thisPc)).map((r) => r.id))
+/**
+ * Search hits (they carry no PC) without the chats of another PC, known by session id from the rows that name their
+ * PC. A Codex chat the Codex hub holds stays, as deskOnPcs keeps it listed.
+ */
+export function hitsOnThisPc<H extends { sessionId: string }>(
+  hits: H[],
+  rows: readonly (Pick<CloudSession, 'id' | 'fromPc'> & { source?: string; codexAccountId?: string })[],
+  thisPc: string
+): H[] {
+  const away = new Set(rows.filter((r) => otherPc(r, thisPc) && !codexHubRow(r)).map((r) => r.id))
   return hits.filter((h) => !away.has(h.sessionId))
 }
 

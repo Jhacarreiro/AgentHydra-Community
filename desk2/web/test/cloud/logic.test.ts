@@ -317,6 +317,10 @@ describe('groupCloud', () => {
       outside('codex-here', { source: 'codex', codexAccountId: 'codex-1' } as never),
     ]
     expect(deskOnPcs([], external, null, 'PC', false).external.map((s) => s.id)).toEqual(['hub-chat', 'codex-here'])
+    // Its search hits stay as it does, beside the cloud list's row for it as the sidebar passes them.
+    const hits = [{ sessionId: 'hub-chat' }, { sessionId: 'synced' }, { sessionId: 'codex-here' }]
+    const cloudRow: CloudSession = { ...row('hub-chat', 'C:/Users/me/work', 1), source: 'codex', fromPc: 'OTHER-PC' }
+    expect(hitsOnThisPc(hits, [cloudRow, ...external], 'PC').map((h) => h.sessionId)).toEqual(['hub-chat', 'codex-here'])
   })
 
   // Owner, 2026-10-05: "show only local, which should mean this PC" did nothing to the desk list.
