@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
 /**
  * AgentHydra's pages (desk2/hydra, AgentHydra 2.0's copy, built for Desk 2's /ah/ base) with an
- * invented world behind them, for simulated visitors (SUE) and anyone who wants to click around
- * without touching real accounts.
+ * invented world behind them, for simulated visitors (a script that clicks through the pages as a
+ * person would) and anyone who wants to click around without touching real accounts. Nothing here
+ * needs another tool or checkout; the folder only keeps its old name.
  *
  *   bun run build && bun scripts/sue-demo/serve.ts          # http://127.0.0.1:5197/ah/
  *   SUE_DEMO_PORT=5300 bun scripts/sue-demo/serve.ts
  *   http://127.0.0.1:5197/ah/?seat=second-pc                 # a PC that has not joined Login sync
  *
  * Why it exists: the real daemon drives real logins. A simulated visitor who presses Log out, Delete
- * or Stop syncing there signs a real account out or stops the owner's sync, so SUE never visits it.
+ * or Stop syncing there signs a real account out or stops the owner's sync, so a simulated visitor
+ * never visits it.
  * Here every /api/ call is answered in the page by two fixture files (scripts/screenshots/
  * page-fixtures.js for the whole app, then cli-fixtures.js for the CLI tab's accounts, Login sync
  * and seats), and this server itself answers no /api/ route at all: a call that slipped past the
