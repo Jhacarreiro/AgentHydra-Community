@@ -1,9 +1,12 @@
 # Third-party notices
 
-AgentHydra is MIT-licensed (see `LICENSE`). Some parts of it are adapted from other MIT-licensed
-projects. The MIT licence requires that the original copyright and permission notice travel with
-any substantial copy, so they are reproduced here, and each adapted file names its source in a
-header comment.
+AgentHydra is MIT-licensed (see `LICENSE`). Some parts of it are adapted from, or ship, other
+projects' work under their own licences: most under MIT, one adapted file under the Apache License
+2.0 (vLLM, below), and the Inter typeface under the SIL Open Font License 1.1. Each of those
+licences requires the original copyright notice and licence to travel with any substantial copy, so
+they are reproduced here or in the file each section names. Each adapted source file names its
+source in a header comment, except the shadcn-vue components, which carry none and are listed by
+folder in their section.
 
 ## NousResearch/hermes-agent
 
@@ -150,4 +153,89 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE
+```
+
+## vllm-project/vllm
+
+`hswarm/anthropic_facade.py` adapts the request and stream converters of vLLM's
+`vllm/entrypoints/anthropic/serving.py` (<https://github.com/vllm-project/vllm>, Apache-2.0,
+Copyright contributors to the vLLM project), without its `OpenAIServingChat` base. Its header
+says so, carries the `SPDX-License-Identifier: Apache-2.0` line, and says what was changed for
+hswarm. That file is distributed under the Apache License 2.0; the rest of AgentHydra stays MIT.
+
+The licence text is in `LICENSES/Apache-2.0.txt`, copied from the `LICENSE` file of vLLM's
+published 0.31.0 source distribution on PyPI. That distribution has no `NOTICE` file, so there is
+no NOTICE text to carry.
+
+```
+Copyright contributors to the vLLM project
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+## unovue/shadcn-vue
+
+The UI components in `desk2/hydra/src/components/ui/` and `orchestrator/web/src/components/ui/`
+come from shadcn-vue's component registry (<https://github.com/unovue/shadcn-vue>, MIT); the
+`components.json` beside each app is that tool's configuration (style `reka-mira`). They have been
+edited here since. `desk2/web/src/components/ui/` holds a further copy of some of the same
+components. The copyright holder below is the one in the `LICENSE` file of shadcn-vue's published
+npm package (version 2.8.2, read from `npm pack shadcn-vue` on 2026-10-17); its `package.json`
+also gives the licence as MIT.
+
+```
+MIT License
+
+Copyright (c) 2023 unovue
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## rsms/inter
+
+The Inter typeface (<https://github.com/rsms/inter>, SIL Open Font License 1.1) ships in two ways:
+
+- `desk2/hydra/public/fonts/inter-latin.woff2` and `inter-latin-ext.woff2`, the Latin and
+  Latin Extended subsets of Inter 4.001's variable font, kept in this repository. Vite copies them
+  into `desk2/hydra/dist/fonts/`.
+- The `@fontsource-variable/inter` package, which `src/styles/kit-base.css` imports in both
+  `desk2/hydra` and `orchestrator/web`, so each of their builds carries that package's Inter
+  woff2 files.
+
+The copyright line below is the one embedded in the vendored files' `name` table, and the same
+line opens the package's own `LICENSE`. The licence names no Reserved Font Name, so the subsets
+keep the family name Inter. The full licence text, with this copyright line, is in
+`desk2/hydra/public/fonts/OFL.txt`, beside the fonts, so every desk2/hydra build copies it into
+`dist/fonts/` with them. It covers the package's files in both apps too.
+
+```
+Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
 ```
