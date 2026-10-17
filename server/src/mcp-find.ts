@@ -319,7 +319,7 @@ export function findTools(
       description:
         'MUTATES: move this chat (a Hydra Desk chat) to another folder or workspace, and/or rename it. `cwd` moves it, ' +
         'which is how its WORKSPACE changes: the sidebar group, the project it works in, and the workspace-scoped tools ' +
-        '(saved browsers, the Connections workspace) that follow the folder; its tools see the new folder from its next ' +
+        '(saved browsers) that follow the folder; its tools see the new folder from its next ' +
         'turn. `title` renames it: worth it when the chat has really changed what it works on, not on every turn. ' +
         '`chat` defaults to THIS chat; name another by its Desk id, its Claude session id, or part of its title. Not for ' +
         'Claude DESKTOP chats (move_chat_folder) or for moving a chat to another ACCOUNT (move_chat).',
