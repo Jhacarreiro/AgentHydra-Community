@@ -296,13 +296,19 @@ func TestHubRequestsCarryTheExtraHeaders(t *testing.T) {
 }
 
 func TestTokenUsable(t *testing.T) {
-	// The hub takes any token its operator set, trimmed.
-	for _, ok := range []string{"x", "short", "has spaces inside", "tökén ñ", "Hub_Token-0123456789~!", strings.Repeat("é", 512)} {
+	// The hub takes any token its operator set, trimmed; this app can send it when it is printable ASCII.
+	var printable []byte
+	for c := byte(' ' + 1); c <= '~'; c++ {
+		printable = append(printable, c)
+	}
+	for _, ok := range []string{"x", "short", "has spaces inside", "Hub_Token-0123456789~!", string(printable), strings.Repeat("x", 512)} {
 		if !tokenUsable(ok) {
 			t.Errorf("refused %q", ok)
 		}
 	}
-	for _, bad := range []string{"", " padded", "padded ", "two\nlines", "a\rb", "tab\there", "del\x7f", "\xff\xfe", strings.Repeat("x", 513)} {
+	for _, bad := range []string{"", " padded", "padded ", "two\nlines", "a\rb", "tab\there", "del\x7f", "\xff\xfe", strings.Repeat("x", 513),
+		// The hub reads the header a byte to a character, so these never match its token.
+		"tökén ñ", "no\u00a0break", "dash\u2010", strings.Repeat("é", 256)} {
 		if tokenUsable(bad) {
 			t.Errorf("took %q", bad)
 		}
@@ -337,8 +343,8 @@ func TestPcNameFrom(t *testing.T) {
 }
 
 func TestPairHandler(t *testing.T) {
-	// Short, with a space and not ASCII: the hub takes such a token, so the tray does too.
-	const good = "Hub tökén ~!"
+	// Short, with a space and punctuation: the hub takes such a token, so the tray does too.
+	const good = "Hub Token ~!"
 	var platforms []string
 	srv := fakeHub(t, good, &platforms)
 	t.Cleanup(func() { os.Remove(configPath) })
@@ -367,10 +373,14 @@ func TestPairHandler(t *testing.T) {
 			t.Errorf("token %q: %d %s", bad, code, body)
 		}
 	}
+	// One that is not ASCII is refused here, saying why, rather than sent for the hub to refuse.
+	if code, body := post("the-state", "Hub tökén ~!"); code != http.StatusBadRequest || !strings.Contains(body, "ASCII") {
+		t.Errorf("a token that is not ASCII: %d %s", code, body)
+	}
 	if c := loadConfig(); c.Token != "" || finished {
 		t.Fatalf("a refused post saved %q (finished %v)", c.Token, finished)
 	}
-	for _, refused := range []string{"short", "refused by the hub", strings.Repeat("é", 512)} {
+	for _, refused := range []string{"short", "refused by the hub", strings.Repeat("x", 512)} {
 		if code, body := post("the-state", refused); code != http.StatusUnauthorized || !strings.Contains(body, "did not take that token") {
 			t.Errorf("token the hub refuses (%q): %d %s", refused, code, body)
 		}

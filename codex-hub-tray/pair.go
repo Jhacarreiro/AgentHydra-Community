@@ -17,8 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 )
 
 // Pairing gets the hub token from the hub's own page (GET /codex-hub/pair, behind the operator's sign-in): the tray
@@ -27,15 +25,21 @@ import (
 
 const pairFor = 20 * time.Minute
 
-// tokenUsable: the hub takes any token its operator set (trimmed, of any length and characters), so this refuses
-// only what cannot be the hub's or cannot go as it is into the Authorization header and the pusher's environment: an
-// empty token, one with spaces at either end (the hub trims its own), one with a line break or another control
-// character, and, as a sanity limit, one over 512 characters.
+// tokenUsable: the hub takes any token its operator set (trimmed, of any length), but it reads the Authorization
+// header a byte to a character (Latin-1) and compares that with its own token (hubTokenMatches in
+// server/src/core/codex-hub.ts), while this app sends the token's UTF-8: only an ASCII token arrives as it was sent.
+// So this refuses an empty token, one with spaces at either end (the hub trims its own), one with any character but
+// printable ASCII (a letter such as é, a line break, a tab), and, as a sanity limit, one over 512 characters.
 func tokenUsable(t string) bool {
-	if t == "" || t != strings.TrimSpace(t) || !utf8.ValidString(t) || utf8.RuneCountInString(t) > 512 {
+	if t == "" || t != strings.TrimSpace(t) || len(t) > 512 {
 		return false
 	}
-	return !strings.ContainsFunc(t, unicode.IsControl)
+	for i := 0; i < len(t); i++ {
+		if t[i] < ' ' || t[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 type pairing struct {
@@ -106,7 +110,7 @@ func (a *app) pairHandler(state string, finish func()) http.HandlerFunc {
 			return
 		}
 		if !tokenUsable(token) {
-			page(w, http.StatusBadRequest, "The hub's token has a shape this app cannot use: it is empty, over 512 characters, has spaces at either end, or has a line break or another control character. Give the hub another token, then choose Connect this PC again.")
+			page(w, http.StatusBadRequest, "The hub's token has a shape this app cannot use: it is empty, over 512 characters, has spaces at either end, or has a character other than ASCII letters, digits, punctuation and spaces (such as é, a tab or a line break), which the hub cannot match in the header this app sends. Give the hub a token of ASCII characters, then choose Connect this PC again.")
 			return
 		}
 		c := loadConfig()
