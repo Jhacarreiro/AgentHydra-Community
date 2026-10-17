@@ -865,9 +865,10 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   `codex-hub-push`, `codex-hub-push.exe` or `codex-hub-push-<platform>` updates itself. A different build
   is downloaded beside it, checked against that hash, and started once with `--version`; only a build
   that starts and prints its own name (`codex-hub-push`; the tray's, `codex-hub-tray`) replaces the
-  running one, leaving the previous file as `.old` until the next start. That `--version` run gets no
-  hub address or token, so a build that does not know the flag stops at once instead of pushing, and a
-  build that fails a check is not fetched again until the hub hands out another. The pusher then exits
+  running one, leaving the previous file as `.old` until the next start. That `--version` run gets the
+  hub address and token set empty, which a `.env` in its working folder does not fill in, so a build that
+  does not know the flag stops at once instead of pushing, and a build that fails a check is not fetched
+  again until the hub hands out another. The pusher then exits
   and the new build takes over: on Windows started by the scheduled task that runs the pusher, so that
   task should repeat every few minutes with one instance at a time. On a Mac or Linux PC a pusher that
   systemd or launchd runs (`INVOCATION_ID` is set, or `XPC_SERVICE_NAME` names a job) exits with 75,

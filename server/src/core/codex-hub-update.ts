@@ -94,14 +94,15 @@ export function removeOldBuild(exePath = process.execPath): void {
 }
 
 /**
- * The environment a downloaded build's --version runs with: this one's without the hub's address and token. A build
- * that does not know --version (one from before it, or another program) would otherwise run as this PC's pusher
- * until the timeout, taking its relay link from this one; without them it stops at its own check.
+ * The environment a downloaded build's --version runs with: this one's with the hub's address and token empty. A
+ * build that does not know --version (one from before it, or another program) would otherwise run as this PC's
+ * pusher until the timeout, taking its relay link from this one; without them it stops at its own check. They are
+ * set empty, not left out: a compiled bun program reads a .env in its working folder for what is not set at all.
  */
 export function probeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out = { ...env }
   for (const prefix of ['AGENTHYDRA_', 'CCMANAGERUI_'])
-    for (const name of ['CODEX_HUB_URL', 'CODEX_HUB_TOKEN']) delete out[`${prefix}${name}`]
+    for (const name of ['CODEX_HUB_URL', 'CODEX_HUB_TOKEN']) out[`${prefix}${name}`] = ''
   return out
 }
 

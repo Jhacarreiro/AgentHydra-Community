@@ -135,25 +135,41 @@ test('a hub build that failed its checks is not fetched again until the hub has 
 })
 
 test.skipIf(process.platform === 'win32')(
-  "a downloaded build's --version runs without the hub's address and token",
+  "a downloaded build's --version gets no hub address or token, from the pusher or from a .env",
   async () => {
-    // A build that does not know --version would run as this PC's pusher; this one writes down what it was given.
-    hubBuild('#!/bin/sh\nenv > "$0.env"\necho codex-hub-push\n')
+    // A build that does not know --version would run as this PC's pusher. This one is run by bun, which reads a .env
+    // in its working folder as a compiled pusher does, and writes down what it was given.
+    const probe = join(dir, 'probe.ts')
+    const given = join(dir, 'probe-env.json')
+    writeFileSync(
+      probe,
+      `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(given)}, JSON.stringify(process.env))\nconsole.log('codex-hub-push')\n`,
+    )
+    hubBuild(`#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(probe)}\n`)
     const names = [
       'AGENTHYDRA_CODEX_HUB_URL',
+      'AGENTHYDRA_CODEX_HUB_TOKEN',
       'CCMANAGERUI_CODEX_HUB_URL',
       'CCMANAGERUI_CODEX_HUB_TOKEN',
     ]
-    for (const name of names) process.env[name] = 'from-the-pusher'
+    // The pusher has the hub settings in its environment (AGENTHYDRA_CODEX_HUB_TOKEN is already set: the hub's token
+    // here), and in a .env in the folder it was started from.
+    const cwd = mkdtempSync(join(tmpdir(), 'ah-pusher-cwd-'))
+    writeFileSync(join(cwd, '.env'), names.map((name) => `${name}=from-the-env-file\n`).join(''))
+    const started = process.cwd()
+    const set = names.filter((name) => name !== 'AGENTHYDRA_CODEX_HUB_TOKEN')
+    for (const name of set) process.env[name] = 'from-the-pusher'
     try {
+      process.chdir(cwd)
       expect(await updateOnce(cfg, deps({ run: undefined }))).toBe('updated')
     } finally {
-      for (const name of names) delete process.env[name]
+      process.chdir(started)
+      for (const name of set) delete process.env[name]
+      rmSync(cwd, { recursive: true, force: true })
     }
-    const env = readFileSync(`${exe}.new.env`, 'utf8')
-    expect(env).not.toContain('CODEX_HUB_URL=')
-    expect(env).not.toContain('CODEX_HUB_TOKEN=')
-    expect(env).toContain('PATH=')
+    const env = JSON.parse(readFileSync(given, 'utf8')) as Record<string, string>
+    for (const name of names) expect(env[name] ?? '', name).toBe('')
+    expect(env.PATH).toBeTruthy()
   },
 )
 
