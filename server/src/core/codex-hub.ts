@@ -10,8 +10,9 @@
 // `sessions/` holds the rollouts at the same relative paths as on the PC, `session_index.jsonl`
 // the titles, and `manifest.json` the list as that PC's app-server last answered it. Because it is
 // shaped like a Codex home, codexInstanceStores() serves it to the transcript index unchanged, so
-// listing, reading, search and analytics treat a pushed chat like a local one. Read-only: nothing
-// here can start a turn on, rename or archive a chat on the PC it came from.
+// listing, reading and search treat a pushed chat like a local one. The analytics kit leaves it out
+// (kit/ingest-foreign.ts): it is the other PC's usage, which kit sync would count twice. Read-only:
+// nothing here can start a turn on, rename or archive a chat on the PC it came from.
 //
 // Off unless AGENTHYDRA_CODEX_HUB_TOKEN is set; then every push must carry it as a bearer token.
 // Any number of PCs may push with the same token; each is kept apart by the name it sends, and two

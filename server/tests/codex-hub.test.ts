@@ -16,8 +16,10 @@ import {
   defaultPcName,
   pushCodexHubOnce,
 } from '../src/core/codex-hub-push'
+import { codexInstanceStores } from '../src/core/codex-instances'
 import type { CodexRpc } from '../src/core/codex-rpc'
 import { app } from '../src/http-app'
+import { discoverForeignSources } from '../src/kit/ingest-foreign'
 import '../src/routes/codex-hub'
 
 // A copy with its own router: a request through the shared app would build its matcher and stop
@@ -146,6 +148,34 @@ test('the next round sends only what changed, and a chat gone from the PC leaves
     `rollout-2026-10-14T10-00-00-${named}.jsonl`,
   )
   expect(readFileSync(copy, 'utf8')).toBe('{"a":2}\n')
+})
+
+test("a PC's chats on the hub are listed, but never ingested as the hub's own Codex usage", () => {
+  const other = `Usage-PC-${crypto.randomUUID().slice(0, 6)}`
+  const dir = join(CODEX_HUB_DIR, hubPcKey(other)!)
+  const rel = 'sessions/2026/10/14/rollout-2026-10-14T10-00-00-usage.jsonl'
+  const gz = Buffer.from(Bun.gzipSync(new TextEncoder().encode('{"u":1}\n'))).toString('base64')
+  try {
+    expect(
+      acceptCodexHubPush({
+        pc: other,
+        threads: [
+          { id: 'usage', name: 'Usage', updatedAt: 1_791_900_000, path: rel, source: 'cli' },
+        ],
+        files: [{ path: rel, updatedAt: 1_791_900_000, gz }],
+      }),
+    ).toMatchObject({ ok: true, stored: 1 })
+    // The chat list, sessions and search read it like a local home.
+    expect(codexInstanceStores().map((s) => s.codexHome)).toContain(dir)
+    expect(listCodexChats().some((c) => c.fromPc === other)).toBe(true)
+    // The analytics kit stamps what it ingests with this PC's machine id and syncs it as this PC's usage, while
+    // the PC that ran the chat already counts it as its own.
+    const roots = discoverForeignSources().codex.map((r) => r.root)
+    expect(roots.length).toBeGreaterThan(0)
+    expect(roots.filter((r) => r.startsWith(CODEX_HUB_DIR))).toEqual([])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('a push without the hub token is refused', async () => {

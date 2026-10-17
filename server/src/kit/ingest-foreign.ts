@@ -82,6 +82,9 @@ export interface ForeignIngestSummary {
 export function discoverForeignSources(): ForeignSources {
   const codex: ForeignSources['codex'] = []
   for (const s of codexInstanceStores()) {
+    // Another PC's chats pushed to this hub (codex-hub.ts) are that PC's usage: ingested here they were stamped
+    // with this PC's machine id, so kit sync counted them again as this PC's.
+    if (s.hub) continue
     codex.push({ root: join(s.codexHome, 'sessions'), instance: s.ref })
     codex.push({ root: join(s.codexHome, 'archived_sessions'), instance: s.ref })
   }

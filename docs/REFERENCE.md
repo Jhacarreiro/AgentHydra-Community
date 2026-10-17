@@ -798,7 +798,8 @@ remote control pairs one PC with the ChatGPT app over OpenAI's encrypted relay a
 else. Instead, each PC asks its own Codex app-server for its chat list (`thread/list`, the list and titles
 the Codex app shows) and pushes it to one hub daemon, which keeps a Codex home per PC under
 `<config dir>/codex-hub/<pc>/`. The hub's chat list, sessions, search and transcripts then include every
-PC's chats, each marked with the PC it came from.
+PC's chats, each marked with the PC it came from. Its usage analytics does not: a chat's usage belongs to
+the PC that ran it, and [kit sync](#usage-across-pcs-post-apikitsync) would count a hub copy as the hub's too.
 
 A chat from another PC can be continued in Desk while that PC is on. Its pusher keeps a WebSocket open to the
 hub (`/api/codex-hub/relay`); when Desk continues one of its chats, the hub asks the PC to start its own

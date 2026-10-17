@@ -303,6 +303,9 @@ export interface CodexInstanceStore {
   codexHome: string
   /** `codex:<id>` — the same ref instance-numbers.ts and usage-service.ts already key on. */
   ref: string
+  /** Set for another PC's chats pushed to this hub (codex-hub.ts): listed and read like a local home, but that
+   *  PC's usage, not this one's. */
+  hub?: true
 }
 
 /**
@@ -327,7 +330,7 @@ export interface CodexInstanceStore {
  * it, so EVERY Codex row can name the account that wrote it rather than only the managed ones.
  */
 export function codexInstanceStores(): CodexInstanceStore[] {
-  const rows = readStore().instances.map((instance) => ({
+  const rows: Omit<CodexInstanceStore, 'num' | 'ref'>[] = readStore().instances.map((instance) => ({
     id: instance.id,
     name: instance.name,
     codexHome: instance.codexHome,
@@ -343,7 +346,7 @@ export function codexInstanceStores(): CodexInstanceStore[] {
     })
   // Other PCs' chats pushed to this daemon (codex-hub.ts) are kept as Codex homes of their own, last.
   for (const home of codexHubHomes())
-    rows.push({ id: home.id, name: home.name, codexHome: home.codexHome })
+    rows.push({ id: home.id, name: home.name, codexHome: home.codexHome, hub: true })
   const numbers = instanceNumbers(rows.map((row) => instanceRef('codex', row.id)))
   return rows.map((row) => {
     const ref = instanceRef('codex', row.id)
