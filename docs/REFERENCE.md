@@ -874,6 +874,15 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   same arguments and writing to the same output. `AGENTHYDRA_CODEX_HUB_RESTART` says which: `exit` or
   `spawn`. The PC trusts the hub with its build as it already does with relay turns;
   `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
+- **Signed builds:** each build is signed with the operator's ed25519 key, away from the hub.
+  `bun scripts/codex-hub-sign.ts keygen <key file>` makes the key (PKCS#8, mode 0600, never written
+  over) and prints its public key, base64 of its 32 bytes (`pubkey <key file>` prints it again).
+  `sign <key file> <build>...` writes `<build>.sig` beside each build, to go into `.pusher/` with it or
+  before it; sign a macOS build after `codesign`, which changes the file. The signature is over the
+  text `codex-hub-build v1\n<pusher|tray>\n<platform>\n<sha256 in lowercase hex>\n`, so it holds
+  for that one build, name and platform, which the script takes from the file's name as the hub serves
+  it. `GET /api/codex-hub/{pusher,tray}` answers `signature` beside `sha256` and `size` when the
+  `.sig` is there (read at each request) and nothing when it is not. The hub never holds the key.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 

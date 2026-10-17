@@ -87,8 +87,10 @@ app.post('/api/codex-hub/push', requireHubToken, async (c) => {
 })
 
 // The builds PCs keep themselves at: the pusher (core/codex-hub-update.ts) and the tray app that runs it
-// (codex-hub-tray/). Each: its hash, then the file, for the platform in `?platform=` (none is Windows). A platform
-// with no build here is a 404 like a hub with none, which the PC takes as nothing to update.
+// (codex-hub-tray/). Each: its hash and size, with the signature from `<build>.sig` when there is one
+// (core/codex-hub-signature.ts; the operator signs builds away from the hub), then the file, for the platform in
+// `?platform=` (none is Windows). A platform with no build here is a 404 like a hub with none, which the PC takes
+// as nothing to update.
 const badPlatform = `platform must be one of ${HUB_PLATFORMS.join(', ')}`
 for (const name of ['pusher', 'tray'] as const) {
   app.get(`/api/codex-hub/${name}`, requireHubToken, async (c) => {

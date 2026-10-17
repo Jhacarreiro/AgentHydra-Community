@@ -86,6 +86,30 @@ test('each platform gets its own file, named for the platform', async () => {
   }
 })
 
+test("a build's signature, written beside it, is handed out with its hash, and nothing without one", async () => {
+  writeFileSync(PUSHER_EXE, 'win pusher')
+  writeFileSync(`${PUSHER_EXE}.sig`, 'c2lnbmF0dXJlIG9mIHRoZSBwdXNoZXI=\n')
+  const tray = hubBuildFile('tray', 'linux-arm64')!
+  writeFileSync(tray, 'arm tray')
+  expect(await get('/api/codex-hub/pusher')).toEqual({
+    status: 200,
+    body: { sha256: sha('win pusher'), size: 10, signature: 'c2lnbmF0dXJlIG9mIHRoZSBwdXNoZXI=' },
+  })
+  expect((await get('/api/codex-hub/pusher/download')).body).toBe('win pusher')
+  expect(await get('/api/codex-hub/tray?platform=linux-arm64')).toEqual({
+    status: 200,
+    body: { sha256: sha('arm tray'), size: 8 },
+  })
+  // A signature put in place after the build is read at the next request.
+  writeFileSync(`${tray}.sig`, 'dHJheQ==')
+  expect((await get('/api/codex-hub/tray?platform=linux-arm64')).body).toMatchObject({
+    signature: 'dHJheQ==',
+  })
+  // An empty one is none.
+  writeFileSync(`${PUSHER_EXE}.sig`, '\n')
+  expect((await get('/api/codex-hub/pusher')).body).toEqual({ sha256: sha('win pusher'), size: 10 })
+})
+
 test('an unknown or empty platform is refused, and a known one with no build is a 404', async () => {
   // An empty one is not "no platform": a PC that meant to name its own never gets the Windows build.
   writeFileSync(PUSHER_EXE, 'win pusher')

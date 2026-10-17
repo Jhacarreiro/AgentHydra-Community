@@ -33,6 +33,7 @@ import { dirname, join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { appEnv, CONFIG_DIR } from '../config'
 import { relayPcInstall } from './codex-hub-relay'
+import { HUB_PLATFORMS } from './codex-hub-signature'
 
 /** One chat as the PC's app-server listed it (the subset of its `Thread` the hub keeps). */
 export interface HubThread {
@@ -390,14 +391,8 @@ export const PUSHER_EXE = join(CODEX_HUB_DIR, '.pusher', 'codex-hub-push.exe')
 /** The Windows tray app that keeps the pusher running and both builds current (codex-hub-tray/). */
 export const TRAY_EXE = join(CODEX_HUB_DIR, '.pusher', 'codex-hub-tray.exe')
 
-/** The platforms a build is handed out for, named as `bun build --compile --target=bun-<platform>` names them. */
-export const HUB_PLATFORMS = [
-  'windows-x64',
-  'linux-x64',
-  'linux-arm64',
-  'darwin-x64',
-  'darwin-arm64',
-] as const
+/** The platforms a build is handed out for (codex-hub-signature.ts, which the signing script reads too). */
+export { HUB_PLATFORMS }
 
 /**
  * The file the hub hands out for one build and platform, or null for a platform it does not know. No platform is
@@ -414,10 +409,13 @@ export function hubBuildFile(name: 'pusher' | 'tray', platform?: string): string
 
 const pusherHashes = new Map<string, { mtimeMs: number; size: number; sha256: string }>()
 
-/** The build's SHA-256 and size, hashed again only when the file changed; null when there is none. */
+/**
+ * The build's SHA-256 and size, hashed again only when the file changed, and its signature (codex-hub-signature.ts)
+ * when `<build>.sig` is beside it; null when there is no build.
+ */
 export async function pusherRelease(
   path: string = PUSHER_EXE,
-): Promise<{ sha256: string; size: number } | null> {
+): Promise<{ sha256: string; size: number; signature?: string } | null> {
   let st: { mtimeMs: number; size: number }
   try {
     st = statSync(path)
@@ -429,7 +427,17 @@ export async function pusherRelease(
     known = { mtimeMs: st.mtimeMs, size: st.size, sha256: await sha256File(path) }
     pusherHashes.set(path, known)
   }
-  return { sha256: known.sha256, size: known.size }
+  const signature = buildSignature(path)
+  return { sha256: known.sha256, size: known.size, ...(signature ? { signature } : {}) }
+}
+
+/** What scripts/codex-hub-sign.ts wrote beside the build, read at each request; undefined without it. */
+function buildSignature(path: string): string | undefined {
+  try {
+    return readFileSync(`${path}.sig`, 'utf8').trim() || undefined
+  } catch {
+    return undefined
+  }
 }
 
 export async function sha256File(path: string): Promise<string> {
