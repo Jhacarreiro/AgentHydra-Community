@@ -364,6 +364,52 @@ func TestNoKeyOverHTTPSIsTaken(t *testing.T) {
 	os.Remove(next)
 }
 
+// Someone on the way can send the hub's signed hash and then bytes without end: the download stops one byte past the
+// announced size, leaves nothing behind, and the build is fetched again at the next check.
+func TestDownloadStopsAtTheAnnouncedSize(t *testing.T) {
+	useTestKey(t)
+	body := []byte(fakePusher)
+	var mu sync.Mutex
+	written := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/codex-hub/pusher":
+			fmt.Fprintf(w, `{"sha256":%q,"size":%d,"signature":%q}`, sumOf(body), len(body), signedBy(testKey, "pusher", sumOf(body)))
+		case "/api/codex-hub/pusher/download":
+			chunk := append(append([]byte{}, body...), make([]byte, 64<<10)...)
+			for i := 0; i < 2048; i++ { // some 128 MB
+				n, err := w.Write(chunk)
+				mu.Lock()
+				written += n
+				mu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	cfg := config{Hub: srv.URL, Token: "token-0123456789abcdef"}
+	rel, err := latest(cfg, "pusher")
+	if err != nil || rel == nil {
+		t.Fatalf("latest: %v %v", rel, err)
+	}
+	dest := filepath.Join(t.TempDir(), "codex-hub-push")
+	if _, err := download(cfg, "pusher", rel, dest); err == nil || errors.As(err, new(badBuild)) {
+		t.Errorf("download took it, or held it against the build: %v", err)
+	}
+	srv.Close() // once the hub's handler has given up writing
+	mu.Lock()
+	defer mu.Unlock()
+	if written > 32<<20 {
+		t.Errorf("the tray read on: the hub wrote %d MB of a %d-byte build", written>>20, len(body))
+	}
+	if exists(dest + ".new") {
+		t.Errorf("left %s.new", dest)
+	}
+}
+
 // A build's --version runs with the hub's address and token set empty: one that does not know the flag (an older
 // pusher put back on the hub) stops at its own check instead of running as a second pusher for this PC.
 func TestVersionCheckGetsNoHubSettings(t *testing.T) {

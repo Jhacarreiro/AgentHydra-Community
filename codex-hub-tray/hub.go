@@ -258,7 +258,8 @@ func download(c config, name string, want *release, dest string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	n, err := io.Copy(f, body)
+	// Someone on the way can send the signed hash and then bytes without end: one past the size is enough to refuse.
+	n, err := io.Copy(f, io.LimitReader(body, want.Size+1))
 	f.Close()
 	if err != nil {
 		os.Remove(next)
