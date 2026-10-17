@@ -871,7 +871,9 @@ keep working.
 theirs). Its + menu offers Claude or ChatGPT; name the login, and Desk prepares the tools, then opens a
 visible window for manual sign-in while the row pulses. Multiple logins to either provider have separate encrypted state. The ClaudFree 0.7 harness
 is bundled in `server/src/free-instances/harness`; no external checkout or folder picker is needed.
-Python 3.11+, Bun and Node.js must be installed. Dependencies are prepared automatically outside the
+Python 3.11+, Bun and Node.js must be installed. Free works on Windows only: the harness seals every login
+with Windows DPAPI (`claudfree/state.py`, `dpapi`) and refuses to save one anywhere else, so off Windows a
+sign-in ends in "Session encryption requires Windows." Dependencies are prepared automatically outside the
 repo in `~/.hydra-desk-2/free/runtime`. Instance state lives in `free/instances/{instanceId}` and metadata
 in `free/accounts.json`. A previous `free-instances.json` connection is imported once, copying its
 encrypted login and registry without removing the original files. Nothing of a login is ever kept in
