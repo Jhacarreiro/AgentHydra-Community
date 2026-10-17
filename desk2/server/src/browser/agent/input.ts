@@ -2,7 +2,8 @@
 // the caller already has (callerPage in navigate.ts) with real mouse and key events, and answers with the same text and
 // errors as Connections' engine (browser.mjs browserActionClick :4085, browserActionHover :4093, browserActionSelect :4202,
 // browserActionType :4234, browserActionPress :4257), with the targeting they share (resolveTarget :2156, resolvePoint :2435).
-// Not ported: cross-origin (OOPIF) iframes, which the per-page link cannot follow. A vault secret is typed through Connections.
+// Not ported: cross-origin (OOPIF) iframes, which the per-page link cannot follow. A vault secret is typed by the vault that
+// holds it, through POST /api/browser/secret (secret.ts), never by these tools.
 
 import type { ToolCaller } from './contract'
 import { ToolInputError } from './errors'
@@ -294,7 +295,7 @@ export const INPUT_TOOLS: ToolDef[] = [
   {
     name: 'browser_type',
     description:
-      "Type text into a field. Pass ref (from browser_snapshot) or selector to focus a specific input first (its existing value is replaced); omit both to type into whatever is focused. This types the text you give; a password or key from the vault is typed by Connections instead (browser_type_secret, through connections_execute).",
+      "Type text into a field. Pass ref (from browser_snapshot) or selector to focus a specific input first (its existing value is replaced); omit both to type into whatever is focused. This types only the text you give: the browser tools hold no vault, so a stored password or key cannot be typed by its name.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -307,7 +308,7 @@ export const INPUT_TOOLS: ToolDef[] = [
     run: (params, caller) => {
       if (params.secret != null && String(params.secret).trim())
         throw new ToolInputError(
-          "Typing a vault secret goes through Connections, which holds the vault: connections_execute { local:true, tool_name:'browser_type_secret', params:{ secret:'<NAME>', selector:'...' } }.",
+          'browser_type has no `secret`: it types only the `text` you give, and the browser tools hold no vault to look a password or key up in.',
         )
       if (params.text == null) throw new ToolInputError('pass `text` to type.')
       const text = String(params.text)

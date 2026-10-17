@@ -136,7 +136,7 @@ async function run(params: Step, caller: ToolCaller): Promise<ToolReply> {
   if (!Array.isArray(params.steps)) throw new ToolInputError('steps must be an array of { do, ... } steps')
   if (params.steps.some((step) => step && typeof step === 'object' && (step as Step).secret != null))
     throw new ToolInputError(
-      'a browser_script step cannot type a `secret` - nothing ran. Split the script: run the steps before it, type the secret through Connections (browser_type_secret), then run the rest.',
+      'a browser_script step cannot type a `secret` - nothing ran. A step types only the `text` it is given; the browser tools hold no vault to look a secret up in.',
     )
   const steps = params.steps.slice(0, MAX_STEPS) as Step[]
   const out: string[] = []
