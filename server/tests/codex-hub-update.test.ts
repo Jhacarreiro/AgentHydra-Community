@@ -124,14 +124,40 @@ test('a hub build that failed its checks is not fetched again until the hub has 
     return toHub(input, init)
   }) as typeof fetch
   const refused = new Set<string>()
-  const broken = deps({ fetch: counting, refused, run: () => ({ status: 1, stdout: '' }) })
-  expect(await updateOnce(cfg, broken)).toBe('failed')
-  expect(await updateOnce(cfg, broken)).toBe('failed')
-  expect(downloads).toBe(1)
+  // It exits with an error, or it crashes (a processor it cannot run on): it would again.
+  const failures = [{ status: 1 }, { status: null, signal: 'SIGILL' as const }]
+  for (const [i, failed] of failures.entries()) {
+    hubBuild(`broken build ${i}`)
+    const broken = deps({ fetch: counting, refused, run: () => ({ stdout: '', ...failed }) })
+    expect(await updateOnce(cfg, broken)).toBe('failed')
+    expect(await updateOnce(cfg, broken)).toBe('failed')
+    expect(downloads).toBe(i + 1)
+  }
   hubBuild('newer build')
   expect(await updateOnce(cfg, deps({ fetch: counting, refused }))).toBe('updated')
-  expect(downloads).toBe(2)
+  expect(downloads).toBe(3)
   expect(readFileSync(exe, 'utf8')).toBe('newer build')
+})
+
+test('a download that is not the signed build, or a --version cut off at the timeout, is tried again', async () => {
+  const refused = new Set<string>()
+  // Someone on the way sends the hub's signed hash and other bytes.
+  const tampered: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+    new URL(String(input)).pathname.endsWith('/download')
+      ? new Response('not the signed build')
+      : toHub(input, init)) as typeof fetch
+  expect(await updateOnce(cfg, deps({ fetch: tampered, refused }))).toBe('failed')
+  // The antivirus holds the new build's first start past the timeout.
+  const timedOut = Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' })
+  const slow = () => ({ status: null, signal: 'SIGTERM' as const, stdout: '', error: timedOut })
+  expect(await updateOnce(cfg, deps({ refused, run: slow }))).toBe('failed')
+  expect(refused.size).toBe(0)
+  expect(readFileSync(exe, 'utf8')).toBe('old build')
+  expect(existsSync(`${exe}.new`)).toBe(false)
+
+  // The hub's real build, at the next check.
+  expect(await updateOnce(cfg, deps({ refused }))).toBe('updated')
+  expect(readFileSync(exe, 'utf8')).toBe('new build')
 })
 
 test.skipIf(process.platform === 'win32')(

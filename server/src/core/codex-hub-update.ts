@@ -41,13 +41,16 @@ export interface UpdateDeps {
   /** The running pusher's own file. */
   exePath?: string
   /** Runs a build with --version; tests give a stand-in. */
-  run?: (exe: string) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout'>
+  run?: (exe: string) => Pick<SpawnSyncReturns<string>, 'status' | 'stdout' | 'error'>
   /** Starts the new build in this one's place, then this process exits. */
   relaunch?: (exe: string) => void
   log?: (line: string) => void
   /** The platform whose build is asked for; this build's own by default. */
   platform?: string
-  /** The hub builds that failed their checks here, by hash and signature; startSelfUpdate keeps one for its checks. */
+  /**
+   * The hub builds that failed their checks here and would again, by hash and signature; startSelfUpdate keeps one
+   * for its checks.
+   */
   refused?: Set<string>
   /** The update key (base64); updateKey() by default, '' for none. */
   updateKey?: string
@@ -187,7 +190,9 @@ export async function updateOnce(
   const signature = typeof want.signature === 'string' ? want.signature : ''
   if ((await sha256File(exe)) === sha256) return 'current'
   // A build that failed its checks here fails them again: it is not fetched until the hub hands out another, or
-  // the same one with another signature (one signed after it was put in place).
+  // the same one with another signature (one signed after it was put in place). A download that does not match the
+  // hash is not one of them: it may have been cut short or swapped on the way (over http the hub's signed hash can
+  // come with other bytes), so the next check fetches it again.
   const seen = `${sha256} ${signature}`
   if (deps.refused?.has(seen)) return 'failed'
 
@@ -212,9 +217,12 @@ export async function updateOnce(
   if (!res.ok) return drop(`the download answered ${res.status}`)
   await Bun.write(next, res)
   if (statSync(next).size !== want.size || (await sha256File(next)) !== sha256)
-    return refuse('the download does not match the hub hash')
+    return drop('the download does not match the hub hash')
   if (process.platform !== 'win32') chmodSync(next, 0o755)
   const tried = (deps.run ?? runVersion)(next)
+  // A first start the antivirus held past the timeout says nothing about the build; an exit code or a crash does.
+  if ((tried.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT')
+    return drop(`the new build's --version did not end within ${VERSION_TIMEOUT_MS / 1000} s`)
   if (tried.status !== 0) return refuse('the new build did not start')
   // The tray's build starts too: only a build whose first line is the pusher's banner is the pusher.
   const [banner = ''] = String(tried.stdout ?? '').split('\n', 1)
@@ -236,7 +244,8 @@ export async function updateOnce(
 
 /**
  * Checks now and every few hours until stopped. A failed check is logged and tried again at the next one; a hub build
- * that failed its checks is remembered by its hash and signature and not fetched again (a build is 60-90 MB).
+ * that failed its checks on its own bytes is remembered by its hash and signature and not fetched again (a build is
+ * 60-90 MB).
  */
 export function startSelfUpdate(cfg: CodexHubPushConfig, deps: UpdateDeps = {}): () => void {
   let stopped = false
