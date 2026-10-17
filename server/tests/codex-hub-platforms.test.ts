@@ -4,12 +4,14 @@
 // other builds asks without one and must keep getting the Windows build at its first name (codex-hub.ts PUSHER_EXE,
 // TRAY_EXE). The "builds" here are a few bytes.
 import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { HUB_PLATFORMS, hubBuildFile, PUSHER_EXE, TRAY_EXE } from '../src/core/codex-hub'
 import type { CodexHubPushConfig } from '../src/core/codex-hub-push'
+import { signBuild, updateKeyText } from '../src/core/codex-hub-signature'
 import { buildPlatform, isCompiledPusher, updateOnce } from '../src/core/codex-hub-update'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
@@ -179,12 +181,14 @@ test('the update check asks for this build, by its platform, on both requests', 
     const own = buildPlatform()
     const exe = join(exeDir, `codex-hub-push-${own}`)
     writeFileSync(exe, 'old build')
+    const operator = generateKeyPairSync('ed25519').privateKey
     const deps = {
       fetch: toHub,
       exePath: exe,
       run: () => ({ status: 0, stdout: 'codex-hub-push\n' }),
       relaunch: () => {},
       log: () => {},
+      updateKey: updateKeyText(operator),
     }
 
     // A Mac whose hub has only the Windows build keeps what it has instead of taking that one.
@@ -197,6 +201,7 @@ test('the update check asks for this build, by its platform, on both requests', 
     const file = hubBuildFile('pusher', own)
     if (!file) return // a platform the hub hands out no builds for
     writeFileSync(file, 'new build')
+    writeFileSync(`${file}.sig`, signBuild(operator, 'pusher', own, sha('new build')))
     asked.length = 0
     expect(await updateOnce(cfg, deps)).toBe('updated')
     expect(asked).toEqual([

@@ -558,6 +558,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes, at most 480 (eight hours); the [Codex hub](#codex-chats-from-other-pcs-codex-hub) holds this PC's name for three of them after each push |
 | `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, and only when each resume and turn says so; `full` also without them (Desk's bypass mode); `off` keeps the relay closed |
 | `AGENTHYDRA_CODEX_HUB_UPDATE` | on | on a PC running the compiled pusher: `off` keeps the installed build instead of following the hub's |
+| `AGENTHYDRA_CODEX_HUB_UPDATE_KEY` | the key the build was compiled with, if any | on a PC running the compiled pusher: the operator's public key (base64), which each hub build must be signed with (`scripts/codex-hub-sign.ts`); without one the pusher takes builds only from an `https://` hub |
 | `AGENTHYDRA_CODEX_HUB_RESTART` | `exit` under systemd or launchd, else `spawn` | on a Mac or Linux PC, how the compiled pusher hands over to a build it updated to: `exit` ends it with code 75 for the service manager to start the new file, `spawn` starts the new file itself |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
@@ -872,8 +873,7 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   systemd or launchd runs (`INVOCATION_ID` is set, or `XPC_SERVICE_NAME` names a job) exits with 75,
   for `Restart=on-failure` or `KeepAlive` to start the new file; any other starts it itself, with the
   same arguments and writing to the same output. `AGENTHYDRA_CODEX_HUB_RESTART` says which: `exit` or
-  `spawn`. The PC trusts the hub with its build as it already does with relay turns;
-  `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
+  `spawn`. `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
 - **Signed builds:** each build is signed with the operator's ed25519 key, away from the hub.
   `bun scripts/codex-hub-sign.ts keygen <key file>` makes the key (PKCS#8, mode 0600, never written
   over) and prints its public key, base64 of its 32 bytes (`pubkey <key file>` prints it again).
@@ -883,6 +883,13 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   for that one build, name and platform, which the script takes from the file's name as the hub serves
   it. `GET /api/codex-hub/{pusher,tray}` answers `signature` beside `sha256` and `size` when the
   `.sig` is there (read at each request) and nothing when it is not. The hub never holds the key.
+  The compiled pusher has the public key from `AGENTHYDRA_CODEX_HUB_UPDATE_KEY`, else from its build
+  (`bun build --compile --define AGENTHYDRA_CODEX_HUB_UPDATE_KEY='"<key>"'`). With a key it fetches a
+  build only when its signature verifies for the pusher on its own platform over the announced
+  SHA-256, which the download must then match; a build that is unsigned, signed with another key, or
+  signed for the tray or another platform is refused before it is downloaded, logged, and not tried
+  again until the hub hands out another build or signature. Without a key it takes builds only from an
+  `https://` hub: over `http://` it keeps its build and logs that it has no update key.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 

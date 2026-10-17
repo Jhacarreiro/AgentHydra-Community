@@ -1,16 +1,18 @@
 // server/tests/codex-hub-update.test.ts — a PC's pusher keeps itself at the build its hub hands out.
 //
-// The hub serves the build under the hub's folder (codex-hub.ts PUSHER_EXE) behind its token; the pusher
-// (core/codex-hub-update.ts) compares hashes, downloads, checks that the new build starts, and swaps it in. Here the
-// "exe" files are a few bytes and starting one is a stand-in.
+// The hub serves the build under the hub's folder (codex-hub.ts PUSHER_EXE) behind its token, with the operator's
+// signature beside it; the pusher (core/codex-hub-update.ts) compares hashes, checks the signature, downloads, checks
+// that the new build starts, and swaps it in. Here the "exe" files are a few bytes and starting one is a stand-in.
 import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { PUSHER_EXE } from '../src/core/codex-hub'
 import type { CodexHubPushConfig } from '../src/core/codex-hub-push'
-import { RESTART_EXIT_CODE, restartPlan, updateOnce } from '../src/core/codex-hub-update'
+import { type HubBuildName, signBuild, updateKeyText } from '../src/core/codex-hub-signature'
+import { RESTART_EXIT_CODE, restartPlan, updateKey, updateOnce } from '../src/core/codex-hub-update'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
 
@@ -30,6 +32,22 @@ const cfg: CodexHubPushConfig = {
   intervalMs: 60_000,
 }
 
+// The operator's key, and another that is not it.
+const operator = generateKeyPairSync('ed25519').privateKey
+const stranger = generateKeyPairSync('ed25519').privateKey
+const KEY = updateKeyText(operator)
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
+
+/** Puts a build at the hub's Windows pusher, signed as scripts/codex-hub-sign.ts signs it (by default). */
+function hubBuild(
+  bytes: string,
+  sig: { key?: typeof operator; name?: HubBuildName; platform?: string; of?: string } = {},
+) {
+  writeFileSync(PUSHER_EXE, bytes)
+  const { key = operator, name = 'pusher', platform = 'windows-x64', of = bytes } = sig
+  writeFileSync(`${PUSHER_EXE}.sig`, `${signBuild(key, name, platform, sha256(of))}\n`)
+}
+
 const dir = mkdtempSync(join(tmpdir(), 'ah-pusher-update-'))
 const exe = join(dir, 'codex-hub-push.exe')
 let relaunched: string[] = []
@@ -41,6 +59,7 @@ const deps = (over: Parameters<typeof updateOnce>[1] = {}) => ({
   log: () => {},
   // The hub's file here is its Windows build (PUSHER_EXE), whatever OS the suite runs on.
   platform: 'windows-x64',
+  updateKey: KEY,
   ...over,
 })
 
@@ -49,7 +68,7 @@ beforeEach(() => {
   writeFileSync(exe, 'old build')
   rmSync(`${exe}.old`, { force: true })
   mkdirSync(dirname(PUSHER_EXE), { recursive: true })
-  writeFileSync(PUSHER_EXE, 'new build')
+  hubBuild('new build')
 })
 
 afterAll(() => {
@@ -109,7 +128,7 @@ test('a hub build that failed its checks is not fetched again until the hub has 
   expect(await updateOnce(cfg, broken)).toBe('failed')
   expect(await updateOnce(cfg, broken)).toBe('failed')
   expect(downloads).toBe(1)
-  writeFileSync(PUSHER_EXE, 'newer build')
+  hubBuild('newer build')
   expect(await updateOnce(cfg, deps({ fetch: counting, refused }))).toBe('updated')
   expect(downloads).toBe(2)
   expect(readFileSync(exe, 'utf8')).toBe('newer build')
@@ -119,7 +138,7 @@ test.skipIf(process.platform === 'win32')(
   "a downloaded build's --version runs without the hub's address and token",
   async () => {
     // A build that does not know --version would run as this PC's pusher; this one writes down what it was given.
-    writeFileSync(PUSHER_EXE, '#!/bin/sh\nenv > "$0.env"\necho codex-hub-push\n')
+    hubBuild('#!/bin/sh\nenv > "$0.env"\necho codex-hub-push\n')
     const names = [
       'AGENTHYDRA_CODEX_HUB_URL',
       'CCMANAGERUI_CODEX_HUB_URL',
@@ -145,6 +164,82 @@ test('a hub with no build to hand out, and a request without the token, change n
   const res = await http.fetch(new Request('http://127.0.0.1/api/codex-hub/pusher/download'))
   expect(res.status).toBe(401)
   expect(readFileSync(exe, 'utf8')).toBe('old build')
+})
+
+test('with an update key, only a build signed with it for the pusher on this platform is fetched', async () => {
+  const asked: string[] = []
+  const counting: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    asked.push(new URL(String(input)).pathname)
+    return toHub(input, init)
+  }) as typeof fetch
+  const lines: string[] = []
+  const refused = new Set<string>()
+  const check = () => updateOnce(cfg, deps({ fetch: counting, refused, log: (l) => lines.push(l) }))
+  for (const [what, sig] of [
+    ['another key', { key: stranger }],
+    ['the tray', { name: 'tray' }],
+    ['another platform', { platform: 'linux-x64' }],
+    ['other bytes', { of: 'other build' }],
+  ] as const) {
+    hubBuild('new build', sig)
+    expect(await check(), what).toBe('failed')
+    expect(lines.at(-1), what).toContain('not signed with this build')
+  }
+  rmSync(`${PUSHER_EXE}.sig`)
+  expect(await check()).toBe('failed')
+  expect(lines.at(-1)).toContain('the hub build is not signed')
+  // None of them was downloaded, and each was refused once.
+  expect(asked.filter((p) => p.endsWith('/download'))).toEqual([])
+  expect(await check()).toBe('failed')
+  expect(lines).toHaveLength(5)
+  expect(readFileSync(exe, 'utf8')).toBe('old build')
+
+  // The same build, once its signature is in place, is taken.
+  hubBuild('new build')
+  expect(await check()).toBe('updated')
+  expect(readFileSync(exe, 'utf8')).toBe('new build')
+})
+
+test('without an update key the pusher takes a build only from an https hub', async () => {
+  let asked = 0
+  const viaHttps: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    asked++
+    return toHub(String(input).replace('https://hub.example.test', 'http://127.0.0.1'), init)
+  }) as typeof fetch
+  const lines: string[] = []
+  const keyless = deps({ fetch: viaHttps, updateKey: '', log: (l) => lines.push(l) })
+  rmSync(`${PUSHER_EXE}.sig`)
+  expect(await updateOnce(cfg, keyless)).toBe('failed')
+  expect(lines).toEqual([
+    'kept this build: it has no update key (AGENTHYDRA_CODEX_HUB_UPDATE_KEY) and the hub is not https',
+  ])
+  expect(asked).toBe(0)
+  expect(readFileSync(exe, 'utf8')).toBe('old build')
+
+  expect(await updateOnce({ ...cfg, url: 'https://hub.example.test' }, keyless)).toBe('updated')
+  expect(readFileSync(exe, 'utf8')).toBe('new build')
+
+  // A key that is not one takes nothing, from any hub.
+  writeFileSync(exe, 'old build')
+  asked = 0
+  const badKey = deps({ fetch: viaHttps, updateKey: 'not a key', log: (l) => lines.push(l) })
+  expect(await updateOnce({ ...cfg, url: 'https://hub.example.test' }, badKey)).toBe('failed')
+  expect(lines.at(-1)).toContain('not a public key')
+  expect(asked).toBe(0)
+})
+
+test('the update key comes from AGENTHYDRA_CODEX_HUB_UPDATE_KEY', () => {
+  const previous = process.env.AGENTHYDRA_CODEX_HUB_UPDATE_KEY
+  try {
+    process.env.AGENTHYDRA_CODEX_HUB_UPDATE_KEY = ` ${KEY}\n`
+    expect(updateKey()).toBe(KEY)
+    // A build compiled without a key and no variable has none.
+    delete process.env.AGENTHYDRA_CODEX_HUB_UPDATE_KEY
+    expect(updateKey()).toBe('')
+  } finally {
+    if (previous === undefined) delete process.env.AGENTHYDRA_CODEX_HUB_UPDATE_KEY
+    else process.env.AGENTHYDRA_CODEX_HUB_UPDATE_KEY = previous
+  }
 })
 
 test('off Windows a service manager starts the new build; anywhere else the pusher does', () => {

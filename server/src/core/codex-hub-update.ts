@@ -10,15 +10,23 @@
 // name; the old process exits and the new build starts in its place: started from here, or by the scheduled task or
 // service manager that runs the pusher (restartPlan).
 //
-// Only a compiled pusher updates itself: a checkout running under bun is updated with git. The PC trusts the hub
-// with its build as it already does with relay turns (codex-hub-relay-pc.ts); AGENTHYDRA_CODEX_HUB_UPDATE=off keeps
-// the installed build.
+// The hash comes from the same address as the file, so over plain http it proves nothing. With an update key (the
+// operator's public key: AGENTHYDRA_CODEX_HUB_UPDATE_KEY, or compiled in with --define) a build is taken only with
+// the operator's signature for the pusher on this platform over that hash (codex-hub-signature.ts), checked before
+// the download; without one, only from an https hub.
+//
+// Only a compiled pusher updates itself: a checkout running under bun is updated with git.
+// AGENTHYDRA_CODEX_HUB_UPDATE=off keeps the installed build.
 
 import { type SpawnSyncReturns, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, renameSync, rmSync, statSync } from 'node:fs'
 import { appEnv } from '../config'
 import { sha256File } from './codex-hub'
 import type { CodexHubPushConfig } from './codex-hub-push'
+import { buildSignatureValid, updateKeyFrom } from './codex-hub-signature'
+
+// The update key a build was compiled with: `bun build --compile --define AGENTHYDRA_CODEX_HUB_UPDATE_KEY='"<key>"'`.
+declare const AGENTHYDRA_CODEX_HUB_UPDATE_KEY: string | undefined
 
 const CHECK_EVERY_MS = 6 * 60 * 60_000
 // A new exe is scanned by the antivirus on its first start.
@@ -39,8 +47,20 @@ export interface UpdateDeps {
   log?: (line: string) => void
   /** The platform whose build is asked for; this build's own by default. */
   platform?: string
-  /** The hashes of hub builds that failed their checks here; startSelfUpdate keeps one for its checks. */
+  /** The hub builds that failed their checks here, by hash and signature; startSelfUpdate keeps one for its checks. */
   refused?: Set<string>
+  /** The update key (base64); updateKey() by default, '' for none. */
+  updateKey?: string
+}
+
+/**
+ * The public key (base64, codex-hub-signature.ts) the hub's builds must be signed with: AGENTHYDRA_CODEX_HUB_UPDATE_KEY,
+ * else the one this build was compiled with; '' when there is none.
+ */
+export function updateKey(): string {
+  const compiled =
+    typeof AGENTHYDRA_CODEX_HUB_UPDATE_KEY === 'string' ? AGENTHYDRA_CODEX_HUB_UPDATE_KEY : ''
+  return appEnv('CODEX_HUB_UPDATE_KEY')?.trim() || compiled.trim()
 }
 
 /**
@@ -142,17 +162,33 @@ export async function updateOnce(
   const doFetch = deps.fetch ?? fetch
   const exe = deps.exePath ?? process.execPath
   const log = deps.log ?? ((line: string) => console.log(`[codex-hub] ${line}`))
+  const keyText = deps.updateKey ?? updateKey()
+  const key = keyText ? updateKeyFrom(keyText) : null
+  if (keyText && !key) {
+    log('kept this build: its update key is not a public key (base64 of 32 bytes)')
+    return 'failed'
+  }
+  if (!key && !/^https:\/\//i.test(cfg.url)) {
+    log(
+      'kept this build: it has no update key (AGENTHYDRA_CODEX_HUB_UPDATE_KEY) and the hub is not https',
+    )
+    return 'failed'
+  }
+  const platform = deps.platform ?? buildPlatform()
   const headers = { ...cfg.headers, authorization: `Bearer ${cfg.token}` }
-  const query = `?platform=${encodeURIComponent(deps.platform ?? buildPlatform())}`
+  const query = `?platform=${encodeURIComponent(platform)}`
   const meta = await doFetch(`${cfg.url}/api/codex-hub/pusher${query}`, { headers })
   if (meta.status === 404) return 'none'
   if (!meta.ok) throw new Error(`the hub answered ${meta.status} for its pusher build`)
-  const want = (await meta.json()) as { sha256?: string; size?: number }
+  const want = (await meta.json()) as { sha256?: string; size?: number; signature?: string }
   if (typeof want.sha256 !== 'string') throw new Error('the hub sent no hash for its pusher build')
   const sha256 = want.sha256
+  const signature = typeof want.signature === 'string' ? want.signature : ''
   if ((await sha256File(exe)) === sha256) return 'current'
-  // A build that failed its checks here fails them again: it is not fetched until the hub hands out another.
-  if (deps.refused?.has(sha256)) return 'failed'
+  // A build that failed its checks here fails them again: it is not fetched until the hub hands out another, or
+  // the same one with another signature (one signed after it was put in place).
+  const seen = `${sha256} ${signature}`
+  if (deps.refused?.has(seen)) return 'failed'
 
   const next = `${exe}.new`
   const drop = (why: string): UpdateOutcome => {
@@ -161,9 +197,16 @@ export async function updateOnce(
     return 'failed'
   }
   const refuse = (why: string): UpdateOutcome => {
-    deps.refused?.add(sha256)
+    deps.refused?.add(seen)
     return drop(`${why} (not fetched again until the hub has another build)`)
   }
+  // The signature covers the hash the download must match, so a build that is not signed is never fetched.
+  if (key && !buildSignatureValid(key, 'pusher', platform, sha256, signature))
+    return refuse(
+      signature
+        ? `the hub build is not signed with this build's update key for the pusher on ${platform}`
+        : 'the hub build is not signed',
+    )
   const res = await doFetch(`${cfg.url}/api/codex-hub/pusher/download${query}`, { headers })
   if (!res.ok) return drop(`the download answered ${res.status}`)
   await Bun.write(next, res)
@@ -192,7 +235,7 @@ export async function updateOnce(
 
 /**
  * Checks now and every few hours until stopped. A failed check is logged and tried again at the next one; a hub build
- * that failed its checks is remembered by its hash and not fetched again (a build is 60-90 MB).
+ * that failed its checks is remembered by its hash and signature and not fetched again (a build is 60-90 MB).
  */
 export function startSelfUpdate(cfg: CodexHubPushConfig, deps: UpdateDeps = {}): () => void {
   let stopped = false
