@@ -13,8 +13,8 @@ import type { FreeInstance, FreeJob, FreeResult } from '@shared/free-instances'
 import type { AhCodexInstance } from '../../../src/bridge/client'
 import type { FreeChats } from '../../../src/engine/chatgpt/runtime'
 import { ChatManager, type ManagerBridge } from '../../../src/engine/chat-manager'
-import type { CodexDirectory } from '../../../src/engine/codex/accounts'
-import type { OpenAppServer, ThreadListener } from '../../../src/engine/codex/app-server'
+import { type CodexDirectory, codexDirectory } from '../../../src/engine/codex/accounts'
+import { type OpenAppServer, relayHome, type ThreadListener } from '../../../src/engine/codex/app-server'
 import { ANSWER_NOW, PIN_INTRO } from '../../../src/engine/handoff'
 import { DEFAULT_SETTINGS } from '../../../src/settings'
 import { fakeBridge, fakeQueries } from './fakes'
@@ -79,13 +79,13 @@ function fakeCodex(o: { resumeError?: string; up?: Promise<void> } = {}) {
   return { open, turnStarts, thread, calls, held, opening: () => opening }
 }
 
-async function setup(o: { external?: ExternalSession[]; items?: Record<string, TranscriptItem[]>; resumeError?: string; free?: FreeChats; up?: Promise<void> } = {}) {
+async function setup(o: { external?: ExternalSession[]; items?: Record<string, TranscriptItem[]>; resumeError?: string; free?: FreeChats; up?: Promise<void>; codex?: CodexDirectory } = {}) {
   const home = temp('desk-pin-home-')
   const cwd = temp('desk-pin-cwd-')
   mkdirSync(cwd, { recursive: true })
   process.env.HYDRA_DESK_HOME = home
   const account: AccountInfo = { id: 'acct-1', label: '#1 user (Pro)', configDir: temp('desk-pin-acct-'), number: 1, email: null, plan: 'Pro', signedIn: true, fiveHourPct: 10, weeklyPct: 10, fiveHourResetsAt: null, weeklyResetsAt: null, inUse: false }
-  const codex: CodexDirectory = {
+  const codex: CodexDirectory = o.codex ?? {
     instances: async () => [ALPHA, BETA],
     usage: async (id) => ({ snapshot: { session: { pct: id === ALPHA.id ? 10 : 40 }, weekAll: { pct: 5 } } }),
   }
@@ -243,6 +243,43 @@ test("a Codex chat its Codex app holds open waits, in a sentence, and is never s
   expect(m.listItems(chat.id).find((i) => i.kind === 'result')).toMatchObject({ ok: false, error: 'The Codex app on #8 beta has this chat open, so only it can write to it now. Close the chat there, then send again.' })
   expect(fake.calls('thread/start')).toEqual([])
   expect(m.get(chat.id).serviceThreads?.codex?.threadId).toBe(threadId)
+})
+
+const OTHER_PC = 'hub:other-pc'
+
+/** The Codex hub's directory: this machine's alpha, then another PC behind the hub, its relay open while `online()`. */
+const hubDirectory = (online: () => boolean): CodexDirectory =>
+  codexDirectory({
+    codexInstances: async () => [ALPHA],
+    codexUsage: async () => ({ snapshot: { session: { pct: 10 }, weekAll: { pct: 5 } } }),
+    codexRelayPcs: async () => [{ id: OTHER_PC, pc: 'OTHER-PC', pushedAt: '', chats: 1, relay: online() }],
+  })
+
+/** A Codex chat the other PC pushed to the hub, in its own folder, as AgentHydra lists it. */
+const hubChat = (id: string, cwd: string): ExternalSession => ({ id, title: 'From the other PC', cwd, source: 'codex', instance: 'OTHER-PC', status: 'idle', activity: null, lastActivityAt: 2, model: null, accountId: null, codexAccountId: OTHER_PC, canResume: true, fromPc: 'OTHER-PC', pinned: false, archived: false, unread: false, group: null })
+
+test("another PC's Codex chat continues on that PC's Codex, in its folder as that PC names it, which this machine need not have", async () => {
+  const onWindows = '0f0f0f0f-1111-4222-8333-666666666661'
+  const onMac = '0f0f0f0f-1111-4222-8333-666666666662'
+  const relative = '0f0f0f0f-1111-4222-8333-666666666663'
+  const winCwd = 'C:\\Users\\me\\work\\ledger'
+  const macCwd = '/Users/me/work/ledger'
+  const external = [hubChat(onWindows, winCwd), hubChat(onMac, macCwd), hubChat(relative, 'work/ledger')]
+  const { m, fake } = await setup({ external, items: { [onWindows]: [], [onMac]: [] }, codex: hubDirectory(() => true) })
+
+  // As Desk's Continue asks for it: the folder the row names.
+  const win = await m.importSession({ sessionId: onWindows, cwd: winCwd })
+  const mac = await m.importSession({ sessionId: onMac, cwd: macCwd })
+  expect(win).toMatchObject({ service: 'codex', cwd: winCwd, serviceThreads: { codex: { accountId: OTHER_PC, label: 'OTHER-PC', threadId: onWindows } } })
+  expect(mac.cwd).toBe(macCwd)
+  await codexTurn(fake, m, win.id, 'Carry on', 'Carrying on.')
+  await codexTurn(fake, m, mac.id, 'Carry on', 'Carrying on.')
+  expect(fake.calls('thread/resume').map((c) => [c.home, c.threadId, c.cwd])).toEqual([
+    [relayHome(OTHER_PC), onWindows, winCwd],
+    [relayHome(OTHER_PC), onMac, macCwd],
+  ])
+  // A folder no PC could name is still refused.
+  await expect(m.importSession({ sessionId: relative, cwd: 'work/ledger' })).rejects.toThrow('cwd must be an absolute path, got "work/ledger"')
 })
 
 const GPT = (n: number, name: string, unlimited: boolean): FreeInstance => ({ id: `0000000${n}-aaaa-4bbb-8ccc-000000000000`, num: n, provider: 'chatgpt', name, autoName: false, loggedIn: true, checkedAt: 1, lastSignedInAt: 1, lastActiveAt: n, usage: unlimited ? { available: true, unlimited_text: true, plan: 'free', is_snapshot: false, observed_at: null, note: '', windows: [] } : null })

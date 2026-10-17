@@ -10,7 +10,7 @@
 import { type SearchResult, searchResult } from '@shared/find'
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path'
 import type { McpServerConfig, Query } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AccountInfo,
@@ -82,7 +82,7 @@ import { forgetChat } from '../../../../server/src/hydra-core/seat-chats'
 import { chatFace, forgetCoreFaces } from './core-lead'
 import { coreDir } from './hydra-core-mode'
 import { forgetManager, MANAGER_SLUG } from './managers'
-import { type CodexDirectory, codexAccount, pickCodexAccount } from './codex/accounts'
+import { type CodexDirectory, codexAccount, isRelayAccount, pickCodexAccount } from './codex/accounts'
 import { closeAppServers, type OpenAppServer } from './codex/app-server'
 import { CodexRuntime } from './codex/runtime'
 import { ChatgptRuntime, type FreeChats } from './chatgpt/runtime'
@@ -1844,7 +1844,8 @@ export class ChatManager {
     const codex = outside?.source === 'codex' ? await this.codexImport(req, outside) : null
     const rawCwd = req.cwd ?? outside?.cwd
     if (!rawCwd) throw new ChatError(400, `cwd is required: AgentHydra does not know the folder of session ${req.sessionId}`)
-    const cwd = checkCwd(rawCwd)
+    // Another PC's chat (the Codex hub's) goes on in that PC's folder, which this machine need not have.
+    const cwd = codex && isRelayAccount(codex.accountId) ? pcCwd(rawCwd) : checkCwd(rawCwd)
     // A Codex chat's Claude account is only where it would go if pinned back to Claude: the default, never refused.
     const { account, auto, note } = codex ? { ...(await this.resolveAccount(this.settingsOf().defaultAccountId)), note: null } : await this.importAccount(req.configDir)
     const loaded = await this.externalItemsOf(req.sessionId)
@@ -3065,6 +3066,12 @@ export function endedTask(item: TranscriptItem, at?: number): TranscriptItem {
 const sameFolder = (a: string, b: string): boolean => resolve(a).toLowerCase() === resolve(b).toLowerCase()
 
 const isFolder = (p: string): boolean => statSync(p, { throwIfNoEntry: false })?.isDirectory() ?? false
+
+/** A folder on another PC, as that PC names it (a Windows or a POSIX path): never looked for or rewritten here. */
+export function pcCwd(cwd: string): string {
+  if (!cwd.trim() || !(win32.isAbsolute(cwd) || posix.isAbsolute(cwd))) throw new ChatError(400, `cwd must be an absolute path, got ${JSON.stringify(cwd)}`)
+  return cwd
+}
 
 export function checkCwd(cwd: string): string {
   if (!isAbsolute(cwd)) throw new ChatError(400, `cwd must be an absolute path, got ${JSON.stringify(cwd)}`)

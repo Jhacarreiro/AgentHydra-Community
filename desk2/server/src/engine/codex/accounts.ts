@@ -24,6 +24,9 @@ export interface CodexDirectory {
 
 export type CodexPick = { account: CodexAccount } | { why: string }
 
+/** Another PC's Codex behind the hub: its id is the hub's `hub:<pc>`, which no account of this machine has. */
+export const isRelayAccount = (id: string): boolean => id.startsWith('hub:')
+
 /** The directory through AgentHydra's API: this machine's accounts, then every PC behind its Codex hub. */
 export function codexDirectory(client: Pick<HydraClient, 'codexInstances' | 'codexUsage' | 'codexRelayPcs'>): CodexDirectory {
   return {
@@ -31,7 +34,7 @@ export function codexDirectory(client: Pick<HydraClient, 'codexInstances' | 'cod
       const [own, pcs] = await Promise.all([client.codexInstances(), client.codexRelayPcs()])
       return [...own, ...pcs.map((p) => ({ id: p.id, name: p.pc, codexHome: relayHome(p.id), loggedIn: p.relay, relay: true }))]
     },
-    usage: (id) => (id.startsWith('hub:') ? Promise.resolve(null) : client.codexUsage(id).catch(() => null)),
+    usage: (id) => (isRelayAccount(id) ? Promise.resolve(null) : client.codexUsage(id).catch(() => null)),
   }
 }
 
