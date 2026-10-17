@@ -2,7 +2,8 @@
 // Codex accounts (a fake app-server here), and the turn's reply, commands and approvals land in the chat as any
 // chat's do. A usage limit moves the message to another Codex account, whose new thread first reads a condensed
 // handoff of the chat; pinned back to Claude, the next message carries what was said on Codex. A Codex chat run
-// outside Desk continues here the same way, in its own thread on the account that holds it.
+// outside Desk continues here the same way, in its own thread on the account that holds it; another PC's chat (the
+// Codex hub's) on that PC's Codex, in that PC's folder, and never on this machine's.
 
 import { afterEach, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
@@ -280,6 +281,58 @@ test("another PC's Codex chat continues on that PC's Codex, in its folder as tha
   ])
   // A folder no PC could name is still refused.
   await expect(m.importSession({ sessionId: relative, cwd: 'work/ledger' })).rejects.toThrow('cwd must be an absolute path, got "work/ledger"')
+})
+
+/** A hub chat imported while its PC's relay was open; `offline()` closes that relay before the test sends. */
+async function hubImport(o: { resumeError?: string } = {}) {
+  const threadId = '0f0f0f0f-1111-4222-8333-777777777777'
+  const cwd = 'C:\\Users\\me\\work\\ledger'
+  let online = true
+  const { m, fake } = await setup({ external: [hubChat(threadId, cwd)], items: { [threadId]: [] }, codex: hubDirectory(() => online), resumeError: o.resumeError })
+  const chat = await m.importSession({ sessionId: threadId, cwd })
+  const bound = { accountId: OTHER_PC, label: 'OTHER-PC', threadId }
+  expect(chat.serviceThreads?.codex).toEqual(bound)
+  /** Nothing reached this machine's own Codex, and the chat is still the PC's. */
+  const stayed = () => {
+    expect(fake.calls('thread/start')).toEqual([])
+    expect(fake.calls('thread/resume').every((c) => c.home === relayHome(OTHER_PC))).toBe(true)
+    expect(fake.turnStarts().every((t) => t.home === relayHome(OTHER_PC))).toBe(true)
+    expect(m.get(chat.id).serviceThreads?.codex).toEqual(bound)
+  }
+  return { m, fake, chat, stayed, offline: () => (online = false) }
+}
+
+const resultOf = (m: ChatManager, chatId: string) => m.listItems(chatId).find((i) => i.kind === 'result')
+
+test("another PC's Codex chat whose PC went off says so on the next send, and never moves to this machine's Codex", async () => {
+  const { m, fake, chat, stayed, offline } = await hubImport()
+  offline()
+  await m.send(chat.id, 'Carry on')
+  await waitFor(() => !!resultOf(m, chat.id))
+  expect(resultOf(m, chat.id)).toMatchObject({ ok: false, error: 'OTHER-PC is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.' })
+  expect(fake.opening()).toBe(0)
+  stayed()
+})
+
+test("another PC's Codex chat gone from that PC says so, and is not started over on this machine's Codex", async () => {
+  const { m, chat, stayed } = await hubImport({ resumeError: 'thread 0f0f0f0f-1111-4222-8333-777777777777 not found' })
+  await m.send(chat.id, 'Carry on')
+  await waitFor(() => !!resultOf(m, chat.id))
+  expect(resultOf(m, chat.id)).toMatchObject({ ok: false, error: 'thread 0f0f0f0f-1111-4222-8333-777777777777 not found' })
+  stayed()
+})
+
+test("another PC's Codex chat at that PC's usage limit waits for it, and is not moved to this machine's Codex", async () => {
+  const { m, fake, chat, stayed } = await hubImport()
+  await m.send(chat.id, 'Carry on')
+  await waitFor(() => fake.turnStarts().length === 1)
+  const threadId = chat.serviceThreads!.codex!.threadId
+  fake.thread(threadId).notify('turn/completed', { threadId, turn: { id: 'turn-1', status: 'failed', error: { message: 'You hit your limit.', codexErrorInfo: 'usageLimitExceeded' } } })
+  await waitFor(() => m.get(chat.id).status === 'limited')
+  expect(systemTexts(m.listItems(chat.id))).toContain("OTHER-PC hit its Codex usage limit. This chat goes on only on that PC's Codex, so it waits until the limit there resets.")
+  expect(fake.turnStarts()).toHaveLength(1)
+  expect(fake.held()).toEqual([])
+  stayed()
 })
 
 const GPT = (n: number, name: string, unlimited: boolean): FreeInstance => ({ id: `0000000${n}-aaaa-4bbb-8ccc-000000000000`, num: n, provider: 'chatgpt', name, autoName: false, loggedIn: true, checkedAt: 1, lastSignedInAt: 1, lastActiveAt: n, usage: unlimited ? { available: true, unlimited_text: true, plan: 'free', is_snapshot: false, observed_at: null, note: '', windows: [] } : null })

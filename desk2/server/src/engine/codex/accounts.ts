@@ -27,6 +27,10 @@ export type CodexPick = { account: CodexAccount } | { why: string }
 /** Another PC's Codex behind the hub: its id is the hub's `hub:<pc>`, which no account of this machine has. */
 export const isRelayAccount = (id: string): boolean => id.startsWith('hub:')
 
+/** Why a chat on another PC's Codex cannot go on now: that PC's relay is not open. */
+export const notConnected = (pc: string): string =>
+  `${pc} is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.`
+
 /** The directory through AgentHydra's API: this machine's accounts, then every PC behind its Codex hub. */
 export function codexDirectory(client: Pick<HydraClient, 'codexInstances' | 'codexUsage' | 'codexRelayPcs'>): CodexDirectory {
   return {

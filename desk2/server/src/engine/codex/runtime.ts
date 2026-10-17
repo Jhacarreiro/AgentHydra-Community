@@ -3,7 +3,8 @@
 // chat does (service-runtime.ts), so the window draws it the same way.
 // The thread is the chat's `serviceThreads.codex`: a later turn, a restart of Desk or a pin back here goes on in
 // it. A new thread (the chat's first Codex turn, or its account gone or at its limit) starts from a condensed
-// handoff of the chat so far (the manager's `handoff`), so Codex knows what was said on Claude.
+// handoff of the chat so far (the manager's `handoff`), so Codex knows what was said on Claude. A chat on another PC's
+// Codex (the Codex hub's relay) never moves that way: its folder and files are that PC's, so it goes on there or says why.
 
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -12,7 +13,7 @@ import type { ImageRef, PermissionDecision, PermissionMode, QuestionAnswer, Serv
 import { mediaCache } from '../../media/cache'
 import { ANSWER_NOW } from '../handoff'
 import { type Sent, ServiceRuntime, type ServiceRuntimeDeps } from '../service-runtime'
-import type { CodexAccount, CodexPick } from './accounts'
+import { type CodexAccount, type CodexPick, isRelayAccount, notConnected } from './accounts'
 import { type AppServer, isRelayHome, type OpenAppServer, openAppServer, type ThreadListener } from './app-server'
 import { activityOf, type CodexItem, codexItems, planTodos, shownCommand } from './items'
 
@@ -236,8 +237,11 @@ export class CodexRuntime extends ServiceRuntime {
     const model = codexModel(this.chat.model)
     const settings = { cwd: this.chat.cwd, approvalPolicy, sandbox, ...(model ? { model } : {}) }
     const bound = this.chat.serviceThreads?.codex
+    // Another PC's chat goes on on that PC alone: never in a new thread here, on this machine's accounts and folders.
+    const relay = !!bound && isRelayAccount(bound.accountId)
     if (bound && !this.avoid.has(bound.accountId)) {
       const account = await this.deps.findAccount(bound.accountId)
+      if (!account && relay) throw new Error(notConnected(bound.label))
       if (account) {
         await this.attach(account)
         try {
@@ -249,7 +253,7 @@ export class CodexRuntime extends ServiceRuntime {
           // Open in that account's Codex app, which alone may write it while it holds it: the chat waits for it.
           if (/active writer/i.test(message)) throw new Error(`The Codex app on ${account.label} has this chat open, so only it can write to it now. Close the chat there, then send again.`)
           // Gone from that account (archived there, deleted): the chat goes on in a new thread. Anything else is said.
-          if (!/not found|no rollout|unknown thread|does not exist/i.test(message)) throw err
+          if (relay || !/not found|no rollout|unknown thread|does not exist/i.test(message)) throw err
         }
       }
     }
@@ -433,9 +437,16 @@ export class CodexRuntime extends ServiceRuntime {
     this.detach()
   }
 
-  /** The thread's account hit its usage limit: it is held out, and the same message goes on in a new thread on another account. */
+  /**
+   * The thread's account hit its usage limit: it is held out, and the same message goes on in a new thread on another
+   * account. Another PC's chat waits for that PC's limit instead.
+   */
   private limited(sent: Sent): void {
     const thread = this.thread
+    if (thread && isRelayAccount(thread.accountId)) {
+      this.detach()
+      return this.allLimited(`${thread.label} hit its Codex usage limit. This chat goes on only on that PC's Codex, so it waits until the limit there resets.`)
+    }
     if (thread) {
       this.deps.hold(thread.accountId, this.now() + LIMIT_HOLD_MS)
       this.avoid.add(thread.accountId)
