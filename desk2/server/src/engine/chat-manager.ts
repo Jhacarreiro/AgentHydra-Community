@@ -612,10 +612,13 @@ export class ChatManager {
     return [...this.chats.values()].flatMap((e) => Object.values(e.chat.serviceThreads ?? {}).map((t) => t.threadId))
   }
 
-  /** What Pin service offers (GET /api/chat-services): Claude always; Codex when one of its accounts is signed in. */
+  /**
+   * What Pin service offers (GET /api/chat-services): Claude always; Codex when one of this machine's accounts is
+   * signed in. Another PC's Codex behind the hub only goes on with that PC's chats (pickCodexAccount), so it is not one.
+   */
   async services(): Promise<ChatServiceInfo[]> {
     const claude = (await this.bridge.listAccounts().catch(() => [])).filter((a) => a.signedIn).length
-    const codex = this.codexDir ? await this.codexDir.instances().then((l) => l.filter((i) => i.loggedIn).length, () => null) : null
+    const codex = this.codexDir ? await this.codexDir.instances().then((l) => l.filter((i) => i.loggedIn && !i.relay).length, () => null) : null
     return [
       { kind: 'claude', label: SERVICE_LABEL.claude, ready: true, accounts: claude },
       {

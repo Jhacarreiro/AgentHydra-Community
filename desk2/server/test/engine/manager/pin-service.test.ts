@@ -248,10 +248,10 @@ test("a Codex chat its Codex app holds open waits, in a sentence, and is never s
 
 const OTHER_PC = 'hub:other-pc'
 
-/** The Codex hub's directory: this machine's alpha, then another PC behind the hub, its relay open while `online()`. */
-const hubDirectory = (online: () => boolean): CodexDirectory =>
+/** The Codex hub's directory: this machine's accounts (alpha), then another PC behind the hub, its relay open while `online()`. */
+const hubDirectory = (online: () => boolean, own: AhCodexInstance[] = [ALPHA]): CodexDirectory =>
   codexDirectory({
-    codexInstances: async () => [ALPHA],
+    codexInstances: async () => own,
     codexUsage: async () => ({ snapshot: { session: { pct: 10 }, weekAll: { pct: 5 } } }),
     codexRelayPcs: async () => [{ id: OTHER_PC, pc: 'OTHER-PC', pushedAt: '', chats: 1, relay: online() }],
   })
@@ -281,6 +281,13 @@ test("another PC's Codex chat continues on that PC's Codex, in its folder as tha
   ])
   // A folder no PC could name is still refused.
   await expect(m.importSession({ sessionId: relative, cwd: 'work/ledger' })).rejects.toThrow('cwd must be an absolute path, got "work/ledger"')
+})
+
+test("Pin service counts only this machine's Codex accounts: another PC's Codex never takes a pinned chat", async () => {
+  const { m } = await setup({ codex: hubDirectory(() => true) })
+  expect((await m.services()).find((s) => s.kind === 'codex')).toMatchObject({ ready: true, accounts: 1 })
+  const { m: hubOnly } = await setup({ codex: hubDirectory(() => true, []) })
+  expect((await hubOnly.services()).find((s) => s.kind === 'codex')).toMatchObject({ ready: false, accounts: 0, why: 'No Codex account is signed in.' })
 })
 
 /** A hub chat imported while its PC's relay was open; `offline()` closes that relay before the test sends. */
