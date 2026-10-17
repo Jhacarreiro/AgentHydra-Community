@@ -570,6 +570,35 @@ describe('--history', () => {
   )
 
   test(
+    "a message may name the upstream hosts, private repositories and folders a commit takes out; a file may not",
+    () => {
+      const host = CONFIG.upstreamHosts?.[0] ?? ''
+      const privateRepo = CONFIG.privateRepos?.[0] ?? ''
+      const folder = CONFIG.pathDenylist?.[0] ?? ''
+      expect([host, privateRepo, folder]).not.toContain('')
+      const names = `api.${host}, ${privateRepo} and ${folder}\n`
+      const dir = repo('messages')
+      const base = commit(dir, {}, 'base')
+      const described = commit(dir, {}, `Services: nothing reads ${names}\nany more.`)
+      expect(auditHistory(dir, [`${base}..HEAD`], ctxWith()).findings).toEqual([])
+
+      // The same names in a file the commit adds are findings, and in a message every other rule
+      // still reads: a home folder, a private address and a mailbox.
+      const home = j('C:\\Users\\', NAME, '\\x')
+      commit(dir, { 'notes.md': names }, `Notes: moved from ${home} to ${IP.b172}, ask ${MAILBOX}`)
+      const { findings } = auditHistory(dir, [`${described}..HEAD`], ctxWith())
+      const where = (path: string) =>
+        findings
+          .filter((f) => f.path === path)
+          .map((f) => f.rule)
+          .sort()
+      expect(where('notes.md')).toEqual(['infra.host', 'infra.private-repo', 'pii.path'])
+      expect(where(MESSAGE_PATH)).toEqual(['net.private-ipv4', 'pii.email', 'pii.path'])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'a binary a commit adds needs provenance, even when a later commit removes it',
     () => {
       const dir = repo('binaries')

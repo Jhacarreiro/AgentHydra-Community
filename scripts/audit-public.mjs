@@ -16,6 +16,9 @@
 //                     addresses; the message and the lines each commit ADDS (git log -p -U0) go
 //                     through the content rules, so a secret added in one commit and removed in the
 //                     next is still caught; each binary a commit adds or changes needs provenance.
+//                     A message may name upstream's hosts, private repositories and denylisted
+//                     folders (it says what a commit takes out, and each name is in the base
+//                     already); the other rules read it as they read a file.
 //   --push REMOTE     What .githooks/check-public-push.mjs calls. stdin carries git's pre-push lines
 //                     ("<local ref> <local sha> <remote ref> <remote sha>"), and the commits read are
 //                     the ones the push carries: reachable from a pushed sha, not from the base, not
@@ -297,6 +300,10 @@ export function compileRules(config, { localNames = [] } = {}) {
   const emailDomains = (config.allowedEmailDomains ?? []).map(lower)
   const historical = new Set(config.historicalPaths ?? [])
   const selfExempt = new Set([CONFIG_FILE])
+  // A commit message that names one of upstream's hosts, private repositories or denylisted folders
+  // says what the commit takes out. Each of those names is in the base commit already, so the message
+  // publishes nothing new. Every other rule reads a message as it reads a file.
+  const describes = (path) => path === MESSAGE_PATH
   const publicInternal = (config.publicInternalHosts ?? []).map(globRe)
   const hostPrefixes = (config.internalHostPrefixes ?? []).map(lower)
   const rules = []
@@ -383,7 +390,7 @@ export function compileRules(config, { localNames = [] } = {}) {
     rules.push({
       id: 'pii.path',
       re: new RegExp(`(?<![\\w])${segments.join('(?:\\\\{1,4}|/)')}(?![\\w-])`, 'gi'),
-      when: (path) => !selfExempt.has(path),
+      when: (path) => !selfExempt.has(path) && !describes(path),
       check: () => ({ value: lower(entry.replace(/[\\/]+/g, '/')) }),
     })
   }
@@ -394,7 +401,7 @@ export function compileRules(config, { localNames = [] } = {}) {
     rules.push({
       id: 'infra.host',
       re: new RegExp(`(?<![\\w-])(?:[a-z0-9-]+\\.)*${escapeRe(host)}(?![\\w-])`, 'gi'),
-      when: (path) => !historical.has(path) && !selfExempt.has(path),
+      when: (path) => !historical.has(path) && !selfExempt.has(path) && !describes(path),
       check: (m) => ({ value: lower(m[0]), note: host }),
     })
   }
@@ -402,7 +409,7 @@ export function compileRules(config, { localNames = [] } = {}) {
     rules.push({
       id: 'infra.private-repo',
       re: new RegExp(`(?<![\\w-])(?:${name})(?![\\w-])`, 'gi'),
-      when: (path) => !selfExempt.has(path),
+      when: (path) => !selfExempt.has(path) && !describes(path),
       check: (m) => ({ value: lower(m[0]), note: name }),
     })
   }

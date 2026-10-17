@@ -46,7 +46,7 @@
   ],
   "//allowedEmailDomains": "RFC 2606 and RFC 6761 names: an address at one of these, or at a name under one, is nobody's.",
   "historicalPaths": ["CHANGELOG.md"],
-  "//historicalPaths": "Files that record what upstream shipped; infra.host does not read them.",
+  "//historicalPaths": "Files that record what upstream shipped; infra.host does not read them. Commit messages are treated alike for upstreamHosts, privateRepos and pathDenylist: a message that names one says what its commit takes out.",
   "upstreamHosts": ["lunarwerx.com", "connectionsapi.com", "repoyeti.com", "connections.icu"],
   "//upstreamHosts": "Upstream's own services and sites. Each also matches every name under it.",
   "privateRepos": [
