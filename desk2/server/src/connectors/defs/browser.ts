@@ -2,6 +2,7 @@
 // `browser` MCP server whenever the connector is enabled (it is on by default). It carries no prompt paragraph: the
 // tool descriptions say what each tool is for.
 
+import { PROJECT_HOMEPAGE } from '@shared/release-links'
 import { createBrowserAgentClient } from '../../browser/agent/client'
 import type { ConnectorFactory } from '../types'
 
@@ -12,7 +13,7 @@ const factory: ConnectorFactory = ({ home }) => {
       id: 'browser',
       name: 'Browser',
       blurb: "Built into AgentHydra: lets a chat see the saved browsers of its folder, the pages open in them and which chat owns each page.",
-      homepage: 'https://github.com/LunarWerxs/AgentHydra',
+      homepage: PROJECT_HOMEPAGE,
       installable: false,
       pane: false,
     },

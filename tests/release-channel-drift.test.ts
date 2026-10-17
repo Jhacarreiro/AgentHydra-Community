@@ -1,11 +1,15 @@
 // tests/release-channel-drift.test.ts - the copies of the release channel that cannot import
-// server/src/release-channel.ts (PowerShell, the tray's JSON, the workflow) say what release-channel.json says.
+// server/src/release-channel.ts (PowerShell, the tray's JSON, Desk's links, the workflow) say what
+// release-channel.json says, and no code names the repository this project was forked from, or the update
+// proxy it used to ask.
 import { describe, expect, test } from 'bun:test'
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { CHANGELOG_URL, PROJECT_HOMEPAGE, PROJECT_REPO } from '../desk2/shared/release-links'
 // @ts-expect-error - a plain node module with runtime exports
 import { readReleaseChannel } from '../scripts/release-channel.mjs'
-import { githubSlug, RELEASE_CHANNEL } from '../server/src/release-channel'
+import { changelogUrl, githubSlug, RELEASE_CHANNEL, repoUrl } from '../server/src/release-channel'
 import { REPO_ROOT } from './repo-root'
 
 const read = (rel: string) => readFileSync(join(REPO_ROOT, rel), 'utf8')
@@ -71,4 +75,55 @@ describe('scripts/release-channel.mjs', () => {
       updates: RELEASE_CHANNEL.updates,
     })
   })
+})
+
+describe('links', () => {
+  test("the tray's changelog item opens the channel repository's CHANGELOG", () => {
+    const tray = JSON.parse(read('misc/AgentHydra-Tray.json')) as { changelogUrl?: string }
+    expect(tray.changelogUrl).toBe(changelogUrl())
+  })
+
+  test("Desk's links (desk2/shared/release-links.ts) are the channel repository's", () => {
+    expect(PROJECT_REPO).toBe(RELEASE_CHANNEL.repo)
+    expect(PROJECT_HOMEPAGE).toBe(repoUrl())
+    expect(CHANGELOG_URL).toBe(changelogUrl())
+  })
+})
+
+// Code only: the CHANGELOG and the docs tell the history, which names the project this one came from, and tests
+// name it as the case that must be refused.
+describe('no code points at the project this one was forked from', () => {
+  const FORBIDDEN = [/lunarwerxs\/agenthydra/i, /connectionsapi\.com\/v1\/app\//i]
+  // Each stays on purpose, and the reason is beside it.
+  const ALLOWED = new Set([
+    // The Go module path of the Codex hub tray: a name, never fetched; renaming it moves every import with it.
+    'codex-hub-tray/go.mod',
+    // A comment on the public-push guard, about the repository that guard was written for.
+    '.githooks/check-public-push.mjs',
+  ])
+  const isDocOrTest = (file: string) =>
+    /\.md$/i.test(file) ||
+    /(^|\/)(tests?|__tests__)\//.test(file) ||
+    /\.test\.[cm]?[jt]sx?$/.test(file) ||
+    /(^|\/)test_[^/]*\.py$/.test(file)
+
+  test('every tracked code file is free of it, except the ones listed with their reason', () => {
+    const files = execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' })
+      .split('\0')
+      .filter((f) => f && !isDocOrTest(f) && !ALLOWED.has(f))
+    // A guard that found nothing to scan would pass over anything.
+    expect(files.length).toBeGreaterThan(500)
+    const hits: string[] = []
+    for (const file of files) {
+      let text: string
+      try {
+        text = readFileSync(join(REPO_ROOT, file), 'utf8')
+      } catch {
+        continue // a symlink to nothing, a file deleted in the working tree
+      }
+      for (const re of FORBIDDEN) if (re.test(text)) hits.push(`${file}: ${re.source}`)
+    }
+    expect(hits).toEqual([])
+    // One `git ls-files` and a read of every tracked code file: about 100 ms here, so this is a bound, not a guess.
+  }, 30_000)
 })

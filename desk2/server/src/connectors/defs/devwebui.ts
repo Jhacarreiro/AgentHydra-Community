@@ -4,6 +4,7 @@
 // AgentHydra's own process, which Desk starts the moment a tool or the pane asks (client.ts), so it counts as usable
 // as long as Desk can start it.
 
+import { PROJECT_HOMEPAGE } from '@shared/release-links'
 import { devServicesClient } from '../../devservers/client'
 import type { ConnectorFactory } from '../types'
 
@@ -17,7 +18,7 @@ const factory: ConnectorFactory = ({ home }) => {
       id: 'devwebui',
       name: 'Dev servers',
       blurb: "Built into AgentHydra: runs each folder's dev servers once for every chat, and gives chats tools to use a running one instead of starting another.",
-      homepage: 'https://github.com/LunarWerxs/AgentHydra',
+      homepage: PROJECT_HOMEPAGE,
       installable: false,
       pane: true
     },

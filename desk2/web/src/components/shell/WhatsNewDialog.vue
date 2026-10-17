@@ -3,8 +3,7 @@ import { computed, ref } from 'vue'
 import { ChevronDown, ExternalLink, Sparkles } from '@lucide/vue'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { dismissWhatsNew, whatsNew } from '@/lib/whats-new'
-
-const CHANGELOG_URL = 'https://github.com/LunarWerxs/AgentHydra/blob/main/CHANGELOG.md'
+import { CHANGELOG_URL } from '@shared/release-links'
 
 const open = computed({
   get: () => whatsNew.value !== null,

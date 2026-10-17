@@ -10,6 +10,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { CHANGELOG_URL } from '@desk/shared/release-links'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 import PageSettingsDialog from '@/components/PageSettingsDialog.vue'
@@ -281,7 +282,7 @@ function showRebrandNoticeOnce() {
     action: {
       label: t('app.rebrandAction'),
       onClick: () =>
-        window.open('https://github.com/LunarWerxs/AgentHydra/blob/main/CHANGELOG.md', '_blank'),
+        window.open(CHANGELOG_URL, '_blank'),
     },
   })
 }
