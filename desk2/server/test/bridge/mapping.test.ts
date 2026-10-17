@@ -97,6 +97,11 @@ describe('CliMayte workers', () => {
       endedAt: null,
       lastActivityAt: 1791069687692,
       lastActivity: 'Bash bun test ./server/test',
+      // The sample was recorded before AgentHydra said what a worker is doing: none of it came, so each reads null.
+      doing: null,
+      doingSince: null,
+      doingKind: null,
+      lastStepAt: null,
       usedPct: 0,
       tokens: null,
       verdict: null,
