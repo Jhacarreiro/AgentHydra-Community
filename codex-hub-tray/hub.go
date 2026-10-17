@@ -93,11 +93,14 @@ func updatesAllowed(hub string) error {
 	if err != nil {
 		return err
 	}
-	if key == nil && !strings.HasPrefix(strings.ToLower(hub), "https://") {
+	if key == nil && !overHTTPS(hub) {
 		return errNoKey
 	}
 	return nil
 }
+
+// overHTTPS says whether the hub's answers are known to be its own: over https, and not over plain http.
+func overHTTPS(hub string) bool { return strings.HasPrefix(strings.ToLower(hub), "https://") }
 
 // buildSignedText is the text a build's signature signs (buildSignedText in server/src/core/codex-hub-signature.ts).
 func buildSignedText(name, plat, sum string) []byte {
@@ -197,8 +200,8 @@ func latest(c config, name string) (*release, error) {
 	}
 }
 
-// badBuild: the hub's build fails its checks here (a program for another system, not the build the hub announced,
-// or it does not start), and would fail them the same way if it were fetched again.
+// badBuild: the hub's build fails its checks here (it lacks the signature it needs, it is a program for another
+// system, or it does not start), and would fail them the same way if it were fetched again.
 type badBuild struct{ error }
 
 // exeSystem is the system a program is for, by its first bytes: windows (MZ), linux (ELF) or darwin (Mach-O, one
@@ -219,8 +222,11 @@ func exeSystem(head []byte) string {
 }
 
 // download saves the hub's build of name at dest+".new", executable, once it matches want and starts with --version.
-// A build without the signature it needs is refused before it is fetched, and a program for another system (what a
-// hub that ignores ?platform= hands out) from its first bytes.
+// A build without the signature it needs is refused before it is fetched. What it does once its bytes match the
+// signed hash is held against it (badBuild); a download that does not match is not, since over http someone on the
+// way can send the hub's signed hash with other bytes, and neither is a --version cut off at the timeout. Over https
+// the bytes are the hub's from the first, so a program for another system (what a hub that ignores ?platform= hands
+// out) is refused from its first bytes, before the rest comes down.
 func download(c config, name string, want *release, dest string) (string, error) {
 	if err := checkSigned(c, name, want); err != nil {
 		return "", err
@@ -241,8 +247,12 @@ func download(c config, name string, want *release, dest string) (string, error)
 	}
 	body := bufio.NewReader(res.Body)
 	head, _ := body.Peek(4)
+	var otherSystem error
 	if sys := exeSystem(head); sys != "" && sys != runtime.GOOS {
-		return "", badBuild{fmt.Errorf("the hub's %s build is a %s program, not one for %s", name, sys, platform)}
+		otherSystem = badBuild{fmt.Errorf("the hub's %s build is a %s program, not one for %s", name, sys, platform)}
+	}
+	if otherSystem != nil && overHTTPS(c.Hub) {
+		return "", otherSystem
 	}
 	f, err := os.OpenFile(next, os.O_RDWR|os.O_CREATE|os.O_TRUNC, exeMode)
 	if err != nil {
@@ -254,15 +264,23 @@ func download(c config, name string, want *release, dest string) (string, error)
 		os.Remove(next)
 		return "", err
 	}
-	// The signature covers want.SHA256, so these bytes are the signed build.
 	if sum, _ := sha256File(next); n != want.Size || sum != want.SHA256 {
 		os.Remove(next)
-		return "", badBuild{fmt.Errorf("the downloaded %s does not match the hub's hash", name)}
+		return "", fmt.Errorf("the downloaded %s does not match the hub's hash", name)
+	}
+	// The signature covers want.SHA256, so from here these bytes are the signed build.
+	if otherSystem != nil {
+		os.Remove(next)
+		return "", otherSystem
 	}
 	out, err := runVersion(next)
 	if err != nil {
 		os.Remove(next)
-		return "", badBuild{fmt.Errorf("the new %s build does not start: %v", name, err)}
+		err = fmt.Errorf("the new %s build does not start: %w", name, err)
+		if errors.Is(err, errSlowStart) {
+			return "", err
+		}
+		return "", badBuild{err}
 	}
 	if first, _, _ := strings.Cut(out, "\n"); strings.TrimSpace(first) != buildBanner(name) {
 		os.Remove(next)

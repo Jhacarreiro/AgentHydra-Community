@@ -87,8 +87,9 @@ func TestDownload(t *testing.T) {
 		}
 		next, err := download(cfg, "pusher", rel, dest)
 		if !c.ok {
-			if !errors.As(err, new(badBuild)) {
-				t.Errorf("%s: download took it, or not as a bad build: %v", c.name, err)
+			// Bytes that are not the build the hub announced say nothing about that build: it is fetched again.
+			if err == nil || errors.As(err, new(badBuild)) {
+				t.Errorf("%s: download took it, or held it against the build: %v", c.name, err)
 			}
 			if exists(dest + ".new") {
 				t.Errorf("%s: left %s.new", c.name, dest)
@@ -204,6 +205,69 @@ func TestABrokenBuildIsFetchedOnce(t *testing.T) {
 	}
 	if have, _ := sha256File(pusherExe); have != sumOf([]byte(fakePusher)) {
 		t.Error("the build that works is not the one in place")
+	}
+}
+
+// Only what is known to be the hub's build is held against it. Over http someone on the way can send the hub's signed
+// hash with other bytes: a download that does not match it, another system's program included, is fetched again at
+// the next check, and so is a build whose first start the antivirus holds past the timeout. The real build is then
+// taken.
+func TestOnlyTheSignedBytesCountAgainstABuild(t *testing.T) {
+	useTestKey(t)
+	slow := filepath.Join(t.TempDir(), "slow")
+	real := []byte("#!/bin/sh\nif [ -e " + slow + " ]; then exec sleep 30; fi\necho codex-hub-push\n")
+	var mu sync.Mutex
+	sent := real
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/codex-hub/pusher":
+			fmt.Fprintf(w, `{"sha256":%q,"size":%d,"signature":%q}`, sumOf(real), len(real), signedBy(testKey, "pusher", sumOf(real)))
+		case "/api/codex-hub/pusher/download":
+			w.Write(sent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { os.Remove(configPath); os.Remove(pusherExe) })
+	os.Remove(pusherExe)
+	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp()
+	for _, step := range []struct {
+		what string
+		sent []byte
+	}{
+		{"other bytes", []byte("#!/bin/sh\necho codex-hub-push\n")},
+		{"a Windows program", append([]byte("MZ\x90\x00"), real...)},
+	} {
+		mu.Lock()
+		sent = step.sent
+		mu.Unlock()
+		a.updateOnce()
+		if a.refused["pusher"] != "" || exists(pusherExe) || exists(pusherExe+".new") {
+			t.Fatalf("%s: refused %q, pusher in place %v", step.what, a.refused["pusher"], exists(pusherExe))
+		}
+	}
+
+	mu.Lock()
+	sent = real
+	mu.Unlock()
+	os.WriteFile(slow, nil, 0o644)
+	saved := versionTimeout
+	versionTimeout = 200 * time.Millisecond
+	a.updateOnce()
+	versionTimeout = saved
+	if a.refused["pusher"] != "" || exists(pusherExe) || exists(pusherExe+".new") {
+		t.Fatalf("a --version past the timeout: refused %q, pusher in place %v", a.refused["pusher"], exists(pusherExe))
+	}
+	os.Remove(slow)
+	a.updateOnce()
+	if have, _ := sha256File(pusherExe); have != sumOf(real) {
+		t.Error("the real build is not in place")
 	}
 }
 
