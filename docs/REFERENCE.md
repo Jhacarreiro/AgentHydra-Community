@@ -687,21 +687,29 @@ profiling a second daemon.
 
 ## Auto-update
 
-Background self-update, on by default since 2026-10-05 (it restarts the daemon; turn it off in
-Settings or with `{ "enabled": false }`):
+Background self-update, off by default (it restarts the daemon; turn it on in Settings or with
+`{ "enabled": true }`; an install that already saved a choice keeps it):
 
 ```
 POST /api/update/settings   { "enabled": true, "intervalSecs": 21600 }
 ```
 
-`intervalSecs` clamps to [900, 604800]; default 21600 (6h). Each tick checks the remote and, only if
-the working tree is clean, applies (`git pull --ff-only` + reinstall + rebuild) and relaunches itself
-on the same port (`AGENTHYDRA_RELAUNCH=1` makes the successor wait for the predecessor to free it).
-A dirty tree is never touched.
+`intervalSecs` clamps to [900, 604800]; default 21600 (6h). Each tick checks for a newer version and
+records the answer whether or not auto-update is on. With it on, the tick applies the update and
+relaunches itself on the same port (`AGENTHYDRA_RELAUNCH=1` makes the successor wait for the
+predecessor to free it), within what the install allows:
 
-Because updates are a `git pull --ff-only` against `origin/main`, **pushing `main` is the release**:
-as soon as `main` moves, every instance with auto-update enabled fast-forwards to it on its next
-check. Treat a push to `main` as user-facing rather than as a staging step.
+- A release build follows its `release-channel.json` ([RELEASING.md](RELEASING.md)): `off` checks
+  nothing and downloads nothing, `notify` checks and says so but installs nothing, and only `auto`
+  downloads the channel repository's release, verifies it against its `SHA256SUMS.txt` and swaps it in.
+- A source checkout applies `git pull --ff-only` + reinstall + rebuild, pulling the branch it tracks,
+  and only when that remote is the channel's repository on GitHub (`server/src/updater.ts`); any other
+  remote is reported and never contacted. A dirty tree is never touched.
+
+Because a source checkout's update is a `git pull --ff-only` of the branch it tracks, **pushing
+`main` is the release** for every checkout that tracks the channel repository's `main`: as soon as
+`main` moves, each one with auto-update enabled fast-forwards to it on its next check. Treat a push
+to `main` as user-facing rather than as a staging step.
 
 ## Instance appearance
 

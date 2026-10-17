@@ -6,9 +6,10 @@
 # 0. Refuse a commit on branch live, the live checkout (scripts/live-checkout.ps1).
 # 1. Refuse a commit whose own staged files fail Biome.
 #
-# WHY (0): the live checkout is what the owner runs, and the daemon's auto-update moves it only by
-# `git pull --ff-only origin main`. On 2026-10-14 a session committed an hswarm change there and never
-# pushed it: live diverged from origin/main and the auto-update refused every update ("a fast-forward
+# WHY (0): the live checkout is what the owner runs, and the daemon's auto-update moves it only by a
+# `git pull --ff-only` of the main it tracks, on the release channel's repository
+# (scripts/live-checkout.ps1). On 2026-10-14 a session committed an hswarm change there and never
+# pushed it: live diverged from that main and the auto-update refused every update ("a fast-forward
 # is not possible"), so nothing anyone landed reached the running app until the branch was rebased.
 #
 # WHY (1): main was broken three separate times on 2026-08-27 alone by commits that had never had
@@ -23,8 +24,8 @@
 # finished. A gate that punishes you for a neighbour's work in progress gets --no-verify'd within
 # the hour, and then it is protecting nothing. Judge a commit by what that commit contains.
 if [ "$(git symbolic-ref --short -q HEAD)" = "live" ]; then
-  echo "This is the live checkout (branch live). It takes only fast-forward pulls of origin/main, and a"
-  echo "commit here stops every auto-update. Make the change in the main checkout and land it from there."
+  echo "This is the live checkout (branch live). It takes only fast-forward pulls of the main it tracks, and"
+  echo "a commit here stops every auto-update. Make the change in the main checkout and land it from there."
   exit 1
 fi
 
