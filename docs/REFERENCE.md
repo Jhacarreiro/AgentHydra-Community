@@ -856,11 +856,13 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   its `tray.json` kept only a hub the user set there saved its build's hub in that file when it paired,
   and the file's hub wins over the build's: build the new tray with the earlier addresses as well
   (`-X main.oldHubURLs=<old>,<older>`), and a PC whose file holds one of them uses the new build's hub.
-- **Pusher updates:** a PC without Bun runs the pusher compiled (`bun build --compile
-  server/src/codex-hub-push-main.ts`, `codex-hub-push.exe`), and that build follows the hub's: put the new
-  build at `<config dir>/codex-hub/.pusher/codex-hub-push.exe` on the hub, and each pusher compares its own
-  file with it (`GET /api/codex-hub/pusher`, its SHA-256 and size; `/download`, the file; same token) when it
-  starts and every six hours. Each pusher asks for its own platform (`?platform=` one of `windows-x64`,
+- **Pusher updates:** a PC without Bun runs the pusher compiled (in the repo's root, `bun build --compile
+  --target=bun-windows-x64 --outfile dist/codex-hub-push.exe server/src/codex-hub-push-main.ts`, and
+  `--target=bun-<platform> --outfile dist/codex-hub-push-<platform>` for another system; `bun run dist`
+  empties `dist/`), and that build follows the hub's: put the new build at
+  `<config dir>/codex-hub/.pusher/codex-hub-push.exe` on the hub, and each pusher compares its own file with
+  it (`GET /api/codex-hub/pusher`, its SHA-256 and size; `/download`, the file; same token) when it starts
+  and every six hours. Each pusher asks for its own platform (`?platform=` one of `windows-x64`,
   `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, as `bun build --target=bun-<platform>` names
   them); a Mac or Linux build sits beside the Windows one as `codex-hub-push-<platform>`, with no
   extension, and the tray's builds (`/api/codex-hub/tray`) the same way as `codex-hub-tray.exe` and

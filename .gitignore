@@ -61,6 +61,16 @@ docs/HANDOFF_MICHAEL.md
 # misc/AgentHydra-Tray.exe is a tracked, committed part of the tray toolkit.
 /AgentHydra.exe
 
+# The Codex hub's builds. The commands in codex-hub-tray/main.go, build-macos.sh and
+# docs/REFERENCE.md write them to dist/ (ignored above); these catch one built beside its source,
+# by a plain `go build` or a `bun build --compile` without --outfile. Each is 10 to 100 MB, and a
+# tray build holds the operator's hub addresses. Named exactly, for the same reason as above.
+/codex-hub-tray/codex-hub-tray
+/codex-hub-tray/codex-hub-tray.exe
+/codex-hub-tray/codex-hub-tray-*
+/codex-hub-push*
+/server/codex-hub-push*
+
 # Local investigation write-ups: internal working notes, same convention as
 # docs/HANDOFF_MICHAEL.md and /docs/todo/* above. Findings get upstreamed as a fix plus its
 # comment, not as a file of field notes about one machine's logs.
