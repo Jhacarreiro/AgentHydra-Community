@@ -34,6 +34,52 @@
   Write each bullet for someone who uses AgentHydra: what changed for them, in a few sentences. The
   owner's quotes, measurements, endpoints and file names belong in the commit message and the docs.
 
+## This repository's releases: the channel and the version line
+
+This project began as a fork of AgentHydra (LunarWerxs/AgentHydra). Its releases come from its own repository,
+and nothing in a build reaches for the one it was forked from: not the update check, not a download, not a link.
+
+**The release channel** is [release-channel.json](../release-channel.json) at the repository root:
+
+```json
+{ "repo": "Jhacarreiro/AgentHydra-Community", "updates": "off" }
+```
+
+- `repo` is the one place the repository is named. [server/src/release-channel.ts](../server/src/release-channel.ts)
+  reads it and derives every URL from it: the update check, the releases page, the download base, the changelog and
+  issue links. The daemon and the window compile it in. The launchers get the download base written in when they are
+  built (`scripts/build-launcher.ts`, `scripts/launcher-posix.ts`). `install.ps1` carries a copy, since `irm | iex`
+  runs it with no checkout beside it, and `tests/release-channel-drift.test.ts` holds that copy to the file.
+- `updates` is what a release build may do about a newer release:
+  - `off`: no check and no download. The updater says why, the auto-update loop records its check and installs
+    nothing, and `install.ps1` refuses to download (`-FromZip` still installs). This is the state while the
+    repository has published no release.
+  - `notify`: asks GitHub for the channel repository's `releases/latest` and says when a newer version exists, with
+    the releases page, but never installs it.
+  - `auto`: installs a newer release when the person turned auto-update on (Settings; it is off until they do).
+- Whatever the release JSON lists, a build downloads only `https://github.com/<repo>/releases/download/<tag>/<file>`,
+  the archive and its `SHA256SUMS.txt` alike. The check is one unauthenticated GET to `api.github.com` and carries no
+  install id.
+- A source checkout updates through git, and only from a remote that is `repo` on GitHub (`server/src/updater.ts`);
+  `scripts/live-checkout.ps1` follows the same remote.
+
+**When to change `updates`.** Leave it `off` until this repository has published a release. A release whose own
+commit says `off` is published as a pre-release (see "What the tag push triggers"), so it is never `releases/latest`.
+To make a release the one installs take, set `updates` to `notify` or `auto` in `release-channel.json` and in
+`install.ps1`'s `$Updates` (the drift test refuses one without the other) in the commit you tag. A copy built with
+`off` never checks, so install that first release by hand; from then on, installed copies find the next ones.
+
+**The version line** is a calendar version, `YYYY.M.PATCH`: the year, the month without a leading zero, then the
+count of releases in that month from 0. The first is `2026.10.0`. The repository this one was forked from numbers
+its releases `0.x`, `1.x` and `2.0.x` (its `v2.0.5` is no longer MIT), and names its assets
+`AgentHydra-<version>-<target>`. A version that starts with a year can never be one of its tags or asset names, it
+compares above every one of them wherever versions are compared here (as three numbers), and it passes every
+"not below 2.0.0" gate. It stays a plain X.Y.Z, because the updater ignores suffixes, and every part stays far under
+65535, the most a Windows file version part can hold. The version lives in `package.json`, `desk2/package.json`,
+`desk2/server/package.json`, `desk2/web/package.json` and the two workspace entries of `desk2/bun.lock`; change
+them together, then freeze the MCP API level (Recipe, step 2). `desk2/hydra` and `orchestrator/` keep their own
+numbers.
+
 ## What a 2.0 bundle holds, and building one on a PC
 
 Every bundle (`AgentHydra-<version>-<target>`, a `.zip` on Windows, a `.tar.gz` elsewhere) holds:
@@ -150,7 +196,8 @@ from the dirty tree. Both hooks have suites under `tests/githooks/`.
 
 ## Recipe
 
-1. **Bump the version.** Update `version` in `package.json`.
+1. **Bump the version.** Update it in the four `package.json` files and `desk2/bun.lock` that "The version line"
+   above names, to the next `YYYY.M.PATCH`.
 2. **Update the changelog.** Move the relevant `[Unreleased]` entries in `CHANGELOG.md` into a new
    `## [X.Y.Z] - YYYY-MM-DD` heading, following the existing Keep a Changelog format already used
    in that file, and open it with its `**TL;DR**` block (above). Only entries for what this release

@@ -74,14 +74,16 @@ const OFF: ReleaseChannel = { repo, updates: 'off' }
 const NOTIFY: ReleaseChannel = { repo, updates: 'notify' }
 const AUTO: ReleaseChannel = { repo, updates: 'auto' }
 
+// The release the fixture offers: above any version this repository's calendar line will reach (2026.10.0 now).
+const NEWER = '9999.1.0'
 const EXT = process.platform === 'win32' ? '.zip' : '.tar.gz'
-const ASSET = `AgentHydra-999.0.0-${currentTarget()}${EXT}`
-const OWN = `${releaseDownloadBase(AUTO)}/v999.0.0`
+const ASSET = `AgentHydra-${NEWER}-${currentTarget()}${EXT}`
+const OWN = `${releaseDownloadBase(AUTO)}/v${NEWER}`
 
 /** A `releases/latest` answer whose two files sit wherever the case says. */
 function release(assetUrl = `${OWN}/${ASSET}`, sumsUrl = `${OWN}/${CHECKSUM_MANIFEST}`) {
   return {
-    tag_name: 'v999.0.0',
+    tag_name: `v${NEWER}`,
     draft: false,
     prerelease: false,
     assets: [
@@ -189,7 +191,7 @@ describe('updates "notify"', () => {
     expect(seen.map((s) => s.url)).toEqual([latestReleaseApi(NOTIFY)])
     expect(status.updateAvailable).toBe(true)
     expect(status.canApply).toBe(false)
-    expect(status.reason).toContain('v999.0.0 is available')
+    expect(status.reason).toContain(`v${NEWER} is available`)
     expect(status.reason).toContain(releasesPage(NOTIFY))
   })
 
@@ -214,9 +216,9 @@ describe('updates "auto": only the channel repository\'s own release files', () 
   for (const [label, url] of [
     [
       "the upstream project's releases",
-      `https://github.com/LunarWerxs/AgentHydra/releases/download/v999.0.0/${ASSET}`,
+      `https://github.com/LunarWerxs/AgentHydra/releases/download/v${NEWER}/${ASSET}`,
     ],
-    ['an unrelated host', `https://downloads.example.test/v999.0.0/${ASSET}`],
+    ['an unrelated host', `https://downloads.example.test/v${NEWER}/${ASSET}`],
   ] as const) {
     test(`an archive on ${label} is reported and never applied`, async () => {
       stubFetch(AUTO, release(url))
@@ -245,7 +247,7 @@ describe('updates "auto": only the channel repository\'s own release files', () 
   test('a checksum list from elsewhere is refused too, before the archive is fetched', async () => {
     const seen = stubFetch(
       AUTO,
-      release(undefined, 'https://downloads.example.test/v999.0.0/SHA256SUMS.txt'),
+      release(undefined, `https://downloads.example.test/v${NEWER}/SHA256SUMS.txt`),
     )
     const { installDir, exePath } = scratchInstall()
     let downloaded = false
