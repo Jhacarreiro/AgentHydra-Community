@@ -41,11 +41,12 @@ func shownNow(a *app) string {
 }
 
 // The pusher has the hub and the token in its environment from its start. A new token, from pairing or written into
-// tray.json, starts it again with that one, and until then the icon does not say it is pushing.
+// tray.json, starts it again with that one, and until then the icon does not say it is pushing. The fake hub is https,
+// so that the status turns on the token and the pusher alone, not on how a build treats a plain http hub.
 func TestANewTokenRestartsThePusher(t *testing.T) {
 	var mu sync.Mutex
 	accepted := "old-token-0123"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		ok := r.Header.Get("Authorization") == "Bearer "+accepted
 		mu.Unlock()
@@ -56,6 +57,9 @@ func TestANewTokenRestartsThePusher(t *testing.T) {
 		http.NotFound(w, r) // no builds to hand out
 	}))
 	t.Cleanup(srv.Close)
+	savedClient := client
+	client = &http.Client{Timeout: savedClient.Timeout, Transport: srv.Client().Transport} // trusts srv's certificate
+	t.Cleanup(func() { client = savedClient })
 	accept := func(token string) {
 		mu.Lock()
 		accepted = token
