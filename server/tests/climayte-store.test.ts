@@ -248,11 +248,13 @@ test('a finished worker held packed reads, takes a write and saves back exactly 
   mkdirSync(join(corch, 'done'), { recursive: true })
   const prompt = 'A brief — with a dash outside Latin-1.\n'.repeat(200)
   const reports = [{ at: 5, message: 'the first turn', results: ['zero'] }]
+  // A worker changed() filed carries its stateAt; a change that leaves its state alone keeps it.
   const done = worker('w-packed', 'done', home, {
     prompt,
     result: 'one\n\ntwo',
     results: ['one', 'two'],
     reports,
+    stateAt: { key: 'done', at: 1_000 },
   })
   const file = join(corch, 'done', 'w-packed.json')
   writeFileSync(file, JSON.stringify(done, null, 2))
