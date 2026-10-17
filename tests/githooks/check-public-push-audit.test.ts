@@ -182,6 +182,42 @@ describe('rule 4: the relicensing commit', () => {
   )
 })
 
+// --- rule 5's verdict, without a push ------------------------------------------------------------
+
+describe("rule 5: what the audit's exit means", () => {
+  const refText = `refs/heads/main ${'ab'.repeat(20)} refs/heads/main ${ZERO}\n`
+  /** A checkout whose audit script is a stub that ends as `body` says. */
+  function withAudit(body: string) {
+    const dir = scratch('verdict')
+    mkdirSync(join(dir, 'scripts'))
+    writeFileSync(join(dir, 'scripts', 'audit-public.mjs'), body)
+    return dir
+  }
+
+  test.each([
+    [0, 0],
+    [1, 1],
+    [2, 2],
+    [3, 2],
+    [134, 2],
+  ])(
+    'an audit that exits %d is read as %d: clean, a finding, or no verdict',
+    (code, verdict) => {
+      expect(runPushAudit(refText, 'origin', withAudit(`process.exit(${code})\n`))).toBe(verdict)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test.skipIf(process.platform === 'win32')(
+    'an audit killed by a signal gives no verdict, not a finding',
+    () => {
+      const dir = withAudit("process.kill(process.pid, 'SIGKILL')\n")
+      expect(runPushAudit(refText, 'origin', dir)).toBe(2)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+})
+
 // --- the real hook, end to end -------------------------------------------------------------------
 
 const COPIED = [
@@ -342,6 +378,22 @@ describe('.githooks/pre-push: rules 4 and 5, end to end', () => {
       expect(git(origin, 'rev-parse', 'main')).toBe(sha)
     },
     HOOK_TEST_TIMEOUT * 2,
+  )
+
+  test(
+    'an audit that cannot load its token formats refuses the push as "could not run", not as a finding',
+    () => {
+      // As on a machine whose only runtime cannot load TypeScript: the import of secrets.ts fails.
+      rmSync(join(repo, 'server', 'src', 'secrets.ts'))
+      const sha = commit(repo, { 'notes.md': 'nothing to see\n' }, 'clean work')
+      const r = push(repo, PRIVATE, 'main')
+      expect(r.status).not.toBe(0)
+      expect(r.output).toContain('server/src/secrets.ts could not be loaded')
+      expect(r.output).toContain('audit:public could not run')
+      expect(r.output).not.toContain('found something')
+      expect(originHas(origin, sha)).toBe(false)
+    },
+    HOOK_TEST_TIMEOUT,
   )
 
   test(

@@ -47,7 +47,8 @@
 // multi-line string is missed. Exit codes: 0 clean, 1 a finding, 2 the audit itself could not run.
 //
 // Self-contained: node or bun, no dependencies. The token formats are server/src/secrets.ts's PATTERNS
-// (bun runs .ts natively; node strips its types from 22.18 on) plus the formats below.
+// (bun runs .ts natively; node strips its types from 22.18 on) plus the formats below. A runtime that
+// cannot load that file gets exit 2, not a crash: without the formats nothing is known to be clean.
 
 import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
@@ -55,7 +56,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PATTERNS as SERVER_SECRET_PATTERNS } from '../server/src/secrets.ts'
+
+// Loaded here rather than by a static import, which would fail before main() could say why, with
+// exit 1, and a hook reads exit 1 as "found something".
+const serverSecrets = await import('../server/src/secrets.ts').then(
+  (m) => (Array.isArray(m.PATTERNS) ? { patterns: m.PATTERNS } : { problem: 'it has no PATTERNS' }),
+  (err) => ({ problem: err instanceof Error ? err.message : String(err) }),
+)
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url))
 export const CONFIG_FILE = 'scripts/audit-public.config.json'
@@ -318,7 +325,13 @@ export function compileRules(config, { localNames = [] } = {}) {
   const hostPrefixes = (config.internalHostPrefixes ?? []).map(lower)
   const rules = []
 
-  for (const p of [...SERVER_SECRET_PATTERNS, ...EXTRA_TOKEN_PATTERNS]) {
+  if (!serverSecrets.patterns) {
+    throw new AuditError(
+      `server/src/secrets.ts could not be loaded (${serverSecrets.problem}), so the token formats are ` +
+        'unknown. Run the audit with bun, or with node 22.18 or later.',
+    )
+  }
+  for (const p of [...serverSecrets.patterns, ...EXTRA_TOKEN_PATTERNS]) {
     const pem = p.kind === 'private-key'
     rules.push({
       id: 'secret.token',

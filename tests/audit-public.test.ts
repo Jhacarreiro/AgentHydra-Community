@@ -15,7 +15,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -790,6 +790,31 @@ describe('the command line', () => {
 
       writeFileSync(allow, '{ not json')
       expect(run().status).toBe(2)
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    'without the token formats of server/src/secrets.ts the audit could not run (exit 2), not "found"',
+    () => {
+      // A copy of the audit with its three files and no server/ beside it: the same failed import
+      // as a node that cannot load TypeScript.
+      const scripts = join(scratch('no-patterns'), 'scripts')
+      mkdirSync(scripts)
+      const own = [
+        'audit-public.mjs',
+        'audit-public.config.json',
+        'audit-public.allow.json',
+        'binary-provenance.json',
+      ]
+      for (const name of own) copyFileSync(join(REPO_ROOT, 'scripts', name), join(scripts, name))
+      const r = spawnSync(process.execPath, [join(scripts, 'audit-public.mjs'), '--tree', 'HEAD'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        timeout: GIT_TEST_TIMEOUT,
+      })
+      expect(r.stderr).toContain('server/src/secrets.ts could not be loaded')
+      expect(r.status).toBe(2)
     },
     GIT_TEST_TIMEOUT,
   )

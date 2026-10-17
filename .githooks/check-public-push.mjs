@@ -40,8 +40,9 @@
  *     with no provenance, and commit emails that are not noreply. It runs for every remote, private
  *     ones too: this repository is public by design, a private repository can be made public later,
  *     and "private" here can also mean "does not exist yet". A finding that is fine goes in
- *     scripts/audit-public.allow.json; there is no override. A checkout without the script has
- *     nothing to audit with and passes, as for rule 3.
+ *     scripts/audit-public.allow.json; there is no override. An audit that gives no verdict (it
+ *     cannot load, start or finish) refuses the push as well, and says so rather than calling it a
+ *     finding. A checkout without the script has nothing to audit with and passes, as for rule 3.
  *
  * VISIBILITY IS FAIL-CLOSED. A remote that is not GitHub, a lookup that times out, a rate limit -
  * every "could not tell" is treated as public. A guard that passes when it cannot see is a guard
@@ -214,7 +215,9 @@ export function licenseRefusals(refs, boundaries, cwd = process.cwd()) {
 /**
  * Rule 5: scripts/audit-public.mjs --push over the same ref lines git handed this hook. bun first,
  * because the audit imports server/src/secrets.ts and bun runs TypeScript as it is; node does from
- * 22.18 on. Returns the audit's exit code (0 clean); a checkout without the script returns 0.
+ * 22.18 on. Returns 0 when the audit is clean, 1 when it found something, and 2 when it gave no
+ * verdict: it said so itself (exit 2), it could not start, it was killed, or it ended with any other
+ * code. A checkout without the script returns 0.
  */
 export function runPushAudit(refText, remote, cwd = process.cwd()) {
   const script = join(cwd, ...AUDIT_SCRIPT.split("/"));
@@ -227,12 +230,16 @@ export function runPushAudit(refText, remote, cwd = process.cwd()) {
     });
     if (r.error && r.error.code === "ENOENT" && runtime === "bun") continue;
     if (r.error) {
-      console.error(`✗ audit:public could not start (${r.error.message}): refused.`);
-      return 1;
+      console.error(`✗ audit:public could not start (${r.error.message}).`);
+      return 2;
     }
-    return r.status ?? 1;
+    if (r.status === 0 || r.status === 1 || r.status === 2) return r.status;
+    console.error(
+      `✗ audit:public ended ${r.signal ? `on ${r.signal}` : `with exit ${r.status}`}, without a verdict.`,
+    );
+    return 2;
   }
-  return 1;
+  return 2;
 }
 
 function readStdin() {
@@ -302,7 +309,7 @@ async function main() {
   }
 
   const audit = runPushAudit(refText, remoteName);
-  if (audit === 2) {
+  if (audit !== 0 && audit !== 1) {
     console.error(
       [
         "",
@@ -313,7 +320,7 @@ async function main() {
     );
     return 1;
   }
-  if (audit !== 0) {
+  if (audit === 1) {
     console.error(
       [
         "",

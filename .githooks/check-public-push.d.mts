@@ -41,5 +41,6 @@ export function licenseRefusals(
   cwd?: string,
 ): Array<{ ref: string; why: string }>
 
-/** Rule 5: audit-public.mjs --push over the hook's ref lines; its exit code, 0 when there is no script. */
+/** Rule 5: audit-public.mjs --push over the hook's ref lines: 0 clean, 1 a finding, 2 no verdict (it
+ *  could not run, start or finish); 0 when there is no script. */
 export function runPushAudit(refText: string, remote: string, cwd?: string): number
