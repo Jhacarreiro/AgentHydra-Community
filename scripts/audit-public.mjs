@@ -64,6 +64,13 @@ export const PROVENANCE_FILE = 'scripts/binary-provenance.json'
 /** The path a finding in a commit message is filed under (allow entries use it too). */
 export const MESSAGE_PATH = '(commit message)'
 const COMMIT_PATH = '(commit)'
+/**
+ * Upstream's commit "AgentHydra is now under the PolyForm Noncommercial License". It is built in, as
+ * in .githooks/check-public-push.mjs, so no config edit can turn license.boundary off: the config's
+ * licenseBoundary may name a further commit, never take this one away.
+ */
+export const LICENSE_BOUNDARY = 'aee9dfc4f7dd0228d8e1740be90b646b30204f37'
+const COMMIT_ID = /^[0-9a-f]{40}$/
 const MAX_BUFFER = 1 << 30
 
 export const RULES = {
@@ -250,6 +257,9 @@ export function loadAuditFiles({ config, allow, provenance } = {}) {
   const provDoc = readJson(provenance ?? join(root, PROVENANCE_FILE), 'the binary provenance list')
   for (const key of ['base', 'placeholderUsers', 'allowedEmails', 'allowedEmailDomains']) {
     if (cfg[key] === undefined) throw new AuditError(`the audit config has no "${key}"`)
+  }
+  if (cfg.licenseBoundary !== undefined && !COMMIT_ID.test(String(cfg.licenseBoundary).toLowerCase())) {
+    throw new AuditError('the audit config\'s "licenseBoundary" is not a full 40-hex commit id')
   }
   const entries = allowDoc.entries ?? []
   for (const [i, e] of entries.entries()) {
@@ -652,24 +662,34 @@ function resolveCommit(cwd, rev) {
   return sha
 }
 
-function licenseFindings(cwd, boundary, commits) {
-  if (!boundary) return []
-  const present = git(cwd, ['cat-file', '-e', `${boundary}^{commit}`], { allowFail: true })
-  if (present.status !== 0) return [] // not in this clone, so nothing here can contain it
+/** license.boundary's commits: LICENSE_BOUNDARY, plus the config's licenseBoundary when it names another. */
+export function licenseBoundaries(config) {
+  const out = [LICENSE_BOUNDARY]
+  const extra = String(config?.licenseBoundary ?? '').toLowerCase()
+  if (COMMIT_ID.test(extra) && !out.includes(extra)) out.push(extra)
+  return out
+}
+
+/** A license.boundary finding for each of `commits` that has one of `boundaries` in its history. */
+export function licenseFindings(cwd, boundaries, commits) {
   const out = []
-  for (const sha of commits) {
-    const r = git(cwd, ['merge-base', '--is-ancestor', boundary, sha], { allowFail: true })
-    if (r.status === 0) {
-      out.push({
-        rule: 'license.boundary',
-        path: COMMIT_PATH,
-        commit: sha,
-        line: 0,
-        fp: fingerprint(boundary),
-        note: `contains ${boundary.slice(0, 8)}`,
-      })
-    } else if (r.status !== 1) {
-      throw new AuditError(`could not tell whether ${sha.slice(0, 8)} contains ${boundary.slice(0, 8)}`)
+  for (const boundary of boundaries) {
+    const present = git(cwd, ['cat-file', '-e', `${boundary}^{commit}`], { allowFail: true })
+    if (present.status !== 0) continue // not in this clone, so nothing here can contain it
+    for (const sha of commits) {
+      const r = git(cwd, ['merge-base', '--is-ancestor', boundary, sha], { allowFail: true })
+      if (r.status === 0) {
+        out.push({
+          rule: 'license.boundary',
+          path: COMMIT_PATH,
+          commit: sha,
+          line: 0,
+          fp: fingerprint(boundary),
+          note: `contains ${boundary.slice(0, 8)}`,
+        })
+      } else if (r.status !== 1) {
+        throw new AuditError(`could not tell whether ${sha.slice(0, 8)} contains ${boundary.slice(0, 8)}`)
+      }
     }
   }
   return out
@@ -731,7 +751,7 @@ export function auditTree(cwd, rev, ctx) {
       })
     }
   }
-  findings.push(...licenseFindings(cwd, ctx.config.licenseBoundary, [commit]))
+  findings.push(...licenseFindings(cwd, licenseBoundaries(ctx.config), [commit]))
   return { findings, stats: { files: entries.length, binaries: bins.length } }
 }
 
@@ -1024,7 +1044,7 @@ export function main(argv = process.argv.slice(2), { stdin } = {}) {
       const r = auditHistory(opts.cwd, [range], ctx)
       const tip = range.includes('..') ? range.split(/\.\.\.?/)[1] || 'HEAD' : range
       const tipCommit = resolveCommit(opts.cwd, tip)
-      findings.push(...licenseFindings(opts.cwd, files.config.licenseBoundary, [tipCommit]))
+      findings.push(...licenseFindings(opts.cwd, licenseBoundaries(files.config), [tipCommit]))
       findings.push(...r.findings)
       scope.push(`history ${range} (${r.commits.length} commits)`)
     }
@@ -1033,7 +1053,7 @@ export function main(argv = process.argv.slice(2), { stdin } = {}) {
       const push = pushRevArgs(opts.cwd, stdin ?? readStdin(), opts.push, files.config.base)
       if (push) {
         const r = auditHistory(opts.cwd, push.args, ctx)
-        findings.push(...licenseFindings(opts.cwd, files.config.licenseBoundary, push.include))
+        findings.push(...licenseFindings(opts.cwd, licenseBoundaries(files.config), push.include))
         findings.push(...r.findings)
         scope.push(`push to ${opts.push} (${r.commits.length} new commits)`)
       } else {

@@ -3,7 +3,7 @@
   "base": "3a65ba8e6497c16732f627fc8934723839c82fdd",
   "//base": "The last upstream commit published under MIT, which this repository is built from. History before it is upstream's and is not read; --history <base>..HEAD and the pre-push mode start here.",
   "licenseBoundary": "aee9dfc4f7dd0228d8e1740be90b646b30204f37",
-  "//licenseBoundary": "Upstream's commit that moved AgentHydra to the PolyForm Noncommercial license. No commit audited here may have it in its history.",
+  "//licenseBoundary": "Upstream's commit that moved AgentHydra to the PolyForm Noncommercial license. No commit audited here may have it in its history. The audit and the pre-push hook have it built in, so taking it out of this file turns nothing off; a different commit id here is checked as well.",
   "placeholderUsers": [
     "me",
     "you",

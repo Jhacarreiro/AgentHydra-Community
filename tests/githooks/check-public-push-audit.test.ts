@@ -35,7 +35,11 @@ import {
   parseRefLines,
   runPushAudit,
 } from '../../.githooks/check-public-push.mjs'
-import { fingerprint, loadAuditFiles } from '../../scripts/audit-public.mjs'
+import {
+  LICENSE_BOUNDARY as AUDIT_LICENSE_BOUNDARY,
+  fingerprint,
+  loadAuditFiles,
+} from '../../scripts/audit-public.mjs'
 import { REPO_ROOT } from '../repo-root'
 
 // Real git, and per push Git for Windows' sh, a node start and a bun start for the audit. See
@@ -106,8 +110,9 @@ function commit(dir: string, files: Record<string, string>, message: string, ema
 // --- rule 4's pieces, without a push -------------------------------------------------------------
 
 describe('rule 4: the relicensing commit', () => {
-  test('the hook and the audit config name the same boundary commit', () => {
+  test('the hook, the audit and the audit config name the same boundary commit', () => {
     expect(LICENSE_BOUNDARY).toMatch(/^[0-9a-f]{40}$/)
+    expect(AUDIT_LICENSE_BOUNDARY).toBe(LICENSE_BOUNDARY)
     expect(loadAuditFiles().config.licenseBoundary).toBe(LICENSE_BOUNDARY)
     expect(licenseBoundaries(REPO_ROOT)).toEqual([LICENSE_BOUNDARY])
   })

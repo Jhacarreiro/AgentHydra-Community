@@ -25,6 +25,9 @@ import {
   auditTree,
   compileRules,
   fingerprint,
+  LICENSE_BOUNDARY,
+  licenseBoundaries,
+  licenseFindings,
   loadAuditFiles,
   MESSAGE_PATH,
   pushRevArgs,
@@ -570,7 +573,7 @@ describe('--history', () => {
   )
 
   test(
-    "a message may name the upstream hosts, private repositories and folders a commit takes out; a file may not",
+    'a message may name the upstream hosts, private repositories and folders a commit takes out; a file may not',
     () => {
       const host = CONFIG.upstreamHosts?.[0] ?? ''
       const privateRepo = CONFIG.privateRepos?.[0] ?? ''
@@ -652,6 +655,39 @@ describe('--history', () => {
       expect(rulesOf(tree.findings)).toEqual(['license.boundary'])
       const before = auditTree(dir, base, ctxWith({ config }))
       expect(before.findings).toEqual([])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test('the relicensing commit is built in: the config can add a boundary, never take it away', () => {
+    const without = { ...CONFIG, licenseBoundary: undefined }
+    expect(licenseBoundaries(without)).toEqual([LICENSE_BOUNDARY])
+    expect(licenseBoundaries({ licenseBoundary: LICENSE_BOUNDARY.toUpperCase() })).toEqual([
+      LICENSE_BOUNDARY,
+    ])
+    const other = 'ab'.repeat(20)
+    expect(licenseBoundaries({ licenseBoundary: other })).toEqual([LICENSE_BOUNDARY, other])
+
+    // A config with no licenseBoundary still loads and still checks the built-in commit; one whose
+    // licenseBoundary is no full commit id stops the audit.
+    const file = join(scratch('boundary-config'), 'config.json')
+    writeFileSync(file, JSON.stringify(without))
+    expect(licenseBoundaries(loadAuditFiles({ config: file }).config)).toEqual([LICENSE_BOUNDARY])
+    writeFileSync(
+      file,
+      JSON.stringify({ ...CONFIG, licenseBoundary: LICENSE_BOUNDARY.slice(0, 8) }),
+    )
+    expect(() => loadAuditFiles({ config: file })).toThrow('licenseBoundary')
+  })
+
+  test.skipIf(!hasCommit(LICENSE_BOUNDARY))(
+    'with no licenseBoundary in the config, the relicensing commit is still a finding where it exists',
+    () => {
+      // Only ancestry is read here (git merge-base), never a file of upstream's later history.
+      const commits = [LICENSE_BOUNDARY, CONFIG.base]
+      const found = licenseFindings(REPO_ROOT, licenseBoundaries({}), commits)
+      expect(found).toHaveLength(1)
+      expect(found[0]).toMatchObject({ rule: 'license.boundary', commit: LICENSE_BOUNDARY })
     },
     GIT_TEST_TIMEOUT,
   )

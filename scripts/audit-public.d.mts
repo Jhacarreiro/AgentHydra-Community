@@ -6,6 +6,8 @@ export const ALLOW_FILE: string
 export const PROVENANCE_FILE: string
 /** The path a finding in a commit message is filed under. */
 export const MESSAGE_PATH: string
+/** Upstream's relicensing commit; built in, so the config can add a boundary but not remove this. */
+export const LICENSE_BOUNDARY: string
 
 /** Every rule id, with the sentence the report shows for it. */
 export const RULES: { readonly [rule: string]: string }
@@ -108,6 +110,12 @@ export function auditHistory(
   revArgs: string[],
   ctx: AuditContext,
 ): { findings: Finding[]; commits: Array<{ sha: string }> }
+
+/** LICENSE_BOUNDARY, plus the config's licenseBoundary when it names another commit. */
+export function licenseBoundaries(config?: Partial<AuditConfig>): string[]
+
+/** A license.boundary finding for each of `commits` with one of `boundaries` in its history. */
+export function licenseFindings(cwd: string, boundaries: string[], commits: string[]): Finding[]
 
 /** The git log arguments for what a pre-push hook's ref lines carry, or null when nothing is new. */
 export function pushRevArgs(
