@@ -93,6 +93,32 @@ func startService() bool {
 	return true
 }
 
+// removeService takes away the unit an install without a desktop wrote, at an install with one: there the autostart
+// entry starts the tray with the session's display, and the unit would start one without it first, at each log in,
+// and hold the lock that the desktop's tray then waits on in vain.
+func removeService() {
+	if !exists(servicePath()) {
+		return
+	}
+	systemctl, err := exec.LookPath("systemctl")
+	if err != nil {
+		systemctl = ""
+	}
+	if systemctl != "" {
+		exec.Command(systemctl, "--user", "disable", "--now", serviceName).Run()
+	}
+	// What enable linked, for a systemctl that is not there or could not disable it.
+	os.Remove(filepath.Join(filepath.Dir(servicePath()), "default.target.wants", serviceName))
+	if err := os.Remove(servicePath()); err != nil {
+		say("Could not remove the systemd unit " + servicePath() + " (" + err.Error() + "), which starts Codex Hub at log in without the desktop's display: remove it.")
+		return
+	}
+	if systemctl != "" {
+		exec.Command(systemctl, "--user", "daemon-reload").Run()
+	}
+	say("Removed the systemd unit an install without a desktop wrote, as the desktop starts it here: " + servicePath())
+}
+
 // refreshAutostart leaves the autostart entry to install: once it is there it is the user's, and turning it off
 // (X-GNOME-Autostart-enabled=false from GNOME, Hidden=true or removing it from KDE) has to survive the next start.
 func refreshAutostart() error { return nil }
@@ -123,6 +149,9 @@ func install(from string) {
 		say("It starts when you log in: " + autostartPath())
 	} else {
 		say("It starts when you log in to a desktop: " + autostartPath())
+	}
+	if desktop {
+		removeService()
 	}
 	if desktop || !startService() {
 		if err := startDetached(trayExe); err != nil {

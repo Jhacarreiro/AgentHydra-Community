@@ -153,6 +153,53 @@ func TestStartServiceWithoutLingering(t *testing.T) {
 	}
 }
 
+// A desktop install takes away the unit an install without one wrote: there the autostart entry starts the tray
+// with the session's display, and the unit would start one without it first, at each log in.
+func TestADesktopInstallRemovesTheUnit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "conf"))
+	calls := fakeSystemctl(t, "")
+	linger(t, true)
+	out := said(t)
+	removeService()
+	if got := calls(); len(got) != 0 || out.Len() != 0 {
+		t.Errorf("with no unit: systemctl calls %v, said %q", got, out)
+	}
+
+	if !startService() {
+		t.Fatalf("systemd did not start it:\n%s", out)
+	}
+	wants := filepath.Join(filepath.Dir(servicePath()), "default.target.wants", serviceName)
+	os.MkdirAll(filepath.Dir(wants), 0o755)
+	if err := os.Symlink(servicePath(), wants); err != nil { // what enable makes
+		t.Fatal(err)
+	}
+	before := len(calls())
+	removeService()
+	want := []string{"--user_disable_--now_codex-hub-tray.service", "--user_daemon-reload"}
+	if got := calls()[before:]; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("systemctl calls %v, want %v", got, want)
+	}
+	for _, p := range []string{servicePath(), wants} {
+		if _, err := os.Lstat(p); err == nil {
+			t.Errorf("%s is still there", p)
+		}
+	}
+	if !strings.Contains(out.String(), "Removed the systemd unit") {
+		t.Errorf("it does not say it removed the unit:\n%s", out)
+	}
+
+	// With no systemctl now, the unit and its link go all the same.
+	t.Setenv("PATH", t.TempDir())
+	writeFileIfChanged(servicePath(), serviceUnit(trayExe))
+	os.Symlink(servicePath(), wants)
+	removeService()
+	for _, p := range []string{servicePath(), wants} {
+		if _, err := os.Lstat(p); err == nil {
+			t.Errorf("without systemctl: %s is still there", p)
+		}
+	}
+}
+
 // When systemd cannot start it, or there is no systemctl, the install starts the tray itself and says plainly that
 // nothing starts it again after a reboot.
 func TestStartServiceSaysWhenNothingStartsItAgain(t *testing.T) {
