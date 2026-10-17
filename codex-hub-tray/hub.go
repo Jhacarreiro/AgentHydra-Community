@@ -143,11 +143,25 @@ func download(c config, name string, want *release, dest string) (string, error)
 		os.Remove(next)
 		return "", badBuild{fmt.Errorf("the downloaded %s does not match the hub's hash", name)}
 	}
-	if out, err := runVersion(next); err != nil || !strings.HasPrefix(strings.TrimSpace(out), "codex-hub-") {
+	out, err := runVersion(next)
+	if err != nil {
 		os.Remove(next)
 		return "", badBuild{fmt.Errorf("the new %s build does not start: %v", name, err)}
 	}
+	if first, _, _ := strings.Cut(out, "\n"); strings.TrimSpace(first) != buildBanner(name) {
+		os.Remove(next)
+		return "", badBuild{fmt.Errorf("the hub's %s build is another program: its --version printed %q", name, strings.TrimSpace(first))}
+	}
 	return next, nil
+}
+
+// buildBanner is what the build of name prints first for --version. The pusher and the tray both start, so the
+// banner is what tells a tray build in the pusher's place (or the other way round) from the build it was fetched as.
+func buildBanner(name string) string {
+	if name == "tray" {
+		return banner
+	}
+	return "codex-hub-push" // PUSHER_BANNER in server/src/core/codex-hub-update.ts
 }
 
 // tokenWorks asks the hub whether it takes this token.

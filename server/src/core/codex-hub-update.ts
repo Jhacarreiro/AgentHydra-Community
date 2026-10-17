@@ -116,8 +116,11 @@ export async function updateOnce(
     return drop('the download does not match the hub hash')
   if (process.platform !== 'win32') chmodSync(next, 0o755)
   const tried = (deps.run ?? runVersion)(next)
-  if (tried.status !== 0 || !String(tried.stdout ?? '').startsWith(PUSHER_BANNER))
-    return drop('the new build did not start')
+  if (tried.status !== 0) return drop('the new build did not start')
+  // The tray's build starts too: only a build whose first line is the pusher's banner is the pusher.
+  const [banner = ''] = String(tried.stdout ?? '').split('\n', 1)
+  if (banner.trim() !== PUSHER_BANNER)
+    return drop(`the new build is another program (it printed ${JSON.stringify(banner.trim())})`)
 
   removeOldBuild(exe)
   renameSync(exe, `${exe}.old`)

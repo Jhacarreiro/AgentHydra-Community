@@ -41,7 +41,8 @@ func TestIconIsA32PixelPNG(t *testing.T) {
 	}
 }
 
-// buildHub serves one build at /api/codex-hub/pusher[/download], announcing sum and size whatever it sends.
+// buildHub serves one build as both the pusher and the tray (/api/codex-hub/{pusher,tray}[/download]), announcing
+// sum and size whatever it sends.
 func buildHub(t *testing.T, body []byte, sum string, size int64) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("platform") != platform {
@@ -49,9 +50,9 @@ func buildHub(t *testing.T, body []byte, sum string, size int64) *httptest.Serve
 			return
 		}
 		switch r.URL.Path {
-		case "/api/codex-hub/pusher":
+		case "/api/codex-hub/pusher", "/api/codex-hub/tray":
 			fmt.Fprintf(w, `{"sha256":%q,"size":%d}`, sum, size)
-		case "/api/codex-hub/pusher/download":
+		case "/api/codex-hub/pusher/download", "/api/codex-hub/tray/download":
 			w.Write(body)
 		default:
 			http.NotFound(w, r)
@@ -108,6 +109,41 @@ func TestDownload(t *testing.T) {
 		if st.Mode().Perm()&0o100 == 0 {
 			t.Errorf("%s: %s is not executable (%v)", c.name, next, st.Mode())
 		}
+	}
+}
+
+// A build is taken only as the build its --version says it is: the tray's build in the pusher's place starts as well,
+// and so does the pusher's in the tray's.
+func TestDownloadTakesOnlyTheBuildItWasFetchedAs(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "build")
+	for _, c := range []struct {
+		name, prints string
+		ok           bool
+	}{
+		{"pusher", "codex-hub-push", true},
+		{"tray", "codex-hub-tray", true},
+		{"pusher", "codex-hub-tray", false},
+		{"tray", "codex-hub-push", false},
+		{"pusher", "codex-hub-pusher", false},
+		{"tray", "codex-hub-tray-next", false},
+	} {
+		body := []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo " + c.prints + "; exit 0; fi\nsleep 30\n")
+		srv := buildHub(t, body, sumOf(body), int64(len(body)))
+		cfg := config{Hub: srv.URL, Token: "token-0123456789abcdef"}
+		rel, err := latest(cfg, c.name)
+		if err != nil || rel == nil {
+			t.Fatalf("%s printing %s: latest: %v %v", c.name, c.prints, rel, err)
+		}
+		next, err := download(cfg, c.name, rel, dest)
+		switch {
+		case c.ok && err != nil:
+			t.Errorf("%s printing %s: refused: %v", c.name, c.prints, err)
+		case !c.ok && !errors.As(err, new(badBuild)):
+			t.Errorf("%s printing %s: taken, or not as a bad build: %v", c.name, c.prints, err)
+		case !c.ok && exists(dest+".new"):
+			t.Errorf("%s printing %s: left %s.new", c.name, c.prints, dest)
+		}
+		os.Remove(next)
 	}
 }
 

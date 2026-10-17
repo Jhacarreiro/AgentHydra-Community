@@ -86,6 +86,18 @@ test('a build that does not start, or does not match the hub hash, never replace
   expect(relaunched).toEqual([])
 })
 
+test('a build that starts but prints another banner, such as the tray in the pusher slot, is refused', async () => {
+  for (const stdout of ['codex-hub-tray\n', 'codex-hub-pusher\n', 'codex-hub-\n', ''])
+    expect(await updateOnce(cfg, deps({ run: () => ({ status: 0, stdout }) }))).toBe('failed')
+  expect(readFileSync(exe, 'utf8')).toBe('old build')
+  expect(existsSync(`${exe}.new`)).toBe(false)
+  expect(relaunched).toEqual([])
+  // A Windows build ends its line with CRLF.
+  expect(
+    await updateOnce(cfg, deps({ run: () => ({ status: 0, stdout: 'codex-hub-push\r\n' }) })),
+  ).toBe('updated')
+})
+
 test('a hub with no build to hand out, and a request without the token, change nothing', async () => {
   rmSync(PUSHER_EXE)
   expect(await updateOnce(cfg, deps())).toBe('none')
