@@ -36,13 +36,17 @@ The builder also reads skills (`~/.claude/skills`) and sub-agents (`~/.claude/ag
 `os.homedir()`. `AGENTHYDRA_CORE_DIR` overrides the core folder (default `~/.agenthydra/core`). Hand-written
 `hand-*.json` files in `<core>/catalog/` are never touched and win over generated entries with the same id.
 
-## Owner-specific sources: `<core>/catalog/sources.json`
+## Extra folders: `<core>/catalog/sources.json`
 
 Optional, outside the repo. Every key is optional; a missing key turns that source off.
 
-`projectsDir`, `connectionsDir`, `extraSkillDirs`, `extraAgentDirs`, `dreddDir`, `sueDir`, `snapshotDir`, `laneDir`,
-`boardroomDir` (paths, `~` allowed), `ownerName`, `companyId`, `seats` (`[{ slug, name, personaId }]`) and
-`minimums` (`{ managers, employees, instruments, skills, knowledge }`, the floors `--check` enforces; none by default).
+- `projectsDir`: a folder of repositories; each one with an `AGENTS.md` or `CLAUDE.md` becomes a rule entry for that
+  folder.
+- `extraSkillDirs`, `extraAgentDirs`: more folders read like `~/.claude/skills` and `~/.claude/agents`.
+- `minimums` (`{ managers, employees, instruments, skills, knowledge }`): the floors `--check` enforces; none by
+  default.
+
+Paths may start with `~`.
 
 ## Commands
 

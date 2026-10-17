@@ -7,8 +7,9 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-// Home paths come from os.homedir() (HOME / USERPROFILE). Owner-specific sources (sibling repos, Boardroom
-// ids, the pinned-prompt lane) are read from <core>/catalog/sources.json when it exists; see docs/PEOPLE.md.
+// Home paths come from os.homedir() (HOME / USERPROFILE). Optional extra folders (a projects folder whose repos'
+// AGENTS.md or CLAUDE.md become rules, more skill and agent folders) are read from <core>/catalog/sources.json
+// when it exists; see docs/PEOPLE.md.
 const HOME = homedir().replace(/\\/g, '/')
 const CORE = (process.env.AGENTHYDRA_CORE_DIR || `${HOME}/.agenthydra/core`).replace(/\\/g, '/')
 const CATALOG = `${CORE}/catalog`
@@ -16,23 +17,13 @@ const AGENTHYDRA = `${HOME}/.agenthydra`
 const MANAGERS = `${AGENTHYDRA}/managers`
 const PEOPLE = `${AGENTHYDRA}/people`
 const ORG = `${CORE}/personas/org.json`
-const PINNED_OUT = `${CORE}/knowledge/pinned`
 const cfgText = (() => { try { return readFileSync(`${CATALOG}/sources.json`, 'utf8').replace(/^\uFEFF/, '') } catch { return '' } })()
 const CFG = (() => { try { const j = JSON.parse(cfgText); return j && typeof j === 'object' ? j : {} } catch { return {} } })()
 const cfgPath = (k) => (typeof CFG[k] === 'string' && CFG[k] ? CFG[k].replace(/\\/g, '/').replace(/^~(?=\/|$)/, HOME) : '')
 const cfgList = (k) => (Array.isArray(CFG[k]) ? CFG[k].map((v) => String(v).replace(/\\/g, '/').replace(/^~(?=\/|$)/, HOME)) : [])
 const PROJECTS = cfgPath('projectsDir')
-const CONN = cfgPath('connectionsDir')
 const SKILL_DIRS = [`${HOME}/.claude/skills`, ...cfgList('extraSkillDirs')]
 const AGENT_DIRS = [`${HOME}/.claude/agents`, ...cfgList('extraAgentDirs')]
-const DREDD = cfgPath('dreddDir')
-const SNAPSHOT = cfgPath('snapshotDir')
-const LANE = cfgPath('laneDir')
-const BOARDROOM = cfgPath('boardroomDir')
-const OWNER = typeof CFG.ownerName === 'string' ? CFG.ownerName : ''
-const COMPANY = typeof CFG.companyId === 'string' ? CFG.companyId : ''
-const SEATS = Array.isArray(CFG.seats) ? CFG.seats.filter((x) => x && x.slug && x.name && x.personaId) : []
-const SUE_DIR = cfgPath('sueDir')
 
 const KINDS = ['person', 'instrument', 'worker', 'knowledge', 'skill']
 const TIERS = ['intern', 'employee', 'manager', 'owner']
@@ -62,7 +53,6 @@ function oneLine(s, max = 159) {
   const sp = cut.lastIndexOf(' ')
   return (sp > 40 ? cut.slice(0, sp) : cut).replace(/[,;:\s-]+$/, '') + '…'
 }
-const capHow = (s) => { const t = str(s).replace(/\s+/g, ' ').trim(); return t.length > 600 ? t.slice(0, 597) + '...' : t }
 const tagsAll = (...lists) => [...new Set(lists.flat().map((t) => str(t).toLowerCase().trim()).filter((t) => t && t.length <= 40))]
 const tagsOf = (...lists) => tagsAll(...lists).slice(0, 8)
 
@@ -89,22 +79,6 @@ function frontMatter(text) {
   }
   for (const k of Object.keys(out.fm)) out.fm[k] = out.fm[k].replace(/^(["'])([\s\S]*)\1$/, '$2')
   return out
-}
-const firstHeading = (body) => { const m = /^#\s+(.+)$/m.exec(str(body)); return m ? m[1].trim() : '' }
-const firstPara = (body) => {
-  for (const p of str(body).split(/\r?\n\s*\r?\n/)) {
-    const t = p.trim()
-    if (t && !/^(#|<!--|---|```|\||>)/.test(t)) return t
-  }
-  return ''
-}
-function costOf(text) {
-  const t = str(text).toLowerCase()
-  if (!t) return 'low'
-  if (/\bfree\b|\$0|no cost/.test(t)) return 'free'
-  if (/hour|real (people|visitor)|dollar|\$\d/.test(t)) return 'high'
-  if (/minute|visitor|opus|model/.test(t)) return 'medium'
-  return 'low'
 }
 
 // ---------- validation (shared by build and --check) ----------
@@ -252,67 +226,7 @@ function skills(add, skip) {
   }
 }
 
-// ---------- 3. Dredd ----------
-function dredd(add, skip) {
-  if (!DREDD) return
-  const doc = existsSync(`${DREDD}/README.md`) ? { type: 'file', path: `${DREDD}/README.md` } : { type: 'none' }
-  add({
-    id: 'instrument:dredd', kind: 'instrument', name: 'Dredd', title: 'Docket: which instruments to convene for an ask',
-    when: "A new ask bigger than a one-line fact or edit: Dredd's docket names the instruments to convene, in what order, and the model for each.",
-    tags: ['dredd', 'docket', 'instruments', 'judge'], cost: 'low',
-    how: `AgentHydra \`dredd { action: "docket", ask: "<the ask>" }\` (or \`node ${DREDD}/dredd.mjs "<the ask>"\`). Follow the docket; skipping an instrument it named takes a one-line reason.`,
-    load: doc, source: `${DREDD}/bench.json ($doc); Connections lane brief 'Dredd first'`
-  })
-  const bench = safeJson(`${DREDD}/bench.json`)
-  if (!bench || !Array.isArray(bench.instruments)) skip('bench.json missing or no instruments array')
-  else {
-    for (const i of bench.instruments) {
-      const id = slugify(i && i.id)
-      if (!id) { skip('instrument without id'); continue }
-      const w = str(i.when)
-      const when = w.length >= 40 ? w : `${str(i.judges)} ${w}`
-      let load = { type: 'none' }
-      const docRef = str(i.doc).split(/[,(]/)[0].trim()
-      if (docRef) for (const base of [CONN, DREDD, DREDD.replace(/\/[^/]*$/, '')].filter(Boolean)) if (isFile(`${base}/${docRef}`) && !/\/$/.test(docRef)) { load = { type: 'file', path: `${base}/${docRef}` }; break }
-      add({
-        id: `instrument:${id}`, kind: 'instrument', name: str(i.name) || id, when: oneLine(when || i.name),
-        tags: tagsOf(i.plane, i.owner, i.domains || [], id.split('-')), cost: costOf(i.cost),
-        how: capHow(`Dredd convenes it in a docket: AgentHydra dredd tool { action: "docket", ask }.${i.run ? ' Runner: ' + str(i.run) + '.' : ''}${i.doc ? ' Doc: ' + str(i.doc) + '.' : ''}`),
-        load, source: `${DREDD}/bench.json instruments[id=${id}] (when, judges, run, doc, cost)`
-      })
-    }
-  }
-  for (const f of safeDir(`${DREDD}/seats`)) {
-    if (!f.isFile() || !f.name.endsWith('.json')) continue
-    const path = `${DREDD}/seats/${f.name}`
-    const s = safeJson(path)
-    if (!s) { skip('seat unreadable', f.name); continue }
-    const id = slugify(s.id || f.name.replace(/^\d+-|\.json$/g, ''))
-    const rooms = Array.isArray(s.rooms) ? s.rooms.join(', ') : ''
-    add({
-      id: `person:${id}`, kind: 'person', name: str(s.name) || id, title: `Dredd board seat${rooms ? ' (' + rooms + ' room)' : ''}`,
-      tier: 'employee', family: 'dredd-seat', when: oneLine(s.jev || s.needs || s.name), tags: tagsOf(Array.isArray(s.keywords) ? s.keywords.slice(0, 5) : [], s.rooms || [], id.split('-')),
-      modes: ['consult'], cost: 'medium',
-      how: `core_use { chat, id: "person:${id}", mode: "consult", question } for one hidden answer. The full boardroom meeting is instrument:boardroom.`,
-      load: { type: 'file', path }, source: `${path} (id, name, rooms, jev, keywords)`
-    })
-  }
-  const mb = safeJson(`${DREDD}/member-bench.json`)
-  if (mb && Array.isArray(mb.capabilities)) {
-    for (const c of mb.capabilities) {
-      const id = slugify(c && c.id)
-      if (!id) { skip('member capability without id'); continue }
-      add({
-        id: `knowledge:member-${id}`, kind: 'knowledge', name: str(c.name) || id, when: oneLine(c.what || c.jev || c.name),
-        tags: tagsOf('member', c.owner, id.split('-')), cost: 'free',
-        how: capHow(`Read the row in sue-dredd/dredd/member-bench.json (id ${id}); its setting names the exact constant or table.${c.owner ? ' Owner plane: ' + str(c.owner) + '.' : ''}`),
-        load: { type: 'file', path: `${DREDD}/member-bench.json` }, source: `${DREDD}/member-bench.json capabilities[id=${id}] (what, setting, owner)`
-      })
-    }
-  }
-}
-
-// ---------- 4. agents ----------
+// ---------- 3. agents ----------
 function agents(add, skip) {
   for (const root of AGENT_DIRS) {
     for (const f of safeDir(root)) {
@@ -333,7 +247,7 @@ function agents(add, skip) {
   }
 }
 
-// ---------- 5. repo rules ----------
+// ---------- 4. repo rules ----------
 function repos(add, skip) {
   if (!PROJECTS) return
   for (const d of safeDir(PROJECTS)) {
@@ -348,167 +262,6 @@ function repos(add, skip) {
       load: { type: 'file', path: file }, source: file
     })
   }
-  const rulesDir = CONN ? `${CONN}/.claude/rules` : ''
-  for (const f of safeDir(rulesDir)) {
-    if (!f.isFile() || !f.name.endsWith('.md')) continue
-    const file = `${rulesDir}/${f.name}`
-    const t = safeRead(file)
-    if (t == null) { skip('rule unreadable', f.name); continue }
-    const { fm, lists, body } = frontMatter(t)
-    const slug = slugify(f.name.replace(/\.md$/, ''))
-    const desc = fm.description || firstHeading(body) || firstPara(body) || slug.replace(/-/g, ' ')
-    const paths = lists.paths && lists.paths.length ? lists.paths : fm.paths ? [fm.paths] : []
-    const scope = paths.length ? ` [paths: ${paths.slice(0, 3).join(', ')}]` : ''
-    add({
-      id: `knowledge:rule-${slug}`, kind: 'knowledge', name: oneLine(firstHeading(body) || slug, 120),
-      when: oneLine(oneLine(desc, 159 - scope.length) + scope), tags: tagsOf('rule', 'connections', slug.split('-')), cost: 'free',
-      folders: [CONN], how: `Read ${file}; it auto-loads when you touch ${paths.length ? paths.join(', ') : 'matching files'}.`,
-      load: { type: 'file', path: file }, source: `${file}:1 (description or first heading, paths)`
-    })
-  }
-}
-
-// ---------- 6. CrAInium docs (Connections' docs: filed under Connections, so a pack in another folder never attaches them) ----------
-function* walkMd(dir, depth = 0) {
-  if (depth > 8) return
-  for (const d of safeDir(dir)) {
-    if (d.isDirectory()) {
-      if (['.claude', '.agents', '.git', 'node_modules'].includes(d.name)) continue
-      yield* walkMd(`${dir}/${d.name}`, depth + 1)
-    } else if (d.isFile() && /\.md$/i.test(d.name)) yield `${dir}/${d.name}`
-  }
-}
-function crainium(add, skip) {
-  if (!CONN) return
-  if (!existsSync(SNAPSHOT)) {
-    add({
-      id: 'knowledge:crainium-docs', kind: 'knowledge', name: 'CrAInium docs', when: 'The CrAInium documentation (architecture, how-to, governance, ai-memory): search it when the repo rules do not answer.',
-      tags: ['crainium', 'docs'], cost: 'low', folders: [CONN],
-      how: "connections_execute { local:true, tool_name:'docs', params:{ action:'search', query:'<topic>' } } (the Connections docs tool).",
-      load: { type: 'tool', call: "connections_execute { local:true, tool_name:'docs', params:{ action:'search', query:'<topic>' } }" },
-      source: 'snapshot missing; Connections docs tool'
-    })
-    return
-  }
-  for (const file of walkMd(SNAPSHOT)) {
-    const t = safeRead(file)
-    if (t == null) { skip('doc unreadable'); continue }
-    const rel = file.slice(SNAPSHOT.length + 1)
-    const { fm, body } = frontMatter(t)
-    const title = fm.title || firstHeading(body)
-    const desc = fm.description || firstPara(body)
-    if (!title && !desc) { skip('no title or description', rel); continue }
-    let slug = slugify(rel.replace(/\.md$/i, ''), 80)
-    if (!slug) { skip('empty slug', rel); continue }
-    add({
-      id: `knowledge:crainium-${slug}`, kind: 'knowledge', name: oneLine(title || rel, 120),
-      when: oneLine(desc || `CrAInium doc: ${title}`), tags: tagsOf('crainium', rel.split('/').slice(0, -1)), cost: 'free', folders: [CONN],
-      how: `Read ${file} (core_use mode "load" returns it).`, load: { type: 'file', path: file },
-      source: `${file}:1 (front matter ${fm.title ? 'title' : 'first heading'}, ${fm.description ? 'description' : 'first paragraph'})`
-    })
-  }
-}
-
-// ---------- 7. owner's pinned instructions (cached lane briefs) ----------
-const SECRET_LINE = [
-  /\b(sk-[A-Za-z0-9_-]{16,}|ghp_\w{20,}|github_pat_\w{20,}|gho_\w{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{10,}|AIza[\w-]{30,}|eyJ[\w-]{20,}\.[\w-]{10,})/,
-  /(api[_ -]?key|secret|token|password|passwd|credential|auth)s?["']?\s*[:=]\s*["']?[A-Za-z0-9_\-/+=.]{12,}/i,
-  /BEGIN [A-Z ]*PRIVATE KEY/,
-  /\bbearer\s+[A-Za-z0-9_\-.=]{20,}/i
-]
-const looksSecret = (line) => SECRET_LINE.some((r) => r.test(line))
-
-function splitH1(text) {
-  const sections = []
-  let cur = null
-  let fence = false
-  for (const line of str(text).split(/\r?\n/)) {
-    if (/^\s*```/.test(line)) fence = !fence
-    const h = !fence && /^# (.+)$/.exec(line)
-    if (h) { cur = { title: h[1].trim(), lines: [] }; sections.push(cur); continue }
-    if (cur) cur.lines.push(line)
-  }
-  return sections
-}
-function pinned(add, skip) {
-  if (!LANE) return
-  mkdirSync(PINNED_OUT, { recursive: true })
-  const files = safeDir(LANE).filter((d) => d.isFile() && /^brief-.*\.json$/.test(d.name)).map((d) => d.name).sort()
-  if (!files.length) skip('no lane briefs found')
-  const done = new Set()
-  for (const f of files) {
-    const j = safeJson(`${LANE}/${f}`)
-    if (!j || typeof j.text !== 'string') { skip('brief unreadable or no text', f); continue }
-    for (const sec of splitH1(j.text)) {
-      const slug = slugify(sec.title, 60)
-      if (!slug) { skip('empty pinned slug', f); continue }
-      if (done.has(slug)) continue
-      done.add(slug)
-      const kept = []
-      for (const line of sec.lines) {
-        if (looksSecret(line)) { skip('credential-looking line dropped', slug); continue }
-        kept.push(line)
-      }
-      const body = kept.join('\n').trim()
-      if (!body) { skip('empty pinned section', slug); continue }
-      const path = `${PINNED_OUT}/${slug}.md`
-      writeFileSync(path, `# ${sec.title}\n\nSource: ${LANE}/${f} (Connections pinned prompt, split by build.mjs)\n\n${body}\n`)
-      add({
-        id: `knowledge:pinned-${slug}`, kind: 'knowledge', name: oneLine(sec.title, 120),
-        when: oneLine((OWNER ? OWNER + "'s pinned ruling: " : 'Pinned ruling: ') + (firstPara(body).replace(/^[-*]\s*/, '') || sec.title)), tags: tagsOf('pinned', OWNER, 'ruling', slug.split('-').slice(0, 4)), cost: 'free',
-        how: `Read ${path}; core_use mode "load" returns it.`, load: { type: 'file', path }, source: `${LANE}/${f} text (H1 section "${oneLine(sec.title, 60)}")`
-      })
-    }
-  }
-}
-
-// ---------- 8. Boardroom members (configured folder) ----------
-function boardroom(add, skip) {
-  if (!BOARDROOM) return
-  for (const d of safeDir(BOARDROOM)) {
-    if (!d.isDirectory()) continue
-    const file = `${BOARDROOM}/${d.name}/persona.md`
-    const t = safeRead(file)
-    if (t == null) { skip('no persona.md', d.name); continue }
-    const { fm } = frontMatter(t)
-    const slug = slugify(fm.id || d.name)
-    const id = `person:board-${slug}`
-    add({
-      id, kind: 'person', name: str(fm.name) || slug, title: oneLine([fm.seat, fm.modeled_on && `modeled on ${fm.modeled_on}`].filter(Boolean).join(', '), 200) || undefined,
-      tier: 'manager', family: 'board', modes: ['consult'], when: oneLine(fm.one_liner || fm.seat || fm.name),
-      tags: tagsOf('boardroom', slug, fm.modeled_on), cost: 'medium',
-      how: `core_use { chat, id: "${id}", mode: "consult", question } for one hidden answer in this Boardroom member's voice. Consult only.`,
-      load: { type: 'file', path: file }, source: `${file} (front matter id, name, seat, one_liner)`
-    })
-  }
-}
-
-// ---------- 9. Owner tier and the Sue roster: pointers into Connections, never copies ----------
-function owners(add) {
-  if (!OWNER) return
-  const seatCall = (personaId) => `connections_execute { endpoint_id: "boardroom_personas_export_brief", project: "${COMPANY}", body: { personaId: "${personaId}", companyId: "${COMPANY}", topic: "<the exact question>" } } returns his brief and the rules that fit.`
-  const ask = 'python ~/.claude/tools/creaitor/creaitor.py ask --option="A: ..." --option="B: ..." --repo=<name> -- "<the exact question>"'
-  add({
-    id: 'person:creaitor', kind: 'person', name: 'CreAItor', title: 'Answers as the owner of this machine, from his rulings and past answers',
-    tier: 'owner', family: 'creator', modes: ['consult'], when: 'Before asking the owner anything: it answers DECIDED, TAKE THE REVERSIBLE OPTION or ESCALATE.',
-    tags: ['creaitor', 'owner', 'decision', 'president'], cost: 'low', how: ask,
-    load: { type: 'tool', call: ask }, source: '~/.claude/skills/decision-sop/SKILL.md step 0'
-  })
-  for (const [slug, name, personaId] of SEATS.map((x) => [x.slug, x.name, x.personaId])) {
-    add({
-      id: `person:${slug}`, kind: 'person', name: `${name} (Boardroom seat)`, title: 'Owner profile held in the Connections cloud; consult only',
-      tier: 'owner', family: 'creator', modes: ['consult'], when: `What ${name} would decide: his brief and dated rules, asked through his Boardroom seat in Connections.`,
-      tags: ['owner', 'seat', 'boardroom', name.toLowerCase()], cost: 'low', how: capHow(seatCall(personaId)),
-      load: { type: 'tool', call: `boardroom_personas_export_brief personaId ${personaId}` }, source: '~/.claude/skills/decision-sop/SKILL.md step 3 (personaIds)'
-    })
-  }
-  add({
-    id: 'instrument:sue-roster', kind: 'instrument', name: 'Sue roster', title: 'The Sues (with their Ape and Art groups) and you-sue, stored on the Postal server',
-    when: "You need a Sue, Ape or Art persona, or the owner's you-sue: the live roster is fetched from the Postal server's store, never listed here.",
-    tags: ['sue', 'ape', 'art', 'you-sue', 'roster', 'connections'], cost: 'low',
-    how: 'AgentHydra `sue { action: "personas" }` returns the live roster (Sues, Ape, Art, you-sue); the engine fetches it from the Connections store, never copied locally. Reading one person mind (boardroom_personas_sue_mind) has no sue-dredd engine action (sue/README.md lists none), so that one call stays: connections_execute { endpoint_id: "boardroom_personas_sue_mind", params: { sueId } }. Code: ' + (SUE_DIR || 'the sue engine') + '.',
-    load: { type: 'tool', call: 'sue { action: "personas" }' }, source: 'sue-dredd/sue/README.md (personas action); Studio /v1/mcp/sue/people/list and /mind (cranium sue_personas on the Postal server)'
-  })
 }
 
 // ---------- build ----------
@@ -516,13 +269,8 @@ function build() {
   runSource('managers', managers)
   runSource('people', people)
   runSource('skills', skills)
-  runSource('dredd', dredd)
   runSource('agents', agents)
   runSource('repos', repos)
-  runSource('crainium', crainium)
-  runSource('pinned', pinned)
-  runSource('boardroom', boardroom)
-  runSource('owners', owners)
   writeFileSync(`${CATALOG}/skips.json`, JSON.stringify(allSkips, null, 2) + '\n')
 }
 

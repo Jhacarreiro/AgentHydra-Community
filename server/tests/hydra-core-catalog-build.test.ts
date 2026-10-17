@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadCatalog } from '../src/hydra-core/catalog'
@@ -64,15 +64,37 @@ test('people folders and legacy manager folders become person entries', () => {
   expect(loaded.skipped).toEqual([])
 })
 
-test('owner sources are read only from sources.json', () => {
+test('sources.json adds project rules and extra skill and agent folders, and nothing else', () => {
+  put('projects/atlas/AGENTS.md', '# Atlas rules\n')
+  put(
+    'more-skills/lint-fix/SKILL.md',
+    '---\nname: lint-fix\ndescription: Fixes lint errors.\n---\n',
+  )
+  put('more-agents/reviewer.md', '---\nname: reviewer\ndescription: Reviews a diff.\n---\n')
   put('.agenthydra/core/catalog/sources.json', {
+    projectsDir: '~/projects',
+    extraSkillDirs: ['~/more-skills'],
+    extraAgentDirs: ['~/more-agents'],
+    // Keys of sources this builder no longer has are ignored.
     ownerName: 'Example Owner',
     seats: [{ slug: 'owner-seat', name: 'Example Owner', personaId: 'p1' }],
-    companyId: 'c1',
   })
   expect(run().status).toBe(0)
-  const owners = JSON.parse(
-    readFileSync(join(home, '.agenthydra/core/catalog/generated-owners.json'), 'utf8'),
-  ) as { id: string }[]
-  expect(owners.map((e) => e.id)).toContain('person:owner-seat')
+  const dir = join(home, '.agenthydra/core/catalog')
+  const ids = (f: string) =>
+    (JSON.parse(readFileSync(join(dir, f), 'utf8')) as { id: string }[]).map((e) => e.id)
+  expect(ids('generated-repos.json')).toEqual(['knowledge:repo-atlas'])
+  expect(ids('generated-skills.json')).toEqual(['skill:lint-fix'])
+  expect(ids('generated-agents.json')).toEqual(['worker:reviewer'])
+  expect(
+    readdirSync(dir)
+      .filter((f) => f.startsWith('generated-'))
+      .sort(),
+  ).toEqual([
+    'generated-agents.json',
+    'generated-managers.json',
+    'generated-people.json',
+    'generated-repos.json',
+    'generated-skills.json',
+  ])
 })
