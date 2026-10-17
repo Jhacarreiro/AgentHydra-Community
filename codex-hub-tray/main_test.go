@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -82,6 +89,148 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 }
 
+// testKey stands in for the operator's key; useTestKey builds the tray with its public half for one test.
+var testKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+
+func useTestKey(t *testing.T) {
+	saved := updateKey
+	updateKey = base64.StdEncoding.EncodeToString(testKey.Public().(ed25519.PublicKey))
+	t.Cleanup(func() { updateKey = saved })
+}
+
+// signedFor is the signature key gives the build of name for plat whose hash is sum; signedBy, for this platform.
+func signedFor(key ed25519.PrivateKey, name, plat, sum string) string {
+	return base64.StdEncoding.EncodeToString(ed25519.Sign(key, buildSignedText(name, plat, sum)))
+}
+
+func signedBy(key ed25519.PrivateKey, name, sum string) string {
+	return signedFor(key, name, platform, sum)
+}
+
+func sumOf(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// The same key and build as tests/codex-hub-sign.test.ts, which signs them with scripts/codex-hub-sign.ts: the seed
+// is the bytes 0 to 31, the build the text "example build", the pusher's for linux-x64.
+func TestBuildSignatureVector(t *testing.T) {
+	const (
+		public = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+		sig    = "bwOwxxI7hsyg9pKJlH3lbMjIC0EG5u9wQyR5soqZ5JPQz8V1M65jodrtlDz5pOlAZLxWw8h9E26hEg67SqpcCA=="
+	)
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i)
+	}
+	if got := base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)); got != public {
+		t.Fatalf("public key %s", got)
+	}
+	saved, savedKey := platform, updateKey
+	platform, updateKey = "linux-x64", public
+	t.Cleanup(func() { platform, updateKey = saved, savedKey })
+	c := config{Hub: "http://hub.example.test"}
+	rel := &release{SHA256: sumOf([]byte("example build")), Signature: sig + "\n"}
+	if err := checkSigned(c, "pusher", rel); err != nil {
+		t.Fatalf("the signature the script made: %v", err)
+	}
+	if err := checkSigned(c, "tray", rel); !errors.As(err, new(badBuild)) {
+		t.Errorf("taken as the tray's: %v", err)
+	}
+	platform = "linux-arm64"
+	if err := checkSigned(c, "pusher", rel); !errors.As(err, new(badBuild)) {
+		t.Errorf("taken on another platform: %v", err)
+	}
+}
+
+// What the tray takes: with a key, a build signed with it for that name and this platform; without one, a build from
+// an https hub only. A refusal for a build's signature is a bad build (remembered); one for this tray's key is not.
+func TestCheckSigned(t *testing.T) {
+	useTestKey(t)
+	stranger := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{8}, ed25519.SeedSize))
+	sum := sumOf([]byte("a build"))
+	plain := config{Hub: "http://hub.example.test:18788"}
+	for _, c := range []struct {
+		what, name, sig string
+		ok              bool
+	}{
+		{"signed", "pusher", signedBy(testKey, "pusher", sum), true},
+		{"the tray, signed", "tray", signedBy(testKey, "tray", sum), true},
+		{"signed with another key", "pusher", signedBy(stranger, "pusher", sum), false},
+		{"signed for the tray", "pusher", signedBy(testKey, "tray", sum), false},
+		{"signed over another hash", "pusher", signedBy(testKey, "pusher", sumOf([]byte("other"))), false},
+		{"signed for another platform", "pusher", signedFor(testKey, "pusher", "windows-arm64", sum), false},
+		{"not signed", "pusher", "", false},
+		{"not base64", "pusher", "not a signature", false},
+	} {
+		err := checkSigned(plain, c.name, &release{SHA256: sum, Signature: c.sig})
+		if c.ok != (err == nil) || (!c.ok && !errors.As(err, new(badBuild))) {
+			t.Errorf("%s: %v", c.what, err)
+		}
+	}
+	other := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 31))
+	for _, c := range []struct {
+		key, hub string
+		want     error
+	}{
+		{"", "http://hub.example.test:18788", errNoKey},
+		{"", "https://hub.example.test", nil},
+		{"", "HTTPS://hub.example.test", nil},
+		{"", "", errNoKey},
+		{other, "https://hub.example.test", errBadKey},
+		{"not base64!", "https://hub.example.test", errBadKey},
+	} {
+		updateKey = c.key
+		if err := updatesAllowed(c.hub); err != c.want {
+			t.Errorf("key %q, hub %q: %v, want %v", c.key, c.hub, err, c.want)
+		}
+		// Unsigned: without a key only the https hub's build is taken.
+		err := checkSigned(config{Hub: c.hub}, "pusher", &release{SHA256: sum})
+		if err != c.want || errors.As(err, new(badBuild)) {
+			t.Errorf("key %q, hub %q: checkSigned %v", c.key, c.hub, err)
+		}
+	}
+}
+
+// A tray built without a key, whose hub is http, takes nothing: it says so once in the log and in amber, and never
+// asks the hub for a build file.
+func TestNoKeyOverHTTPTakesNothing(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		json.NewEncoder(w).Encode(release{SHA256: strings.Repeat("ab", 32), Size: 1})
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { os.Remove(configPath) })
+	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+		t.Fatal(err)
+	}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	a := newApp()
+	for i := 0; i < 3; i++ {
+		a.updateOnce()
+	}
+	if n := strings.Count(logged.String(), "update: this build has no update key"); n != 1 {
+		t.Errorf("logged the missing key %d times:\n%s", n, logged.String())
+	}
+	if !strings.Contains(a.shown, "no update key") {
+		t.Errorf("status %q", a.shown)
+	}
+	for _, p := range paths {
+		if p != "/api/codex-hub/pusher" {
+			t.Errorf("asked the hub for %s", p)
+		}
+	}
+	if exists(pusherExe) || exists(pusherExe+".new") {
+		t.Error("a pusher was put in place")
+	}
+}
+
 // fakeHub answers GET /api/codex-hub/pusher for one token, recording the platform each request named.
 func fakeHub(t *testing.T, token string, platforms *[]string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,9 +262,11 @@ func TestHubRequestsCarryTheExtraHeaders(t *testing.T) {
 			w.Write([]byte("not the announced build"))
 			return
 		}
-		json.NewEncoder(w).Encode(release{SHA256: strings.Repeat("ab", 32), Size: 1})
+		sum := strings.Repeat("ab", 32)
+		json.NewEncoder(w).Encode(release{SHA256: sum, Size: 1, Signature: signedBy(testKey, "tray", sum)})
 	}))
 	t.Cleanup(srv.Close)
+	useTestKey(t)
 	cfg := config{Hub: srv.URL, Token: "token-0123456789abcdef"}
 	t.Setenv("AGENTHYDRA_CODEX_HUB_HEADERS", `{"X-Hub-Access":"e2e-access","Authorization":"not this"}`)
 	rel, err := latest(cfg, "tray")

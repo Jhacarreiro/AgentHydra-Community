@@ -4,8 +4,7 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"image/png"
@@ -42,7 +41,7 @@ func TestIconIsA32PixelPNG(t *testing.T) {
 }
 
 // buildHub serves one build as both the pusher and the tray (/api/codex-hub/{pusher,tray}[/download]), announcing
-// sum and size whatever it sends.
+// sum and size whatever it sends, signed with testKey for the build asked for (the test calls useTestKey).
 func buildHub(t *testing.T, body []byte, sum string, size int64) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("platform") != platform {
@@ -51,7 +50,8 @@ func buildHub(t *testing.T, body []byte, sum string, size int64) *httptest.Serve
 		}
 		switch r.URL.Path {
 		case "/api/codex-hub/pusher", "/api/codex-hub/tray":
-			fmt.Fprintf(w, `{"sha256":%q,"size":%d}`, sum, size)
+			name := strings.TrimPrefix(r.URL.Path, "/api/codex-hub/")
+			fmt.Fprintf(w, `{"sha256":%q,"size":%d,"signature":%q}`, sum, size, signedBy(testKey, name, sum))
 		case "/api/codex-hub/pusher/download", "/api/codex-hub/tray/download":
 			w.Write(body)
 		default:
@@ -64,12 +64,8 @@ func buildHub(t *testing.T, body []byte, sum string, size int64) *httptest.Serve
 
 const fakePusher = "#!/bin/sh\nif [ \"$1\" = --version ]; then echo codex-hub-push; exit 0; fi\nsleep 30\n"
 
-func sumOf(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
-
 func TestDownload(t *testing.T) {
+	useTestKey(t)
 	body := []byte(fakePusher)
 	dest := filepath.Join(t.TempDir(), "codex-hub-push")
 	cases := []struct {
@@ -115,6 +111,7 @@ func TestDownload(t *testing.T) {
 // A build is taken only as the build its --version says it is: the tray's build in the pusher's place starts as well,
 // and so does the pusher's in the tray's.
 func TestDownloadTakesOnlyTheBuildItWasFetchedAs(t *testing.T) {
+	useTestKey(t)
 	dest := filepath.Join(t.TempDir(), "build")
 	for _, c := range []struct {
 		name, prints string
@@ -162,7 +159,7 @@ func TestABrokenBuildIsFetchedOnce(t *testing.T) {
 		mu.Unlock()
 		switch r.URL.Path {
 		case "/api/codex-hub/pusher":
-			fmt.Fprintf(w, `{"sha256":%q,"size":%d}`, sumOf(b), len(b))
+			fmt.Fprintf(w, `{"sha256":%q,"size":%d,"signature":%q}`, sumOf(b), len(b), signedBy(testKey, "pusher", sumOf(b)))
 		case "/api/codex-hub/pusher/download":
 			w.WriteHeader(code)
 			w.Write(b)
@@ -172,6 +169,7 @@ func TestABrokenBuildIsFetchedOnce(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { os.Remove(configPath); os.Remove(pusherExe) })
+	useTestKey(t)
 	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +205,99 @@ func TestABrokenBuildIsFetchedOnce(t *testing.T) {
 	if have, _ := sha256File(pusherExe); have != sumOf([]byte(fakePusher)) {
 		t.Error("the build that works is not the one in place")
 	}
+}
+
+// With a key, a build is fetched only with its signature for that build on this platform: one that has none, or one
+// for another key, build or hash, is refused before a byte of it comes down, once, and taken once it is signed.
+func TestOnlyASignedBuildIsFetched(t *testing.T) {
+	useTestKey(t)
+	stranger := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
+	body := []byte(fakePusher)
+	var mu sync.Mutex
+	sig, downloads := "", 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/codex-hub/pusher":
+			fmt.Fprintf(w, `{"sha256":%q,"size":%d,"signature":%q}`, sumOf(body), len(body), sig)
+		case "/api/codex-hub/pusher/download":
+			downloads++
+			w.Write(body)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { os.Remove(configPath); os.Remove(pusherExe) })
+	os.Remove(pusherExe)
+	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp()
+	for _, c := range []struct{ what, sig string }{
+		{"not signed", ""},
+		{"signed with another key", signedBy(stranger, "pusher", sumOf(body))},
+		{"signed for the tray", signedBy(testKey, "tray", sumOf(body))},
+		{"signed over another build", signedBy(testKey, "pusher", sumOf([]byte("another build")))},
+		{"signed for another platform", signedFor(testKey, "pusher", "windows-arm64", sumOf(body))},
+	} {
+		mu.Lock()
+		sig = c.sig
+		mu.Unlock()
+		a.updateOnce()
+		a.updateOnce()
+		if a.refused["pusher"] != sumOf(body)+" "+c.sig {
+			t.Errorf("%s: not remembered as refused (%q)", c.what, a.refused["pusher"])
+		}
+		if exists(pusherExe) || exists(pusherExe+".new") {
+			t.Fatalf("%s: a pusher was put in place", c.what)
+		}
+	}
+	mu.Lock()
+	sig = signedBy(testKey, "pusher", sumOf(body))
+	mu.Unlock()
+	a.updateOnce()
+	mu.Lock()
+	defer mu.Unlock()
+	if downloads != 1 {
+		t.Errorf("%d downloads, want only the signed one's", downloads)
+	}
+	if have, _ := sha256File(pusherExe); have != sumOf(body) {
+		t.Error("the signed build is not in place")
+	}
+}
+
+// A tray built without a key takes a build from an https hub, unsigned.
+func TestNoKeyOverHTTPSIsTaken(t *testing.T) {
+	body := []byte(fakePusher)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/codex-hub/pusher":
+			fmt.Fprintf(w, `{"sha256":%q,"size":%d}`, sumOf(body), len(body))
+		case "/api/codex-hub/pusher/download":
+			w.Write(body)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	saved, savedLong := client.Transport, downloadClient.Transport
+	client.Transport, downloadClient.Transport = srv.Client().Transport, srv.Client().Transport
+	t.Cleanup(func() { client.Transport, downloadClient.Transport = saved, savedLong })
+	if updateKey != "" {
+		t.Fatal("this test is for a build without a key")
+	}
+	cfg := config{Hub: srv.URL, Token: "token-0123456789abcdef"}
+	rel, err := latest(cfg, "pusher")
+	if err != nil || rel == nil {
+		t.Fatalf("latest: %v %v", rel, err)
+	}
+	next, err := download(cfg, "pusher", rel, filepath.Join(t.TempDir(), "codex-hub-push"))
+	if err != nil {
+		t.Fatalf("download over https: %v", err)
+	}
+	os.Remove(next)
 }
 
 func TestDownloadRefusesAnUnknownPlatformAnswer(t *testing.T) {

@@ -7,11 +7,15 @@
 #   codex-hub-tray-darwin-arm64     the builds the hub serves for updates, put in <config>/codex-hub/.pusher/
 #   codex-hub-tray-darwin-x64
 #
-# The addresses come from HUB_URL, PAIR_URL and INBOX_URL, and the bundle identifier, which also names the
-# LaunchAgent, from BUNDLE_ID (default com.example.codex-hub-tray):
+# The addresses come from HUB_URL, PAIR_URL and INBOX_URL, the public key the hub's builds are signed with from
+# UPDATE_KEY (scripts/codex-hub-sign.ts prints it; without one the app takes builds only from an https hub), and the
+# bundle identifier, which also names the LaunchAgent, from BUNDLE_ID (default com.example.codex-hub-tray):
 #
 #   HUB_URL=http://hub:18788 PAIR_URL=https://inbox.example/codex-hub/pair INBOX_URL=https://inbox.example \
-#     ./build-macos.sh
+#     UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey hub-update.key) ./build-macos.sh
+#
+# The hub's builds are signed after this, as codesign changes them: bun ../scripts/codex-hub-sign.ts sign
+# hub-update.key dist/codex-hub-tray-darwin-arm64 dist/codex-hub-tray-darwin-x64.
 #
 # Without a paid Apple Developer account the app is not notarized: the first open of the downloaded app needs
 # System Settings > Privacy & Security > Open Anyway. The copy it installs in ~/Applications does not.
@@ -33,8 +37,12 @@ BUNDLE_ID=${BUNDLE_ID:-com.example.codex-hub-tray}
 OUT=${OUT:-dist}
 # Go supports macOS 11 and later; without this the C side would require the macOS this build runs on.
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-11.0}
-LDFLAGS="-s -w -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-} -X main.inboxURL=${INBOX_URL:-} -X main.bundleID=$BUNDLE_ID"
+LDFLAGS="-s -w -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-} -X main.inboxURL=${INBOX_URL:-} -X main.updateKey=${UPDATE_KEY:-} -X main.bundleID=$BUNDLE_ID"
 [ -n "${HUB_URL:-}" ] || echo "warning: HUB_URL is empty; each Mac then needs the hub address in its tray.json" >&2
+case "${UPDATE_KEY:-}:${HUB_URL:-}" in
+:https://*) ;;
+:*) echo "warning: UPDATE_KEY is empty; the app then takes no builds from a hub that is not https" >&2 ;;
+esac
 
 mkdir -p "$OUT"
 for arch in arm64 amd64; do

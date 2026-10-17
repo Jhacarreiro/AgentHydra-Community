@@ -889,7 +889,12 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   SHA-256, which the download must then match; a build that is unsigned, signed with another key, or
   signed for the tray or another platform is refused before it is downloaded, logged, and not tried
   again until the hub hands out another build or signature. Without a key it takes builds only from an
-  `https://` hub: over `http://` it keeps its build and logs that it has no update key.
+  `https://` hub: over `http://` it keeps its build and logs that it has no update key. The tray app
+  (`codex-hub-tray/`) has the key from its build (`-X main.updateKey=<key>`; `build-macos.sh` takes
+  `UPDATE_KEY`) and checks each pusher and tray build the same way for its own name and platform, the
+  first pusher it fetches included. A tray built without a key takes builds only from an `https://`
+  hub: over `http://` it keeps what it has, logs once that its build has no update key, and says so in
+  amber in its menu.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 

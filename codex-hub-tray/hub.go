@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -49,9 +51,78 @@ var errToken = errors.New("the hub refused the token")
 type release struct {
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	// The operator's signature (base64) when the hub has the build's .sig (checkSigned).
+	Signature string `json:"signature,omitempty"`
 }
 
-var client = &http.Client{Timeout: 30 * time.Second}
+// seen names the build with its signature, as the updater remembers one that failed its checks: the same build with
+// a signature put in place after it is checked again.
+func (r *release) seen() string { return r.SHA256 + " " + r.Signature }
+
+var (
+	client = &http.Client{Timeout: 30 * time.Second}
+	// A build is 60-90 MB.
+	downloadClient = &http.Client{Timeout: 15 * time.Minute}
+)
+
+// The hash the hub sends comes from the same address as the build, so over plain http anyone on the way can send
+// both. A build is therefore taken only with the operator's ed25519 signature over its name, this platform and its
+// hash, checked against the public key this tray was built with (-X main.updateKey: base64 of its 32 bytes, as
+// scripts/codex-hub-sign.ts prints it); server/src/core/codex-hub-signature.ts says what is signed. A tray built
+// without a key takes builds only from an https hub.
+var (
+	errNoKey  = errors.New("this build has no update key (-X main.updateKey), so it takes no builds from a hub that is not https")
+	errBadKey = errors.New("this build's update key (-X main.updateKey) is not a public key (base64 of 32 bytes), so it takes no builds")
+)
+
+// buildKey is this build's update key; nil without one.
+func buildKey() (ed25519.PublicKey, error) {
+	if updateKey == "" {
+		return nil, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(updateKey)
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		return nil, errBadKey
+	}
+	return ed25519.PublicKey(raw), nil
+}
+
+// updatesAllowed is why this build takes no builds from hub (errNoKey, errBadKey), or nil.
+func updatesAllowed(hub string) error {
+	key, err := buildKey()
+	if err != nil {
+		return err
+	}
+	if key == nil && !strings.HasPrefix(strings.ToLower(hub), "https://") {
+		return errNoKey
+	}
+	return nil
+}
+
+// buildSignedText is the text a build's signature signs (buildSignedText in server/src/core/codex-hub-signature.ts).
+func buildSignedText(name, plat, sum string) []byte {
+	return []byte("codex-hub-build v1\n" + name + "\n" + plat + "\n" + sum + "\n")
+}
+
+// checkSigned says whether the hub's build of name may be fetched: with a key, only when it carries the operator's
+// signature for name on this platform over its hash, which the download must then match.
+func checkSigned(c config, name string, rel *release) error {
+	if err := updatesAllowed(c.Hub); err != nil {
+		return err
+	}
+	key, _ := buildKey()
+	if key == nil {
+		return nil
+	}
+	if rel.Signature == "" {
+		return badBuild{fmt.Errorf("the hub's %s build is not signed", name)}
+	}
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rel.Signature))
+	if err != nil || !ed25519.Verify(key, buildSignedText(name, platform, rel.SHA256), sig) {
+		return badBuild{fmt.Errorf("the hub's %s build is not signed with this build's update key for %s", name, platform)}
+	}
+	return nil
+}
 
 // platform names this system the way the hub names its builds (Bun's targets: windows-x64, linux-x64, linux-arm64,
 // darwin-x64, darwin-arm64), so each PC is handed the build that runs on it.
@@ -148,16 +219,19 @@ func exeSystem(head []byte) string {
 }
 
 // download saves the hub's build of name at dest+".new", executable, once it matches want and starts with --version.
-// A program for another system (what a hub that ignores ?platform= hands out) is refused from its first bytes.
+// A build without the signature it needs is refused before it is fetched, and a program for another system (what a
+// hub that ignores ?platform= hands out) from its first bytes.
 func download(c config, name string, want *release, dest string) (string, error) {
+	if err := checkSigned(c, name, want); err != nil {
+		return "", err
+	}
 	next := dest + ".new"
 	os.Remove(next)
 	req, err := hubGet(c, "/api/codex-hub/"+name+"/download?platform="+platform)
 	if err != nil {
 		return "", err
 	}
-	long := &http.Client{Timeout: 15 * time.Minute}
-	res, err := long.Do(req)
+	res, err := downloadClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -180,6 +254,7 @@ func download(c config, name string, want *release, dest string) (string, error)
 		os.Remove(next)
 		return "", err
 	}
+	// The signature covers want.SHA256, so these bytes are the signed build.
 	if sum, _ := sha256File(next); n != want.Size || sum != want.SHA256 {
 		os.Remove(next)
 		return "", badBuild{fmt.Errorf("the downloaded %s does not match the hub's hash", name)}

@@ -5,7 +5,7 @@
 #   ./test-macos.sh          (KEEP=1 keeps the scratch folder)
 #
 # It builds the app with build-macos.sh, then runs it against a fake hub (testdata/fakehub) serving a fake pusher
-# script, with HOME set to a scratch folder, so the real ~/Applications, ~/Library and LaunchAgents are never
+# script, signed with a key made for the run (testdata/signbuild), with HOME set to a scratch folder, so the real ~/Applications, ~/Library and LaunchAgents are never
 # touched. launchctl, open and osascript are stand-ins that record what they were asked (the launchctl one starts
 # the program a bootstrapped LaunchAgent names, as launchd would), so nothing is loaded into the real launchd and
 # no browser, dialog or notification opens. With CODEX_HUB_E2E_LAUNCHCTL=1 it also loads a copy of the LaunchAgent
@@ -127,8 +127,18 @@ EOF
 chmod 755 "$T/fake/"*
 export PATH="$T/fake:$REAL_PATH"
 
-# The hub, and the app built as it would be for the operator.
+# The hub, and the app built as it would be for the operator, with the key the hub's builds are signed with.
 go build -o "$T/bin/fakehub" ./testdata/fakehub || exit 1
+go build -o "$T/bin/signbuild" ./testdata/signbuild || exit 1
+KEY=$("$T/bin/signbuild" keygen "$T/update.key") || exit 1
+"$T/bin/signbuild" keygen "$T/other.key" >/dev/null || exit 1
+# publish SRC NAME [KEY]: puts SRC on the hub as NAME, signed with KEY (the operator's by default); the .sig goes in
+# first and each file by a rename, so the hub never serves half a file.
+publish() {
+	mkdir -p "$T/stage"
+	cp "$1" "$T/stage/$2" && "$T/bin/signbuild" sign "${3:-$T/update.key}" "$T/stage/$2" || return 1
+	mv "$T/stage/$2.sig" "$T/hub/$2.sig" && mv "$T/stage/$2" "$T/hub/$2"
+}
 "$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
 BG+=($!)
 wait_for 10 test -s "$T/hub.addr" || { echo "FAIL: the fake hub did not start"; exit 1; }
@@ -137,7 +147,7 @@ echo "== unit tests"
 check "go test ./... passes" go test -count=1 ./...
 echo "== build"
 if HUB_URL=$HUB PAIR_URL=https://inbox.example.test/codex-hub/pair INBOX_URL=https://inbox.example.test BUNDLE_ID=$ID \
-	OUT="$T/dist" ./build-macos.sh >"$T/build.log" 2>&1; then
+	UPDATE_KEY=$KEY OUT="$T/dist" ./build-macos.sh >"$T/build.log" 2>&1; then
 	pass "build-macos.sh builds the app"
 else
 	fail "build-macos.sh builds the app"
@@ -155,17 +165,18 @@ check "the app is signed (ad hoc)" codesign --verify --strict "$DIST"
 check "the hub builds are signed" codesign --verify "$T/dist/codex-hub-tray-darwin-arm64" "$T/dist/codex-hub-tray-darwin-x64"
 check "--version prints the banner" test "$("$DIST/Contents/MacOS/codex-hub-tray" --version)" = codex-hub-tray
 # A second build that differs, so the hub can hand out an update.
-CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.hubURL=$HUB -X main.bundleID=$ID -X main.inboxURL=https://next.example.test" \
+CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.hubURL=$HUB -X main.bundleID=$ID -X main.inboxURL=https://next.example.test -X main.updateKey=$KEY" \
 	-o "$T/next" . || exit 1
 codesign --force --sign - --identifier "$ID" "$T/next"
 V2=$(sha "$T/next")
-cat >"$T/hub/codex-hub-push-$P" <<'EOF'
+cat >"$T/push-good" <<'EOF'
 #!/bin/bash
 if [ "$1" = --version ]; then echo codex-hub-push; exit 0; fi
 env | grep '^AGENTHYDRA_CODEX_HUB_' >pusher-env
 # Keeps the pusher's path as its name, as a real (compiled) pusher has.
 exec -a "$0" /bin/sleep 86400
 EOF
+publish "$T/push-good" "codex-hub-push-$P" || exit 1
 PUSHSUM=$(sha "$T/hub/codex-hub-push-$P")
 
 echo "== install"
@@ -246,7 +257,7 @@ check "a reinstall shows no dialog again" test "$(grep -c 'display dialog' "$T/o
 echo "== self-update"
 INFOSUM=$(sha "$BUNDLE/Contents/Info.plist")
 FILES=$(cd "$BUNDLE" && find . | sort)
-cp "$T/next" "$T/hub/codex-hub-tray-$P"
+publish "$T/next" "codex-hub-tray-$P"
 kill -USR1 "$PID2" # check the hub now
 check "the new build is swapped in" wait_for 30 has_sha "$TRAY" "$V2"
 check "the tray says so" wait_for 10 log_has "update: tray now ${V2:0:8}"
@@ -293,6 +304,47 @@ PUSH5=$(pusher_pid)
 kill -TERM "$PID4"
 wait_for 10 dead "$PID4"
 wait_for 10 dead "$PUSH5"
+
+echo "== signatures"
+rm -f "$PUSH"
+{ cat "$T/push-good"; echo "# the next build"; } >"$T/push-next"
+NEXTSUM=$(sha "$T/push-next")
+case "$P" in darwin-arm64) OTHERP=darwin-x64 ;; *) OTHERP=darwin-arm64 ;; esac
+# sig_for NAME: the signature push-next gets when it is signed as the hub's file NAME.
+sig_for() {
+	mkdir -p "$T/stage"
+	cp "$T/push-next" "$T/stage/$1"
+	"$T/bin/signbuild" sign "$T/update.key" "$T/stage/$1" && cat "$T/stage/$1.sig"
+}
+refusals() { log_count "pusher build is not signed"; }
+downloads() { grep -c "GET /api/codex-hub/pusher/download" "$T/hub.log"; }
+publish "$T/push-next" "codex-hub-push-$P" "$T/other.key"
+D0=$(downloads)
+R0=$(refusals)
+"$TRAY" >/dev/null 2>&1 &
+check "a tray starts" wait_for 15 has_tray
+PID7=$(tray_pid)
+check "  ...and refuses a build signed with another key" wait_for 10 log_has "pusher build is not signed with this build's update key"
+for sig in "$(sig_for "codex-hub-tray-$P")" "$(sig_for "codex-hub-push-$OTHERP")" ""; do
+	n=$(refusals)
+	if [ -n "$sig" ]; then printf '%s\n' "$sig" >"$T/hub/codex-hub-push-$P.sig"; else rm -f "$T/hub/codex-hub-push-$P.sig"; fi
+	kill -USR1 "$PID7"
+	wait_for 10 bash -c "[ \$(grep -c 'pusher build is not signed' '$LOG') -gt $n ]"
+done
+check "  ...and one signed for the tray, for $OTHERP, or not at all" test $(($(refusals) - R0)) -eq 4
+kill -USR1 "$PID7"
+sleep 1
+check "  ...each once, downloading none of them" test $(($(refusals) - R0)) -eq 4 -a $(($(downloads) - D0)) -eq 0
+check "  ...and putting nothing in place" test ! -e "$PUSH" -a ! -e "$PUSH.new"
+publish "$T/push-next" "codex-hub-push-$P"
+kill -USR1 "$PID7"
+check "the build signed for it is fetched" wait_for 20 has_sha "$PUSH" "$NEXTSUM"
+check "  ...in one download" test $(($(downloads) - D0)) -eq 1
+check "  ...and runs" wait_for 20 has_pusher
+PUSH7=$(pusher_pid)
+kill -TERM "$PID7"
+wait_for 10 dead "$PID7"
+wait_for 10 dead "$PUSH7"
 
 if [ -n "${CODEX_HUB_E2E_LAUNCHCTL:-}" ]; then
 	echo "== launchd (gui/$UIDN, label $ID)"

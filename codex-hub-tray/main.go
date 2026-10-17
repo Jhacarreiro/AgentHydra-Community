@@ -5,10 +5,13 @@
 // nothing is typed or copied. What differs per system is in os_windows.go, os_unix.go (Linux and macOS),
 // os_linux.go and os_darwin.go.
 //
-// Build (the addresses are the operator's, given at build time):
+// Build (the addresses are the operator's, given at build time, with the public key the hub's builds are signed with:
+// `bun scripts/codex-hub-sign.ts keygen` prints it, and `sign` signs each build the hub hands out):
 //
 //	FLAGS="-X main.hubURL=http://hub:18788 -X main.pairURL=https://inbox.example/codex-hub/pair \
-//	  -X main.inboxURL=https://inbox.example"
+//	  -X main.inboxURL=https://inbox.example -X main.updateKey=$(bun ../scripts/codex-hub-sign.ts pubkey hub-update.key)"
+//
+// Without updateKey the tray takes builds only from an https hub (hub.go checkSigned).
 //
 // Windows: one exe; the Run key starts it.
 //
@@ -20,8 +23,8 @@
 //	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w $FLAGS" -o codex-hub-tray-linux-x64 .
 //
 // macOS needs cgo and the Xcode command line tools, so it is built on a Mac: build-macos.sh (the same flags, from
-// HUB_URL, PAIR_URL, INBOX_URL and BUNDLE_ID) makes "Codex Hub.app", which a LaunchAgent starts, and the hub's
-// codex-hub-tray-darwin-arm64 and codex-hub-tray-darwin-x64.
+// HUB_URL, PAIR_URL, INBOX_URL, UPDATE_KEY and BUNDLE_ID) makes "Codex Hub.app", which a LaunchAgent starts, and the
+// hub's codex-hub-tray-darwin-arm64 and codex-hub-tray-darwin-x64.
 //
 // test-linux.sh and test-macos.sh run the app end to end against a fake hub.
 package main
@@ -38,6 +41,8 @@ var (
 	hubURL   = ""
 	pairURL  = ""
 	inboxURL = ""
+	// The operator's ed25519 public key, base64: every build the tray takes from the hub is signed with it.
+	updateKey = ""
 	// macOS: the app bundle's identifier, which also names its LaunchAgent.
 	bundleID = "com.example.codex-hub-tray"
 )

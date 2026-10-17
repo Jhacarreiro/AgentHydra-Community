@@ -30,13 +30,16 @@ type app struct {
 	hold    bool // an update is swapping the pusher's file: do not start it
 	since   time.Time
 	hubErr  error // the last check's error (nil: the hub answered)
+	blocked error // why this build takes no builds from the hub (updatesAllowed); nil when it does
 	selfSHA string
 	wake    chan struct{}
 	check   chan struct{}
 	pairing pairing
 	paired  bool // pairing was opened once this run on its own
-	// The updater's: per build ("pusher", "tray"), the hash of the hub's build that failed its checks here.
-	refused map[string]string
+	// The updater's: per build ("pusher", "tray"), the hub's build that failed its checks here (release.seen), and
+	// whether blocked was logged.
+	refused     map[string]string
+	toldBlocked bool
 
 	status, restart *systray.MenuItem // nil when there is no tray to show them (Linux without a desktop session)
 	shown           string
@@ -130,13 +133,17 @@ func (a *app) show(c rgb, text string) {
 func (a *app) refresh() {
 	cfg := loadConfig()
 	a.mu.Lock()
-	running, hubErr := a.cmd != nil, a.hubErr
+	running, hubErr, blocked := a.cmd != nil, a.hubErr, a.blocked
 	a.mu.Unlock()
 	switch {
 	case cfg.Token == "":
 		a.show(amber, "Not connected: choose Connect this PC")
 	case errors.Is(hubErr, errToken):
 		a.show(amber, "The hub refused the token: choose Connect this PC")
+	case errors.Is(blocked, errNoKey):
+		a.show(amber, "This build has no update key: it takes no builds over http")
+	case blocked != nil:
+		a.show(amber, "This build's update key is not valid: it takes no builds")
 	case !running:
 		a.show(amber, "The pusher is not running; restarting it")
 	case hubErr != nil:
@@ -290,15 +297,25 @@ func (a *app) updateOnce() {
 		return
 	}
 	rel, err := latest(cfg, "pusher")
+	blocked := updatesAllowed(cfg.Hub)
 	a.mu.Lock()
-	a.hubErr = err
+	a.hubErr, a.blocked = err, blocked
 	a.mu.Unlock()
 	a.refresh()
+	if blocked != nil {
+		// Nothing it would fetch could be told from a stranger's program: it keeps the builds it has.
+		if !a.toldBlocked {
+			a.toldBlocked = true
+			log.Printf("update: %v; keeping the builds this PC has", blocked)
+		}
+		return
+	}
+	a.toldBlocked = false
 	if err != nil {
 		log.Println("update: pusher:", err)
 		return
 	}
-	if rel != nil && a.refused["pusher"] != rel.SHA256 {
+	if rel != nil && a.refused["pusher"] != rel.seen() {
 		if have, _ := sha256File(pusherExe); have != rel.SHA256 {
 			if err := a.swapPusher(cfg, rel); err != nil {
 				log.Println("update: pusher:", err)
@@ -308,7 +325,7 @@ func (a *app) updateOnce() {
 		}
 	}
 	rel, err = latest(cfg, "tray")
-	if err != nil || rel == nil || rel.SHA256 == a.selfSHA || a.refused["tray"] == rel.SHA256 {
+	if err != nil || rel == nil || rel.SHA256 == a.selfSHA || a.refused["tray"] == rel.seen() {
 		if err != nil {
 			log.Println("update: tray:", err)
 		}
@@ -327,8 +344,8 @@ func (a *app) updateOnce() {
 func (a *app) fetch(cfg config, name string, rel *release, dest string) (string, error) {
 	next, err := download(cfg, name, rel, dest)
 	if errors.As(err, new(badBuild)) {
-		a.refused[name] = rel.SHA256
-		return "", fmt.Errorf("%w (not fetched again until the hub has another %s build)", err, name)
+		a.refused[name] = rel.seen()
+		return "", fmt.Errorf("%w (not fetched again until the hub has another %s build or signature)", err, name)
 	}
 	return next, err
 }

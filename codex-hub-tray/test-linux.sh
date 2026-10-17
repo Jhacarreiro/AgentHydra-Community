@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end test of the tray app on Linux, without a desktop: a scratch HOME, a private session bus
 # (dbus-run-session) with a stand-in tray host (testdata/sniwatcher), and a fake hub (testdata/fakehub) that serves
-# the tray and a fake pusher script. Each check prints PASS or FAIL; the script exits non-zero if any failed.
+# the tray and a fake pusher script, signed with a key made for the run (testdata/signbuild, as
+# scripts/codex-hub-sign.ts signs them). Each check prints PASS or FAIL; the script exits non-zero if any failed.
 # It needs Go, curl and dbus-run-session (the dbus-daemon package), and touches nothing outside its scratch folder.
 #
 #   ./test-linux.sh          (KEEP=1 keeps the scratch folder)
@@ -92,6 +93,17 @@ trap cleanup EXIT
 # The stand-ins: a tray host on the private bus and the hub.
 go build -o "$T/bin/fakehub" ./testdata/fakehub || exit 1
 go build -o "$T/bin/sniwatcher" ./testdata/sniwatcher || exit 1
+go build -o "$T/bin/signbuild" ./testdata/signbuild || exit 1
+# The operator's key, which the trays are built with, and another.
+KEY=$("$T/bin/signbuild" keygen "$T/update.key") || exit 1
+"$T/bin/signbuild" keygen "$T/other.key" >/dev/null || exit 1
+# publish SRC NAME [KEY]: puts SRC on the hub as NAME, signed with KEY (the operator's by default); the .sig goes in
+# first and each file by a rename, so the hub never serves half a file.
+publish() {
+	mkdir -p "$T/stage"
+	cp "$1" "$T/stage/$2" && "$T/bin/signbuild" sign "${3:-$T/update.key}" "$T/stage/$2" || return 1
+	mv "$T/stage/$2.sig" "$T/hub/$2.sig" && mv "$T/stage/$2" "$T/hub/$2"
+}
 "$T/bin/sniwatcher" >"$T/sni.log" 2>&1 &
 BG+=($!)
 "$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
@@ -100,18 +112,20 @@ wait_for 10 test -s "$T/hub.addr" || { echo "FAIL: the fake hub did not start"; 
 HUB=$(cat "$T/hub.addr")
 
 # Two tray builds that differ, so the hub can hand out an update.
-FLAGS="-X main.hubURL=$HUB -X main.pairURL=https://inbox.example.test/codex-hub/pair -X main.inboxURL=https://inbox.example.test"
+NOKEY="-X main.hubURL=$HUB -X main.pairURL=https://inbox.example.test/codex-hub/pair -X main.inboxURL=https://inbox.example.test"
+FLAGS="$NOKEY -X main.updateKey=$KEY"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $FLAGS" -o "$T/dl/codex-hub-tray-$P" . || exit 1
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $FLAGS -X main.bundleID=com.example.codex-hub-tray.next" -o "$T/next" . || exit 1
 V1=$(sha "$T/dl/codex-hub-tray-$P")
 V2=$(sha "$T/next")
-cp "$T/dl/codex-hub-tray-$P" "$T/hub/codex-hub-tray-$P"
-cat >"$T/hub/codex-hub-push-$P" <<'EOF'
+publish "$T/dl/codex-hub-tray-$P" "codex-hub-tray-$P" || exit 1
+cat >"$T/push-good" <<'EOF'
 #!/bin/sh
 if [ "$1" = --version ]; then echo codex-hub-push; exit 0; fi
 env | grep '^AGENTHYDRA_CODEX_HUB_' >pusher-env
 while :; do sleep 1; done
 EOF
+publish "$T/push-good" "codex-hub-push-$P" || exit 1
 PUSHSUM=$(sha "$T/hub/codex-hub-push-$P")
 
 echo "== version"
@@ -188,7 +202,7 @@ echo "== self-update"
 wait_for 10 test -n "$(last_item)"
 ITEM=$(last_item)
 sed -i 's/^X-GNOME-Autostart-enabled=true$/X-GNOME-Autostart-enabled=false/' "$DESKTOP" # turned off by the user
-cp "$T/next" "$T/hub/codex-hub-tray-$P"
+publish "$T/next" "codex-hub-tray-$P"
 kill -USR1 "$PID2" # check the hub now
 check "the new build is swapped in" wait_for 30 has_sha "$TRAY" "$V2"
 check "the tray says so" wait_for 10 log_has "update: tray now ${V2:0:8}"
@@ -243,9 +257,9 @@ kill -TERM "$PID4" 2>/dev/null
 wait_for 10 dead "$PID4"
 
 echo "== a pusher build that cannot run here"
-cp "$T/hub/codex-hub-push-$P" "$T/push-good"
 rm -f "$PUSH"
-{ printf 'MZ\220\0'; head -c 4000000 /dev/zero; } >"$T/hub/codex-hub-push-$P" # what a hub without ?platform= sends
+{ printf 'MZ\220\0'; head -c 4000000 /dev/zero; } >"$T/windows" # what a hub without ?platform= sends
+publish "$T/windows" "codex-hub-push-$P"
 downloads() { grep -c "GET /api/codex-hub/pusher/download" "$T/hub.log"; }
 checks() { grep -c "GET /api/codex-hub/pusher platform=$P 200" "$T/hub.log"; }
 D0=$(downloads)
@@ -261,7 +275,7 @@ done
 check "  ...asking the hub again at each check" test $(($(checks) - C0)) -ge 3
 check "  ...but fetching that build only once" test $(($(downloads) - D0)) -eq 1
 check "  ...and putting nothing in place" test ! -e "$PUSH" -a ! -e "$PUSH.new"
-cp "$T/push-good" "$T/hub/codex-hub-push-$P"
+publish "$T/push-good" "codex-hub-push-$P"
 kill -USR1 "$PID6"
 check "the hub's next build is fetched" wait_for 20 has_sha "$PUSH" "$PUSHSUM"
 check "  ...and runs" wait_for 20 has_pusher
@@ -269,6 +283,48 @@ PUSH6=$(pusher_pid)
 kill -TERM "$PID6"
 wait_for 10 dead "$PID6"
 wait_for 10 dead "$PUSH6"
+
+echo "== signatures"
+rm -f "$PUSH"
+{ cat "$T/push-good"; echo "# the next build"; } >"$T/push-next"
+NEXTSUM=$(sha "$T/push-next")
+case "$P" in linux-x64) OTHERP=linux-arm64 ;; *) OTHERP=linux-x64 ;; esac
+# sig_for NAME: the signature push-next gets when it is signed as the hub's file NAME.
+sig_for() {
+	mkdir -p "$T/stage"
+	cp "$T/push-next" "$T/stage/$1"
+	"$T/bin/signbuild" sign "$T/update.key" "$T/stage/$1" && cat "$T/stage/$1.sig"
+}
+refusals() { log_count "pusher build is not signed"; }
+publish "$T/push-next" "codex-hub-push-$P" "$T/other.key"
+D0=$(downloads)
+R0=$(refusals)
+"$TRAY" >/dev/null 2>&1 &
+check "a tray starts" wait_for 10 has_tray
+PID7=$(tray_pid)
+check "  ...and refuses a build signed with another key" wait_for 10 log_has "pusher build is not signed with this build's update key"
+for sig in "$(sig_for "codex-hub-tray-$P")" "$(sig_for "codex-hub-push-$OTHERP")" ""; do
+	n=$(refusals)
+	if [ -n "$sig" ]; then printf '%s\n' "$sig" >"$T/hub/codex-hub-push-$P.sig"; else rm -f "$T/hub/codex-hub-push-$P.sig"; fi
+	kill -USR1 "$PID7"
+	wait_for 10 bash -c "[ \$(grep -c 'pusher build is not signed' '$LOG') -gt $n ]"
+done
+check "  ...and one signed for the tray, for $OTHERP, or not at all" test $(($(refusals) - R0)) -eq 4
+check "  ...saying so for the unsigned one" log_has "the hub's pusher build is not signed ("
+kill -USR1 "$PID7"
+sleep 1
+check "  ...each once" test $(($(refusals) - R0)) -eq 4
+check "  ...downloading none of them" test $(($(downloads) - D0)) -eq 0
+check "  ...and putting nothing in place" test ! -e "$PUSH" -a ! -e "$PUSH.new"
+publish "$T/push-next" "codex-hub-push-$P"
+kill -USR1 "$PID7"
+check "the build signed for it is fetched" wait_for 20 has_sha "$PUSH" "$NEXTSUM"
+check "  ...in one download" test $(($(downloads) - D0)) -eq 1
+check "  ...and runs" wait_for 20 has_pusher
+PUSH7=$(pusher_pid)
+kill -TERM "$PID7"
+wait_for 10 dead "$PID7"
+wait_for 10 dead "$PUSH7"
 
 echo "== no session bus"
 mkdir -p "$T/run-empty"
@@ -288,6 +344,28 @@ check "nothing panicked" bash -c "! grep -q panic '$T/headless.out' '$LOG'"
 kill -TERM "$PID5"
 check "SIGTERM stops the headless tray" wait_for 10 dead "$PID5"
 check "  ...and its pusher" wait_for 10 dead "$PUSH5"
+
+echo "== a build without an update key, from an http hub"
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $NOKEY" -o "$T/nokey" . || exit 1
+rm -f "$PUSH"
+D0=$(downloads)
+(
+	unset DBUS_SESSION_BUS_ADDRESS
+	export XDG_RUNTIME_DIR="$T/run-empty"
+	exec "$T/nokey" >"$T/nokey.out" 2>&1
+)
+check "it installs and runs" wait_for 10 has_tray
+PID8=$(tray_pid)
+check "  ...saying it has no update key" wait_for 10 log_has "update: this build has no update key"
+check "  ...in its status (amber)" wait_for 10 log_has "status: This build has no update key: it takes no builds over http"
+for i in 1 2 3; do
+	kill -USR1 "$PID8"
+	sleep 1
+done
+check "  ...in one line" test "$(log_count "update: this build has no update key")" -eq 1
+check "  ...and takes no build" test $(($(downloads) - D0)) -eq 0 -a ! -e "$PUSH" -a ! -e "$PUSH.new"
+kill -TERM "$PID8"
+check "SIGTERM stops it" wait_for 10 dead "$PID8"
 
 echo "== the fake hub"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=$P")
