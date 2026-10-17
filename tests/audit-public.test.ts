@@ -328,6 +328,30 @@ describe('infra rules', () => {
     expect(rulesOf(found)).toEqual(['infra.private-repo'])
   })
 
+  test("Project Hydra and Odin fire by repository slug and command, not by the connector's names", () => {
+    const fire = [
+      j('https://github.com/LunarWerx', 's/project-hydra'),
+      j('see LunarWerx/', 'Odin'),
+      j('rewritten by `ph', ' codex about --publish`'),
+      j('<!-- odin', ':about GENERATED BEGIN -->'),
+      j('the odin', ' todo-sweep runs'),
+      j('Managed in the Odin', ' repo.'),
+    ]
+    for (const line of fire) {
+      expect(rulesOf(scanText(`${line}\n`, 'docs/a.md', RULES_PLAIN))).toEqual([
+        'infra.private-repo',
+      ])
+    }
+    // The optional connector, a user's own clone folder, and the word on its own.
+    const quiet = [
+      'Project Hydra lists your projects; set PROJECTHYDRA_HOME to its folder.',
+      "sources: ['projecthydra', 'chats'] and schema projecthydra.facts/1",
+      'HYDRA = Path(tmp) / "project-hydra"',
+      'One Odin refresh task met it 20 times.',
+    ].join('\n')
+    expect(scanText(quiet, 'docs/a.md', RULES_PLAIN)).toEqual([])
+  })
+
   test('a home or office network name fires in prose and in a string, not as a property', () => {
     expect(rulesOf(scanText(`ssh ${LAN_HOST}\n`, 'docs/a.md', RULES_PLAIN))).toEqual([
       'infra.internal-host',

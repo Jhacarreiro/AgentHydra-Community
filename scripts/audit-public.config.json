@@ -54,9 +54,13 @@
     "sue-dredd",
     "LunarWerxs?/orchestrator",
     "LunarWerxs?/HSwarm",
-    "LunarWerxs?/Connections"
+    "LunarWerxs?/Connections",
+    "LunarWerxs?/project-?hydra",
+    "LunarWerxs?/odin",
+    "ph codex",
+    "odin(?::about| codex| todo-sweep| repo)"
   ],
-  "//privateRepos": "Upstream repositories nobody outside upstream can read. Case-insensitive regular expressions.",
+  "//privateRepos": "Upstream repositories nobody outside upstream can read, and the commands only they provide. Case-insensitive regular expressions. Project Hydra and Odin are matched by their repository slugs and by their commands (ph codex, odin codex and so on), not by their bare names. Project Hydra and projecthydra name the optional connector AgentHydra has had since the base (the New screen's project source, the box doctor's checks, PROJECTHYDRA_HOME): it reaches a user's own copy and publishes nothing of upstream's, and a clone folder called project-hydra can be anyone's (upstream's own is on pathDenylist). Odin alone is a common word; most of the 49 lines that have it are upstream's run notes and chat-title fixtures.",
   "pathDenylist": ["D:\\PublicProjects", "D:\\NEWProjects", "H:\\LargeProjects"],
   "//pathDenylist": "Folders from upstream maintainers' own disks. Any spelling matches (D:/x, d:\\\\x).",
   "publicInternalHosts": [
