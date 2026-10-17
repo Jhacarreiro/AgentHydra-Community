@@ -177,7 +177,7 @@ function stripAccents(s) {
   return s.normalize('NFD').replace(/\p{M}/gu, '')
 }
 
-// Each base letter of a name, widened to its accented forms, so "Joao" also finds "João".
+// Each base letter of a name, widened to its accented forms, so "Zoe" also finds "Zoë".
 const ACCENTED = {
   a: 'aàáâãäåā',
   c: 'cçć',
