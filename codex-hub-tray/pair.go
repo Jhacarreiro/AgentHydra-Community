@@ -113,13 +113,16 @@ func (a *app) pairHandler(state string, finish func()) http.HandlerFunc {
 			page(w, http.StatusBadRequest, "The hub's token has a shape this app cannot use: it is empty, over 512 characters, has spaces at either end, or has a character other than ASCII letters, digits, punctuation and spaces (such as é, a tab or a line break), which the hub cannot match in the header this app sends. Give the hub a token of ASCII characters, then choose Connect this PC again.")
 			return
 		}
-		c := loadConfig()
-		c.Token = token
-		err := tokenWorks(c)
+		check := loadConfig()
+		check.Token = token
+		err := tokenWorks(check)
 		if errors.Is(err, errToken) {
 			page(w, http.StatusUnauthorized, "The hub did not take that token. Choose Connect this PC again.")
 			return
 		}
+		// Only what the user set, and now the token: the hub stays the build's unless they set another.
+		c := savedConfig()
+		c.Token = token
 		if serr := saveConfig(c); serr != nil {
 			page(w, http.StatusInternalServerError, "Could not save the token: "+serr.Error())
 			return

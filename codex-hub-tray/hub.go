@@ -24,11 +24,25 @@ type config struct {
 	Token string `json:"token,omitempty"`
 }
 
-func loadConfig() config {
+// savedConfig is what the user set in tray.json, without what loadConfig fills in. A hub that is this build's own
+// (-X main.hubURL) is no choice of theirs: a build before this one saved it with the token when it paired.
+func savedConfig() config {
 	var c config
 	if b, err := os.ReadFile(configPath); err == nil {
 		_ = json.Unmarshal(b, &c)
 	}
+	if isBuildHub(c.Hub) {
+		c.Hub = ""
+	}
+	return c
+}
+
+func isBuildHub(hub string) bool {
+	return hub != "" && strings.TrimRight(hub, "/") == strings.TrimRight(hubURL, "/")
+}
+
+func loadConfig() config {
+	c := savedConfig()
 	if c.Hub == "" {
 		c.Hub = hubURL
 	}
@@ -40,9 +54,25 @@ func loadConfig() config {
 	return c
 }
 
+// saveConfig writes c to tray.json, leaving out a hub that is this build's own: only a hub the user set there is
+// kept over the one a later build names.
 func saveConfig(c config) error {
+	if isBuildHub(c.Hub) {
+		c.Hub = ""
+	}
 	b, _ := json.MarshalIndent(c, "", "  ")
 	return os.WriteFile(configPath, b, 0o600)
+}
+
+// unpinBuildHub takes this build's hub out of a tray.json that an earlier build saved it in, so that once the hub
+// hands out a build with another hub, that hub is the one this PC uses.
+func unpinBuildHub() error {
+	var c config
+	b, err := os.ReadFile(configPath)
+	if err != nil || json.Unmarshal(b, &c) != nil || !isBuildHub(c.Hub) {
+		return nil
+	}
+	return saveConfig(c)
 }
 
 // errToken: the hub refused the token (a new one on the hub, or none here).

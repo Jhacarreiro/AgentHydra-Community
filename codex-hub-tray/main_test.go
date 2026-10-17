@@ -539,3 +539,91 @@ func TestInfoPlist(t *testing.T) {
 		}
 	}
 }
+
+// postToken posts token to h as the hub's pairing page does, for this pairing's state.
+func postToken(h http.HandlerFunc, state, token string) (int, string) {
+	form := url.Values{"state": {state}, "token": {token}}
+	req := httptest.NewRequest(http.MethodPost, "/paired", strings.NewReader(form.Encode()))
+	req.Header.Set("content-type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	b, _ := io.ReadAll(rec.Body)
+	return rec.Code, string(b)
+}
+
+// savedFile is tray.json as it is on disk.
+func savedFile(t *testing.T) map[string]string {
+	t.Helper()
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("tray.json: %v\n%s", err, b)
+	}
+	return m
+}
+
+// Pairing saves the token alone: the hub stays the build's (-X main.hubURL), so the hub a later build names is the
+// one the PC uses.
+func TestPairingLeavesTheHubToTheBuild(t *testing.T) {
+	const token = "Hub Token ~!"
+	var platforms []string
+	srv := fakeHub(t, token, &platforms)
+	saved := hubURL
+	t.Cleanup(func() { hubURL = saved; os.Remove(configPath) })
+	os.Remove(configPath)
+	hubURL = srv.URL + "/"
+	a := newApp()
+	if code, body := postToken(a.pairHandler("the-state", func() {}), "the-state", token); code != http.StatusOK {
+		t.Fatalf("pairing: %d %s", code, body)
+	}
+	if f := savedFile(t); f["token"] != token || f["hub"] != "" {
+		t.Errorf("tray.json %v: want the token and no hub", f)
+	}
+	hubURL = "https://hub-next.example.test"
+	if c := loadConfig(); c.Hub != hubURL || c.Token != token {
+		t.Errorf("with the next build's hub: %+v", c)
+	}
+}
+
+// A tray.json in which an earlier build saved its own hub with the token: that hub is the build's, not one the user
+// chose, so it does not count, and the start takes it out of the file before a build with another hub comes. A hub
+// the user set stays.
+func TestTheBuildsHubIsNotKeptAsTheUsers(t *testing.T) {
+	saved := hubURL
+	t.Cleanup(func() { hubURL = saved; os.Remove(configPath) })
+	hubURL = "http://hub.example.test:18788"
+	const token = "Hub Token ~!"
+	if err := os.WriteFile(configPath, []byte(`{"hub": "http://hub.example.test:18788/", "token": "`+token+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := savedConfig(); c.Hub != "" || c.Token != token {
+		t.Errorf("savedConfig %+v: want the token and no hub", c)
+	}
+	if err := unpinBuildHub(); err != nil {
+		t.Fatal(err)
+	}
+	if f := savedFile(t); f["token"] != token || f["hub"] != "" {
+		t.Errorf("tray.json %v after the start: want the token and no hub", f)
+	}
+	hubURL = "https://hub-next.example.test"
+	if c := loadConfig(); c.Hub != hubURL || c.Token != token {
+		t.Errorf("with the next build's hub: %+v", c)
+	}
+
+	const mine = "http://10.0.0.5:18788"
+	if err := saveConfig(config{Hub: mine, Token: token}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unpinBuildHub(); err != nil {
+		t.Fatal(err)
+	}
+	if f := savedFile(t); f["hub"] != mine {
+		t.Errorf("the user's hub was dropped: %v", f)
+	}
+	if c := loadConfig(); c.Hub != mine {
+		t.Errorf("the user's hub is not the one used: %+v", c)
+	}
+}

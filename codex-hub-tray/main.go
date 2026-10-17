@@ -86,6 +86,9 @@ func main() {
 	}
 	os.Remove(trayExe + ".old")
 	os.Remove(trayExe + ".new")
+	if err := unpinBuildHub(); err != nil {
+		log.Println("config:", err)
+	}
 	startup()
 	run()
 }
