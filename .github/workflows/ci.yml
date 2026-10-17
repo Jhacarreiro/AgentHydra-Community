@@ -1,8 +1,5 @@
 name: CI
 
-# rust-ci-speed: ci not applied: misc/tray-host-native is the LunarWerx kit's tray host, synced from
-# lunarwerx-ui, which builds and tests it (.github/workflows/tray-host.yml); this copy is not built here.
-
 # rust-ci-speed: windows-per-change not applied: AgentHydra ships on Windows (tray, Claude Desktop
 # control, the orchestrator's UI Automation actuators), so the Windows leg is the real gate and stays
 # on every change; it already runs side by side with the Linux leg, and the slow part of it (the
@@ -118,7 +115,7 @@ jobs:
 
       # Fails if a vendored server lib's runtime .mjs and its hand-maintained .d.mts disagree on
       # value exports either way: a .mjs export the .d.mts omits (TS2305 on import — exactly the
-      # kit-sync that shipped RepoYeti v0.6.0 with red CI), or a .d.mts declaration the .mjs lacks
+      # drift that shipped RepoYeti v0.6.0 with red CI), or a .d.mts declaration the .mjs lacks
       # (tsc trusts it, so it typechecks and is `undefined` at runtime). See the check's header.
       - name: Guardrail (kit lib .mjs/.d.mts export drift)
         run: bun scripts/checks/kit-lib-type-drift.mjs
@@ -234,9 +231,6 @@ jobs:
     # ubuntu) and the golden crypto vectors in server/tests/instances-crypto.test.ts, which are
     # gated on BOTH platform and the presence of this machine's real credential fixture — they
     # skip gracefully on any CI runner (no fixture present) rather than failing.
-    #
-    # check:kit is intentionally NOT run here — it needs the private lunarwerx-ui kit repo as a
-    # sibling checkout, which CI doesn't have.
 
   # orchestrator/ is the Python toolbox that decides what should happen to a chat (see
   # docs/REFERENCE.md "The orchestrator"): ~650 unit tests against a stub daemon, no fleet, no
