@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pre-push guard, two rules that used to live only in people's memory:
+ * Pre-push guard: rules that used to live only in people's memory, and the public-safety audit.
  *
  *  1. A push to a PUBLIC remote is refused unless this one command was told to proceed.
  *     LunarWerxs/AgentHydra is public, and a push to `main` is a release for every source install
@@ -26,6 +26,23 @@
  *     like Sage does": a TL;DR, then the detail under "read more". release.yml runs the same check;
  *     here it stops the tag before it reaches GitHub. No override, as for rule 2.
  *
+ *  4. No ref may carry upstream's relicensing commit. AgentHydra Community is built from 3a65ba8e,
+ *     the last commit LunarWerxs/AgentHydra published under MIT; the very next one, aee9dfc4, moved
+ *     AgentHydra to the PolyForm Noncommercial license, and nothing from it on may be published
+ *     from this checkout. A merge or rebase onto upstream's main would bring it in without a single
+ *     changed file saying so, so the history of every pushed ref is checked, on every push to any
+ *     remote. scripts/audit-public.config.json may name a further boundary commit; it can only add
+ *     to this one. No override.
+ *
+ *  5. scripts/audit-public.mjs runs over what the push carries (its --push mode: the commits the
+ *     remote does not have yet, from the base commit on): tokens and keys, credential files, private
+ *     addresses, email addresses, home paths, upstream's hosts and private repositories, binaries
+ *     with no provenance, and commit emails that are not noreply. It runs for every remote, private
+ *     ones too: this repository is public by design, a private repository can be made public later,
+ *     and "private" here can also mean "does not exist yet". A finding that is fine goes in
+ *     scripts/audit-public.allow.json; there is no override. A checkout without the script has
+ *     nothing to audit with and passes, as for rule 3.
+ *
  * VISIBILITY IS FAIL-CLOSED. A remote that is not GitHub, a lookup that times out, a rate limit -
  * every "could not tell" is treated as public. A guard that passes when it cannot see is a guard
  * that passes exactly when something is wrong. `--no-verify` still skips this hook, which a hook
@@ -40,7 +57,7 @@
  *   GH_TOKEN / GITHUB_TOKEN          optional; sent with the lookup so a rate limit cannot turn a
  *                                    private repo into "unknown"
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,6 +67,10 @@ const LOOKUP_TIMEOUT_MS = 5000;
 const ZERO_SHA = /^0+$/;
 const RELEASE_TAG = /^refs\/tags\/v\d+\.\d+\.\d+/;
 const TODO_FILE = "docs/todo/TODO.md";
+// Rule 4: upstream's commit "AgentHydra is now under the PolyForm Noncommercial License".
+export const LICENSE_BOUNDARY = "aee9dfc4f7dd0228d8e1740be90b646b30204f37";
+const AUDIT_SCRIPT = "scripts/audit-public.mjs";
+const AUDIT_CONFIG = "scripts/audit-public.config.json";
 
 const [remoteName = "", remoteUrl = ""] = process.argv.slice(2);
 
@@ -145,6 +166,75 @@ export function openTodoSections(todoPath) {
     .filter((h) => contentsAt >= 0 || !/STATE OF PLAY/i.test(h));
 }
 
+/** Rule 4's commits: LICENSE_BOUNDARY, plus the audit config's licenseBoundary when it names another. */
+export function licenseBoundaries(cwd = process.cwd()) {
+  const out = [LICENSE_BOUNDARY];
+  try {
+    const cfg = JSON.parse(readFileSync(join(cwd, ...AUDIT_CONFIG.split("/")), "utf8"));
+    const extra = String(cfg?.licenseBoundary || "").toLowerCase();
+    if (/^[0-9a-f]{40}$/.test(extra) && !out.includes(extra)) out.push(extra);
+  } catch {
+    /* no config, or an unreadable one: the constant above still holds */
+  }
+  return out;
+}
+
+function git(args, cwd) {
+  return spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/**
+ * Rule 4: each pushed ref whose history holds one of `boundaries`, with the reason. A boundary commit
+ * this clone does not have cannot be in any of its refs' history, so it is skipped; a git answer
+ * that is neither yes nor no refuses (fail closed).
+ */
+export function licenseRefusals(refs, boundaries, cwd = process.cwd()) {
+  const out = [];
+  for (const boundary of boundaries) {
+    if (git(["cat-file", "-e", `${boundary}^{commit}`], cwd).status !== 0) continue;
+    for (const r of refs) {
+      if (r.isDelete) continue;
+      const peeled = git(["rev-parse", "--verify", "--quiet", `${r.localSha}^{commit}`], cwd);
+      const commit = (peeled.stdout || "").trim();
+      if (!commit) continue; // a tag on a tree or a blob carries no history
+      const s = git(["merge-base", "--is-ancestor", boundary, commit], cwd);
+      if (s.status === 0) {
+        out.push({ ref: r.remoteRef, why: `its history contains ${boundary.slice(0, 8)}` });
+      } else if (s.status !== 1) {
+        out.push({
+          ref: r.remoteRef,
+          why: `git could not tell whether its history contains ${boundary.slice(0, 8)} (exit ${s.status})`,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Rule 5: scripts/audit-public.mjs --push over the same ref lines git handed this hook. bun first,
+ * because the audit imports server/src/secrets.ts and bun runs TypeScript as it is; node does from
+ * 22.18 on. Returns the audit's exit code (0 clean); a checkout without the script returns 0.
+ */
+export function runPushAudit(refText, remote, cwd = process.cwd()) {
+  const script = join(cwd, ...AUDIT_SCRIPT.split("/"));
+  if (!existsSync(script)) return 0;
+  for (const runtime of ["bun", process.execPath]) {
+    const r = spawnSync(runtime, [script, "--push", remote || "origin"], {
+      cwd,
+      input: refText,
+      stdio: ["pipe", "inherit", "inherit"],
+    });
+    if (r.error && r.error.code === "ENOENT" && runtime === "bun") continue;
+    if (r.error) {
+      console.error(`✗ audit:public could not start (${r.error.message}): refused.`);
+      return 1;
+    }
+    return r.status ?? 1;
+  }
+  return 1;
+}
+
 function readStdin() {
   if (process.stdin.isTTY) return "";
   try {
@@ -155,8 +245,26 @@ function readStdin() {
 }
 
 async function main() {
-  const refs = parseRefLines(readStdin());
+  const refText = readStdin();
+  const refs = parseRefLines(refText);
   if (refs.length === 0) return 0; // nothing to push (e.g. everything up to date)
+
+  const pastBoundary = licenseRefusals(refs, licenseBoundaries());
+  if (pastBoundary.length > 0) {
+    console.error(
+      [
+        "",
+        "✗ push refused: a pushed ref carries upstream's relicensing commit.",
+        ...pastBoundary.map((r) => `    ${r.ref}: ${r.why}`),
+        "",
+        `  ${LICENSE_BOUNDARY.slice(0, 8)} moved upstream AgentHydra to the PolyForm Noncommercial license.`,
+        "  AgentHydra Community is built from 3a65ba8e, the last MIT commit, and nothing from that",
+        "  commit on may be pushed from this checkout. There is no override for this rule.",
+        "",
+      ].join("\n"),
+    );
+    return 1;
+  }
 
   const { verdict, reason } = await lookupVisibility(remoteUrl);
   const override = (process.env.AGENTHYDRA_PUSH_PUBLIC || "").trim() === "1";
@@ -191,6 +299,31 @@ async function main() {
       console.error(lines.join("\n"));
       return 1;
     }
+  }
+
+  const audit = runPushAudit(refText, remoteName);
+  if (audit === 2) {
+    console.error(
+      [
+        "",
+        "✗ push refused: audit:public could not run (the reason is above), so nothing it checks is known",
+        "  to be safe to publish. There is no override for this rule.",
+        "",
+      ].join("\n"),
+    );
+    return 1;
+  }
+  if (audit !== 0) {
+    console.error(
+      [
+        "",
+        "✗ push refused: audit:public found something this push would publish (listed above).",
+        "  Fix it, or, for a finding that is really fine, add its {rule, path, fp, reason} to",
+        "  scripts/audit-public.allow.json. There is no override for this rule.",
+        "",
+      ].join("\n"),
+    );
+    return 1;
   }
 
   const releaseTags = refs.filter((r) => !r.isDelete && RELEASE_TAG.test(r.remoteRef || ""));

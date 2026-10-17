@@ -27,3 +27,19 @@ export function parseRefLines(text: string): PushRef[]
 
 /** Open sections of the work queue; a missing file is an empty queue. */
 export function openTodoSections(todoPath: string): string[]
+
+/** Rule 4: upstream's relicensing commit, which no pushed ref may have in its history. */
+export const LICENSE_BOUNDARY: string
+
+/** Rule 4's commits: LICENSE_BOUNDARY plus the audit config's licenseBoundary, when it names another. */
+export function licenseBoundaries(cwd?: string): string[]
+
+/** Rule 4: the pushed refs whose history holds one of `boundaries`. Fail-closed on an unclear answer. */
+export function licenseRefusals(
+  refs: PushRef[],
+  boundaries: string[],
+  cwd?: string,
+): Array<{ ref: string; why: string }>
+
+/** Rule 5: audit-public.mjs --push over the hook's ref lines; its exit code, 0 when there is no script. */
+export function runPushAudit(refText: string, remote: string, cwd?: string): number
