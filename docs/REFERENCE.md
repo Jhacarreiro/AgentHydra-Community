@@ -829,7 +829,7 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   round). The first push sends every rollout, later ones only what changed; a chat archived or deleted
   on the PC leaves the hub at its next push. Add PCs by repeating this on each with its own name.
 - **Two PCs with one name:** the hub keeps a PC by its name, and two can send one (WSL beside the Windows
-  PC it runs on, two Linux PCs called `ubuntu`, the daemon's pusher beside a standalone one). So each
+  PC it runs on, two Linux PCs called `ubuntu`, two pushers on one PC: see the next point). So each
   pusher makes a random install id once, keeps it in the config dir (`codex-hub-install` for the daemon's
   pusher, `codex-hub-push-install` for the standalone one, so those two are two installs), and sends it
   with every push and relay connect as `x-codex-hub-install`, and its interval with every push; the hub
@@ -842,7 +842,12 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   connects again after five minutes, not five seconds. Once the install that held the name has stopped
   for that long (the PC set up again, with a new id), the next one takes it: after 10 minutes at the
   default interval, after a day at the longest. A pusher from before install ids sends none: it is taken
-  as before and holds its name against no one.
+  as before and holds its name against no one. Between two machines, a name of its own is the fix.
+- **Two pushers on one PC:** the daemon's pusher and a standalone one read the same Codex home and push the
+  same chats, so run only one of them: stop the standalone pusher, or leave `AGENTHYDRA_CODEX_HUB_URL` out
+  of the daemon's environment. Another name does not help here. Set where both read it (the user's
+  environment), it moves both to the new name, where one is refused again; set for one only, the hub lists
+  each of the PC's chats twice, under both names. The refusal says so too.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 

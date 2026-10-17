@@ -124,9 +124,15 @@ export function hubInstallHeaders(id: string | null | undefined): Record<string,
   return id ? { [HUB_INSTALL_HEADER]: id } : {}
 }
 
-/** What a pusher refused its name is told, and logs. */
+/**
+ * What a pusher refused its name is told, and logs. A name of its own is for another machine: two pushers on one
+ * PC (the daemon's and a standalone one) push the same chats, and another name for one lists each twice on the hub.
+ */
 export function hubNameTaken(pc: string): string {
-  return `another PC already pushes as ${pc}; set AGENTHYDRA_CODEX_HUB_PC to give this one a name of its own`
+  return (
+    `another PC already pushes as ${pc}; set AGENTHYDRA_CODEX_HUB_PC to give this one a name of its own; ` +
+    'if both pushers run on this PC, stop one of them instead'
+  )
 }
 
 /** A pusher's interval as it sent it, up to HUB_PUSH_INTERVAL_MAX_MS, or null for none or for what is not one. */

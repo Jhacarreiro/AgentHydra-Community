@@ -112,11 +112,12 @@ test("another install's push under a name that is held is refused with 409, and 
 
   // Its name normalizes to the same folder, as `ubuntu` and `Ubuntu.local` would.
   const refused = acceptCodexHubPush(pushOf('same pc', 'second'), root, undefined, B)
+  // A name of its own is for another machine: two pushers on one PC push the same chats, and one is to stop.
   expect(refused).toEqual({
     ok: false,
     status: 409,
     error: expect.stringMatching(
-      /^another PC already pushes as same pc; set AGENTHYDRA_CODEX_HUB_PC/,
+      /^another PC already pushes as same pc; set AGENTHYDRA_CODEX_HUB_PC .+; if both pushers run on this PC, stop one/,
     ),
   })
   expect(readFileSync(join(dir, 'manifest.json'), 'utf8')).toBe(manifest)
