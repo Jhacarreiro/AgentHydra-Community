@@ -19,8 +19,14 @@
     * No PATH edit, no registry writes, no service. It copies files and optionally makes a shortcut.
     * No auto-start. AgentHydra has its own update path once installed (docs/RELEASING.md).
 
+  Releases come from one repository, the release channel's (release-channel.json at the repository
+  root; $Repo below is its copy). While the channel says "updates": "off", the repository has
+  published no release, so the download path refuses before it asks GitHub anything, and only
+  -FromZip installs (a ZIP you built yourself with scripts/package-release.ts). A download is
+  installed only from that repository's own release files.
+
 .PARAMETER Version
-  A specific release tag (e.g. v0.19.3). Defaults to the latest published release.
+  A specific release tag (e.g. v2026.10.0). Defaults to the latest published release.
 
 .PARAMETER InstallDir
   Where to install. Defaults to %LOCALAPPDATA%\Programs\AgentHydra.
@@ -48,10 +54,10 @@
   Start Menu.
 
 .EXAMPLE
-  irm https://raw.githubusercontent.com/LunarWerxs/AgentHydra/main/install.ps1 | iex
+  irm https://raw.githubusercontent.com/Jhacarreiro/AgentHydra-Community/main/install.ps1 | iex
 
 .EXAMPLE
-  .\install.ps1 -Version v0.19.3 -InstallDir D:\Tools\AgentHydra
+  .\install.ps1 -Version v2026.10.0 -InstallDir D:\Tools\AgentHydra
 #>
 [CmdletBinding()]
 param(
@@ -79,7 +85,10 @@ Set-StrictMode -Version Latest
 
 if ($Sha256 -and -not $FromZip) { throw "-Sha256 only applies together with -FromZip." }
 
-$Repo = 'LunarWerxs/AgentHydra'
+# The release channel, copied from release-channel.json: `irm | iex` runs this file alone, with no
+# checkout beside it to read. tests/release-channel-drift.test.ts holds both values to that file.
+$Repo = 'Jhacarreiro/AgentHydra-Community'
+$Updates = 'off'
 
 # --- release-owned components ---------------------------------------------------------------
 # The complete windows-x64 payload, per scripts/package-release.ts: AgentHydra.exe (the launcher)
@@ -123,6 +132,9 @@ if ($FromZip) {
   if (-not (Test-Path $FromZip)) { throw "-FromZip path does not exist: $FromZip" }
   Write-Note (Resolve-Path $FromZip).Path
 } else {
+  if ($Updates -eq 'off') {
+    throw "No AgentHydra release is published from $Repo yet (release-channel.json says updates are off), so there is nothing to download. Build one from source (docs/RELEASING.md) and install it with -FromZip <zip>."
+  }
   Write-Step 'Finding the release'
   $headers = @{ 'User-Agent' = 'agenthydra-install' }
   if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
@@ -132,7 +144,17 @@ if ($FromZip) {
   } else {
     "https://api.github.com/repos/$Repo/releases/latest"
   }
-  $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers
+  try {
+    $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers
+  } catch {
+    $status = $null
+    if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+    if ($status -eq 404) {
+      if ($Version) { throw "$Repo has no release $Version. See https://github.com/$Repo/releases." }
+      throw "$Repo has published no full release yet (a pre-release installs only with -Version <tag>). See https://github.com/$Repo/releases."
+    }
+    throw
+  }
   $tag = $release.tag_name
   Write-Note "release $tag"
 
@@ -147,6 +169,14 @@ if ($FromZip) {
   $sums = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' }
   if (-not $sums) {
     throw "Release $tag published no SHA256SUMS.txt, so the download cannot be verified. Refusing to install."
+  }
+  # The answer names each file's download URL, and whoever answers decides it. Both files must be this
+  # repository's own release files, for this tag, or nothing is downloaded.
+  foreach ($file in @($asset, $sums)) {
+    $expectedUrl = "https://github.com/$Repo/releases/download/$tag/$($file.name)"
+    if ([string]$file.browser_download_url -ne $expectedUrl) {
+      throw "Release $tag lists $($file.name) at $($file.browser_download_url), which is not a release download of $Repo. Refusing to install."
+    }
   }
 }
 

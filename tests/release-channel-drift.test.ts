@@ -39,3 +39,25 @@ describe('scripts/live-checkout.ps1', () => {
       expect({ url, slug: slug(url) }).toEqual({ url, slug: githubSlug(url) })
   })
 })
+
+describe('install.ps1', () => {
+  const ps1 = read('install.ps1')
+
+  test("copies the channel's repository and policy, and its one-line install names that repository", () => {
+    expect(/^\$Repo = '([^']*)'\r?$/m.exec(ps1)?.[1]).toBe(RELEASE_CHANNEL.repo)
+    expect(/^\$Updates = '([^']*)'\r?$/m.exec(ps1)?.[1]).toBe(RELEASE_CHANNEL.updates)
+    expect(ps1).toContain(
+      `irm https://raw.githubusercontent.com/${RELEASE_CHANNEL.repo}/main/install.ps1 | iex`,
+    )
+    expect(ps1.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
+  })
+
+  test('refuses the download while updates are off, and downloads only the release files of $Repo', () => {
+    // The refusal comes before the first request: nothing is asked of GitHub while there is nothing to get.
+    const off = ps1.indexOf("if ($Updates -eq 'off')")
+    expect(off).toBeGreaterThan(0)
+    expect(off).toBeLessThan(ps1.indexOf('Invoke-RestMethod'))
+    expect(ps1).toContain('"https://github.com/$Repo/releases/download/$tag/$($file.name)"')
+    expect(ps1.indexOf('$expectedUrl')).toBeLessThan(ps1.indexOf('Invoke-WebRequest'))
+  })
+})
