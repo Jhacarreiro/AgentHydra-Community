@@ -300,6 +300,38 @@ func TestNoKeyOverHTTPSIsTaken(t *testing.T) {
 	os.Remove(next)
 }
 
+// A build's --version runs with the hub's address and token set empty: one that does not know the flag (an older
+// pusher put back on the hub) stops at its own check instead of running as a second pusher for this PC.
+func TestVersionCheckGetsNoHubSettings(t *testing.T) {
+	names := []string{"AGENTHYDRA_CODEX_HUB_URL", "AGENTHYDRA_CODEX_HUB_TOKEN", "CCMANAGERUI_CODEX_HUB_URL",
+		"CCMANAGERUI_CODEX_HUB_TOKEN"}
+	for _, name := range names {
+		t.Setenv(name, "from-the-tray")
+	}
+	exe := filepath.Join(t.TempDir(), "build")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nenv\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runVersion(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	given := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			given[k] = v
+		}
+	}
+	for _, name := range names {
+		if v, ok := given[name]; !ok || v != "" {
+			t.Errorf("the build was given %s=%q (set %v), not an empty one", name, v, ok)
+		}
+	}
+	if given["PATH"] == "" {
+		t.Error("the build was given no PATH")
+	}
+}
+
 func TestDownloadRefusesAnUnknownPlatformAnswer(t *testing.T) {
 	saved := platform
 	platform = "plan9-x64"

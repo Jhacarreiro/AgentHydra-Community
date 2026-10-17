@@ -379,11 +379,17 @@ func short(sum string) string {
 	return sum[:8]
 }
 
-// runVersion starts a build with --version, giving the antivirus time for a new exe's first scan.
+// runVersion starts a build with --version, giving the antivirus time for a new exe's first scan. The hub's address
+// and token are set empty for it (a PC set up by the earlier script has them in its user environment): a build that
+// does not know --version, such as an older pusher put back on the hub, then stops at its own check instead of
+// running as this PC's second pusher. Empty, not left out: a pusher reads a .env in its working folder for what is not
+// set at all.
 func runVersion(exe string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, "--version")
+	cmd.Env = append(os.Environ(), "AGENTHYDRA_CODEX_HUB_URL=", "AGENTHYDRA_CODEX_HUB_TOKEN=",
+		"CCMANAGERUI_CODEX_HUB_URL=", "CCMANAGERUI_CODEX_HUB_TOKEN=")
 	cmd.SysProcAttr = hiddenAttr()
 	out, err := cmd.Output()
 	if err != nil {
