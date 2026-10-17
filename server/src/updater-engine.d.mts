@@ -25,6 +25,9 @@ export interface UpdateStatus {
   latestRemoteCommit?: string | null;
   /** The cooldown in days that chose `remoteCommit`; present alongside `latestRemoteCommit`. */
   cooldownDays?: number;
+  /** True when the app's `remoteGate` refused the update remote: nothing was asked of it, `reason`
+   *  says why, and apply refuses. OPTIONAL: set by the git-checkout engine only. */
+  remoteRefused?: boolean;
   /** Installed version of each release-owned component, or null where an install predates version
    *  stamping. OPTIONAL because only an app whose release ships sidecar components beside the
    *  executable can populate it: the git-checkout engine has no such components, and a fabricated
@@ -82,6 +85,10 @@ export interface UpdaterOptions {
     args: string[],
     opts: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number },
   ) => Promise<UpdaterRunResult>;
+  /** Given the URL git would contact for the update remote (`git ls-remote --get-url`, so
+   *  url.<base>.insteadOf rewrites applied), null to use it or the reason it may not be used. A
+   *  refused remote is never contacted: the check reports `remoteRefused` and apply throws the reason. */
+  remoteGate?: (remoteUrl: string) => string | null;
 }
 
 export interface Updater {

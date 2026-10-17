@@ -13,6 +13,9 @@
  *   cooldownDays      optional; when > 0, only commits at least this many days old are adopted
  *   run               optional; runs each command instead of the engine's own spawn (an app whose
  *                     daemon serves every route on one thread passes an off-thread runner)
+ *   remoteGate        optional; given the URL git would contact for the update remote, returns null
+ *                     to use it or the reason it may not be used. A refused remote is never asked
+ *                     anything, and apply refuses with that reason.
  *
  * runtime-agnostic (Bun + Node): node:child_process spawn runs in both. Maintained in
  * this repository; keep it app-agnostic, the app specifics are the parameters above.
@@ -27,7 +30,7 @@ const BUILD_TIMEOUT_MS = 240_000;
 
 const DAY_SECONDS = 86_400;
 
-export function createUpdater({ appRoot, serviceName, appLabel, updateRepoEnvVar, installCmd, buildCmd, cooldownDays = 0, run = null }) {
+export function createUpdater({ appRoot, serviceName, appLabel, updateRepoEnvVar, installCmd, buildCmd, cooldownDays = 0, run = null, remoteGate = null }) {
   // Normalized once so a string or negative option is never echoed back in status or reasons.
   const cooldownDaysN = Math.max(0, Number(cooldownDays) || 0);
   const cooldownSeconds = cooldownDaysN * DAY_SECONDS;
@@ -277,6 +280,13 @@ export function createUpdater({ appRoot, serviceName, appLabel, updateRepoEnvVar
     const { status, upstream, remote } = await gatherLocalStatus(base);
     if (!status.currentCommit) return { ...status, ok: false, reason: "could not read current commit" };
     if (!remote.remoteArg) return { ...status, ok: false, reason: "no update remote configured" };
+    // The gate sees the URL git would really contact: `ls-remote --get-url` applies the
+    // url.<base>.insteadOf rewrites and talks to nobody, for a remote name and a URL alike.
+    if (remoteGate) {
+      const target = (await gitText(["ls-remote", "--get-url", remote.remoteArg])) || remote.remote;
+      const refused = remoteGate(target);
+      if (refused) return { ...status, remoteRefused: true, reason: refused };
+    }
 
     const compareBranch = upstream.remoteBranch || status.branch;
     const resolved = await resolveRemoteCommit(remote.remoteArg, compareBranch, status.branch);
@@ -547,6 +557,8 @@ export function createUpdater({ appRoot, serviceName, appLabel, updateRepoEnvVar
 
   async function applyRecording(output) {
     const before = await checkForUpdate();
+    // Not "no update is available": nobody was asked, and the reason says why.
+    if (before.remoteRefused) throw new Error(before.reason ?? "The update remote may not be used.");
     if (!before.updateAvailable) {
       return {
         ok: true,

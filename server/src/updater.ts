@@ -5,10 +5,20 @@
 //     release's platform bundle and swap the self-contained executable in place.
 // Both expose the identical UpdateStatus / UpdateApplyResult shape, so the /api/update routes, the
 // auto-update loop, and the web UI drive whichever is active without knowing which it is.
+//
+// Both take updates only from the release channel's repository (release-channel.ts): the compiled
+// path asks nothing else, and a source checkout pulls only from a remote that IS that repository on
+// GitHub (channelRemoteRefusal below).
 import { APP_ROOT, IS_RELEASE, SERVICE_NAME } from './config'
 import { spawnCaptured } from './core/process'
 import { applyUpdate as ghApplyUpdate, checkForUpdate as ghCheckForUpdate } from './github-updater'
-import { applyRefusal, RELEASE_CHANNEL } from './release-channel'
+import {
+  applyRefusal,
+  githubSlug,
+  RELEASE_CHANNEL,
+  type ReleaseChannel,
+  sameRepo,
+} from './release-channel'
 import { beginUpdateProgress, finishUpdateProgress, setUpdatePhase } from './update-progress'
 import { createUpdater, type UpdateApplyResult, type UpdateStatus } from './updater-engine.mjs'
 
@@ -20,8 +30,27 @@ if (!process.env.AGENTHYDRA_UPDATE_REPO && process.env.CCMANAGERUI_UPDATE_REPO) 
   process.env.AGENTHYDRA_UPDATE_REPO = process.env.CCMANAGERUI_UPDATE_REPO
 }
 
+/**
+ * Why a source checkout may not update from `remoteUrl`, or null when it may.
+ *
+ * The git engine follows whatever the branch tracks, else origin, else AGENTHYDRA_UPDATE_REPO, and
+ * never asked which repository that is. A checkout cloned from somewhere else, or a fork synced with
+ * another project, could then fast-forward onto another project's code the next time the loop ran.
+ * So the remote must be the channel's repository on GitHub, by the URL git would really contact.
+ * Anything else, a local path included, is refused before it is asked anything, and the reason
+ * names the fix.
+ */
+export function channelRemoteRefusal(
+  remoteUrl: string,
+  channel: ReleaseChannel = RELEASE_CHANNEL,
+): string | null {
+  const slug = githubSlug(remoteUrl)
+  if (sameRepo(slug, channel.repo)) return null
+  return `the update remote (${slug ?? remoteUrl}) is not ${channel.repo}, the repository release-channel.json names, so this checkout does not update from it. Track a remote of ${channel.repo} (git branch --set-upstream-to=<remote>/main) to update here.`
+}
+
 /** Why this install may not install an update by itself, or null when it may (auto-update.ts). A
- *  release build follows its channel's policy; a source checkout updates through git. */
+ *  release build follows its channel's policy; a source checkout is held by channelRemoteRefusal. */
 export function updateApplyRefusal(): string | null {
   return IS_RELEASE ? applyRefusal(RELEASE_CHANNEL) : null
 }
@@ -48,6 +77,7 @@ const gitUpdater = createUpdater({
       ? { ...r, stderr: `${args[0]} could not be started` }
       : r
   },
+  remoteGate: (remoteUrl) => channelRemoteRefusal(remoteUrl),
 })
 
 /** `fresh` bypasses the compiled path's 5-minute result cache, for a check a PERSON asked for.

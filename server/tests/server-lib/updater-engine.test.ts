@@ -491,6 +491,135 @@ test("cooldownDays adopts the newest aged commit and holds back a younger tip", 
   expect(after.reason).toContain("7-day update cooldown");
 }, REAL_GIT_TEST_MS); // real git+install+build - see the note on the tests above.
 
+// remoteGate: the app decides which repository it may update from, by the URL git would really
+// contact. Each test points origin at a GitHub-shaped URL that url.<base>.insteadOf rewrites to the
+// scratch remote, so a gate that judged the configured name instead of the rewrite would let the
+// rewrite choose the code.
+async function originRewrittenTo(local: string, remote: string): Promise<void> {
+  const named = "https://github.com/Example-Owner/Example-App.git";
+  await $`git -C ${local} remote set-url origin ${named}`.quiet();
+  await $`git -C ${local} config ${`url.${remote}.insteadOf`} ${named}`.quiet();
+}
+
+function recordingRun(calls: string[][]) {
+  return async (args: string[], { cwd, env }: { cwd: string; env: Record<string, string | undefined> }) => {
+    calls.push(args);
+    const p = Bun.spawn(args, { cwd, env, stdout: "pipe", stderr: "pipe", windowsHide: true });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    return { code, stdout, stderr, timedOut: false };
+  };
+}
+
+test("remoteGate: a refused remote is asked nothing, the check says why, and apply refuses with that reason", async () => {
+  const remote = await remoteRepo();
+  const local = await cloneRepo(remote);
+  await advanceRemote(remote, "0.2.0");
+  await originRewrittenTo(local, remote);
+  const headBefore = (await $`git -C ${local} rev-parse HEAD`.text()).trim();
+  const logPath = join(scratchDir("ue-log-"), "log.txt");
+  const calls: string[][] = [];
+  const seen: string[] = [];
+  const updater = createUpdater({
+    appRoot: local,
+    serviceName: "testsvc",
+    appLabel: "TestSvc",
+    updateRepoEnvVar: "UE_TEST_UPDATE_REPO_UNUSED",
+    installCmd: loggingCmd(logPath, "install"),
+    buildCmd: loggingCmd(logPath, "build"),
+    run: recordingRun(calls),
+    remoteGate: (url) => {
+      seen.push(url);
+      return "that remote is not this app's repository";
+    },
+  });
+
+  const status = await updater.checkForUpdate();
+  expect(status.remoteRefused).toBe(true);
+  expect(status.updateAvailable).toBe(false);
+  expect(status.canApply).toBe(false);
+  expect(status.reason).toBe("that remote is not this app's repository");
+  expect(seen).toEqual([remote]); // the rewrite, not the name origin was given
+
+  await expect(updater.applyUpdate()).rejects.toThrow("that remote is not this app's repository");
+  expect((await $`git -C ${local} rev-parse HEAD`.text()).trim()).toBe(headBefore);
+  expect(existsSync(logPath)).toBe(false); // install/build never ran
+  // `ls-remote --get-url` only reads the config; every git step that talks to a remote is absent.
+  const contacted = calls.filter(
+    (a) => a[0] === "git" && (["fetch", "pull", "merge"].includes(a[1]) || (a[1] === "ls-remote" && a[2] !== "--get-url")),
+  );
+  expect(contacted).toEqual([]);
+}, REAL_GIT_TEST_MS);
+
+// `git remote get-url` already applies insteadOf to a remote NAME; an update remote given as a URL
+// (updateRepoEnvVar) is a URL git rewrites only when it contacts it, so it is the case that needs
+// `ls-remote --get-url`.
+test("remoteGate: an update remote given as a URL is judged by its rewrite too", async () => {
+  const remote = await remoteRepo();
+  const local = await cloneRepo(remote);
+  const named = "https://github.com/Example-Owner/Example-Env.git";
+  await $`git -C ${local} config ${`url.${remote}.insteadOf`} ${named}`.quiet();
+  const envVar = "UE_TEST_UPDATE_REPO_GATE";
+  process.env[envVar] = named;
+  try {
+    const seen: string[] = [];
+    const updater = createUpdater({
+      appRoot: local,
+      serviceName: "testsvc",
+      appLabel: "TestSvc",
+      updateRepoEnvVar: envVar,
+      installCmd: loggingCmd(join(scratchDir("ue-log-"), "log.txt"), "install"),
+      buildCmd: loggingCmd(join(scratchDir("ue-log-"), "log.txt"), "build"),
+      remoteGate: (url) => {
+        seen.push(url);
+        return "refused";
+      },
+    });
+    const status = await updater.checkForUpdate();
+    expect(status.remote).toBe(named);
+    expect(status.remoteRefused).toBe(true);
+    expect(seen).toEqual([remote]);
+  } finally {
+    delete process.env[envVar];
+  }
+}, REAL_GIT_TEST_MS);
+
+test("remoteGate: an allowed remote updates as before, and the gate is asked again before the pull", async () => {
+  const remote = await remoteRepo();
+  const local = await cloneRepo(remote);
+  await advanceRemote(remote, "0.2.0");
+  await originRewrittenTo(local, remote);
+  const logPath = join(scratchDir("ue-log-"), "log.txt");
+  const seen: string[] = [];
+  const updater = createUpdater({
+    appRoot: local,
+    serviceName: "testsvc",
+    appLabel: "TestSvc",
+    updateRepoEnvVar: "UE_TEST_UPDATE_REPO_UNUSED",
+    installCmd: loggingCmd(logPath, "install"),
+    buildCmd: loggingCmd(logPath, "build"),
+    remoteGate: (url) => {
+      seen.push(url);
+      return null;
+    },
+  });
+
+  const status = await updater.checkForUpdate();
+  expect(status.remoteRefused).toBeUndefined();
+  expect(status.updateAvailable).toBe(true);
+  expect(status.canApply).toBe(true);
+
+  const result = await updater.applyUpdate();
+  expect(result.ok).toBe(true);
+  expect((await $`git -C ${local} rev-parse HEAD`.text()).trim()).toBe((await $`git -C ${remote} rev-parse HEAD`.text()).trim());
+  expect(readFileSync(logPath, "utf8").trim().split("\n")).toEqual(["install", "build"]);
+  expect(seen.length).toBeGreaterThanOrEqual(2); // the person's check, then apply's own check
+  expect(new Set(seen)).toEqual(new Set([remote]));
+}, REAL_GIT_TEST_MS); // real git+install+build - see the note on the tests above.
+
 // Windows locks a running program's image against overwrite, so a fast-forward that replaces it
 // fails with "unable to unlink old" partway through the checkout. It can still rename that file,
 // and the process keeps running from the renamed copy, so the engine moves it aside before advancing.
