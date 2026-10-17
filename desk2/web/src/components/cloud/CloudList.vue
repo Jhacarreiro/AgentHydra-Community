@@ -19,7 +19,6 @@ import { compactSidebar } from '@/components/sidebar/compact'
 import ProjectRing from '@/components/sidebar/ProjectRing.vue'
 import ProjectMenuItems from '@/components/sidebar/ProjectMenuItems.vue'
 import GroupDashboardButton from '@/components/dashboard/GroupDashboardButton.vue'
-import TodoButton from '@/components/fourman/TodoButton.vue'
 import { dimText, HEADER_BTN, LIST_ROW } from '@/components/sidebar/rowClasses'
 import { useRowDrag } from '@/components/sidebar/rowDrag'
 import { glyphDotClass, HIDE_TITLE, newChatFolder, runPulse, type RowMenuEntry, type RowMenuItem, type StatusGlyph } from '@/components/sidebar/logic'
@@ -234,7 +233,6 @@ const menuFolderOf = (g: CloudGroup) => (g.key === RESULTS_KEY ? null : (props.p
       </Tip>
       <span class="flex-1" />
       <GroupDashboardButton :folder="menuFolderOf(g)" :label="g.label" />
-      <TodoButton :folder="menuFolderOf(g)" :label="g.label" />
       <Tip v-if="newFolderOf(g)" :label="`New session in ${g.label}`">
         <button type="button" :class="HEADER_BTN" :aria-label="`New session in ${g.label}`" @click="emit('new-session', newFolderOf(g)!)">
           <component :is="shellGlyphs.groupNew" class="size-4" />

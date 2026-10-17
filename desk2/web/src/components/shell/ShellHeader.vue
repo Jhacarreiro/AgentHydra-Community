@@ -11,9 +11,8 @@ import { chatServices } from '@/components/sidebar/services'
 import { resumable } from '@/components/external/logic'
 import AccountSubmenu from './AccountSubmenu.vue'
 import WorkspacePicker from './WorkspacePicker.vue'
-import { ListTodo, PanelRightClose, PanelRightOpen, Search } from '@lucide/vue'
+import { PanelRightClose, PanelRightOpen, Search } from '@lucide/vue'
 import { findAsk, findShown } from '@/components/session-header/state'
-import { fourmanAvailable } from '@/components/fourman/store'
 import { openDashboard } from '@/components/dashboard/store'
 import { DashboardGlyph } from '@/components/dashboard/glyph'
 import { useClock } from '@/lib/clock'
@@ -22,7 +21,7 @@ import { isMuted, toggleMuted } from '@/lib/chat-audio'
 // The title bar inside the pane (h32): session title (click to rename), its menu, the folder pill,
 // Hydra Desk's status cue, and on the right the 26px pane buttons. Hydra Desk 2: an outside session's
 // title bar has one, the session header's fold (components/session-header).
-export type RightPane = 'diff' | 'climayte' | 'servers' | 'todo'
+export type RightPane = 'diff' | 'climayte' | 'servers'
 
 const props = withDefaults(
   defineProps<{
@@ -64,7 +63,7 @@ const menu = computed(() => (props.chat ? rowMenu({ ...chatRow(props.chat), mute
 // button and the CliMayte count) were set where its items stop fitting beside six buttons (176px); with fewer buttons they
 // hide a little early, never late. The gap before the buttons never closes: an alert with no room left still sits in it.
 const side = computed(() => {
-  const n = props.chat ? 4 + Number(fourmanAvailable.value) : props.external ? 1 : 0
+  const n = props.chat ? 4 : props.external ? 1 : 0
   return `${n ? n * 26 + (n - 1) * 4 : 0}px`
 })
 
@@ -258,11 +257,6 @@ const PANE_BTN =
       <Tip label="Browser and servers">
         <button type="button" :class="PANE_BTN" aria-label="Browser and servers" :aria-pressed="pane === 'servers'" @click="emit('toggle-pane', 'servers')">
           <component :is="shellGlyphs.browser" class="size-4" />
-        </button>
-      </Tip>
-      <Tip v-if="fourmanAvailable" label="To-do">
-        <button type="button" :class="PANE_BTN" aria-label="To-do" :aria-pressed="pane === 'todo'" @click="emit('toggle-pane', 'todo')">
-          <ListTodo class="size-4" />
         </button>
       </Tip>
       <Tip label="View options">

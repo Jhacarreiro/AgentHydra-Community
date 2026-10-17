@@ -24,8 +24,6 @@ import {
   ensureDashboardBackend,
   stopDashboardBackend,
 } from './dashboard-backend'
-import TODO_WIDGET from './dashboard-widgets/todo.js' with { type: 'text' }
-import { fourmanBoard, unavailableBoard } from './fourman'
 
 export class DashboardError extends Error {}
 
@@ -161,7 +159,9 @@ export function checkPath(raw: unknown, what = 'path'): string {
     )
   const parts = p.split('/')
   if (parts[0]?.toLowerCase() === '_hydra')
-    fail(`${what} ${JSON.stringify(raw)}: the _hydra folder is reserved for AgentHydra's feeds`)
+    fail(
+      `${what} ${JSON.stringify(raw)}: the _hydra folder is reserved for AgentHydra's own routes`,
+    )
   if (parts.length > MAX_DEPTH)
     fail(`${what} ${JSON.stringify(raw)} is deeper than ${MAX_DEPTH} folders`)
   for (const seg of parts) {
@@ -560,23 +560,6 @@ function text(status: number, body: string, extra: Record<string, string> = {}):
   })
 }
 
-async function hydraFeed(id: string, rest: string[], isHead: boolean): Promise<Response> {
-  if (rest.length === 1 && rest[0] === 'todo.json') {
-    const meta = await readMeta(id)
-    const board = meta
-      ? await fourmanBoard({ folder: meta.workspace })
-      : unavailableBoard('this dashboard has no project folder')
-    return new Response(isHead ? null : JSON.stringify(board), {
-      headers: { 'content-type': 'application/json; charset=utf-8', ...SITE_HEADERS },
-    })
-  }
-  if (rest.length === 1 && rest[0] === 'todo.js')
-    return new Response(isHead ? null : TODO_WIDGET, {
-      headers: { 'content-type': 'text/javascript; charset=utf-8', ...SITE_HEADERS },
-    })
-  return text(404, 'not found')
-}
-
 const API_PREFIX = '/_hydra/api'
 const MAX_BODY_BYTES = 1024 * 1024
 const UPSTREAM_TIMEOUT_MS = 30_000
@@ -701,7 +684,8 @@ export async function serveDashboardSite(req: Request): Promise<Response | null>
   }
   if (segs.some((s) => s === '.' || s === '..')) return text(404, 'not found')
   const isHead = req.method === 'HEAD'
-  if (segs[0] === '_hydra') return hydraFeed(id, segs.slice(1), isHead)
+  // Only /_hydra/api (the backend, above) is AgentHydra's; nothing else under _hydra is served.
+  if (segs[0] === '_hydra') return text(404, 'not found')
   const site = siteOf(id)
   const html = (body: string, status = 200) =>
     new Response(isHead ? null : body, {

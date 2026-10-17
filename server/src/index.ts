@@ -829,7 +829,6 @@ await import('./routes/hswarm')
 await import('./routes/helpers')
 await import('./routes/routing')
 await import('./routes/dashboards')
-await import('./routes/fourman')
 const { relayWebSocket } = await import('./routes/codex-hub')
 
 // --- full-shutdown sentinel (web-UI "Shut down") -----------------------------

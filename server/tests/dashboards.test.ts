@@ -170,6 +170,17 @@ describe('writing', () => {
       await refused(writeDashboard(fresh('w4'), { files: [{ path, content: 'x' }] }))
     })
 
+  test('writes under _hydra/ are refused in every form', async () => {
+    const dir = fresh('w6')
+    for (const change of [
+      { files: [{ path: '_hydra/data.json', content: '{}' }] },
+      { files: [{ path: '_Hydra/x.js', content: '' }] },
+      { edits: [{ path: '_hydra/x.js', old: 'a', new: 'b' }] },
+      { remove: ['_hydra/x.js'] },
+    ])
+      await refused(writeDashboard(dir, change))
+  })
+
   test('size and file-count limits apply to the result of the whole call', async () => {
     const dir = fresh('w5')
     await refused(
@@ -248,6 +259,12 @@ describe('hosting at <id>.localhost', () => {
     expect(await empty.text()).toContain('dashboard_write')
     await writeDashboard(dir, { files: [{ path: 'other.html', content: 'o' }] })
     expect(await (await get(r.id, '/')).text()).toContain('No dashboard yet')
+  })
+
+  test('nothing under /_hydra but its backend route is served', async () => {
+    const r = await writeDashboard(fresh('h4'), { files: [{ path: 'index.html', content: 'ok' }] })
+    for (const p of ['/_hydra', '/_hydra/todo.js', '/_hydra/todo.json'])
+      expect((await get(r.id, p)).status).toBe(404)
   })
 
   test('/api with a dashboard Host never reaches the API', async () => {
