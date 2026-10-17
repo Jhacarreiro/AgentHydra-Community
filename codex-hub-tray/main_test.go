@@ -628,6 +628,47 @@ func TestTheBuildsHubIsNotKeptAsTheUsers(t *testing.T) {
 	}
 }
 
+// A build for a hub that moved names the hubs earlier builds had (-X main.oldHubURLs): a tray.json in which one of
+// them saved its own hub is unpinned by that build too, so the PC takes the new hub without first running a build
+// with the old one.
+func TestAnEarlierBuildsHubIsNotKeptAsTheUsers(t *testing.T) {
+	savedHub, savedOld := hubURL, oldHubURLs
+	t.Cleanup(func() { hubURL, oldHubURLs = savedHub, savedOld; os.Remove(configPath) })
+	hubURL = "https://hub-next.example.test"
+	oldHubURLs = "http://hub-first.example.test:18788, http://hub.example.test:18788/"
+	const token = "Hub Token ~!"
+	if err := os.WriteFile(configPath, []byte(`{"hub": "http://hub.example.test:18788", "token": "`+token+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := savedConfig(); c.Hub != "" || c.Token != token {
+		t.Errorf("savedConfig %+v: want the token and no hub", c)
+	}
+	if err := unpinBuildHub(); err != nil {
+		t.Fatal(err)
+	}
+	if f := savedFile(t); f["token"] != token || f["hub"] != "" {
+		t.Errorf("tray.json %v after the start: want the token and no hub", f)
+	}
+	if c := loadConfig(); c.Hub != hubURL || c.Token != token {
+		t.Errorf("with the new build's hub: %+v", c)
+	}
+
+	// A hub the user set, that no build had, stays; so does one when the list is empty.
+	for _, old := range []string{oldHubURLs, ""} {
+		oldHubURLs = old
+		const mine = "http://10.0.0.5:18788"
+		if err := saveConfig(config{Hub: mine, Token: token}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unpinBuildHub(); err != nil {
+			t.Fatal(err)
+		}
+		if c := loadConfig(); c.Hub != mine {
+			t.Errorf("oldHubURLs %q: the user's hub is not the one used: %+v", old, c)
+		}
+	}
+}
+
 func TestServiceUnit(t *testing.T) {
 	u := serviceUnit("/home/me/.local/share/codex-hub/codex-hub-tray")
 	for _, line := range []string{

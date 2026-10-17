@@ -27,6 +27,13 @@
 // hub's codex-hub-tray-darwin-arm64 and codex-hub-tray-darwin-x64.
 //
 // test-linux.sh and test-macos.sh run the app end to end against a fake hub.
+//
+// A build for a hub at a new address names the earlier addresses too, comma-separated:
+//
+//	FLAGS="$FLAGS -X main.oldHubURLs=http://hub:18788"
+//
+// A tray built before tray.json kept only the hub the user set saved its build's hub there when it paired, and a PC
+// uses the hub in tray.json over the build's, unless it is one of these.
 package main
 
 import (
@@ -45,6 +52,8 @@ var (
 	updateKey = ""
 	// macOS: the app bundle's identifier, which also names its LaunchAgent.
 	bundleID = "com.example.codex-hub-tray"
+	// The hubs earlier builds were made with, comma-separated, once the hub has moved (hub.go isBuildHub).
+	oldHubURLs = ""
 )
 
 // Printed by --version: how an update checks that a downloaded build starts before it takes this one's place.

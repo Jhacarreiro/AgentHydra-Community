@@ -851,6 +851,11 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   of the daemon's environment. Another name does not help here. Set where both read it (the user's
   environment), it moves both to the new name, where one is refused again; set for one only, the hub lists
   each of the PC's chats twice, under both names. The refusal says so too.
+- **Moving the hub:** the tray app (`codex-hub-tray/`) has the hub's address from its build, so a new
+  address reaches each PC in a tray build that names it, which the old hub hands out. A tray built before
+  its `tray.json` kept only a hub the user set there saved its build's hub in that file when it paired,
+  and the file's hub wins over the build's: build the new tray with the earlier addresses as well
+  (`-X main.oldHubURLs=<old>,<older>`), and a PC whose file holds one of them uses the new build's hub.
 - **Pusher updates:** a PC without Bun runs the pusher compiled (`bun build --compile
   server/src/codex-hub-push-main.ts`, `codex-hub-push.exe`), and that build follows the hub's: put the new
   build at `<config dir>/codex-hub/.pusher/codex-hub-push.exe` on the hub, and each pusher compares its own

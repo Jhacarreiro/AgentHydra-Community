@@ -25,7 +25,8 @@ type config struct {
 }
 
 // savedConfig is what the user set in tray.json, without what loadConfig fills in. A hub that is this build's own
-// (-X main.hubURL) is no choice of theirs: a build before this one saved it with the token when it paired.
+// or an earlier build's (isBuildHub) is no choice of theirs: a build before this one saved it with the token when it
+// paired.
 func savedConfig() config {
 	var c config
 	if b, err := os.ReadFile(configPath); err == nil {
@@ -37,8 +38,19 @@ func savedConfig() config {
 	return c
 }
 
+// isBuildHub: hub is this build's (-X main.hubURL) or one that earlier builds were made with (-X main.oldHubURLs),
+// which a build that moved the hub names so that a PC paired by one of them takes the new hub at once.
 func isBuildHub(hub string) bool {
-	return hub != "" && strings.TrimRight(hub, "/") == strings.TrimRight(hubURL, "/")
+	hub = strings.TrimRight(hub, "/")
+	if hub == "" {
+		return false
+	}
+	for _, h := range append(strings.Split(oldHubURLs, ","), hubURL) {
+		if strings.TrimRight(strings.TrimSpace(h), "/") == hub {
+			return true
+		}
+	}
+	return false
 }
 
 func loadConfig() config {
@@ -64,8 +76,8 @@ func saveConfig(c config) error {
 	return os.WriteFile(configPath, b, 0o600)
 }
 
-// unpinBuildHub takes this build's hub out of a tray.json that an earlier build saved it in, so that once the hub
-// hands out a build with another hub, that hub is the one this PC uses.
+// unpinBuildHub takes a build's hub (isBuildHub) out of a tray.json that an earlier build saved it in, so that the hub
+// a build names, this one or a later one, is the one this PC uses.
 func unpinBuildHub() error {
 	var c config
 	b, err := os.ReadFile(configPath)
