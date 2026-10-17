@@ -794,6 +794,8 @@ export interface RowState {
   service?: ChatServiceKind
   /** The account the pinned service runs the chat on, as the window names it; null when not known yet. */
   serviceLabel?: string | null
+  /** The other PC whose Codex holds the chat's thread (the Codex hub's `hub:<pc>`, its name): Pin service keeps it there. */
+  codexPc?: { id: string; label: string } | null
   /** When it last did something (a message sent, a reply, a tool call), epoch ms; null or left out when not known. */
   lastActionAt?: number | null
 }
@@ -830,8 +832,15 @@ export function chatRow(chat: ChatSummary): RowState {
     note: chat.note ?? null,
     service: chat.service ?? 'claude',
     serviceLabel: chat.service ? (chat.serviceThreads?.[chat.service]?.label ?? null) : null,
+    codexPc: codexPcOf(chat),
     lastActionAt: chat.lastActionAt ?? null
   }
+}
+
+/** The other PC behind the Codex hub whose Codex holds the chat's thread; null for a thread on this machine's accounts, or none. */
+function codexPcOf(chat: ChatSummary): RowState['codexPc'] {
+  const thread = chat.serviceThreads?.codex
+  return thread?.accountId.startsWith('hub:') ? { id: thread.accountId, label: thread.label } : null
 }
 
 export function externalRow(s: ExternalSession): RowState {
@@ -1023,25 +1032,37 @@ export const SERVICE_WORDS: Record<ChatServiceKind, string> = { claude: 'Claude'
 /**
  * Pin service ›: Claude (the default), Codex, ChatGPT. A pinned service is ticked, and names the account it runs on.
  * A non-Claude service is offered only when one of its accounts can take a chat now (`services`, AgentHydra's answer);
- * `services` null: the answer is not in yet, so those two are off until it is.
+ * `services` null: the answer is not in yet, so those two are off until it is. A chat on another PC's Codex is offered
+ * that Codex alone (pinOff).
  */
-function serviceMenu(service: ChatServiceKind, serviceLabel: string | null, services: readonly ChatServiceInfo[] | null): RowMenuEntry {
+function serviceMenu(row: RowState, services: readonly ChatServiceInfo[] | null): RowMenuEntry {
   const items = (['claude', 'codex', 'chatgpt'] as const).map((kind): RowMenuItem => {
-    const info = services?.find((s) => s.kind === kind)
-    const checked = service === kind
-    const unchecked = kind !== 'claude' && !info?.ready
-    const title = kind === 'claude' ? undefined : services ? info?.why : 'Checking which services are signed in…'
+    const checked = row.service === kind
+    const { off, title } = pinOff(kind, services, row.codexPc ?? null)
     return {
       action: 'pinService',
       label: SERVICE_WORDS[kind],
       value: kind,
       checked,
-      disabled: unchecked,
+      disabled: off,
       ...(title ? { title } : {}),
-      ...(checked && kind !== 'claude' && serviceLabel ? { hint: serviceLabel } : {})
+      ...(checked && kind !== 'claude' && row.serviceLabel ? { hint: row.serviceLabel } : {})
     }
   })
   return { label: 'Pin service', items }
+}
+
+/**
+ * Whether Pin service's `kind` is off for a chat, and why. A chat on another PC's Codex (`pc`) goes on there alone,
+ * whatever this machine's own accounts: its folder is on that PC, so Codex is on exactly while that PC is connected.
+ */
+function pinOff(kind: ChatServiceKind, services: readonly ChatServiceInfo[] | null, pc: RowState['codexPc']): { off: boolean; title?: string } {
+  if (pc && kind !== 'codex') return { off: true, title: `${pc.label}'s chat goes on only on that PC's Codex: its folder is there.` }
+  if (kind === 'claude') return { off: false }
+  if (!services) return { off: true, title: 'Checking which services are signed in…' }
+  const info = services.find((s) => s.kind === kind)
+  if (pc && info?.pcs) return info.pcs.includes(pc.id) ? { off: false } : { off: true, title: `${pc.label} is not connected to the Codex hub now (it is off, or its pusher is not running).` }
+  return { off: !info?.ready, ...(info?.why ? { title: info.why } : {}) }
 }
 
 /** `codexAccounts` are a Codex chat's: its first line and Move to account name those instead of the desktop ones. `services`: Pin service's answer, null until it is in. */
@@ -1088,7 +1109,7 @@ export function rowMenu(
   // Duplicate to account sits with Fork, the other copy, never beside Move to account: both open the same account list,
   // and a pointer that slid one row down from Move landed a copy (owner, 2026-10-14: a move "seems to duplicate it").
   if (row.movable) out.push(duplicateMenu(row.movable === 'codex' ? home : onAccount, accounts, row.movable))
-  if (row.service) out.push(serviceMenu(row.service, row.serviceLabel ?? null, services))
+  if (row.service) out.push(serviceMenu(row, services))
   out.push('separator', { label: 'Move to group', items: moveTo })
   if (row.movable) out.push(accountMenu(onAccount, accounts, row.movable, !!row.unassigned))
   out.push('separator')

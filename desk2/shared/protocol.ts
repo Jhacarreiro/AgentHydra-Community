@@ -57,6 +57,11 @@ export interface ChatServiceInfo {
   why?: string
   /** How many of its accounts are signed in. */
   accounts: number
+  /**
+   * Codex: the other PCs behind the Codex hub whose relay is open now, by account id (`hub:<pc>`). Not in `accounts`:
+   * each goes on with its own chats alone, which Pin service keeps on it. Absent when AgentHydra does not answer.
+   */
+  pcs?: string[]
 }
 
 /** A CliMayte worker that waits for an account to start on: `reason` in plain words (no addresses), `until` the epoch ms it is expected to start, when known. */

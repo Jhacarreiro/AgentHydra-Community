@@ -494,6 +494,39 @@ describe('row menu', () => {
     expect(show(rowMenu(externalRow(ext()), [], null, null, services))).not.toContain('Pin service >')
   })
 
+  it("keeps a chat on another PC's Codex there: Codex on while that PC is connected, whatever this machine's accounts, and nothing else", () => {
+    // This machine has no Codex account of its own; the other PC's relay is open (pcs) or not.
+    const services = (pcs?: string[]): ChatServiceInfo[] => [
+      { kind: 'claude', label: 'Claude', ready: true, accounts: 1 },
+      { kind: 'codex', label: 'Codex', ready: false, why: pcs ? 'No Codex account is signed in.' : 'AgentHydra is not answering, so Desk cannot see the Codex accounts.', accounts: 0, ...(pcs ? { pcs } : {}) },
+      { kind: 'chatgpt', label: 'ChatGPT', ready: true, accounts: 1 }
+    ]
+    const hub = chat('h', { sessionId: 't1', service: 'codex', serviceThreads: { codex: { accountId: 'hub:other-pc', label: 'OTHER-PC', threadId: 't1' } } })
+    const pin = (c: ChatSummary, s: ChatServiceInfo[] | null) => {
+      const menu = rowMenu(chatRow(c), [], null, null, s)
+      const found = menu.find((e): e is Extract<RowMenuEntry, { items: unknown }> => e !== 'separator' && 'items' in e && e.label === 'Pin service')!
+      return (found.items as RowMenuItem[]).map((i) => [`${i.label}${i.checked ? ' *' : ''}${i.disabled ? ' (off)' : ''}`, i.title ?? null])
+    }
+    const only = "OTHER-PC's chat goes on only on that PC's Codex: its folder is there."
+    expect(pin(hub, services(['hub:other-pc']))).toEqual([
+      ['Claude (off)', only],
+      ['Codex *', null],
+      ['ChatGPT (off)', only]
+    ])
+    expect(pin(hub, services([]))[1]).toEqual(['Codex * (off)', 'OTHER-PC is not connected to the Codex hub now (it is off, or its pusher is not running).'])
+    expect(pin(hub, services())[1]).toEqual(['Codex * (off)', 'AgentHydra is not answering, so Desk cannot see the Codex accounts.'])
+    expect(pin(hub, null).map(([label]) => label)).toEqual(['Claude (off)', 'Codex * (off)', 'ChatGPT (off)'])
+    // Pinned off Codex before, it can go back to that PC's Codex.
+    expect(pin({ ...hub, service: null }, services(['hub:other-pc']))[1]).toEqual(['Codex', null])
+    // A chat on this machine's Codex goes by this machine's accounts.
+    const own = chat('o', { sessionId: 't2', service: 'codex', serviceThreads: { codex: { accountId: 'codex-1', label: '#196 example', threadId: 't2' } } })
+    expect(pin(own, services(['hub:other-pc']))).toEqual([
+      ['Claude', null],
+      ['Codex * (off)', 'No Codex account is signed in.'],
+      ['ChatGPT', null]
+    ])
+  })
+
   it('is the real menu for an idle chat under a line naming it: Open in, Pin, Mark as unread, Rename, Fork, Pin service, Move to group, Archive, Delete', () => {
     expect(show(rowMenu(chatRow(chat('a', { sessionId: 's1' }))))).toEqual([
       's1',

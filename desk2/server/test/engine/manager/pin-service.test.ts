@@ -297,15 +297,15 @@ test("Pin service counts only this machine's Codex accounts: another PC's Codex 
 })
 
 /**
- * A hub chat imported while its PC's relay was open; `offline()` closes that relay before the test sends, `down()`
- * stops AgentHydra answering.
+ * A hub chat imported while its PC's relay was open, on a hub whose own Codex accounts are `own` (alpha); `offline()`
+ * closes that relay before the test sends, `down()` stops AgentHydra answering.
  */
-async function hubImport(o: { resumeError?: string } = {}) {
+async function hubImport(o: { resumeError?: string; own?: AhCodexInstance[] } = {}) {
   const threadId = '0f0f0f0f-1111-4222-8333-777777777777'
   const cwd = 'C:\\Users\\me\\work\\ledger'
   let online = true
   let answering = true
-  const codex = hubDirectory(() => online, [ALPHA], () => answering)
+  const codex = hubDirectory(() => online, o.own, () => answering)
   const { m, fake } = await setup({ external: [hubChat(threadId, cwd)], items: { [threadId]: [] }, codex, resumeError: o.resumeError })
   const chat = await m.importSession({ sessionId: threadId, cwd })
   const bound = { accountId: OTHER_PC, label: 'OTHER-PC', threadId }
@@ -321,6 +321,22 @@ async function hubImport(o: { resumeError?: string } = {}) {
 }
 
 const resultOf = (m: ChatManager, chatId: string) => m.listItems(chatId).find((i) => i.kind === 'result')
+
+test("another PC's Codex chat stays pinned to that PC's Codex, which Pin service offers it while the PC is connected, with no Codex account here", async () => {
+  const { m, chat, stayed, offline } = await hubImport({ own: [] })
+  // No account of this machine's takes a pinned chat, but the PC's own chat goes on there.
+  expect((await m.services()).find((s) => s.kind === 'codex')).toMatchObject({ ready: false, accounts: 0, pcs: [OTHER_PC] })
+  // Another service would run it here, in a folder that is the PC's.
+  const why = "OTHER-PC's chat goes on only on that PC's Codex: its folder is there."
+  await expect(m.patch(chat.id, { service: null })).rejects.toMatchObject({ status: 409, message: why })
+  await expect(m.patch(chat.id, { service: 'chatgpt' })).rejects.toMatchObject({ status: 409, message: why })
+  // Leaving sus 'bad', which unpins any other chat, leaves it there too.
+  await m.patch(chat.id, { sus: 'bad' })
+  expect((await m.patch(chat.id, { sus: 'fine' })).service).toBe('codex')
+  stayed()
+  offline()
+  expect((await m.services()).find((s) => s.kind === 'codex')).toMatchObject({ ready: false, pcs: [] })
+})
 
 test("another PC's Codex chat whose PC went off says so on the next send, and never moves to this machine's Codex", async () => {
   const { m, fake, chat, stayed, offline } = await hubImport()

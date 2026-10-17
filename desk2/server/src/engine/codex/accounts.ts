@@ -34,6 +34,9 @@ export const NOT_ANSWERING = 'AgentHydra is not answering, so Desk cannot see th
 export const notConnected = (pc: string): string =>
   `${pc} is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.`
 
+/** Why a chat on another PC's Codex stays there: another service would run it here, and its folder is that PC's. */
+export const onlyOnPc = (pc: string): string => `${pc}'s chat goes on only on that PC's Codex: its folder is there.`
+
 /** The directory through AgentHydra's API: this machine's accounts, then every PC behind its Codex hub. */
 export function codexDirectory(client: Pick<HydraClient, 'codexInstances' | 'codexUsage' | 'codexRelayPcs'>): CodexDirectory {
   return {
