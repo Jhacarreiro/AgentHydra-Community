@@ -1,0 +1,47 @@
+name: Public audit
+
+# audit:public (scripts/audit-public.mjs) on every push and pull request: the tree as it stands and
+# every commit since 3a65ba8e, the MIT base this repository is built from. The pre-push hook runs the
+# same audit on what a push carries; this is the copy a hook cannot skip (--no-verify, a push from a
+# machine without the hooks, a pull request from a fork).
+#
+# No paths-ignore, unlike ci.yml: a docs-only or Markdown-only change can publish an email address or
+# a token as easily as code can, and history is checked commit by commit, so a value added and
+# removed again is still caught. Nothing is installed: the audit needs only git and bun (and jq,
+# which the runner has, to read the base commit from the audit config).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: audit-public-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: audit:public (tree and history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The whole history, for --history. A pull request is checked out at its own head commit, not
+      # at the merge commit GitHub makes for it, so the commits read are exactly the ones pushed.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Tree (every tracked file, path and binary at this commit)
+        run: bun scripts/audit-public.mjs --tree HEAD
+
+      - name: History (every commit since the MIT base)
+        if: ${{ !cancelled() }}
+        run: bun scripts/audit-public.mjs --history "$(jq -r .base scripts/audit-public.config.json)..HEAD"
