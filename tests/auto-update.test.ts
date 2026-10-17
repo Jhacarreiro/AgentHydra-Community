@@ -25,6 +25,7 @@ import {
   startAutoUpdate,
   stopAutoUpdate,
 } from '../server/src/auto-update'
+import { applyRefusal } from '../server/src/release-channel'
 import type { UpdateApplyResult, UpdateStatus } from '../server/src/updater-engine.mjs'
 
 // Reset the module's hooks + timer state after each case so they don't bleed across tests.
@@ -151,6 +152,36 @@ test('defers while dispatch runs are in flight, and installs past them after an 
   expect([due.applied, applied, relaunched]).toEqual([true, 1, 1])
 })
 
+// The release channel (release-channel.ts) is above the setting: a release build whose channel says
+// "off" or "notify" never installs, however available and applicable the update looks.
+for (const updates of ['off', 'notify'] as const) {
+  test(`a channel set to "${updates}" stops the tick before it applies`, async () => {
+    let applied = 0
+    const reason = applyRefusal({ repo: 'Example-Owner/Example-App', updates })
+    setAutoUpdateHooks({
+      check: async () => status({ updateAvailable: true, canApply: true }),
+      apply: async () => {
+        applied++
+        return applyResult()
+      },
+      relaunch: () => {
+        throw new Error('nothing may relaunch')
+      },
+      applyRefusal: () => reason,
+    })
+    const r = await runAutoUpdateOnce()
+    expect(r).toEqual({
+      checked: true,
+      applied: false,
+      relaunched: false,
+      reason: reason as string,
+    })
+    expect(applied).toBe(0)
+    // The check still landed, so the passive hint can say there is a release.
+    expect(lastUpdateCheck()?.status.updateAvailable).toBe(true)
+  })
+}
+
 test('does not relaunch when the apply fails', async () => {
   let relaunched = 0
   setAutoUpdateHooks({
@@ -198,7 +229,7 @@ test('clampAutoUpdateInterval bounds the cadence', () => {
   expect(clampAutoUpdateInterval(3600)).toBe(3600)
 })
 
-test('a database that never chose applies updates by itself (owner, 2026-10-05)', () => {
+test('a database that never chose does not apply updates by itself', () => {
   // A fresh database in its own process: this one's setting is rewritten after every case here.
   const root = mkdtempSync(join(tmpdir(), 'ah-autoupdate-'))
   try {
@@ -208,7 +239,7 @@ test('a database that never chose applies updates by itself (owner, 2026-10-05)'
       cwd: join(import.meta.dir, '..'),
       env: { ...process.env, AGENTHYDRA_DB: join(root, 'fresh.db') },
     })
-    expect(r.stdout.toString().trim()).toBe('true')
+    expect(r.stdout.toString().trim()).toBe('false')
   } finally {
     rmSync(root, { recursive: true, force: true, maxRetries: 10 })
   }

@@ -8,6 +8,7 @@
 import { APP_ROOT, IS_RELEASE, SERVICE_NAME } from './config'
 import { spawnCaptured } from './core/process'
 import { applyUpdate as ghApplyUpdate, checkForUpdate as ghCheckForUpdate } from './github-updater'
+import { applyRefusal, RELEASE_CHANNEL } from './release-channel'
 import { beginUpdateProgress, finishUpdateProgress, setUpdatePhase } from './update-progress'
 import { createUpdater, type UpdateApplyResult, type UpdateStatus } from './updater-engine.mjs'
 
@@ -17,6 +18,12 @@ export type { UpdateApplyResult, UpdateStatus }
 // the legacy spelling forward here rather than fork updater-engine.mjs for one alias.
 if (!process.env.AGENTHYDRA_UPDATE_REPO && process.env.CCMANAGERUI_UPDATE_REPO) {
   process.env.AGENTHYDRA_UPDATE_REPO = process.env.CCMANAGERUI_UPDATE_REPO
+}
+
+/** Why this install may not install an update by itself, or null when it may (auto-update.ts). A
+ *  release build follows its channel's policy; a source checkout updates through git. */
+export function updateApplyRefusal(): string | null {
+  return IS_RELEASE ? applyRefusal(RELEASE_CHANNEL) : null
 }
 
 const gitUpdater = createUpdater({

@@ -10,9 +10,10 @@
  * injected from server/src/index.ts, which owns the shutdown handle. The tray then finds the
  * successor via ~/.agenthydra/runtime.json + /api/health exactly as it does after a manual restart.
  *
- * APPLYING follows the `auto_update_enabled` setting, ON by default since 2026-10-05 (owner: "we should
- * have it default that AgentHydra auto-updates if there's a new version"; db.ts seeds it '1', and an
- * install turned off in Settings keeps its '0'). It restarts the daemon unattended, which is why it
+ * APPLYING follows the `auto_update_enabled` setting, OFF by default (db.ts seeds it '0'; an install
+ * that already saved a choice keeps it), and only ever within what the release channel allows: a
+ * release build whose release-channel.json says "off" or "notify" never installs anything, whatever
+ * the setting says (release-channel.ts). It restarts the daemon unattended, which is why it
  * still waits while work a restart would lose is in flight. CHECKING is not gated on it and never was meant
  * to be: the loop runs either way and records the answer (lastUpdateCheck), because "is there a
  * newer version" is worth knowing whether or not you want it installed for you. Before that split,
@@ -29,7 +30,7 @@ import { watch } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawnCaptured } from './core/process'
 import { getSetting, setSetting } from './db'
-import { applyUpdate, checkForUpdate, type UpdateStatus } from './updater'
+import { applyUpdate, checkForUpdate, type UpdateStatus, updateApplyRefusal } from './updater'
 
 /** Check cadence bounds (seconds): 15 min floor, 7 day ceiling, default 6 h. */
 export const AUTO_UPDATE_INTERVAL_MIN_S = 900
@@ -56,6 +57,9 @@ export interface AutoUpdateHooks {
    *  relaunch never churns a live run's stream, for at most AUTO_UPDATE_MAX_DEFER_S. Wired by
    *  server/src/index.ts; default: never busy. */
   hasActiveRuns: () => boolean
+  /** Why this install may not install an update by itself, or null when it may: the release
+   *  channel's policy for a release build (updater.ts). Default: the real one. */
+  applyRefusal: () => string | null
 }
 function defaultRelaunch(): void {
   // No relaunch handler wired (e.g. a bare test harness) — the update is applied on disk and takes
@@ -69,6 +73,7 @@ const realHooks: AutoUpdateHooks = {
   apply: applyUpdate,
   relaunch: defaultRelaunch,
   hasActiveRuns: () => false,
+  applyRefusal: updateApplyRefusal,
 }
 let hooks: AutoUpdateHooks = realHooks
 /** Override the side-effect hooks (index.ts sets `relaunch`; tests inject fakes for all three so
@@ -89,7 +94,7 @@ export function loadAutoUpdateSettings(): void {
 }
 
 // ── runtime state ────────────────────────────────────────────────────────────────────────────
-let enabled = true // ON by default (owner, 2026-10-05); loadAutoUpdateSettings reads the saved choice
+let enabled = false // OFF by default; loadAutoUpdateSettings reads the saved choice
 let intervalSecs = AUTO_UPDATE_INTERVAL_DEFAULT_S
 let started = false // true only after the daemon finishes booting (startAutoUpdate)
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -115,8 +120,8 @@ export const AUTO_UPDATE_MAX_DEFER_S = 3600
  * asked was SettingsView's onMounted. Open Settings and you'd find out; otherwise never.
  *
  * Checking and applying are now separate decisions. The check is cheap and side-effect-free (one
- * GitHub API call, or a `git ls-remote`), so it always runs; applying is its own setting (on by
- * default since 2026-10-05). Nothing about the restart-on-apply behaviour changes.
+ * GitHub API call, or a `git ls-remote`), so it always runs; applying is its own setting (off by
+ * default). Nothing about the restart-on-apply behaviour changes.
  */
 let lastCheck: { status: UpdateStatus; at: number } | null = null
 
@@ -181,6 +186,13 @@ export async function runAutoUpdateOnce(now = Date.now()): Promise<AutoUpdateRun
       relaunched: false,
       reason: status.reason ?? 'check-error',
     }
+  // The release channel's word is above the setting's: a build whose channel says "off" or
+  // "notify" checks (for "off" that costs nothing) and stops there, every time.
+  const refused = hooks.applyRefusal()
+  if (refused) {
+    deferredSince = null
+    return { checked: true, applied: false, relaunched: false, reason: refused }
+  }
   if (!status.updateAvailable) {
     deferredSince = null
     return { checked: true, applied: false, relaunched: false, reason: 'up-to-date' }
