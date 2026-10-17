@@ -7,6 +7,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this p
 
 ## [Unreleased]
 
+- **Updates come only from this project's own releases, and stay off until it publishes one.** An installed copy no
+  longer asks the original project's update service and sends no install id. It installs only files from this
+  repository's own release downloads, and auto-update is off until you turn it on in Settings. A copy run from
+  source updates only from this repository, and says so when its remote is another one.
+- **Versions are now numbered by date, starting at 2026.10.0.** A release can no longer share a number or a file
+  name with one of the original project's.
 - **The connector list stops polling fast when nothing changes.** A connector stuck installing or starting is asked about every second; after a minute with the same answer the poll falls back to every 5 seconds. A Desk window at rest asks once every 5 seconds (7 requests in 30 s).
 - **When a Claude Desktop or Codex app goes down with chats running, the Instance manager moves them and starts them
   again.** If the app crashed, was signed out, or its plan or organization stopped working, it opens the same kind of
