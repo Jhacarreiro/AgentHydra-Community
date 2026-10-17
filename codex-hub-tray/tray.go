@@ -27,7 +27,8 @@ const (
 type app struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
-	hold    bool // an update is swapping the pusher's file: do not start it
+	ran     config // the hub and token cmd has in its environment
+	hold    bool   // an update is swapping the pusher's file: do not start it
 	since   time.Time
 	hubErr  error // the last check's error (nil: the hub answered)
 	blocked error // why this build takes no builds from the hub (updatesAllowed); nil when it does
@@ -50,7 +51,7 @@ func newApp() *app {
 	return &app{selfSHA: sum, wake: make(chan struct{}, 1), check: make(chan struct{}, 1), refused: map[string]string{}}
 }
 
-// kick restarts the pusher now and runs an update check (after pairing, or from the menu).
+// kick starts the pusher now if it is waiting to start, and runs an update check (after pairing, or from the menu).
 func (a *app) kick() {
 	for _, ch := range []chan struct{}{a.wake, a.check} {
 		select {
@@ -129,11 +130,13 @@ func (a *app) show(c rgb, text string) {
 	a.status.SetTitle(text)
 }
 
-// refresh shows what is true now: no token, a refused token, the hub out of reach, or pushing.
+// refresh shows what is true now: no token, a refused token, the hub out of reach, or pushing. Pushing is the
+// pusher's: it is shown only while the pusher runs with the hub and token the check was made with.
 func (a *app) refresh() {
 	cfg := loadConfig()
 	a.mu.Lock()
 	running, hubErr, blocked := a.cmd != nil, a.hubErr, a.blocked
+	stale := running && a.ran != cfg
 	a.mu.Unlock()
 	switch {
 	case cfg.Token == "":
@@ -146,6 +149,8 @@ func (a *app) refresh() {
 		a.show(amber, "This build's update key is not valid: it takes no builds")
 	case !running:
 		a.show(amber, "The pusher is not running; restarting it")
+	case stale:
+		a.show(amber, "Restarting the pusher with the new token")
 	case hubErr != nil:
 		a.show(grey, "The hub is out of reach (away from home?)")
 	default:
@@ -248,8 +253,36 @@ func (a *app) startPusher(cfg config) (*exec.Cmd, error) {
 	}
 	out.Close() // the child has its own handle
 	adoptPusher(cmd.Process)
-	a.cmd, a.since = cmd, time.Now()
+	a.cmd, a.ran, a.since = cmd, cfg, time.Now()
 	return cmd, nil
+}
+
+// restartIfChanged ends a pusher started with another hub or token than cfg's (pairing saved a new token, or
+// tray.json was edited): it would go on using the old ones from its environment, refused by the hub, and never exit.
+// The supervisor, woken, starts it again with cfg's.
+func (a *app) restartIfChanged(cfg config) {
+	a.mu.Lock()
+	old := a.cmd
+	if old == nil || old.Process == nil || a.ran == cfg {
+		a.mu.Unlock()
+		return
+	}
+	log.Println("pusher: the hub or the token changed; restarting it")
+	killPusher(old.Process)
+	a.mu.Unlock()
+	for i := 0; i < 50; i++ {
+		a.mu.Lock()
+		gone := a.cmd != old
+		a.mu.Unlock()
+		if gone {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
 }
 
 // stopPusher ends the running pusher and waits until its file is free; hold keeps it stopped until release.
@@ -293,6 +326,7 @@ func (a *app) updates() {
 
 func (a *app) updateOnce() {
 	cfg := loadConfig()
+	a.restartIfChanged(cfg)
 	if cfg.Token == "" {
 		return
 	}

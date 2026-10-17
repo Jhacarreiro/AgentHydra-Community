@@ -134,7 +134,12 @@ func (a *app) pairHandler(state string, finish func()) http.HandlerFunc {
 			page(w, http.StatusOK, "This PC is connected and is pushing its Codex chats. You can close this tab.")
 		}
 		finish()
-		a.kick()
+		// The running pusher has the token it was started with; it starts again with this one.
+		now := loadConfig()
+		go func() {
+			a.restartIfChanged(now)
+			a.kick()
+		}()
 	}
 }
 
