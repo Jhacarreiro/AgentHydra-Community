@@ -25,6 +25,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { RELEASE_CHANNEL } from '../server/src/release-channel'
 
 const isWin = process.platform === 'win32'
 /** A loopback port nothing listens on: connecting to it is refused at once. */
@@ -245,7 +246,6 @@ try {
     CLAUDE_CONFIG_DIR: join(home, '.claude'),
     AGENTHYDRA_MCP_CONFIG: join(home, 'mcp.json'),
     AGENTHYDRA_NO_OPEN: '1',
-    AGENTHYDRA_NO_PING: '1',
     AGENTHYDRA_HEADLESS: '1',
     // Nothing may be downloaded: both bases refuse, so a launcher that tries fails the smoke.
     AGENTHYDRA_RELEASE_BASE: REFUSING_BASE,
@@ -260,9 +260,16 @@ try {
     `${pin}
 `,
   )
-  const bundleVersion = (
-    JSON.parse(readFileSync(join(bundle, 'app/release.json'), 'utf8')) as { version?: string }
-  ).version
+  const stamped = JSON.parse(readFileSync(join(bundle, 'app/release.json'), 'utf8')) as {
+    version?: string
+    channel?: { repo?: string; updates?: string }
+  }
+  const bundleVersion = stamped.version
+  check(
+    stamped.channel?.repo === RELEASE_CHANNEL.repo &&
+      stamped.channel?.updates === RELEASE_CHANNEL.updates,
+    `app/release.json names the release channel it was built for (${JSON.stringify(stamped.channel)})`,
+  )
   const lv = spawnSync(exe, ['--version'], { encoding: 'utf8', env, windowsHide: true })
   check(
     lv.status === 0 && (lv.stdout ?? '').trim() === bundleVersion,

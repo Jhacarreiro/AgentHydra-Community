@@ -5,8 +5,8 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 /**
  * Build the AgentHydra daemon as a bun bundle: `<outdir>/app/` holds server.js (`bun build --target=bun`
  * of the daemon's entry), the assets it reads at run time (the misc files it hands out and the tray
- * toolkit, beside server.js), release.json (what marks a release) and bun-version (the bun the launcher
- * downloads to run it). The launcher (AgentHydra.exe / agenthydra) starts it. The window is desk2/,
+ * toolkit, beside server.js), release.json (what marks a release, and the release channel it was built
+ * for) and bun-version (the bun the launcher downloads to run it). The launcher (AgentHydra.exe / agenthydra) starts it. The window is desk2/,
  * which scripts/package-release.ts builds and ships beside app/.
  *
  * Options:
@@ -20,6 +20,7 @@ import pkg from '../package.json'
 // ONE list, shared with the runtime that writes these files out again (server/src/tray-toolkit.ts).
 // Two copies of a filename list is how an app ends up embedding a file nothing reads.
 import { RUNTIME_MISC_FILES } from '../server/src/misc-assets.ts'
+import { RELEASE_CHANNEL } from '../server/src/release-channel.ts'
 import { TRAY_TOOLKIT_FILES } from '../server/src/tray-toolkit.ts'
 
 const ROOT = join(import.meta.dir, '..')
@@ -248,9 +249,16 @@ try {
 } finally {
   rmSync(TMP, { recursive: true, force: true })
 }
+// The channel itself is compiled into server.js (release-channel.ts imports the JSON); this copy says, to a
+// person or a smoke test looking at the folder, which repository and policy that build carries.
 writeFileSync(
   join(outApp, 'release.json'),
-  `${JSON.stringify({ version: pkg.version, commit: stamp.commit ?? null, builtAt: stamp.builtAt })}
+  `${JSON.stringify({
+    version: pkg.version,
+    commit: stamp.commit ?? null,
+    builtAt: stamp.builtAt,
+    channel: { repo: RELEASE_CHANNEL.repo, updates: RELEASE_CHANNEL.updates },
+  })}
 `,
 )
 const bunVersion = (option('--bun-version') ?? Bun.version).trim()
