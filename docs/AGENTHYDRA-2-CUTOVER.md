@@ -55,8 +55,8 @@ the first full release, the one installed copies update to ([RELEASING.md](RELEA
   first-run build (it builds `desk2` now), the live checkout's build, and the checks and tools that read
   `web/src` (they read `desk2/hydra/src`, AgentHydra 2.0's copy, or were cut). A page asked of the daemon goes
   to Desk 2; an install whose `desk2/` is missing gets a page saying so. The README screenshot tool and the
-  SUE demo server run on `desk2/hydra` at `/ah/`. The shared kit's AgentHydra entry keeps its server libraries
-  and tray and has no web tree.
+  SUE demo server run on `desk2/hydra` at `/ah/`. The server libraries and the tray, once synced in from
+  another repository, stay in this one and are maintained here; no web tree goes with them.
 
 ## What the old window had that Desk 2 left out on purpose
 

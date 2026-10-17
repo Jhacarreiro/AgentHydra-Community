@@ -73,7 +73,7 @@ counting how many times the same act had already failed or measuring whether it 
 ```
 scripts/  THE REWRITE - one Python script per functionality, each runnable and testable alone
 server/   the remote front-end's gateway (Bun + Hono; a root workspace of the AgentHydra repo)
-web/      the remote front-end's dashboard (Vue 3 + the lunarwerx-ui kit; likewise a workspace)
+web/      the remote front-end's dashboard (Vue 3 + shadcn-vue; likewise a workspace)
 docs/     the v2 retirement note, the courier spec, the old /orchestrate command, to-do harvests
 state/    runtime state - ledgers, the tray heartbeat, locks, logs. Never committed.
 ```
@@ -338,8 +338,8 @@ on our own zone, which is the setup here (see below); a rotating Quick Tunnel an
 **app.repoyeti.com** is the fallback when no named tunnel is configured - gates every request
 that arrives over it behind **Sign in with Connections** (public OIDC, PKCE, the id_token verified
 against the IdP's public JWKS), plus a
-**Vue 3 + Tailwind v4 + lunarwerx-ui** dashboard (`web/`) built on the shared kit (accent:
-amber; `bun run check:kit`).
+**Vue 3 + Tailwind v4 + shadcn-vue** dashboard (`web/`) built on the styles, shell and libs it
+shares with `desk2/hydra` (accent: amber).
 
 **What it can do, exactly:** everything `orchestrator/scripts/dashboard.py` answers (the plan, waiting-on-you,
 every chat, instances, holds and the breaker, the accounts strip and balancing plan, the rules,

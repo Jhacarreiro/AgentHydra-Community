@@ -1004,7 +1004,7 @@ next one.
 
 | Layer | Choice |
 |---|---|
-| Frontend | Vue 3 + Vite, a shared LunarWerx UI kit (shadcn-vue `reka-mira` on Reka UI), Tailwind v4, `@lucide/vue`, TypeScript |
+| Frontend | Vue 3 + Vite, shadcn-vue components (`reka-mira` style, on Reka UI) with the styles, shell and libs `desk2/hydra` and `orchestrator/web` share, Tailwind v4, `@lucide/vue`, TypeScript |
 | Backend | **Bun + Hono**, `bun:sqlite` (queue / dispatch / scheduler / accounts and read-only OpenCode/Hermes access) + JSON under `CONFIG_DIR`, SSE (`hono/streaming`) for live run output |
 | Dispatch | `Bun.spawn` of the real `claude` CLI (no Agent SDK) |
 | Multi-instance | per-OS Claude and Codex Desktop discovery / launch / focus / quit plus isolated Claude/Codex CLI homes (`server/src/core/*`); Windows DPAPI / macOS Keychain / Linux libsecret read Claude Desktop credentials |
@@ -1110,23 +1110,19 @@ Requires a Chromium-based browser; set `CHROME_PATH` if it is not in a standard 
 
 ## Checks
 
-`bun run check` runs Biome + a kit drift-check. The kit check needs an internal
-LunarWerx kit checkout, so it's **owner-only and skipped in CI**; external contributors should run
-the individual checks instead:
+`bun run check` runs Biome over the repository, and needs nothing outside it. The other checks run
+on their own:
 
-- `bun run lint`: Biome.
+- `bun run lint`: Biome, the same as `check`.
 - `bun run --cwd desk2/hydra check:i18n`: no hardcoded UI strings in AgentHydra's pages; every `t()` key
   resolves (also gates Desk 2's `build`).
 - `bun test`: includes the Windows-gated tray launcher guard and instance/crypto tests.
 - `bun run typecheck`: the server (`bun check`) and the orchestrator (`tsc`, `vue-tsc`); Desk 2 has its own,
   `bun run --cwd desk2 typecheck`.
 
-`bun run check:local` is the owner-only half on its own: today it is just `check:kit`, split out under a
-name a pre-push runner can look for. It exists because the kit check is the one gate CI *structurally*
-cannot run, comparing this app's synced copies against a private sibling repo that a public repo's
-workflow can never check out. Before it had a name, a pre-commit hook was its only enforcement, and
-that hook is skipped by `--no-verify` and silently does nothing on any machine without the sibling
-checkout. External contributors should not run it; nothing in CI depends on it.
+`bun run check:deep` runs `check`, `typecheck` and then `test:full`, which adds the orchestrator's
+Python suite (25+ minutes). The pre-push hook runs it for a release tag when it cannot
+confirm a green CI run on the tagged commit (see docs/RELEASING.md).
 
 CI runs these across `[ubuntu-latest, windows-latest]`, so a green local run on one OS clears one
 leg of two.
@@ -1243,7 +1239,7 @@ stays quiet on the fixed one, so none can rot into a silent no-op.
   pointer events.
 - `wmi-commandline-query-self-match.mjs`: a `CommandLine LIKE` query that forgets to exclude the
   shell running it matches itself and answers "found" forever.
-- `kit-lib-type-drift.mjs`: a vendored kit lib whose `.mjs` and hand-written `.d.mts` disagree,
+- `kit-lib-type-drift.mjs`: a lib whose `.mjs` and hand-written `.d.mts` disagree,
   which is either a compile error on import or `undefined` at runtime.
 - `spawn-console-window.mjs`: `windowsHide` missing on a console spawn (a stray console window) or
   present on a GUI one (the window never appears).
