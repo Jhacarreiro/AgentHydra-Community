@@ -312,9 +312,9 @@ async function checkLocaleParity() {
   }
 }
 
-// Vendored/synced kit files are library code (not app copy) — exempt from the scan, same
-// as the siblings' checkers. Covers components/ui, shell, and the synced lib/* modules
-// (which carry their own i18n keys from the kit, e.g. relativeTime's `time.*`).
+// Library code (not app copy) is exempt from the scan: components/ui, shell, and the
+// general-purpose lib/* modules below, most of them shared with orchestrator/web (they
+// carry their own i18n keys, e.g. relativeTime's `time.*`).
 const SYNCED_LIB = /lib[\\/](utils|theme|httpClient|i18n-core|relativeTime|useSelfUpdate)\.ts$/
 const SKIP = (path: string) =>
   path.includes('i18n/locales') ||
