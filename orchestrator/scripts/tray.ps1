@@ -110,7 +110,7 @@ function Get-RemoteEnabled {
             return [bool]((Get-Content -Raw $RemotePrefFile | ConvertFrom-Json).enabled)
         }
     } catch { }
-    return $true   # remote access is the point of the feature; default it on
+    return $false  # off until you turn it on: it needs a sign-in provider of your own (README, Remote access)
 }
 
 function Set-RemoteEnabled([bool]$on) {

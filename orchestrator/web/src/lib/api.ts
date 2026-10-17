@@ -220,7 +220,7 @@ export interface GatewayStatus {
     port: number
     oauth: { issuer: string; clientId: string; redirectUri: string; ownerClaimed: boolean } | null
     tunnel: { provider: 'quick' | 'named'; hostname: string | null; hasToken: boolean }
-    relay: { url: string; id: string | null }
+    relay: { url: string | null; id: string | null }
   }
   switch: SwitchStatus
   daemon: { ok: boolean; version: string | null; url: string }

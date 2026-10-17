@@ -1,12 +1,14 @@
 /**
  * The remote gateway's configuration: where it lives on disk, the OAuth client it presents to
- * Connections, and the tunnel it opens. Everything persistent sits under `state/remote/`, which
- * the repo ignores (`state/` is runtime state, never source).
+ * your sign-in provider, and the tunnel it opens. Everything persistent sits under `state/remote/`,
+ * which the repo ignores (`state/` is runtime state, never source).
  *
- * The defaults are enough: a fresh clone gets the registered "Orchestrator" public OAuth client
- * (PKCE, no secret), the RepoYeti relay as the stable callback for a rotating Quick Tunnel, and
- * first-use ownership - the first verified Connections sign-in claims the install and is persisted.
- * A named Cloudflare tunnel (stable hostname on the owner's own zone) is opt-in via `tunnel`.
+ * Nothing is configured out of the box. Until `oauth` names an OpenID Connect provider of your own
+ * (issuer, client id, redirect URI), the gateway serves loopback only: it refuses to open a tunnel
+ * and answers 401 to any request that arrives through one. With it, the first verified sign-in
+ * made at the machine itself claims the install, and that owner is persisted. A Quick Tunnel's
+ * sign-in returns through a relay you run (`relay`, by default the origin of `oauth.redirectUri`);
+ * a named Cloudflare tunnel (a stable hostname on your own zone) is opt-in via `tunnel`.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -38,13 +40,14 @@ export const DAEMON_URL = (process.env.AGENTHYDRA_URL ?? 'http://127.0.0.1:7787'
 )
 
 export interface OAuthConfig {
-  /** IdP issuer origin, e.g. https://accounts.connectionsapi.com */
+  /** IdP issuer origin, e.g. https://accounts.example.com */
   issuer: string
   clientId: string
   /** The EXACT registered redirect URI a Quick Tunnel login must use (the relay's callback). */
   redirectUri: string
-  /** Only for a confidential client; the registered Orchestrator client is public (PKCE). */
+  /** Only for a confidential client; a public client signs in with PKCE alone. */
   clientSecret?: string
+  /** Space-separated; default "openid profile email". */
   scopes?: string
   /** The owner, locked on first verified sign-in (TOFU). Either field matches. */
   ownerSub?: string
@@ -71,7 +74,8 @@ export interface RelayIdentity {
 }
 
 export interface RelayConfig {
-  /** Base URL of the relay; empty uses app.repoyeti.com (the OAuth callback lives there too). */
+  /** Base URL of the relay that serves the permanent /r/<id> address; empty means the origin of
+   *  `oauth.redirectUri`, where the relay answers the OAuth callback too. */
   url?: string
   identity?: RelayIdentity
 }
@@ -82,23 +86,6 @@ export interface RemoteConfig {
   relay?: RelayConfig
 }
 
-/**
- * The "Orchestrator" Sign-in-with-Connections app, registered 2026-09-02 through Studio's
- * /v1/oauth-apps (public client, PKCE, scopes openid profile email photo). Its redirect
- * allow-list is both named-tunnel hostnames' /oauth/callback (one orch-<name> per owner on
- * lunarwerx.com), the relay callback, and loopback (registered as :7790; the IdP accepts any
- * loopback port per RFC 8252 section 7.3, so DEFAULT_PORT can move without touching the app); a
- * Quick Tunnel completes through the relay, loopback completes directly on the gateway.
- */
-export const CONNECTIONS_OAUTH: OAuthConfig = {
-  issuer: 'https://accounts.connectionsapi.com',
-  clientId: 'fa219acf42e2f4ccfce5ab7ddda9544c',
-  redirectUri: 'https://app.repoyeti.com/oauth/callback',
-  scopes: 'openid profile email photo',
-}
-
-export const DEFAULT_RELAY_URL = 'https://app.repoyeti.com'
-
 export function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
 }
@@ -108,18 +95,15 @@ export function loadConfig(): RemoteConfig {
   try {
     stored = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as RemoteConfig
   } catch (err) {
-    // A missing file is the defaults with no warning; anything else is reported as before.
+    // A missing file is an empty config with no warning; anything else is reported as before.
     const code = (err as { code?: string }).code
     if (code !== 'ENOENT' && code !== 'ENOTDIR') {
       console.warn(
-        `[orchestrator-remote] ${CONFIG_PATH} is not valid JSON, using defaults: ${String(err)}`,
+        `[orchestrator-remote] ${CONFIG_PATH} is not valid JSON, using an empty config: ${String(err)}`,
       )
     }
   }
-  return {
-    ...stored,
-    oauth: { ...CONNECTIONS_OAUTH, ...(stored.oauth ?? {}) },
-  }
+  return stored
 }
 
 export function saveConfig(cfg: RemoteConfig): void {
@@ -128,7 +112,7 @@ export function saveConfig(cfg: RemoteConfig): void {
   restrictToCurrentUser(CONFIG_PATH)
 }
 
-/** OIDC configured => every tunnel request needs a signed-in owner. Always true with defaults. */
+/** OIDC configured => a tunnel may open, and every request through it needs a signed-in owner. */
 export function authEnforced(cfg: RemoteConfig): boolean {
   return !!(cfg.oauth?.issuer && cfg.oauth.clientId && cfg.oauth.redirectUri)
 }
@@ -152,8 +136,15 @@ export function namedTunnel(cfg: RemoteConfig): { hostname: string; token: strin
   return { hostname, token }
 }
 
-export function relayBase(cfg: RemoteConfig): string {
-  return (cfg.relay?.url?.trim() || DEFAULT_RELAY_URL).replace(/\/+$/, '')
+/** The relay's base URL: `relay.url`, else the origin of `oauth.redirectUri`, else null (none configured). */
+export function relayBase(cfg: RemoteConfig): string | null {
+  const url = cfg.relay?.url?.trim()
+  if (url) return url.replace(/\/+$/, '')
+  try {
+    return cfg.oauth?.redirectUri ? new URL(cfg.oauth.redirectUri).origin : null
+  } catch {
+    return null
+  }
 }
 
 /** Key-free projection for /api/status - hostname + token PRESENCE, never a token or a private key. */

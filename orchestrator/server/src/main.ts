@@ -3,7 +3,9 @@
  *
  *   loopback :7794  ->  this gateway  ->  scripts/dashboard.py :7799 (data, read-only)
  *   cloudflared     ->  https://<quick>.trycloudflare.com  ->  this gateway (owner session required)
- *   app.repoyeti.com/r/<id>  ->  the permanent address, and the OAuth return route
+ *   <your relay>/r/<id>  ->  the permanent address, and the OAuth return route
+ *
+ * No tunnel opens until state/remote/config.json names a sign-in provider (`oauth`, see config.ts).
  *
  * The port lives in ../package.json `config.remotePort` and ORCH_REMOTE_PORT overrides it; ORCH_NO_TUNNEL=1 serves loopback only; CF_TUNNEL_TOKEN with
  * `tunnel.hostname` in state/remote/config.json runs a named tunnel on the owner's own domain.

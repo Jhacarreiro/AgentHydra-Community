@@ -162,9 +162,8 @@ export function useGateway() {
     statusTimer = undefined
   }
 
-  const needsSignIn = computed(
-    () => !!auth.value && auth.value.authEnforced && !auth.value.authenticated,
-  )
+  // Over the tunnel with no owner session; with no sign-in configured the screen says so instead.
+  const needsSignIn = computed(() => !!auth.value && auth.value.remote && !auth.value.authenticated)
   const switchState = computed<SwitchStatus | null>(() => status.value?.switch ?? null)
 
   /** Throw the switch through `python orch.py arm|disarm`; the answer carries the fresh heartbeat read. */

@@ -1,10 +1,11 @@
 /**
- * "Sign in with Connections" - public OIDC relying party, vendored from RepoYeti's src/auth.ts
- * and trimmed to what a single-owner dashboard needs (no share links, no guests, no API tokens).
+ * Sign-in - a public OIDC relying party for any OpenID Connect provider you configure (config.ts
+ * `oauth`), vendored from RepoYeti's src/auth.ts and trimmed to what a single-owner dashboard
+ * needs (no share links, no guests, no API tokens).
  *
  * The gateway only ever calls the IdP's PUBLIC URLs (discovered from
  * `<issuer>/.well-known/openid-configuration`) and verifies the returned id_token with the IdP's
- * PUBLIC JWKS (via `jose`). No shared secret, no coupling to the Connections repo.
+ * PUBLIC JWKS (via `jose`). No shared secret unless the client is a confidential one.
  *
  * Flow (gateway-side PKCE; the phone never holds tokens):
  *   /oauth/login -> authorize with the exact registered redirect URI signed into `state` -> IdP ->
@@ -12,8 +13,8 @@
  *   or the IdP returns straight to /oauth/callback (loopback, named tunnel) -> token exchange with
  *   that same redirect URI -> verify id_token (JWKS) -> owner check -> signed session cookie.
  *
- * ACCESS POLICY: a request that arrived over the tunnel ALWAYS needs a signed-in owner. A loopback
- * request is open - the Python dashboard on the same machine is open on loopback too, and the
+ * ACCESS POLICY: a request that arrived over the tunnel ALWAYS needs a signed-in owner, and with no
+ * sign-in configured nobody gets in that way. A loopback request is open - the Python dashboard on the same machine is open on loopback too, and the
  * tunnel is the only thing this gateway adds. Local is guarded against browser CSRF separately.
  */
 import { createHash, randomBytes } from 'node:crypto'
@@ -244,7 +245,7 @@ export async function handleLogin(
     console.error(`[orchestrator-remote] OIDC discovery failed: ${String(error)}`)
     return c.html(
       errPage(
-        'Could not reach Connections to start sign-in. This is usually temporary - try again in a few seconds.',
+        'Could not reach the sign-in provider to start sign-in. This is usually temporary - try again in a few seconds.',
       ),
       502,
     )
@@ -266,7 +267,7 @@ export async function handleLogin(
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('client_id', oauth.clientId)
   url.searchParams.set('redirect_uri', resolved.redirectUri)
-  url.searchParams.set('scope', oauth.scopes || 'openid profile email photo')
+  url.searchParams.set('scope', oauth.scopes || 'openid profile email')
   url.searchParams.set('code_challenge', challenge)
   url.searchParams.set('code_challenge_method', 'S256')
   url.searchParams.set('state', state)
@@ -364,11 +365,11 @@ async function exchangeAuthorizationCode(
     console.error(
       `[orchestrator-remote] token exchange failed: HTTP ${tr.status}${detail ? ` ${detail}` : ' (no parseable error field)'}`,
     )
-    return { ok: false, status: 502, message: 'Token exchange with Connections failed.' }
+    return { ok: false, status: 502, message: 'Token exchange with the sign-in provider failed.' }
   }
   const token = (await tr.json()) as TokenSet
   if (!token.id_token) {
-    return { ok: false, status: 502, message: 'Connections returned no identity token.' }
+    return { ok: false, status: 502, message: 'The sign-in provider returned no identity token.' }
   }
   return { ok: true, token }
 }
@@ -385,7 +386,7 @@ type OwnershipResult =
 // ⛔ FIRST-USE OWNERSHIP IS CLAIMABLE FROM THE MACHINE ONLY, NEVER OVER THE TUNNEL.
 //
 // Plain TOFU is a takeover waiting to happen here: until someone claims the install, ANY
-// verified Connections account that reaches the public hostname becomes the permanent owner
+// verified account that reaches the public hostname becomes the permanent owner
 // - and the owner can arm this machine's fleet automation from a phone. /oauth/login sits
 // outside the auth gate by necessity (a sign-in cannot require a session), so "nobody knows
 // the URL yet" was the only thing standing between a stranger and the switch. A URL is not
@@ -422,7 +423,7 @@ function resolveOwnership(
     return {
       ok: false,
       status: 403,
-      message: "This Connections account isn't the owner of this orchestrator.",
+      message: "This account isn't the owner of this orchestrator.",
     }
   }
   return { ok: true }
@@ -481,7 +482,7 @@ export async function handleComplete(
     return c.redirect('/')
   } catch (err) {
     console.error(`[orchestrator-remote] sign-in could not be verified: ${String(err)}`)
-    return c.html(errPage("Couldn't verify your Connections sign-in."), 401)
+    return c.html(errPage("Couldn't verify your sign-in."), 401)
   }
 }
 
@@ -503,13 +504,12 @@ const PUBLIC_PATHS = new Set(['/api/auth/status', '/api/auth/me', '/api/health']
 export function authMiddleware(cfg: RemoteConfig) {
   // biome-ignore lint/suspicious/noConfusingVoidType: pass-through branches return next()
   return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
-    if (!authEnforced(cfg)) return next()
     const path = new URL(c.req.url).pathname
-    if (PUBLIC_PATHS.has(path)) return next()
-    if (isRemoteRequest(c)) {
-      if (readSession(c, cfg.oauth!)) return next()
-      return c.body(null, 401)
-    }
-    return next()
+    if (PUBLIC_PATHS.has(path) || !isRemoteRequest(c)) return next()
+    // Over a tunnel only the owner's session gets in. With no sign-in configured this gateway opens
+    // no tunnel itself, and a request that still arrives through one (a tunnel someone else
+    // started) is refused rather than let in with no owner check.
+    if (authEnforced(cfg) && readSession(c, cfg.oauth!)) return next()
+    return c.body(null, 401)
   }
 }

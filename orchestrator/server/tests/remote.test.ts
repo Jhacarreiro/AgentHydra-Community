@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
-import { CONNECTIONS_OAUTH, type RemoteConfig } from '../src/config.ts'
+import type { OAuthConfig, RemoteConfig } from '../src/config.ts'
 import { OAUTH_CALLBACK_CAPABILITY } from '../src/relay.ts'
 import {
   getOAuthCallback,
@@ -11,8 +11,15 @@ import {
   startRemote,
 } from '../src/remote.ts'
 
+/** An invented provider whose callback lives on an invented relay. */
+const PROVIDER: OAuthConfig = {
+  issuer: 'https://accounts.example.test',
+  clientId: 'test-client',
+  redirectUri: 'https://relay.example.test/oauth/callback',
+}
+
 function cfg(): RemoteConfig {
-  return { oauth: { ...CONNECTIONS_OAUTH } }
+  return { oauth: { ...PROVIDER } }
 }
 
 const fakeRelay = (
@@ -21,8 +28,8 @@ const fakeRelay = (
 ): typeof fetch =>
   (async (input: string | URL | Request) => {
     const url = String(input)
-    expect(url).toBe('https://app.repoyeti.com/announce')
-    return new Response(JSON.stringify({ ...answer, url: 'https://app.repoyeti.com/r/abc' }), {
+    expect(url).toBe('https://relay.example.test/announce')
+    return new Response(JSON.stringify({ ...answer, url: 'https://relay.example.test/r/abc' }), {
       status,
     })
   }) as unknown as typeof fetch
@@ -62,11 +69,11 @@ describe('publishRemoteRoutes', () => {
     )
     expect(getOAuthCallbackStatus(c, origin)).toBe('ready')
     expect(getOAuthCallback(c, origin)).toEqual({
-      redirectUri: CONNECTIONS_OAUTH.redirectUri,
+      redirectUri: PROVIDER.redirectUri,
       relayId: c.relay!.identity!.id,
     })
     const s = getRemoteStatus()
-    expect(s.stableUrl).toBe('https://app.repoyeti.com/r/abc')
+    expect(s.stableUrl).toBe('https://relay.example.test/r/abc')
     expect(s.relayError).toBeNull()
     // The identity was minted and persisted onto the config.
     expect(c.relay?.identity?.id).toMatch(/^[a-f0-9]{32}$/)
@@ -163,7 +170,7 @@ describe('startRemote: a tunnel exit after readiness cannot be resurrected', () 
         new Response(
           JSON.stringify({
             ok: true,
-            url: 'https://app.repoyeti.com/r/zzz',
+            url: 'https://relay.example.test/r/zzz',
             capabilities: [OAUTH_CALLBACK_CAPABILITY],
           }),
           { status: 200 },

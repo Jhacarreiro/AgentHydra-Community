@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """remote.py - act (machine config): THE REMOTE FRONT-END - start, stop or report the gateway
-that serves the web dashboard (web/) over a Cloudflare tunnel, behind Sign in with Connections.
+that serves the web dashboard (web/) over a Cloudflare tunnel, behind your own sign-in provider.
 
 The gateway is server/src/main.ts (Bun + Hono; RepoYeti's remote-access stack, vendored). It
 fronts scripts/dashboard.py's READ-ONLY answers, gates every tunnel request behind the owner's
-Connections sign-in, and opens a cloudflared tunnel. The one thing it can change is THE SWITCH
+sign-in (an OpenID Connect provider named in state/remote/config.json), and opens a cloudflared
+tunnel. With no provider named it opens no tunnel and serves loopback only. The one thing it can change is THE SWITCH
 (python orch.py arm / disarm) - every other act stays in the toolbox's own rails. Loopback
 stays open, exactly like the Python dashboard.
 
 TWO KINDS OF ADDRESS. With a NAMED tunnel configured (scripts/remote_tunnel.py --provision) the
-gateway serves one hostname on our own zone that never changes and completes sign-in on its own
-/oauth/callback - that is the setup here. With none, it falls back to a rotating Quick Tunnel
-and announces itself to app.repoyeti.com, whose /r/<id> is then the permanent address.
+gateway serves one hostname on your own zone that never changes and completes sign-in on its own
+/oauth/callback. With none, it falls back to a rotating Quick Tunnel and announces itself to the
+relay you configured, whose /r/<id> is then the permanent address.
 
 ⛔ THE TRAY ICON OWNS THIS PROCESS, and there is deliberately no scheduled keepalive. A
 keepalive lane briefly existed and was a false kill switch: it was ungated, so closing the icon

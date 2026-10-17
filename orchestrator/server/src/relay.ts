@@ -1,10 +1,11 @@
 /**
- * Relay client - publishes "here is my current address" to the RepoYeti relay Worker
- * (RepoYeti/app/relay/worker.js). Vendored from RepoYeti's src/relay.ts.
+ * Relay client - publishes "here is my current address" to a relay you run (config.ts `relay`),
+ * one that answers /announce, /r/<id> and /oauth/callback as below. Vendored from RepoYeti's
+ * src/relay.ts.
  *
  * WHY: a Quick Tunnel re-hosts itself on every start. The relay gives this gateway one permanent
  * URL (`<relay>/r/<id>`) that forwards to wherever it currently lives, AND it is the registered
- * OAuth callback: Connections returns the browser to `<relay>/oauth/callback`, which reads the
+ * OAuth callback: the sign-in provider returns the browser to `<relay>/oauth/callback`, which reads the
  * relay id out of the signed `state` and bounces `code`+`state` to `<currentOrigin>/oauth/finish`.
  *
  * IDENTITY: an Ed25519 keypair generated once and kept in state/remote/config.json. The public

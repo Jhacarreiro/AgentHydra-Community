@@ -334,9 +334,9 @@ and it was removed.
 Built 2026-09-02, owner ask: "a front-end for the orchestrator I can access remotely using a web
 URL and Cloudflare, the same tech we use for RepoYeti". So it IS RepoYeti's remote-access stack,
 vendored: a **Bun + Hono gateway** (`server/`) that opens a **cloudflared tunnel** - a NAMED one
-on our own zone, which is the setup here (see below); a rotating Quick Tunnel announced to
-**app.repoyeti.com** is the fallback when no named tunnel is configured - gates every request
-that arrives over it behind **Sign in with Connections** (public OIDC, PKCE, the id_token verified
+on your own Cloudflare zone (see below), or a rotating Quick Tunnel announced to a relay you run
+when no named tunnel is configured - and gates every request that arrives over it behind
+**sign-in with an OpenID Connect provider of your own** (public OIDC, PKCE, the id_token verified
 against the IdP's public JWKS), plus a
 **Vue 3 + Tailwind v4 + shadcn-vue** dashboard (`web/`) built on the styles, shell and libs it
 shares with `desk2/hydra` (accent: amber).
@@ -348,6 +348,29 @@ the scripts, the logic tree), and **THE SWITCH** - turn the tray icon on or off 
 read-only by construction and the gateway proxies only its named `/data/*` routes; every other act
 stays in the toolbox's own rails. Loopback stays open (the Python dashboard already is); only
 tunnel traffic needs the owner.
+
+**Nothing is on by default.** A fresh clone has no sign-in provider, no relay and no tunnel: the
+gateway serves loopback only, refuses to open a tunnel, and answers 401 to anything that still
+reaches it through one, and the tray icon's Remote access starts OFF. To use it from a phone, name
+your provider in `state/remote/config.json` (gitignored):
+
+```json
+{
+  "oauth": {
+    "issuer": "https://accounts.example.com",
+    "clientId": "<your client id>",
+    "redirectUri": "https://relay.example.com/oauth/callback"
+  }
+}
+```
+
+`redirectUri` is where a Quick Tunnel sign-in returns: the `/oauth/callback` of a relay you run
+(one that answers the calls `server/src/relay.ts` makes: `/announce`, `/r/<id>`, `/oauth/callback`), which also
+gives the rotating tunnel its permanent `/r/<id>` address; `relay.url` names the relay when it is
+not on that origin. Sign-in at the machine (`http://127.0.0.1:7794`) and over a named tunnel
+returns to the gateway's own `<address>/oauth/callback`, so register those on the provider as
+well (loopback on any port, per RFC 8252). `scopes` defaults to `openid profile email`;
+`clientSecret` is only for a confidential client.
 
 ```sh
 bun install && bun run remote:build     # once (and after web/ changes)
@@ -435,7 +458,8 @@ was a false kill switch: the lane was ungated, so closing the icon stopped the l
 quietly restored remote access five minutes later - and this gateway can throw the arm switch
 from a phone, so that is a route to arming the machine with no kill switch on screen.
 
-`orchestrator/scripts/tray.ps1` starts the gateway when remote access is enabled, watchdogs it every 15
+`orchestrator/scripts/tray.ps1` starts the gateway when remote access is enabled (it is off until you turn
+it on from the icon's menu), watchdogs it every 15
 seconds (stopping after three failed starts rather than hammering a broken one), and closes it
 on Exit. `python orch.py disarm` closes it too - it kills the icon with `/F`, which skips the
 tray's own shutdown path, so disarm stops the gateway itself.
@@ -469,20 +493,20 @@ powershell -File scripts\tray.ps1 -InstallShortcut   # Desktop shortcut (add -St
 powershell -File scripts\tray.ps1 -SelfTest          # prove the wiring, arm nothing, show no icon
 ```
 
-**Security model, in one breath.** No OIDC config, no tunnel - the gateway refuses to open one
-(a public URL with no auth is the machine on the open internet). The first verified Connections
-sign-in **claims the install** (TOFU) and is persisted to `state/remote/config.json`; after that
-it is locked to that identity. Sessions are signed cookies (per-install HMAC key in
+**Security model, in one breath.** No OIDC config, no tunnel - the gateway refuses to open one,
+and refuses a request that arrives through a tunnel someone else opened (a public URL with no auth
+is the machine on the open internet). The first verified sign-in made at the machine **claims the
+install** and is persisted to `state/remote/config.json`; after that it is locked to that identity. Sessions are signed cookies (per-install HMAC key in
 `state/remote/session.key`, ACL-restricted); "sign out everywhere" rotates the key. The relay
 sees the OAuth code in transit but cannot redeem it (PKCE verifier lives only in gateway memory).
-`state/` is gitignored, so nothing of this ever lands in the repo. The OAuth client is the
-registered "Orchestrator" app (public, client id in `server/src/config.ts`; redirect allow-list =
-the relay callback + loopback, which the IdP accepts on any port).
+`state/` is gitignored, so nothing of this ever lands in the repo. The OAuth client is yours: a
+public client (PKCE, no secret) whose redirect allow-list holds the relay callback, loopback and
+any named tunnel's `/oauth/callback`.
 
 **A stable address on your own domain** (optional): create a Cloudflare named tunnel, point its
 public hostname at `http://localhost:7794`, put `{"tunnel":{"hostname":"orch.example.com","token":"..."}}`
 in `state/remote/config.json` (or `CF_TUNNEL_TOKEN` in the env), and add
-`https://orch.example.com/oauth/callback` to the OAuth app's redirect URIs. `ORCH_NO_TUNNEL=1`
+`https://orch.example.com/oauth/callback` to your OAuth client's redirect URIs. `ORCH_NO_TUNNEL=1`
 serves loopback only. The port is written once, in `package.json` `config.remotePort` (7794;
 7793 is HSwarm's shared MCP server and 7790 was ZSwarm's, retired 2026-10-03), and
 `ORCH_REMOTE_PORT` overrides it for one run. Moving it means re-running

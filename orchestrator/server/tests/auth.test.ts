@@ -1,17 +1,24 @@
 import { describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
 import { handleComplete, handleLogin, ownerMatches, refusesRemoteClaim, txs } from '../src/auth.ts'
-import { CONNECTIONS_OAUTH, type OAuthConfig } from '../src/config.ts'
+import type { OAuthConfig } from '../src/config.ts'
 import { sign } from '../src/signing.ts'
 
+/** An invented provider: nothing here is a real client. */
+const PROVIDER: OAuthConfig = {
+  issuer: 'https://accounts.example.test',
+  clientId: 'test-client',
+  redirectUri: 'https://relay.example.test/oauth/callback',
+}
+
 function oauth(extra: Partial<OAuthConfig> = {}): OAuthConfig {
-  return { ...CONNECTIONS_OAUTH, ...extra }
+  return { ...PROVIDER, ...extra }
 }
 
 const discovery = {
-  authorization_endpoint: 'https://accounts.connectionsapi.com/oauth/authorize',
-  token_endpoint: 'https://accounts.connectionsapi.com/oauth/token',
-  jwks_uri: 'https://accounts.connectionsapi.com/oauth/jwks',
+  authorization_endpoint: 'https://accounts.example.test/oauth/authorize',
+  token_endpoint: 'https://accounts.example.test/oauth/token',
+  jwks_uri: 'https://accounts.example.test/oauth/jwks',
 }
 const discoveryFetch: typeof fetch = (async (input: string | URL | Request) => {
   if (String(input).endsWith('/.well-known/openid-configuration')) return Response.json(discovery)
@@ -34,7 +41,7 @@ describe('handleLogin', () => {
       handleLogin(c, oauth(), {
         fetchImpl: discoveryFetch,
         resolveRedirect: async () => ({
-          redirectUri: CONNECTIONS_OAUTH.redirectUri,
+          redirectUri: PROVIDER.redirectUri,
           relayId: '0123456789abcdef0123456789abcdef',
         }),
       }),
@@ -45,10 +52,10 @@ describe('handleLogin', () => {
     expect(res.status).toBe(302)
     const to = new URL(res.headers.get('location')!)
     expect(to.origin + to.pathname).toBe(discovery.authorization_endpoint)
-    expect(to.searchParams.get('client_id')).toBe(CONNECTIONS_OAUTH.clientId)
-    expect(to.searchParams.get('redirect_uri')).toBe(CONNECTIONS_OAUTH.redirectUri)
+    expect(to.searchParams.get('client_id')).toBe(PROVIDER.clientId)
+    expect(to.searchParams.get('redirect_uri')).toBe(PROVIDER.redirectUri)
     expect(to.searchParams.get('code_challenge_method')).toBe('S256')
-    expect(to.searchParams.get('scope')).toBe('openid profile email photo')
+    expect(to.searchParams.get('scope')).toBe('openid profile email')
     const state = to.searchParams.get('state')!
     // The relay reads the FIRST segment of state as base64url JSON and needs `r` in it.
     const payload = JSON.parse(Buffer.from(state.split('.')[0]!, 'base64url').toString()) as {
@@ -58,7 +65,7 @@ describe('handleLogin', () => {
       n: string
     }
     expect(payload.o).toBe('https://blue-fox.trycloudflare.com')
-    expect(payload.d).toBe(CONNECTIONS_OAUTH.redirectUri)
+    expect(payload.d).toBe(PROVIDER.redirectUri)
     expect(payload.r).toBe('0123456789abcdef0123456789abcdef')
     expect(txs.has(payload.n)).toBe(true)
   })
@@ -76,7 +83,7 @@ describe('handleLogin', () => {
 
 describe('ownership can only be claimed at the machine', () => {
   // The takeover this closes: while an install is unclaimed, /oauth/login is necessarily outside
-  // the auth gate (a sign-in cannot require a session), so any verified Connections account that
+  // the auth gate (a sign-in cannot require a session), so any verified account that
   // reached the public hostname would otherwise become the permanent owner - and the owner can
   // arm this machine's fleet automation from a phone. A URL is not a secret.
   test('an unclaimed install refuses a claim that arrived over the tunnel', () => {
@@ -102,7 +109,7 @@ describe('handleLogin surfaces a retryable page instead of throwing', () => {
       throw new Error('network is down')
     }) as unknown as typeof fetch
     // A unique issuer per test bypasses auth.ts's module-level discovery cache, which is keyed by
-    // issuer and shared across every test in this file - reusing CONNECTIONS_OAUTH.issuer here
+    // issuer and shared across every test in this file - reusing PROVIDER.issuer here
     // would risk silently serving another test's already-cached (successful) discovery doc.
     app.get('/oauth/login', (c) =>
       handleLogin(c, oauth({ issuer: 'https://discovery-rejects.test' }), {
