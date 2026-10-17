@@ -627,3 +627,28 @@ func TestTheBuildsHubIsNotKeptAsTheUsers(t *testing.T) {
 		t.Errorf("the user's hub is not the one used: %+v", c)
 	}
 }
+
+func TestServiceUnit(t *testing.T) {
+	u := serviceUnit("/home/me/.local/share/codex-hub/codex-hub-tray")
+	for _, line := range []string{
+		"[Service]",
+		"ExecStart=/home/me/.local/share/codex-hub/codex-hub-tray",
+		"Restart=on-failure",
+		"[Install]",
+		"WantedBy=default.target",
+	} {
+		if !strings.Contains(u, "\n"+line+"\n") {
+			t.Errorf("unit has no %q:\n%s", line, u)
+		}
+	}
+	for in, want := range map[string]string{
+		"/home/me/tray":         "/home/me/tray",
+		"/home/me/My Apps/tray": `"/home/me/My Apps/tray"`,
+		"/home/me/100%/tray":    "/home/me/100%%/tray",
+		`/home/me/a"b\c/tray`:   `"/home/me/a\"b\\c/tray"`,
+	} {
+		if got := systemdExec(in); got != want {
+			t.Errorf("systemdExec(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

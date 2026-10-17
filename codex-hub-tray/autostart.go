@@ -1,7 +1,8 @@
 package main
 
-// What starts the tray at log in on Linux (an XDG autostart entry) and on macOS (a LaunchAgent), and the macOS app
-// bundle's Info.plist. They are plain text, made here for every system so their tests run on any of them.
+// What starts the tray at log in on Linux (an XDG autostart entry, and a systemd --user unit on a PC without a
+// desktop) and on macOS (a LaunchAgent), and the macOS app bundle's Info.plist. They are plain text, made here for
+// every system so their tests run on any of them.
 
 import (
 	"bytes"
@@ -44,6 +45,32 @@ func desktopExec(p string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// serviceUnit is the systemd --user unit that starts the tray on a Linux PC without a desktop, where no autostart
+// entry runs: when the user's systemd starts, at their first log in (over SSH too) or at boot once lingering is on
+// for them, and again after a crash, but not after a stop (the tray exits 0 on SIGTERM).
+func serviceUnit(exe string) string {
+	return "[Unit]\n" +
+		"Description=Codex Hub: keeps this PC's Codex chats pushed to the hub\n" +
+		"\n" +
+		"[Service]\n" +
+		"ExecStart=" + systemdExec(exe) + "\n" +
+		"Restart=on-failure\n" +
+		"RestartSec=10\n" +
+		"\n" +
+		"[Install]\n" +
+		"WantedBy=default.target\n"
+}
+
+// systemdExec writes a program's path as ExecStart's first word: % doubled (systemd's specifiers), and quoted, with
+// \ and " escaped, when it has a space, a quote or a backslash.
+func systemdExec(p string) string {
+	p = strings.ReplaceAll(p, "%", "%%")
+	if !strings.ContainsAny(p, " \t\"'\\") {
+		return p
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(p) + `"`
 }
 
 const plistHead = `<?xml version="1.0" encoding="UTF-8"?>

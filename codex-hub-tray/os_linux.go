@@ -37,13 +37,55 @@ func writeAutostart() error {
 	return writeFileIfChanged(autostartPath(), desktopEntry(trayExe))
 }
 
+const serviceName = "codex-hub-tray.service"
+
+func servicePath() string {
+	return filepath.Join(xdgDir("XDG_CONFIG_HOME", ".config"), "systemd", "user", serviceName)
+}
+
+// startService has the user's systemd start the tray, on a PC without a desktop to run the autostart entry: it
+// writes the unit, enables it and restarts it, which starts it now and, after an install over a running one, runs
+// the new build (the tray stopped for the install exits 0, which systemd does not restart). It says what it did; false
+// when the tray is not started, and the caller starts it.
+func startService() bool {
+	systemctl, err := exec.LookPath("systemctl")
+	if err != nil {
+		say("There is no systemctl here, so Codex Hub will not start again after a reboot, or when you log in without a desktop: run " + trayExe + " again then.")
+		return false
+	}
+	if err := writeFileIfChanged(servicePath(), serviceUnit(trayExe)); err != nil {
+		say("Could not write the systemd unit " + servicePath() + " (" + err.Error() + "), so Codex Hub will not start again after a reboot, or when you log in without a desktop.")
+		return false
+	}
+	run := func(args ...string) error {
+		out, err := exec.Command(systemctl, append([]string{"--user"}, args...)...).CombinedOutput()
+		if err != nil {
+			say(fmt.Sprintf("systemctl --user %s: %v %s", strings.Join(args, " "), err, strings.TrimSpace(string(out))))
+		}
+		return err
+	}
+	if run("daemon-reload") != nil || run("enable", serviceName) != nil {
+		say("So Codex Hub will not start again after a reboot, or when you log in without a desktop, until `systemctl --user enable --now " + serviceName + "` works here.")
+		return false
+	}
+	if run("restart", serviceName) != nil {
+		say("systemd could not start it now; it starts it at your next log in: " + servicePath())
+		return false
+	}
+	say("Without a desktop session, systemd starts it: now, at each log in (over SSH too), and again if it crashes: " + servicePath())
+	say("To start it at boot, before you log in, turn on lingering for your user: loginctl enable-linger")
+	return true
+}
+
 // refreshAutostart leaves the autostart entry to install: once it is there it is the user's, and turning it off
 // (X-GNOME-Autostart-enabled=false from GNOME, Hidden=true or removing it from KDE) has to survive the next start.
 func refreshAutostart() error { return nil }
 
-// install copies a downloaded build to its place, replacing a running tray, adds the autostart entry and starts it.
+// install copies a downloaded build to its place, replacing a running tray, adds the autostart entry and starts it;
+// without a desktop session, through systemd (startService).
 func install(from string) {
 	first := !exists(trayExe)
+	desktop := hasDisplay() && hasBus()
 	stopRunningTray()
 	killStale(pidPath(), pusherExe)
 	// A running program's file cannot be written over, but it can be renamed over.
@@ -60,11 +102,15 @@ func install(from string) {
 	say("Installed Codex Hub at " + trayExe)
 	if err := writeAutostart(); err != nil {
 		say("Could not add it to the programs that start at log in (" + autostartPath() + "): " + err.Error())
-	} else {
+	} else if desktop {
 		say("It starts when you log in: " + autostartPath())
+	} else {
+		say("It starts when you log in to a desktop: " + autostartPath())
 	}
-	if err := startDetached(trayExe); err != nil {
-		fatal("Could not start Codex Hub: " + err.Error())
+	if desktop || !startService() {
+		if err := startDetached(trayExe); err != nil {
+			fatal("Could not start Codex Hub: " + err.Error())
+		}
 	}
 	say("Started it; its log is " + filepath.Join(appDir, "tray.log"))
 	if !hasBus() {
@@ -73,7 +119,7 @@ func install(from string) {
 	if !hasDisplay() {
 		say("To connect this PC, open the pairing address it writes to that log in a browser on this PC, or put the hub token in " + configPath + ".")
 	}
-	if first {
+	if first && desktop {
 		message("Codex Hub is installed and starts when you log in. It sits in the system tray (on GNOME, with the AppIndicator extension).\n\nIf the browser opens the hub's pairing page, choose Connect there to link this PC.")
 	}
 }
