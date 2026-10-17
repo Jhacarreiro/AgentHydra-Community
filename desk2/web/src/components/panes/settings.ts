@@ -73,9 +73,6 @@ export type SettingsRowId =
   | 'bridge'
   | 'ahMcp'
   | 'ahRepair'
-  | 'ahSync'
-  | 'ahSyncNow'
-  | 'ahDisconnect'
   | 'ahVersion'
   | 'ahAutoUpdate'
   | 'version'
@@ -114,7 +111,7 @@ export type SettingsRowId =
   | 'dwAlerts'
 
 /** An AgentHydra state a row only makes sense under; agenthydra.ts says which hold. */
-export type SettingsCondition = 'alerts' | 'persistent' | 'email' | 'missing' | 'connected' | 'syncing' | 'keepalive' | 'native' | 'freeKeepalive'
+export type SettingsCondition = 'alerts' | 'persistent' | 'email' | 'missing' | 'keepalive' | 'native' | 'freeKeepalive'
 
 export interface SettingsRow {
   id: SettingsRowId
@@ -356,22 +353,6 @@ export const SETTINGS_ROWS: SettingsRow[] = [
     description: 'Re-applies the current version, which restores the folders a release ships beside the executable.',
     when: ['missing']
   },
-  {
-    id: 'ahSync',
-    section: 'connections',
-    group: 'Cloud sync',
-    label: 'Sync settings with Connections',
-    description: 'Scheduler preferences and the theme follow you to AgentHydra on another machine. Never accounts, secrets or queue data.'
-  },
-  {
-    id: 'ahSyncNow',
-    section: 'connections',
-    group: 'Cloud sync',
-    label: 'Sync now',
-    description: "Pulls the synced settings, then pushes this machine's.",
-    when: ['connected', 'syncing']
-  },
-  { id: 'ahDisconnect', section: 'connections', group: 'Cloud sync', label: 'Disconnect', description: 'Signs this machine out of Connections.', when: ['connected'] },
   {
     id: 'ahVersion',
     section: 'updates',

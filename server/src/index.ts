@@ -51,19 +51,6 @@ import {
   SERVICE_NAME,
   VERSION,
 } from './config'
-import {
-  buildAuthorizeUrl,
-  disable,
-  enable,
-  flushPending,
-  handleCallback,
-  initConnections,
-  logout,
-  pullNow,
-  pushNow,
-  syncStatus,
-  updateAppearance,
-} from './connections'
 import { createChatGptContextPack } from './context-pack'
 import {
   listCliInstances,
@@ -125,7 +112,7 @@ import { keepAwakeStatus, refreshKeepAwake, startKeepAwake } from './keep-awake'
 import { startKitSweep } from './kit/sweep'
 import { initFileLogging, logFilePath } from './log-file.mjs'
 import { startLoopDetector } from './loop-detector'
-import { createLoopbackGuard, isLoopbackOrigin } from './loopback-guard.mjs'
+import { createLoopbackGuard } from './loopback-guard.mjs'
 import { startManagerAnalytics } from './manager-analytics/collect'
 import { startManagerJudge } from './manager-analytics/judge'
 import { autoRsiTick, startTrialSettling } from './manager-analytics/rsi'
@@ -324,9 +311,7 @@ app.use(
 )
 // Reject browser cross-site requests to the loopback API (drive-by CSRF → RCE), in the opt-in
 // exact-origin mode (AH-11): a present Origin must be in allowedApiOrigins, not merely loopback.
-// Runs after cors so preflight OPTIONS is answered by cors; applies to every /api/* verb. NOT
-// applied to /oauth/* (those are legitimate cross-site top-level navigations returning from the
-// OAuth provider).
+// Runs after cors so preflight OPTIONS is answered by cors; applies to every /api/* verb.
 app.use('/api/*', createLoopbackGuard({ allowedOrigins: () => allowedApiOrigins }))
 // No API route needs a multi-megabyte body. Bound parser memory even for a deliberate local/MCP
 // misuse; the provenance guard runs first so a rejected browser origin is never allowed to stream.
@@ -815,94 +800,12 @@ app.post('/api/chatgpt/context-pack', async (c) => {
   }
 })
 
-// --- "Sign in with Connections" + settings-sync (see server/src/connections.ts) ----------------
-// Loopback-only daemon: no auth gate, no session cookie; "signed in" simply means the daemon
-// holds a refresh token. Login/callback are full-page navigations (not /api), matching the
-// family pattern (DevWebUI).
-app.get('/oauth/login', async (c) => {
-  try {
-    const origin = new URL(c.req.url).origin
-    if (!isLoopbackOrigin(origin)) return c.redirect('/?connect=failed')
-    const url = await buildAuthorizeUrl(origin)
-    return c.redirect(url)
-  } catch {
-    return c.redirect('/?connect=failed')
-  }
-})
-app.get('/oauth/callback', async (c) => {
-  const origin = new URL(c.req.url).origin
-  if (!isLoopbackOrigin(origin)) return c.redirect('/?connect=failed')
-  const code = c.req.query('code')
-  const stateTok = c.req.query('state')
-  let ok = false
-  if (code && stateTok) {
-    try {
-      ok = await handleCallback(origin, code, stateTok)
-    } catch {
-      ok = false
-    }
-  }
-  // If sync was already enabled before this sign-in, converge now that we have a token: pull the
-  // remote doc (applying it) OR seed the store from local if the remote is empty. Runs in the
-  // background so the redirect never waits on the network.
-  if (ok && syncStatus().enabled) void enable().catch(() => {})
-  return c.redirect(ok ? '/?connected=1' : '/?connect=failed')
-})
-
-/** Run a sync op and turn any failure into an inline `{ ok:false, error }` (HTTP 200,
- *  non-fatal; the daemon keeps using local settings and the UI surfaces the reason). */
-async function guardSync<T extends object>(
-  c: import('hono').Context,
-  run: () => Promise<T>,
-): Promise<Response> {
-  try {
-    return c.json(await run())
-  } catch (e) {
-    const err = e as { code?: string; message?: string }
-    const code = err.code ?? (err.message === 'not_signed_in' ? 'not_signed_in' : 'sync_failed')
-    return c.json({ ok: false, error: code })
-  }
-}
-app.get('/api/settings/sync', (c) => c.json(syncStatus()))
-app.put('/api/settings/sync', async (c) => {
-  const b = (await jsonBody(c)) as {
-    enabled?: boolean
-    forget?: boolean
-    appearance?: Record<string, unknown>
-  }
-  return guardSync(c, async () => {
-    if (b.enabled === true) {
-      const { status } = await enable(b.appearance)
-      return status
-    }
-    if (b.enabled === false) return disable(b.forget === true)
-    if (b.appearance && typeof b.appearance === 'object') await updateAppearance(b.appearance)
-    return syncStatus()
-  })
-})
-app.post('/api/settings/sync/pull', (c) =>
-  guardSync(c, async () => {
-    await pullNow()
-    return syncStatus()
-  }),
-)
-app.post('/api/settings/sync/push', (c) =>
-  guardSync(c, async () => {
-    await pushNow()
-    return syncStatus()
-  }),
-)
-app.post('/api/settings/sync/logout', async (c) => {
-  await logout()
-  return c.json({ ok: true })
-})
-
 // --- feature routes (see server/src/routes/*.ts for each group) ------------------
 // Dynamic `import()`, not a static one: each module registers its routes as top-level
 // module-scope statements (no wrapping function — see http-app.ts for why), and a dynamic
 // import is the one way to run that module code at this EXACT point in the boot sequence.
 // A static `import` is hoisted above everything in this file, which would register every
-// route group here before the health/settings/notifications/oauth-sync routes above ever
+// route group here before the health/settings/notifications routes above ever
 // run — reordering registration in a router where relative order has already mattered once
 // (see the MUST-STAY-ABOVE comments in routes/sessions.ts). Awaited in sequence so the
 // original file's registration order is reproduced exactly, group by group.
@@ -954,22 +857,9 @@ function clearShutdownRequest(): void {
 
 // --- graceful shutdown (tray Quit calls this before falling back to taskkill) ---
 const SHUTDOWN_TOKEN = appEnv('SHUTDOWN_TOKEN')
-async function flushConnectionsBeforeExit(): Promise<void> {
-  await Promise.race([
-    flushPending().catch((error) => {
-      console.error(
-        `[agenthydra] final settings sync failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      )
-    }),
-    new Promise<void>((resolve) => setTimeout(resolve, 6_000)),
-  ])
-}
-
-/** Every graceful exit waits for the settings sync and for CliMayte's queued store writes. */
+/** Every graceful exit waits for CliMayte's queued store writes. */
 async function flushBeforeExit(): Promise<void> {
-  await Promise.all([flushConnectionsBeforeExit(), flushCliMayteStore()])
+  await flushCliMayteStore()
 }
 
 app.post('/api/shutdown', (c) => {
@@ -993,8 +883,8 @@ app.post('/api/shutdown', (c) => {
 })
 
 // --- the window ---------------------------------------------------------------
-// AgentHydra 2.0 (owner, 2026-10-06): the window is Desk 2 (desk2.ts). A page asked of the daemon, the
-// Connections sign-in's return included, goes on to Desk 2 with its query once Desk 2 answers; while it
+// AgentHydra 2.0 (owner, 2026-10-06): the window is Desk 2 (desk2.ts). A page asked of the daemon
+// goes on to Desk 2 with its query once Desk 2 answers; while it
 // does not, the daemon starts it and answers a small "Starting AgentHydra..." page that goes on by
 // itself. /api stays the daemon's, and so does the quick-instances window (/instances), AgentHydra
 // 2.0's copy of it served by the daemon itself (quick-instances-page.ts).
@@ -1391,10 +1281,6 @@ if (POINTER_DIR !== CONFIG_DIR)
 // Loud on purpose. This line only prints when a second state directory exists, and the whole cost
 // of that situation is someone not knowing about it (see resolveDataDir in config.ts).
 if (DATA_DIR_NOTICE) console.warn(`[agenthydra] WARNING: ${DATA_DIR_NOTICE}`)
-
-// --- Connections cloud sync (opt-in; see server/src/connections.ts) ---------
-// Load the persisted session/sync state into memory before the server starts accepting requests.
-initConnections()
 
 // Restart the daemon so a freshly-applied update takes over. The tray's watchdog only revives a
 // daemon that has died, so the daemon must relaunch ITSELF: spawn a DETACHED copy of this exact

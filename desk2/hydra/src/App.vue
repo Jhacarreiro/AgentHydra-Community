@@ -41,7 +41,6 @@ import {
   findInstanceRow,
   flashRow,
   openInDesk,
-  openSettingsInDesk,
   PANE_OPEN_EVENT,
   resendSidebar,
   setDeskView,
@@ -247,24 +246,6 @@ provide(OPEN_VIEW, (v: AppView) => {
 })
 
 
-// The "Sync my settings with Connections" sign-in (Desk's Settings, Connections) opens /oauth/login in
-// a NEW tab; a tab that boots this window lands back on ?connected=1 / ?connect=failed after the
-// daemon's /oauth/callback redirect. Surface the outcome, open Settings so the result is visible, and
-// strip the query param so a refresh doesn't re-trigger the toast.
-function handleConnectRedirect() {
-  const params = new URLSearchParams(window.location.search)
-  const connected = params.get('connected')
-  const failed = params.get('connect')
-  if (!connected && !failed) return
-  params.delete('connected')
-  params.delete('connect')
-  const query = params.toString()
-  window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : ''))
-  openSettingsInDesk()
-  if (connected === '1') toast.success(t('settings.cloudSyncEnableToggle'))
-  else if (failed === 'failed') toast.error(t('settings.cloudSyncConnectFailed'))
-}
-
 // One-time rename notice, shown only to installs that carried CC Manager UI state across (the
 // carry-over in lib/storage-rebrand sets the flag). Cleared before the toast is raised, not after
 // it is dismissed: an unread toast that survives a reload would follow the user around forever,
@@ -317,7 +298,6 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onEscape)
 })
 onMounted(() => startNotificationPolling(t))
-onMounted(handleConnectRedirect)
 onMounted(showRebrandNoticeOnce)
 // Reads the daemon's LAST background check — a memory read, no network from the daemon's side and
 // nothing that delays boot. See composables/useUpdates.ts.

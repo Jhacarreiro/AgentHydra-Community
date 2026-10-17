@@ -56,7 +56,6 @@ import type {
   SessionSummary,
   SessionUsage,
   SpendReport,
-  SyncStatus,
   TailResult,
   TokensByDay,
   TokenSinkReport,
@@ -145,7 +144,6 @@ export type {
   SessionUsageStatus,
   SpendBucket,
   SpendReport,
-  SyncStatus,
   TailEvent,
   TailResult,
   TitleSource,
@@ -763,31 +761,6 @@ export const createChatGptContextPack = (cwd: string, task: string) =>
     method: 'POST',
     body: JSON.stringify({ cwd, task }),
   })
-
-// --- "Sync my settings with Connections" (see server/src/connections.ts) -----------------------
-/** A handled sync failure — returned at HTTP 200 so it's non-blocking. */
-export interface SyncErrorResult {
-  ok: false
-  error: string
-}
-export type SyncResult = SyncStatus | SyncErrorResult
-
-/** Read the current sync status (enabled/connected/email/appearance/etc). */
-export const getSyncStatus = () => j<SyncStatus>('/api/settings/sync')
-/**
- * Turn sync on/off, disconnect, or push an updated appearance blob.
- * `{ enabled: true, appearance }` seeds/pulls; `{ enabled: false }` turns off (keeps the
- * connection); `{ enabled: false, forget: true }` disconnects fully.
- */
-export const setSync = (b: {
-  enabled?: boolean
-  forget?: boolean
-  appearance?: Record<string, unknown>
-}) => j<SyncResult>('/api/settings/sync', { method: 'PUT', body: JSON.stringify(b) })
-/** Force a pull of the remote synced settings now. */
-export const syncPull = () => j<SyncResult>('/api/settings/sync/pull', { method: 'POST' })
-/** Force a push of the current local settings now. */
-export const syncPush = () => j<SyncResult>('/api/settings/sync/push', { method: 'POST' })
 
 // --- usage-check subsystem (Feature B) -----------------------------------------
 // Read an account's remaining Claude quota. A check is a ~300ms call to the same quota endpoint the

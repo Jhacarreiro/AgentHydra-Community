@@ -439,18 +439,6 @@ function openSettingsOn(section?: SettingsSection) {
   requestedSection.value = section ?? null
   src.openSettings()
 }
-// The Connections sign-in (Settings → Connections) comes back to this page with ?connected=1 or
-// ?connect=failed: AgentHydra's /oauth/callback lands on its own address, which sends a page visit on to
-// Desk (server/src/index.ts). The result shows on Connections; the query goes so a reload does not ask again.
-function takeConnectReturn() {
-  const params = new URLSearchParams(window.location.search)
-  if (!params.has('connected') && !params.has('connect')) return
-  params.delete('connected')
-  params.delete('connect')
-  const query = params.toString()
-  window.history.replaceState(window.history.state, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash)
-  openSettingsOn('connections')
-}
 function showSessions() {
   cloudForHydra = false
   cloud.on.value = true
@@ -896,7 +884,6 @@ function onKey(e: KeyboardEvent) {
 }
 
 onMounted(() => {
-  if (!props.demo) takeConnectReturn()
   // In AgentHydra's own window the page draws the title bar from here on (lib/host-window.ts); a browser tab is untouched.
   startOwnFrame()
   window.addEventListener('keydown', onKey)

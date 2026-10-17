@@ -685,7 +685,6 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   poll_seconds: '5',
   max_concurrent: '3',
   hide_tray_icon: '0',
-  connections_sync: '',
   // '' = auto-detect an editor (server/src/transcript-open.ts); set to an absolute path to override.
   transcript_editor: '',
   // Auto-resume monitor (Feature E) — OFF by default (it auto-prompts sessions while you sleep).
@@ -807,3 +806,6 @@ export function pruneMigratedSettings(maxAgeMs: number): number {
 for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
   if (!db.query('select 1 from settings where key = ?').get(k)) setSetting(k, v)
 }
+// The settings sync with Connections is gone; an install that was signed in to it kept its sealed
+// refresh token in this row, which nothing reads any more.
+db.query("delete from settings where key = 'connections_sync'").run()

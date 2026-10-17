@@ -7,7 +7,6 @@
 // page in (a page on another local port is not it), so the API here asks the same: a browser request
 // must come from Desk 2's own page. What goes on carries no Origin, Referer, cookies or Sec-Fetch
 // headers: to AgentHydra it is a local client, the same as Desk's own bridge calls.
-// /oauth/* (AgentHydra's sign-in pages) is sent to AgentHydra itself: a sign-in is a page of its own.
 
 import { statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
@@ -68,11 +67,6 @@ export default function plugin(app: Hono): void {
     out.delete('content-encoding')
     out.delete('content-length')
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out })
-  })
-
-  app.get('/oauth/*', (c) => {
-    const url = new URL(c.req.url)
-    return c.redirect(`${bridge().url}${url.pathname}${url.search}`, 302)
   })
 
   app.get(BASE, (c) => c.redirect(`${BASE}/${new URL(c.req.url).search}`, 301))

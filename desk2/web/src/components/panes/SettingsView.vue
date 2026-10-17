@@ -419,15 +419,9 @@ watch(
   },
   { immediate: true }
 )
-// The Connections sign-in is a window of its own: coming back here reads the sync state again.
-function onFocus() {
-  if (!ah.sync.value?.connected) void ah.loadSync()
-}
-window.addEventListener('focus', onFocus)
 onMounted(async () => {
   syncBridgePoll()
   void ah.load()
-  void ah.loadSync()
   void ah.loadAutoUpdate()
   const tasks: Promise<unknown>[] = [
     api.models().then((m) => (models.value = m)).catch(() => {}),
@@ -458,7 +452,6 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onBabysitterVisibility)
   document.removeEventListener('visibilitychange', onInstanceManagerVisibility)
   document.removeEventListener('visibilitychange', onRoutinesVisibility)
-  window.removeEventListener('focus', onFocus)
   stopBridgePoll()
   if (savedTimer) clearTimeout(savedTimer)
   if (idleTimer) clearTimeout(idleTimer)

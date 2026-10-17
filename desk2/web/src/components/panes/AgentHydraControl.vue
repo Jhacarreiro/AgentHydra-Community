@@ -155,30 +155,6 @@ function onVersion() {
     @update:model-value="(v: boolean) => ah.setAutoUpdate(v)"
   />
 
-  <template v-else-if="id === 'ahSync'">
-    <button v-if="!ah.sync.value?.connected" type="button" :class="BUTTON" @click="ah.connect()">Sign in</button>
-    <PaneSwitch
-      v-else
-      label="Sync settings"
-      :disabled="ah.syncBusy.value"
-      :model-value="!!ah.sync.value?.enabled"
-      @update:model-value="(v: boolean) => ah.setSync(v)"
-    />
-  </template>
-  <button v-else-if="id === 'ahSyncNow'" type="button" :class="BUTTON" :disabled="ah.syncBusy.value" @click="ah.syncNow()">
-    {{ ah.syncBusy.value ? 'Syncing…' : 'Sync now' }}
-  </button>
-  <button
-    v-else-if="id === 'ahDisconnect'"
-    type="button"
-    :class="[BUTTON, ah.confirmDisconnect.value ? 'text-danger-text' : '']"
-    :disabled="ah.syncBusy.value"
-    @click="ah.disconnect()"
-    @blur="ah.confirmDisconnect.value = false"
-  >
-    {{ ah.confirmDisconnect.value ? 'Click again to disconnect' : 'Disconnect' }}
-  </button>
-
   <span v-else-if="!s" class="text-ui leading-4.75 text-text-muted">Loading…</span>
 
   <PaneSwitch v-else-if="sw" :label="label" :model-value="s[sw]" @update:model-value="(v: boolean) => ah.save({ [sw!]: v } as AhSettingsPatch)" />

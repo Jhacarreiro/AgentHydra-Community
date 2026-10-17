@@ -77,16 +77,6 @@ interface AhUpdateStatus {
   reason: string | null
 }
 
-interface AhSyncStatus {
-  enabled: boolean
-  connected: boolean
-  name: string | null
-  email: string | null
-  lastSyncedAt: string | null
-  appearance: Record<string, unknown> | null
-}
-type AhSyncResult = ({ ok: true } & AhSyncStatus) | { ok: false; error: string }
-
 interface AhTestResult {
   desktop: { attempted: boolean; ok: boolean; error?: string | null }
   email: { attempted: boolean; ok: boolean; error?: string | null }
@@ -94,10 +84,9 @@ interface AhTestResult {
 
 export type UpdateState = 'checking' | 'up-to-date' | 'available' | 'blocked' | 'no-source' | 'unknown'
 
-// The pane's keys (hydra/src/lib/tooltip-config.ts, composables/useUiPrefs.ts, lib/theme.ts).
+// The pane's keys (hydra/src/lib/tooltip-config.ts, composables/useUiPrefs.ts).
 const TOOLTIPS_KEY = 'lunarwerx-tooltips-enabled'
 const PRIVACY_KEY = 'agenthydra.privacyMode'
-const THEME_KEY = 'lunarwerx-theme'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -115,7 +104,7 @@ export function useAgentHydraSettings(api: PaneApi) {
   const error = ref<string | null>(null)
   /** When a setting last saved, for the dialog's "Saved". */
   const savedAt = ref(0)
-  const notes = reactive<Partial<Record<'test' | 'repair' | 'sync' | 'shortcut', string>>>({})
+  const notes = reactive<Partial<Record<'test' | 'repair' | 'shortcut', string>>>({})
 
   const tooltips = useStorage(TOOLTIPS_KEY, true)
   const privacy = useStorage(PRIVACY_KEY, false)
@@ -255,74 +244,6 @@ export function useAgentHydraSettings(api: PaneApi) {
     return p.message || null
   })
 
-  // --- cloud sync ---
-  const sync = ref<AhSyncStatus | null>(null)
-  const syncBusy = ref(false)
-  const confirmDisconnect = ref(false)
-
-  // What syncs of the appearance is the pane's theme; a pulled one is stored for the pane to apply.
-  const appearance = () => ({ theme: localStorage.getItem(THEME_KEY) ?? 'dark' })
-  function absorbSync(r: AhSyncResult): boolean {
-    if (!r.ok) {
-      notes.sync = r.error
-      return false
-    }
-    sync.value = r
-    notes.sync = undefined
-    const theme = r.appearance?.theme
-    if (theme === 'light' || theme === 'dark' || theme === 'system') localStorage.setItem(THEME_KEY, theme)
-    return true
-  }
-
-  async function loadSync() {
-    try {
-      sync.value = await api.agentHydra<AhSyncStatus>('/settings/sync')
-    } catch {
-      sync.value = null
-    }
-  }
-
-  async function syncCall(run: () => Promise<boolean | void>) {
-    syncBusy.value = true
-    try {
-      await run()
-    } catch (e) {
-      notes.sync = message(e)
-    } finally {
-      syncBusy.value = false
-    }
-  }
-  const putSync = (body: Record<string, unknown>) =>
-    api.agentHydra<AhSyncResult>('/settings/sync', { method: 'PUT', body: JSON.stringify(body) })
-
-  // The sign-in is AgentHydra's own page (Desk sends /oauth/* to it), in a window of its own; the
-  // status is read again when this one gets the focus back.
-  const connect = () => window.open('/oauth/login', '_blank', 'noopener')
-  const setSync = (enabled: boolean) =>
-    syncCall(async () => absorbSync(await putSync(enabled ? { enabled, appearance: appearance() } : { enabled })))
-  const syncNow = () =>
-    syncCall(async () => {
-      if (absorbSync(await api.agentHydra<AhSyncResult>('/settings/sync/pull', { method: 'POST' })))
-        if (absorbSync(await api.agentHydra<AhSyncResult>('/settings/sync/push', { method: 'POST' }))) notes.sync = 'Synced.'
-    })
-  function disconnect() {
-    if (!confirmDisconnect.value) {
-      confirmDisconnect.value = true
-      return
-    }
-    confirmDisconnect.value = false
-    void syncCall(async () => absorbSync(await putSync({ enabled: false, forget: true })))
-  }
-
-  function syncedLabel(now = Date.now()): string {
-    const ts = Date.parse(sync.value?.lastSyncedAt ?? '')
-    if (Number.isNaN(ts)) return 'Not synced yet'
-    const s = Math.round((now - ts) / 1000)
-    if (s < 10) return 'Synced just now'
-    const when = s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
-    return `Synced ${when} ago`
-  }
-
   /** Whether a row's `when` holds right now. */
   function holds(c: SettingsCondition): boolean {
     const s = settings.value
@@ -335,10 +256,6 @@ export function useAgentHydraSettings(api: PaneApi) {
         return !!s?.notifyEmail
       case 'missing':
         return !!s?.mcpMissingComponents.length
-      case 'connected':
-        return !!sync.value?.connected
-      case 'syncing':
-        return !!sync.value?.enabled
       case 'keepalive':
         return !!s?.keepaliveEnabled
       case 'native':
@@ -371,15 +288,6 @@ export function useAgentHydraSettings(api: PaneApi) {
     ]
   }
 
-  function syncNotes(): string[] {
-    return [
-      ...(sync.value?.connected
-        ? [`${privacy.value ? 'Connected' : sync.value.name || sync.value.email || 'Connected'} · ${sync.value.enabled ? syncedLabel() : 'Sync is off'}`]
-        : []),
-      ...(notes.sync ? [notes.sync] : [])
-    ]
-  }
-
   function versionNotes(): string[] {
     if (applying.value) return [progressLabel.value ?? 'Updating…']
     const u = update.value
@@ -404,8 +312,6 @@ export function useAgentHydraSettings(api: PaneApi) {
         return notes.shortcut ? [notes.shortcut] : []
       case 'ahSmtpPass':
         return settings.value?.notifySmtpPassSet ? ['A password is stored.'] : []
-      case 'ahSync':
-        return syncNotes()
       case 'ahVersion':
         return versionNotes()
       default:
@@ -434,14 +340,6 @@ export function useAgentHydraSettings(api: PaneApi) {
     setAutoUpdate,
     applyUpdate,
     repair,
-    sync,
-    syncBusy,
-    confirmDisconnect,
-    loadSync,
-    connect,
-    setSync,
-    syncNow,
-    disconnect,
     holds,
     rowNotes
   }

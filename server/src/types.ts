@@ -19,30 +19,6 @@ import type { LimitStop, SessionLimitStop } from './rate-limit-signal'
 // Same reasoning: session-ending.ts imports only that leaf, so this stays free of Bun runtime.
 import type { SessionEnding } from './session-ending'
 
-export type { LimitStop, SessionEnding, SessionLimitStop }
-
-/** "Sync my settings with Connections" DTO, defined HERE (not re-exported from
- * ./connections.ts) because that module imports Bun-only runtime files (db.ts), which
- * must never be pulled into the web app's vue-tsc pass; ./connections.ts imports it back.
- * Status shape returned by every settings-sync endpoint (matches DevWebUI's SyncStatus). */
-export interface SyncStatus {
-  ok: true
-  /** Sync is turned on (independent of whether a Connections credential exists). */
-  enabled: boolean
-  /** The daemon holds a Connections credential (owner is signed in). */
-  connected: boolean
-  /** Signed-in display name, or null when not connected (or a pre-name connection pending refresh). */
-  name: string | null
-  /** Privacy-relay email; third-party apps never receive the real inbox, shown only as a fallback. */
-  email: string | null
-  /** Avatar image URL from the IdP, or null when not granted/available. */
-  picture: string | null
-  /** ISO timestamp of the last successful sync, or null. */
-  lastSyncedAt: string | null
-  version: number
-  /** Last-synced appearance blob (e.g. `{ theme }`) to apply locally, or null. */
-  appearance: Record<string, unknown> | null
-}
 /** One account's chat list (see ./chat-dossier.ts), re-exported here for the same reason. TYPE
  * re-exports only: chat-dossier reads the desktop stores at runtime and must never be pulled
  * into the browser bundle, and `export type` is erased before it could be. */
@@ -78,6 +54,7 @@ export { INSTANCE_COLOR_KEYS, INSTANCE_ICON_KEYS, INSTANCE_LABEL_MAX } from './c
 /** Self-updater DTOs (see ./updater-engine.mjs), re-exported here so the web app only
  * ever imports types from this one module, same as every other DTO in this file. */
 export type { UpdateApplyResult, UpdateStatus } from './updater-engine.mjs'
+export type { LimitStop, SessionEnding, SessionLimitStop }
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type AuthType = 'oauth_token' | 'api_key'
@@ -350,8 +327,8 @@ export interface SessionSecretScan {
 /**
  * One coding agent, as found on this machine (server/src/agent-catalog.ts).
  *
- * Defined here rather than beside the scanner for the same reason SyncStatus is: agent-catalog.ts
- * imports node:fs, and nothing Bun-only may be pulled into the web app's type pass.
+ * Defined here rather than beside the scanner: agent-catalog.ts imports node:fs, and nothing
+ * Bun-only may be pulled into the web app's type pass.
  */
 export interface AgentPresence {
   /** Catalog id — 'claude-code', 'openclaude', 'traex', … */
@@ -379,7 +356,7 @@ export interface AgentPresence {
 }
 
 // --- the analytics tier (server/src/analytics.ts) ---------------------------
-// DTOs only; the runtime module imports them back, same discipline as SyncStatus above.
+// DTOs only; the runtime module imports them back, so the web app's type pass never pulls it in.
 
 /** How much of the store the background scan has reached. Every report carries it, because a chart
  *  from a half-warmed store looks identical to one from a complete store and means less. */
@@ -1051,7 +1028,7 @@ export interface TranscriptSettings {
 // --- usage-check subsystem (Feature B) --------------------------------------
 // These DTOs live HERE (the pure, web-safe types hub) rather than in server/src/usage.ts, so the
 // Vue app's type-only import path never pulls a Bun-only module. The runtime `usage.ts` imports
-// them back, same discipline as SyncStatus above.
+// them back.
 
 /** Server-computed "how bad is this" for one limit. Only the API path supplies it; the text
  *  parser cannot (the `/usage` screen renders severity as color, which we never see). */

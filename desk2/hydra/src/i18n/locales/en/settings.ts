@@ -14,10 +14,6 @@ export default {
 
   toastSchedulerFailed: 'Failed to update scheduler settings.',
 
-  // the Connections sign-in's return (App.vue handleConnectRedirect)
-  cloudSyncEnableToggle: 'Sync settings',
-  cloudSyncConnectFailed: "Couldn't connect to Connections. Try again.",
-
   // scheduler section
   scheduler: 'Scheduler',
   schedulerHint:
