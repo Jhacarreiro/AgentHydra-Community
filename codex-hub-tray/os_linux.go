@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -43,10 +44,21 @@ func servicePath() string {
 	return filepath.Join(xdgDir("XDG_CONFIG_HOME", ".config"), "systemd", "user", serviceName)
 }
 
+// lingerDir holds a file for each user whose systemd runs from boot and while they are logged out (loginctl
+// enable-linger).
+var lingerDir = "/var/lib/systemd/linger"
+
+func lingering() bool {
+	u, err := user.Current()
+	return err == nil && u.Username != "" && exists(filepath.Join(lingerDir, u.Username))
+}
+
 // startService has the user's systemd start the tray, on a PC without a desktop to run the autostart entry: it
-// writes the unit, enables it and restarts it, which starts it now and, after an install over a running one, runs
-// the new build (the tray stopped for the install exits 0, which systemd does not restart). It says what it did; false
-// when the tray is not started, and the caller starts it.
+// writes the unit and enables it. With lingering on it also restarts it, which starts it now and, after an install
+// over a running one, runs the new build (the tray stopped for the install exits 0, which systemd does not restart).
+// Without lingering the user's systemd stops with every unit it runs once they have logged out, so the caller starts
+// this tray itself, as without systemd, and the unit starts it at the next log ins. It says what it did; false when
+// the tray is not started, and the caller starts it.
 func startService() bool {
 	systemctl, err := exec.LookPath("systemctl")
 	if err != nil {
@@ -68,12 +80,16 @@ func startService() bool {
 		say("So Codex Hub will not start again after a reboot, or when you log in without a desktop, until `systemctl --user enable --now " + serviceName + "` works here.")
 		return false
 	}
-	if run("restart", serviceName) != nil {
-		say("systemd could not start it now; it starts it at your next log in: " + servicePath())
+	if !lingering() {
+		say("Without a desktop session, systemd starts it at each log in (over SSH too), and stops it when you log out: " + servicePath())
+		say("To keep it running while you are logged out, and start it at boot, turn on lingering for your user: loginctl enable-linger")
 		return false
 	}
-	say("Without a desktop session, systemd starts it: now, at each log in (over SSH too), and again if it crashes: " + servicePath())
-	say("To start it at boot, before you log in, turn on lingering for your user: loginctl enable-linger")
+	if run("restart", serviceName) != nil {
+		say("systemd could not start it now; it starts it at boot: " + servicePath())
+		return false
+	}
+	say("Without a desktop session, systemd starts it: now, at boot, and again if it crashes: " + servicePath())
 	return true
 }
 
@@ -82,7 +98,8 @@ func startService() bool {
 func refreshAutostart() error { return nil }
 
 // install copies a downloaded build to its place, replacing a running tray, adds the autostart entry and starts it;
-// without a desktop session, through systemd (startService).
+// without a desktop session it also enables the systemd unit, which starts it now when lingering is on
+// (startService).
 func install(from string) {
 	first := !exists(trayExe)
 	desktop := hasDisplay() && hasBus()

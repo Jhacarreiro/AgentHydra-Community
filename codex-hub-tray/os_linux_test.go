@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,11 +76,31 @@ func said(t *testing.T) *bytes.Buffer {
 	return &b
 }
 
-// Without a desktop the autostart entry never runs, so systemd starts the tray: a --user unit, enabled and started.
-// An install over it writes the same unit and starts the new build in the old one's place.
+// linger turns lingering on or off for this user, as /var/lib/systemd/linger would have it.
+func linger(t *testing.T, on bool) {
+	t.Helper()
+	saved := lingerDir
+	lingerDir = t.TempDir()
+	t.Cleanup(func() { lingerDir = saved })
+	if !on {
+		return
+	}
+	u, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lingerDir, u.Username), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Without a desktop the autostart entry never runs, so systemd starts the tray: a --user unit, enabled and, with
+// lingering on, started, so that it runs while the user is logged out. An install over it writes the same unit and
+// starts the new build in the old one's place.
 func TestStartServiceWithoutADesktop(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "conf"))
 	calls := fakeSystemctl(t, "")
+	linger(t, true)
 	out := said(t)
 	var want []string
 	for round := 1; round <= 2; round++ {
@@ -101,7 +122,31 @@ func TestStartServiceWithoutADesktop(t *testing.T) {
 	if want := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "systemd", "user", "codex-hub-tray.service"); servicePath() != want {
 		t.Errorf("unit at %s, want %s", servicePath(), want)
 	}
-	for _, s := range []string{"systemd starts it: now, at each log in", servicePath(), "loginctl enable-linger"} {
+	for _, s := range []string{"systemd starts it: now, at boot", servicePath()} {
+		if !strings.Contains(out.String(), s) {
+			t.Errorf("it does not say %q:\n%s", s, out)
+		}
+	}
+}
+
+// Without lingering the user's systemd stops when they log out, and every unit with it, so the install starts the
+// tray itself, as without systemd, and enables the unit only for later log ins; it says the tray stops at log out.
+func TestStartServiceWithoutLingering(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "conf"))
+	calls := fakeSystemctl(t, "")
+	linger(t, false)
+	out := said(t)
+	if startService() {
+		t.Fatal("systemd started the tray that it stops at log out")
+	}
+	want := []string{"--user_daemon-reload", "--user_enable_codex-hub-tray.service"}
+	if got := calls(); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("systemctl calls %v, want %v", got, want)
+	}
+	if b, err := os.ReadFile(servicePath()); err != nil || string(b) != serviceUnit(trayExe) {
+		t.Fatalf("unit %q %v", b, err)
+	}
+	for _, s := range []string{"stops it when you log out", servicePath(), "loginctl enable-linger"} {
 		if !strings.Contains(out.String(), s) {
 			t.Errorf("it does not say %q:\n%s", s, out)
 		}
