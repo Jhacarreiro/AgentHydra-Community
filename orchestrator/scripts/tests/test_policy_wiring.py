@@ -139,10 +139,12 @@ class ScheduledLaneTest(_PolicyCase):
 
     def test_the_default_cadences_match_what_was_registered_before(self):
         import schedule_jobs
-        for job, spec in schedule_jobs.JOBS.items():
-            with self.subTest(job):
-                self.assertEqual(schedule_jobs.configured_jobs()[job]["schedule"],
-                                 spec["schedule"])
+        # Every lane set up, todo-sweep included (it needs a Project Hydra clone named).
+        with mock.patch.object(schedule_jobs, "HYDRA", Path("project-hydra")):
+            for job, spec in schedule_jobs.JOBS.items():
+                with self.subTest(job):
+                    self.assertEqual(schedule_jobs.configured_jobs()[job]["schedule"],
+                                     spec["schedule"])
 
 
 @unittest.skipUnless(os.name == "nt", "schedule_jobs.main refuses to run off Windows")

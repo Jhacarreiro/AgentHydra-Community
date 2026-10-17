@@ -15,10 +15,11 @@ WHAT COUNTS AS A PENDING ITEM, taken from the chat's own recap and nothing inven
     wherever it stopped and only a person can judge whether to resume it
 
 WHICH CODEBASE, derived not guessed: a chat's transcript lives under a project folder whose
-name is its working directory with the separators flattened (`D--PublicProjects-orchestrator`).
-Every real directory under the known roots is encoded the same way and matched back, so a chat
-lands in its own repo or in nobody's - never in a wrong one. Unresolved chats go to one
-fallback file rather than being dropped.
+name is its working directory with the separators flattened (`D--Projects-orchestrator`).
+Every real directory under the roots you name in ORCH_HARVEST_ROOTS (folders separated the
+way PATH separates them) is encoded the same way and matched back, so a chat lands in its own
+repo or in nobody's - never in a wrong one. With no roots named, nothing is matched and every
+chat goes to the one fallback file; unresolved chats always go there rather than being dropped.
 
 ⛔ IT ONLY EVER ADDS A FILE. One `docs/todo/from-archived-chats.md` per codebase, rewritten
 whole on each run so it never grows duplicates, and it stages nothing and commits nothing -
@@ -32,6 +33,7 @@ Exit:  0 wrote (or nothing to write) - 1 fleet read failed, or a write failed.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -41,9 +43,11 @@ from lib import gatelib
 from lib import hydralib
 from lib import stamplib
 
-# Where codebases live on this machine. A chat outside these is still harvested - it just
-# lands in the fallback file instead of a repo.
-ROOTS = [Path(r"D:\PublicProjects"), Path(r"D:\NEWProjects"), Path(r"H:\LargeProjects")]
+# Where codebases live on this machine: the folders named in ORCH_HARVEST_ROOTS, none by
+# default. A chat outside these is still harvested - it just lands in the fallback file
+# instead of a repo.
+ROOTS = [Path(p) for p in (os.environ.get("ORCH_HARVEST_ROOTS") or "").split(os.pathsep)
+         if p.strip()]
 FALLBACK = Path(__file__).resolve().parents[1] / "docs" / "todo"
 TODO_NAME = "from-archived-chats.md"
 
@@ -58,10 +62,10 @@ def _repo_index() -> dict[str, Path]:
 
     THREE DETAILS, each of which cost a batch of unresolved chats when it was missing
     (measured 2026-09-01, 640 of 681 unresolved on the first cut):
-      - the folder names are CASE-INSENSITIVE against the real path ('d--NEWProjects…' for
-        'D:\\NEWProjects…', 'agenthydra' for 'AgentHydra') - 312 chats hung on that one;
+      - the folder names are CASE-INSENSITIVE against the real path ('d--Projects…' for
+        'D:\\Projects…', 'agenthydra' for 'AgentHydra') - 312 chats hung on that one;
       - the ROOTS THEMSELVES are working directories, not just their children;
-      - real trees go three deep (D:\\NEWProjects\\active\\RustTor\\rLibtorrent).
+      - real trees go three deep (D:\\Projects\\active\\some-app\\some-lib).
     """
     out: dict[str, Path] = {}
 
@@ -166,18 +170,16 @@ def write(plan: dict) -> list[dict]:
     roots = {str(r).lower() for r in ROOTS}
     for key, bucket in plan["repos"].items():
         repo = Path(bucket["repo"]) if bucket["repo"] else None
-        # A CONTAINER IS NOT A CODEBASE. A chat whose working directory was D:\PublicProjects
+        # A CONTAINER IS NOT A CODEBASE. A chat whose working directory was one of the ROOTS
         # itself belongs to no repo in particular, and dropping a docs/todo/ into the root of a
         # projects folder would be litter. Those go to the orchestrator's own to-do folder,
         # named for the root they came from.
         if repo is not None and str(repo).lower() in roots:
             target, name = FALLBACK, f"from-archived-chats-{repo.name}.md"
         elif repo is not None:
-            # A repo may forbid loose files at its docs/todo/ ROOT (Connections: owner directive,
-            # 2026-07-30, gated there by `todo-root-loose-file-gate` - every to-do belongs
-            # to an owner folder or a standing intake folder). Machine-filed intake there lives in
-            # `docs/todo/loki/` beside the other harvester-written files, so write into that folder
-            # when the repo has one; a repo without it keeps the plain docs/todo/ convention.
+            # A repo may forbid loose files at its docs/todo/ ROOT and keep machine-filed intake
+            # in `docs/todo/loki/` beside the other harvester-written files, so write into that
+            # folder when the repo has one; a repo without it keeps the plain docs/todo/ convention.
             todo = repo / "docs" / "todo"
             target, name = (todo / "loki" if (todo / "loki").is_dir() else todo), TODO_NAME
         else:
@@ -227,6 +229,9 @@ def main(argv: list[str]) -> int:
         return 1 if failed else 0
     print(f"{plan['chats']} archived chat(s) with open work, across "
           f"{len(plan['repos'])} codebase(s) ({plan['skipped']} had nothing extractable)")
+    if not ROOTS:
+        print("  ORCH_HARVEST_ROOTS names no folders, so no chat is matched to its repo - "
+              "all of them go to the orchestrator's own docs/todo/.")
     for key, bucket in sorted(plan["repos"].items(),
                               key=lambda kv: -len(kv[1]["chats"]))[:limit]:
         name = Path(key).name if bucket["repo"] else key

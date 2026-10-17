@@ -510,8 +510,9 @@ def _cmd_arm(rest: list[str], tray_ps1: Path) -> int:
         want = {n for job, spec in schedule_jobs.configured_jobs().items()
                 for n in schedule_jobs.task_names(job, spec)}
         missing = sorted(want - have)
+        unset = schedule_jobs.unconfigured_jobs()
     except Exception as err:  # noqa: BLE001 - a registry read must never block the switch
-        missing, err_note = [], str(err)[:120]
+        missing, unset, err_note = [], {}, str(err)[:120]
     else:
         err_note = ""
     if missing:
@@ -521,6 +522,8 @@ def _cmd_arm(rest: list[str], tray_ps1: Path) -> int:
               + (f" - {len(bad)} did NOT register: " + "; ".join(str(r.get('detail'))[:80] for r in bad) if bad else ""))
     elif err_note:
         print(f"could not read the task registry ({err_note}) - starting the icon anyway", file=sys.stderr)
+    for job, why in unset.items():
+        print(f"not set up, so not registered: {job} - {why}")
     # ARMING IS NOT STARTING (owner, 2026-09-02: "it should probably launch on pause so
     # that it doesn't just immediately start working"). The icon comes up paused; the
     # lanes stay registered and silent until `resume`. `--now` is the old one-step form,

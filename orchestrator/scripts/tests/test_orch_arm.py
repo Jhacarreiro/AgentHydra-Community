@@ -71,12 +71,24 @@ class OrchArmTest(unittest.TestCase):
     def test_arm_registers_lanes_that_are_missing_on_this_machine(self):
         # owner, 2026-09-02: "/orchestrate should spin up the orchestrator service, so I
         # don't have to find the script" - arm is the whole start, lanes included.
-        with mock.patch.object(schedule_jobs, "registered", return_value={}), self._fake_tray(beats=True):
+        # Every lane set up, todo-sweep included: an invented Project Hydra clone.
+        with mock.patch.object(schedule_jobs, "registered", return_value={}), \
+             mock.patch.object(schedule_jobs, "HYDRA", Path(self._state.name) / "project-hydra"), \
+             self._fake_tray(beats=True):
             code, out, _ = run_cli(orch.main, ["arm"])
         self.assertEqual(code, 0)
         self.assertEqual(self.applied, [sorted(schedule_jobs.JOBS)])
         self.assertIn("registered", out)
         self.assertIn("ARMED", out)
+
+    def test_arm_leaves_out_a_lane_this_machine_has_not_set_up_and_says_so(self):
+        with mock.patch.object(schedule_jobs, "registered", return_value={}), \
+             mock.patch.object(schedule_jobs, "HYDRA", None), self._fake_tray(beats=True):
+            code, out, _ = run_cli(orch.main, ["arm"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.applied, [sorted(set(schedule_jobs.JOBS) - {"todo-sweep"})])
+        self.assertIn("not registered: todo-sweep", out)
+        self.assertIn("PROJECTHYDRA_HOME", out)
 
     def test_arm_registers_nothing_when_every_lane_exists(self):
         with self._fake_tray(beats=True):

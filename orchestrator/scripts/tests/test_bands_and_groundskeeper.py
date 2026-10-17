@@ -599,6 +599,23 @@ class HarvestTodosTest(unittest.TestCase):
         self.assertIn(enc, idx)
         self.assertEqual(idx[enc].name, "orchestrator")
 
+    def test_the_roots_are_the_folders_you_name_and_none_by_default(self):
+        import importlib
+
+        saved = os.environ.pop("ORCH_HARVEST_ROOTS", None)
+        try:
+            self.assertEqual(importlib.reload(self.mod).ROOTS, [])
+            self.assertEqual(self.mod._repo_index(), {})
+            os.environ["ORCH_HARVEST_ROOTS"] = os.pathsep.join(
+                [str(self.root / "a"), "", str(self.root / "b")])
+            self.assertEqual(importlib.reload(self.mod).ROOTS,
+                             [self.root / "a", self.root / "b"])
+        finally:
+            os.environ.pop("ORCH_HARVEST_ROOTS", None)
+            if saved is not None:
+                os.environ["ORCH_HARVEST_ROOTS"] = saved
+            importlib.reload(self.mod)
+
     def test_items_come_from_the_chats_own_words(self):
         v = {"state": "finished", "crashed": None, "finished": {
             "interrupted": False, "done_claim": "no",

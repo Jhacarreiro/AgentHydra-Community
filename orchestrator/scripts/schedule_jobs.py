@@ -29,7 +29,8 @@ THE JOBS (cadence set 2026-08-31 by owner: "these sweeps need to run every 5 min
   reconcile   every 5 min - did every past archive attempt settle? OBSERVE ONLY, never
               --retry: an unattended retry is the shape both previous orchestrators died of
   todo-sweep  every 5 min - `ph discover` (new codebases) + `ph loki --file --apply`
-              (consolidate open work into each codebase's docs/todo/). Writes files; never
+              (consolidate open work into each codebase's docs/todo/). Registered only when
+              PROJECTHYDRA_HOME names your Project Hydra clone. Writes files; never
               stages, commits or pushes anything. This one is MINUTES long over a real
               fleet, so it holds a lockfile: a tick that finds the previous run still going
               says so and exits, rather than stacking runs on top of each other
@@ -96,9 +97,10 @@ SCRIPTS = REPO / "scripts"
 PREFIX = "Orchestrator-"
 
 # Project Hydra (Odin and Launchpad combined, 2026-10-05) is a separate program in its own clone;
-# the to-do sweep drives it, so its location is a parameter rather than an assumption. Env
-# override for the other machine.
-HYDRA = Path(os.environ.get("PROJECTHYDRA_HOME", r"D:\NEWProjects\shared\project-hydra"))
+# the to-do sweep drives it, so its location is yours to give in PROJECTHYDRA_HOME. Unset, there is
+# no default to guess: the todo-sweep lane is simply not registered.
+_HYDRA_HOME = (os.environ.get("PROJECTHYDRA_HOME") or "").strip()
+HYDRA: Path | None = Path(_HYDRA_HOME) if _HYDRA_HOME else None
 
 # The interpreters, resolved from THIS process rather than from PATH: a scheduled task runs
 # with a different environment than a terminal, and "python" may not be on it at all.
@@ -137,6 +139,20 @@ def _policy_on(job: str) -> bool:
     return bool(configlib.get(f"jobs.{job_key(job)}.enabled", True))
 
 
+def _not_set_up(job: str) -> str | None:
+    """Why a lane cannot be registered on this machine, or None when it can."""
+    if HYDRA is None and any("{hydra}" in line for line in JOBS[job]["lines"]):
+        return "PROJECTHYDRA_HOME does not say where your Project Hydra clone is"
+    return None
+
+
+def unconfigured_jobs() -> dict[str, str]:
+    """Lanes the policy wants that this machine has not set up, each with why. They are left out
+    of a registration rather than unregistered: a task written while the setting was there still
+    carries the path it was given."""
+    return {job: why for job in JOBS if _policy_on(job) and (why := _not_set_up(job))}
+
+
 def configured_jobs() -> dict[str, dict]:
     """THE LANES YOUR POLICY ACTUALLY WANTS (2026-09-17). Every lane below is now
     `jobs.<name>.enabled` (default on = today's behaviour) with its own
@@ -144,8 +160,9 @@ def configured_jobs() -> dict[str, dict]:
     it if it was registered before - a config that only stopped NEW registrations would leave
     the old task ticking, which is the worst of both worlds. Changing a cadence needs one
     `orch.py schedule_jobs --apply` to re-register the task; the policy menu says so rather
-    than letting someone wonder why nothing changed."""
-    return {job: job_spec(job) for job in JOBS if _policy_on(job)}
+    than letting someone wonder why nothing changed. A lane this machine has not set up
+    (unconfigured_jobs) is left out too."""
+    return {job: job_spec(job) for job in JOBS if _policy_on(job) and not _not_set_up(job)}
 
 
 def switched_off_jobs() -> dict[str, dict]:
@@ -430,6 +447,9 @@ def write_wrapper(job: str, spec: dict) -> Path:
         body.append(DAEMON_GUARD.rstrip())
     if job not in UNGATED_JOBS:
         body.append(ARM_GUARD.replace("{python}", str(PYTHON)).replace("{repo}", str(REPO)).rstrip())
+    why = _not_set_up(job)
+    if why:
+        raise ValueError(f"{job} cannot be written: {why}")
     resolved = [
         # Plain replacement, never str.format: these lines carry PowerShell blocks whose
         # braces are syntax, and format() read `try { $r = ...` as a field name and died.
@@ -608,7 +628,14 @@ def _select_jobs(argv: list[str]) -> tuple[dict[str, dict], int | None]:
         return {}, 3
     # A job NAMED on the command line is a person's own word: it is acted on even if the
     # policy switched it off (the same precedence the sweep's lane flags use), at the cadence
-    # the policy sets for it, and nothing else is touched.
+    # the policy sets for it, and nothing else is touched. One this machine has not set up
+    # cannot be registered (--apply, or the dry run that shows it), and says why; --status,
+    # --pause, --resume and --remove only name its task, so they still work.
+    why = _not_set_up(only)
+    registers = not any(flag in argv for flag in ("--status", "--pause", "--resume", "--remove"))
+    if why and registers:
+        print(f"{only} is not set up on this machine: {why}", file=sys.stderr)
+        return {}, 3
     return {only: job_spec(only)}, None
 
 
@@ -663,7 +690,7 @@ def _cmd_remove(jobs: dict[str, dict]) -> int:
     return 0 if all(r["ok"] for r in results) else 2
 
 
-def _cmd_apply(jobs: dict[str, dict], off: dict[str, dict]) -> int:
+def _cmd_apply(jobs: dict[str, dict], off: dict[str, dict], unset: dict[str, str]) -> int:
     results = apply_jobs(jobs)
     # ⛔ A LANE SWITCHED OFF IN POLICY MUST ALSO BE UNREGISTERED. Skipping its registration
     # is not enough: a task registered by a previous --apply keeps ticking on Windows' own
@@ -682,12 +709,14 @@ def _cmd_apply(jobs: dict[str, dict], off: dict[str, dict]) -> int:
         print(f"  {'registered' if r['ok'] else 'FAILED    '} {r['task']}")
         if not r["ok"]:
             print(f"      {r['detail']}")
+    for job, why in unset.items():
+        print(f"  not set up {PREFIX}{job} - {why}")
     print(f"\nwrappers: {_state() / 'jobs'}   logs: {_state() / 'logs'}")
     print("Check them with --status; remove them all with --remove.")
     return 0 if all(r["ok"] for r in results) else 2
 
 
-def _cmd_dry_run(jobs: dict[str, dict]) -> int:
+def _cmd_dry_run(jobs: dict[str, dict], unset: dict[str, str]) -> int:
     """Say exactly what would be created, and show the wrapper body. No flag selects this -
     it is what runs when none of --status/--pause/--resume/--remove/--apply were given."""
     print("DRY RUN - nothing registered. Re-run with --apply.\n")
@@ -696,6 +725,8 @@ def _cmd_dry_run(jobs: dict[str, dict]) -> int:
             if sched is None:
                 continue
             print(f"  {name}\n      {spec['what']}\n      schedule: {' '.join(sched)}")
+    for job, why in unset.items():
+        print(f"  {PREFIX}{job} is not registered: {why}")
     print(f"\n  wrappers would be written to {_state() / 'jobs'}")
     print(f"  every run appends to {_state() / 'logs'}")
     print("  jobs that need the daemon SKIP themselves (exit 0) when it is not answering.")
@@ -731,8 +762,8 @@ def main(argv: list[str]) -> int:
         return _cmd_remove(jobs)
     if "--apply" in argv:
         return _cmd_apply(jobs if named else configured_jobs(),
-                          {} if named else switched_off_jobs())
-    return _cmd_dry_run(jobs if named else configured_jobs())
+                          {} if named else switched_off_jobs(), {} if named else unconfigured_jobs())
+    return _cmd_dry_run(jobs if named else configured_jobs(), {} if named else unconfigured_jobs())
 
 
 if __name__ == "__main__":

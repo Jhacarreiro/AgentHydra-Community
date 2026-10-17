@@ -22,8 +22,12 @@ class WrapperTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         os.environ["ORCHESTRATOR_STATE_DIR"] = self._tmp.name
+        # Every lane is set up here, todo-sweep included: an invented Project Hydra clone.
+        self._hydra = mock.patch.object(schedule_jobs, "HYDRA", Path(self._tmp.name) / "project-hydra")
+        self._hydra.start()
 
     def tearDown(self):
+        self._hydra.stop()
         os.environ.pop("ORCHESTRATOR_STATE_DIR", None)
         self._tmp.cleanup()
 
@@ -194,11 +198,26 @@ class WrapperTest(unittest.TestCase):
     def test_todo_sweep_runs_project_hydra_and_never_commits(self):
         schedule_jobs.write_wrapper("todo-sweep", schedule_jobs.JOBS["todo-sweep"])
         work = schedule_jobs.work_path("todo-sweep").read_text(encoding="utf-8")
-        self.assertIn(str(schedule_jobs.HYDRA / "ph.py"), work)
+        # The wrapper is a Windows batch file, so the clone and ph.py are joined with a backslash.
+        self.assertIn(str(schedule_jobs.HYDRA) + "\\ph.py", work)
         self.assertIn("discover", work)
         self.assertIn("loki --file --apply", work)
         for forbidden in ("git commit", "git push", "git add"):
             self.assertNotIn(forbidden, work)
+
+    def test_todo_sweep_is_left_out_until_project_hydra_is_named(self):
+        with mock.patch.object(schedule_jobs, "HYDRA", None):
+            self.assertNotIn("todo-sweep", schedule_jobs.configured_jobs())
+            self.assertIn("reconcile", schedule_jobs.configured_jobs())
+            self.assertIn("PROJECTHYDRA_HOME", schedule_jobs.unconfigured_jobs()["todo-sweep"])
+            # Not set up is not switched off: a full --apply leaves a task registered earlier alone.
+            self.assertNotIn("todo-sweep", schedule_jobs.switched_off_jobs())
+            with self.assertRaises(ValueError):
+                schedule_jobs.write_wrapper("todo-sweep", schedule_jobs.JOBS["todo-sweep"])
+            jobs, code = schedule_jobs._select_jobs(["--only", "todo-sweep", "--apply"])
+            self.assertEqual((jobs, code), ({}, 3))
+            jobs, code = schedule_jobs._select_jobs(["--only", "todo-sweep", "--remove"])
+            self.assertEqual((list(jobs), code), (["todo-sweep"], None))
 
     def test_task_names_are_namespaced(self):
         for job, spec in schedule_jobs.JOBS.items():
