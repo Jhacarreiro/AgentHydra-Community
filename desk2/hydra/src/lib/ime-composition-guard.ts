@@ -1,8 +1,8 @@
 /**
  * ime-composition-guard - ONE document-level guard that keeps input-method (IME) keystrokes out
  * of application key handlers. Installed once per app from its web boot entry (`main.ts`), and
- * proven there by the Architect's `ime-composition-enter-guard` check. Kit-synced: edit it here,
- * never in an app's copy.
+ * proven there by the Architect's `ime-composition-enter-guard` check. desk2/web, desk2/hydra and
+ * orchestrator/web carry the same file, maintained in this repository: change all three together.
  *
  * THE DEFECT IT CLOSES. A Chinese, Japanese or Korean user types through an input method: the
  * keystrokes build a candidate and Enter COMMITS the candidate. Chrome on Windows reports that

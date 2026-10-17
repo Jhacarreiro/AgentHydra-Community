@@ -23,8 +23,8 @@ import { prefersReducedMotion } from "./utils";
  *    meta tag (defaults #0a0a0a / #ffffff); apps without the meta simply opt out for free.
  *
  * DEFAULT = dark. The no-flash boot script in each app's index.html <head> MUST use the same
- * storage key (`lunarwerx-theme`) and the same resolve logic (see the kit README "Theme boot
- * snippet"), otherwise the first paint flashes before this composable takes over.
+ * storage key (`lunarwerx-theme`) and the same resolve logic (the inline script in index.html),
+ * otherwise the first paint flashes before this composable takes over.
  */
 export type ThemeMode = "light" | "dark" | "system";
 

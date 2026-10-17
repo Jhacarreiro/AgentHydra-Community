@@ -2,7 +2,7 @@
 // Segmented tab bar for a settings panel: flat buttons in a bordered pill row with the
 // active tab lifted onto the page background. Promoted from RepoYeti's Settings
 // (2026-07-10) when DevWebUI needed the identical bar; the tab CONTENT stays app-local,
-// only the bar is kit. Rule for consumers: keep every tab's sections MOUNTED behind
+// only the bar is shared. Rule for consumers: keep every tab's sections MOUNTED behind
 // v-show (not v-if) whenever a section loads its data from an open-watcher, or a
 // section first mounted by a later tab click never runs that watcher.
 //

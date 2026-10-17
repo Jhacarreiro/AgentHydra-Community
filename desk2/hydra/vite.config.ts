@@ -4,26 +4,27 @@ import vue from '@vitejs/plugin-vue'
 import { defineConfig, type Plugin } from 'vite'
 
 /**
- * Drop the kit's Google Fonts `@import` from this app's CSS, because we serve Inter ourselves.
+ * Drop any Google Fonts `@import` from this app's CSS, because we serve Inter ourselves.
  *
- * styles/kit-base.css opens with `@import url('https://fonts.googleapis.com/css2?family=Inter…')`.
- * A remote @import at the head of a render-blocking stylesheet blocks first paint on a round trip
- * to fonts.googleapis.com — pure dead time for a local desktop app, and an outright stall with no
- * network. src/style.css declares the same typeface from web/public/fonts/ instead; this removes
- * the remote one so the two don't both load.
+ * styles/kit-base.css used to open with
+ * `@import url('https://fonts.googleapis.com/css2?family=Inter…')` (since 2026-09-15 it imports
+ * @fontsource-variable/inter instead). A remote @import at the head of a render-blocking stylesheet
+ * blocks first paint on a round trip to fonts.googleapis.com — pure dead time for a local desktop
+ * app, and an outright stall with no network. src/style.css declares the same typeface from
+ * public/fonts/ instead; this keeps a remote one from loading beside it.
  *
- * Done here rather than by editing kit-base.css because that file is VENDORED FROM THE SHARED KIT
- * (lunarwerx-ui) and `bun run check:kit` fails on any byte of drift. Stripping at build time keeps
- * the checked-in copy identical to the kit while this app opts out of the behaviour. See the long
- * comment in src/style.css for why the fix isn't pushed up into the kit itself.
+ * It was done here rather than by editing kit-base.css because that file was then kept
+ * byte-identical with a copy outside this repository. It stays as a backstop: whatever CSS a change
+ * brings in, the stylesheet the daemon serves carries no remote font import. See the Inter comment
+ * in src/style.css.
  *
  * It runs at `enforce: 'post'` AND again over the emitted bundle. Both are needed: @tailwindcss/vite
  * inlines the `@import` chain itself and re-serialises the result (dropping `url(...)` to a bare
- * string in the process), so a `pre` transform on the entry stylesheet never sees the kit's line —
+ * string in the process), so a `pre` transform on the entry stylesheet never sees the remote line —
  * verified 2026-08-06, the remote import survived that shape untouched.
  */
 function stripRemoteFontImport(): Plugin {
-  // Both spellings: `@import url('https://…');` as authored in the kit, and the bare
+  // Both spellings: `@import url('https://…');` as kit-base.css used to write it, and the bare
   // `@import"https://…";` Tailwind re-serialises it to.
   //
   // The URL body is matched up to its QUOTE or CLOSING PAREN, never up to a semicolon — the

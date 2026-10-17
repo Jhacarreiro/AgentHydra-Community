@@ -11,7 +11,8 @@ import './style.css'
 
 // Keep input-method (IME) composition keystrokes away from every @keydown.enter handler: on
 // Safari and Chrome-on-macOS the Enter that commits a CJK candidate otherwise submits half-typed
-// text. One document-level guard (kit-synced) instead of a check at ~every Enter handler.
+// text. One document-level guard (lib/ime-composition-guard.ts) instead of a check at ~every
+// Enter handler.
 installImeCompositionGuard()
 
 // Hold animation still while the window is unfocused or hidden (idle GPU). Framed in Desk, Desk's focus counts.

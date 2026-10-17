@@ -1,13 +1,13 @@
 /* App entry stylesheet — the two kit imports plus genuinely app-specific rules only.
-   Tokens, dark mode and shared utilities all come from the kit; Inter is served locally
-   from this app (see the @font-face block below). */
+   Tokens, dark mode and shared utilities all come from styles/kit-base.css; Inter is served
+   locally from this app (see the @font-face block below). */
 @import "./styles/kit-base.css";
 @import "./styles/kit-accent.css";
 
 /* ---------------------------------------------------------------------------
-   Inter, SELF-HOSTED — replaces the kit's Google Fonts CDN @import.
+   Inter, SELF-HOSTED — this app never fetches its typeface from the network.
 
-   THE PROBLEM. styles/kit-base.css opens with
+   THE PROBLEM. styles/kit-base.css used to open with
 
      @import url('https://fonts.googleapis.com/css2?family=Inter:...&display=swap');
 
@@ -21,20 +21,17 @@
    stylesheet timeout.
 
    THE FIX. The two Latin subsets of Inter's variable woff2 are vendored under
-   web/public/fonts/ (Vite copies public/ verbatim into dist/, and the daemon serves
+   public/fonts/ (Vite copies public/ verbatim into dist/, and the daemon serves
    dist/), and declared here. Same typeface, same rendering, zero network, no
-   flash-of-fallback-text, and it works with the machine offline.
+   flash-of-fallback-text, and it works with the machine offline. Inter's licence
+   (SIL OFL 1.1) sits beside them as public/fonts/OFL.txt, so every build ships it
+   with the fonts; THIRD-PARTY-NOTICES.md has the notice too.
 
-   WHY NOT IN THE KIT, where the offending @import actually lives: sync.mjs's copyFile
-   is TEXT-ONLY by construction — it compares and rewrites synced files as utf8 and
-   normalises their line endings, which would corrupt a woff2 byte-for-byte. Carrying
-   font binaries in the kit therefore means reworking the sync tool that five sibling
-   apps depend on, which is a great deal more risk than a ~150ms cold-start win is
-   worth. The kit's remote @import is stripped from THIS app's CSS at build time
-   instead (web/vite.config.ts, `stripRemoteFontImport`), so kit-base.css stays
-   byte-identical to the kit and `bun run check:kit` stays green. Any sibling app can
-   adopt the same two files plus this block; if they all do, that is the moment to
-   teach sync.mjs about binaries and promote it.
+   kit-base.css has since (2026-09-15) replaced that @import with the
+   @fontsource-variable/inter package, which Vite bundles as 'Inter Variable', the
+   first name in --font-sans; these 'Inter' faces are the second. vite.config.ts's
+   `stripRemoteFontImport` still drops any Google Fonts @import at build time, so the
+   stylesheet the daemon serves cannot carry one again.
 
    The subsets are latin + latin-ext only: every app in this family ships English UI
    copy, and latin alone already covers all of Latin-1, so latin-ext is here purely so
@@ -42,9 +39,9 @@
    face mid-word. unicode-range values are Google's own, copied verbatim from the css2
    response so the browser downloads latin-ext only when a page actually needs it.
    --------------------------------------------------------------------------- */
-/* Both files must exist under web/public/fonts/. If either goes missing the UI silently drops to
-   the next family in --font-sans (ui-sans-serif / Segoe UI) rather than breaking — so a missing
-   font shows up as "the app looks slightly off", not as an error anywhere. */
+/* Both files belong under public/fonts/. If either goes missing nothing breaks: the text is
+   already set in 'Inter Variable' from the package, and only the characters that reach this
+   fallback face drop on to ui-sans-serif / Segoe UI. */
 @font-face {
   font-family: 'Inter';
   font-style: normal;
@@ -76,10 +73,9 @@
    visible brown cast on every surface.
 
    This lives here, after both kit imports, so it wins the cascade and stays SCOPED
-   TO THIS APP — kit-base.css is shared across every LunarWerx app (warming it there
-   would drag DevWebUI / RēDesign / RepoYeti along), and kit-accent.css is a synced
-   file we must not edit in-app. An app-owned override is the one place a per-app
-   look belongs, and it survives `bun run check:kit`.
+   TO THIS APP — kit-base.css is the same file orchestrator/web uses (warming it there
+   would drag that dashboard along), and kit-accent.css holds the accent this layer
+   overrides. An app-owned override is the one place a per-app look belongs.
 
    The neutrals must stay neutral (R≈G≈B). Any real chroma on these greys reads as a
    colour cast across the whole window, which is the failure mode this file exists to
@@ -513,8 +509,7 @@ html.motion-paused *:not([data-state])::after {
 }
 
 /* --- usage threshold slider (UsageFilterWindow.vue) --------------------------------------------
-   A bare range input, styled here rather than vendored as a ui/ component: the kit owns
-   components/ui and shell/ (check:kit fails on a single byte of drift), and this is the only
+   A bare range input, styled here rather than added as a ui/ component: this is the only
    slider in the app. Both vendor prefixes because the track/thumb pseudo-elements cannot be
    combined into one rule — a selector list containing an unknown pseudo-element is dropped whole.
    The thumb has no transition: its focus ring is a box-shadow and must be there on the first frame. */
@@ -582,8 +577,8 @@ html.motion-paused *:not([data-state])::after {
    NOT the kit's own --chart-1..5. That set fails a colourblind-safety check in light mode: its
    slots 4 and 5 (#ffb900 and #fe9a00) sit ΔE 7.4 apart for NORMAL vision and 5.6 under deuteranopia,
    which is two series a reader cannot tell apart, and two of the five also fall below 3:1 against a
-   white surface. kit-base.css is vendored from the shared kit and `bun run check:kit` fails on any
-   drift, so the fix belongs here rather than there.
+   white surface. kit-base.css is the same file orchestrator/web uses, so the fix for this app
+   belongs here rather than there.
 
    These six were re-stepped at the same hues and validated: lightness band, chroma floor, adjacent
    CVD separation (deutan/protan/tritan), normal-vision separation, and contrast against the real

@@ -13,9 +13,10 @@
 // an empty cache, and a preference that lives only in the browser is a preference the app forgets
 // on those launches — not a rare case on a machine that runs the daemon alongside other things.
 //
-// What is deliberately NOT here: the theme (owned by the shared kit under its own un-namespaced
-// key, which the daemon's store does not accept and should not), and the locale (written by the
-// kit's i18n factory with no ref to mirror, and English is the only catalog that ships today).
+// What is deliberately NOT here: the theme (owned by lib/theme.ts under its own un-namespaced
+// key, which the daemon's store does not accept and should not), and the locale (written by
+// lib/i18n-core.ts's factory with no ref to mirror, and English is the only catalog that ships
+// today).
 
 import { useStorage } from '@vueuse/core'
 import {

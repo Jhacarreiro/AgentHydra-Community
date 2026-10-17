@@ -1,9 +1,9 @@
 // Self-update state for the app.
 //
-// The check/apply mechanics come from the shared kit (lib/useSelfUpdate.ts, synced — not edited
-// here). This module adds the two things that were missing and that users actually reported:
+// The check/apply mechanics come from lib/useSelfUpdate.ts, the same file orchestrator/web uses.
+// This module adds the two things that were missing and that users actually reported:
 //
-//  1. AVAILABILITY, readable from anywhere. The kit's `checkForUpdate` performs a real check, so
+//  1. AVAILABILITY, readable from anywhere. Its `checkForUpdate` performs a real check, so
 //     the only place that called it was the Settings screen's onMounted — meaning someone who
 //     never opened Settings was never told a new version existed. `availability` instead reads the
 //     daemon's last BACKGROUND check (GET /api/update/available: a memory read, no network), which

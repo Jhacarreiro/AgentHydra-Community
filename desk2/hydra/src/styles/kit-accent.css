@@ -1,7 +1,7 @@
 /* AgentHydra brand accent: cosmic magenta-purple (~320°). Overrides the neutral
    --primary/--ring from base.css (light + dark). Hue sits clearly apart from DevWebUI
    indigo (277), RēDesign violet (303), and RepoYeti green (~150).
-   Part of the shared kit; do not edit the in-app copy. */
+   This app's own accent, maintained in this repository. */
 :root {
   --primary: oklch(0.55 0.19 320);
   --primary-foreground: oklch(0.985 0 0);

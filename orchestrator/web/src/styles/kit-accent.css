@@ -2,7 +2,7 @@
    --primary/--ring from base.css (light + dark). Hue sits clearly apart from RepoYeti
    green (~150), DevWebUI indigo (277), RēDesign violet (303) and AgentHydra magenta (320),
    so the fleet's remote dashboard is never mistaken for the daemon it watches.
-   Part of the shared kit; do not edit the in-app copy. */
+   This app's own accent, maintained in this repository. */
 :root {
   --primary: oklch(0.6 0.16 60);
   --primary-foreground: oklch(0.985 0 0);

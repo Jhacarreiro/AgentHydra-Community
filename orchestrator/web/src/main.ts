@@ -7,7 +7,8 @@ import 'vue-sonner/style.css'
 
 // Keep input-method (IME) composition keystrokes away from every @keydown.enter handler: on
 // Safari and Chrome-on-macOS the Enter that commits a CJK candidate otherwise submits half-typed
-// text. One document-level guard (kit-synced) instead of a check at ~every Enter handler.
+// text. One document-level guard (lib/ime-composition-guard.ts) instead of a check at ~every
+// Enter handler.
 installImeCompositionGuard()
 
 createApp(App).mount('#app')

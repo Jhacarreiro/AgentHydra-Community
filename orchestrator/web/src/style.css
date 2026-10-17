@@ -1,5 +1,5 @@
 /* App entry stylesheet — the two kit imports plus genuinely app-specific rules only.
-   Tokens, dark mode and shared utilities all come from the kit (lunarwerx-ui). */
+   Tokens, dark mode and shared utilities all come from styles/kit-base.css. */
 @import "./styles/kit-base.css";
 @import "./styles/kit-accent.css";
 
