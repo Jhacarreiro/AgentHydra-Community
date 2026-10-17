@@ -1,16 +1,22 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { getSetting, setSetting } from '../src/db'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
+  applyUpdate,
   assetForThisPlatform,
-  buildLatestReleaseRequest,
+  CHECKSUM_MANIFEST,
   checkForUpdate,
-  coarseOsTag,
   currentTarget,
-  formatWindowsTag,
-  installId,
   isNewer,
-  pingOptedOut,
+  latestReleaseRequest,
 } from '../src/github-updater'
+import {
+  latestReleaseApi,
+  type ReleaseChannel,
+  releaseDownloadBase,
+  releasesPage,
+} from '../src/release-channel'
 
 describe('github-updater version logic', () => {
   test('isNewer: strictly-greater semver only', () => {
@@ -57,168 +63,204 @@ describe('github-updater version logic', () => {
   })
 })
 
-describe('anonymous install ping', () => {
-  // These tests deliberately override CI/NODE_ENV so the "opted-in" assertions are deterministic
-  // whether run locally or under GitHub Actions (where CI=true would otherwise always opt out).
-  const savedNoPing = process.env.AGENTHYDRA_NO_PING
-  const savedCi = process.env.CI
-  const savedNodeEnv = process.env.NODE_ENV
+// ── the release channel (release-channel.ts) ──────────────────────────────────────────────────────
+//
+// Every case names its own channel, so none depends on what the committed release-channel.json says
+// today. The network is globalThis.fetch replaced by a recorder that answers only the channel's own
+// API URL from a local fixture and fails everything else; nothing leaves the machine.
 
-  afterEach(() => {
-    for (const [key, value] of [
-      ['AGENTHYDRA_NO_PING', savedNoPing],
-      ['CI', savedCi],
-      ['NODE_ENV', savedNodeEnv],
-    ] as const) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
+const repo = 'Example-Owner/Example-App'
+const OFF: ReleaseChannel = { repo, updates: 'off' }
+const NOTIFY: ReleaseChannel = { repo, updates: 'notify' }
+const AUTO: ReleaseChannel = { repo, updates: 'auto' }
+
+const EXT = process.platform === 'win32' ? '.zip' : '.tar.gz'
+const ASSET = `AgentHydra-999.0.0-${currentTarget()}${EXT}`
+const OWN = `${releaseDownloadBase(AUTO)}/v999.0.0`
+
+/** A `releases/latest` answer whose two files sit wherever the case says. */
+function release(assetUrl = `${OWN}/${ASSET}`, sumsUrl = `${OWN}/${CHECKSUM_MANIFEST}`) {
+  return {
+    tag_name: 'v999.0.0',
+    draft: false,
+    prerelease: false,
+    assets: [
+      { name: ASSET, browser_download_url: assetUrl, size: 1 },
+      { name: CHECKSUM_MANIFEST, browser_download_url: sumsUrl, size: 1 },
+    ],
+  }
+}
+
+interface Seen {
+  url: string
+  headers: Record<string, string>
+}
+
+const savedFetch = globalThis.fetch
+const scratch = mkdtempSync(join(tmpdir(), 'ah-gh-updater-'))
+afterAll(() => rmSync(scratch, { recursive: true, force: true }))
+afterEach(() => {
+  globalThis.fetch = savedFetch
+})
+
+/** Replace fetch: the channel's latest-release URL answers `body`, any other URL is a failure. */
+function stubFetch(channel: ReleaseChannel, body: unknown): Seen[] {
+  const seen: Seen[] = []
+  // `input: unknown` rather than RequestInfo: the server tsconfig has no DOM lib.
+  globalThis.fetch = (async (input: unknown, init?: { headers?: Record<string, string> }) => {
+    const url =
+      typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input)
+    seen.push({ url, headers: { ...(init?.headers ?? {}) } })
+    if (url !== latestReleaseApi(channel)) throw new Error(`unexpected request to ${url}`)
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as unknown as typeof fetch
+  return seen
+}
+
+/** A scratch install whose exe must still be the old one after a refusal. */
+function scratchInstall(): { installDir: string; exePath: string } {
+  const installDir = mkdtempSync(join(scratch, 'install-'))
+  const exePath = join(installDir, process.platform === 'win32' ? 'AgentHydra.exe' : 'agenthydra')
+  writeFileSync(exePath, 'old exe')
+  return { installDir, exePath }
+}
+
+describe('the update request', () => {
+  test("asks GitHub for the channel repository's latest release, and sends nothing about this install", () => {
+    const { url, headers } = latestReleaseRequest(AUTO)
+    expect(url).toBe('https://api.github.com/repos/Example-Owner/Example-App/releases/latest')
+    expect(Object.keys(headers).sort()).toEqual(['accept', 'user-agent'])
+    expect(new URL(url).search).toBe('')
+  })
+
+  test('a check reaches only that URL: no proxy, no install id, no upstream', async () => {
+    const seen = stubFetch(AUTO, release())
+    const status = await checkForUpdate({ fresh: true, channel: AUTO })
+    expect(status.ok).toBe(true)
+    expect(seen.map((s) => s.url)).toEqual([latestReleaseApi(AUTO)])
+    for (const s of seen) {
+      expect(s.url.toLowerCase()).not.toContain('lunarwerxs')
+      expect(s.url).not.toContain('connectionsapi')
+      expect(Object.keys(s.headers).map((h) => h.toLowerCase())).not.toContain('x-install-id')
     }
-    setSetting('app_install_id', '')
-    setSetting('app_ping_reported', '0')
-  })
-
-  test('formatWindowsTag: build-number threshold picks win10 vs win11', () => {
-    expect(formatWindowsTag('10.0.19045.3693')).toBe('win10-19045')
-    expect(formatWindowsTag('10.0.22000.100')).toBe('win11-22000')
-    expect(formatWindowsTag('10.0.26100.1')).toBe('win11-26100')
-    expect(formatWindowsTag('not-a-version')).toBe('windows')
-  })
-
-  test('coarseOsTag: never leaks anything beyond OS family / Windows build', () => {
-    const tag = coarseOsTag()
-    expect(tag).toMatch(/^(win(10|11)-\d+|macos|linux|win32|darwin|freebsd|openbsd|sunos|aix)$/)
-  })
-
-  test('installId: generated once, then persists across calls', () => {
-    setSetting('app_install_id', '')
-    const a = installId()
-    const b = installId()
-    expect(a).toBe(b)
-    // A v4 UUID — random, never derived from hostname/MAC/username.
-    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
-  })
-
-  test('AGENTHYDRA_NO_PING=1 opts out', () => {
-    delete process.env.CI
-    delete process.env.NODE_ENV
-    process.env.AGENTHYDRA_NO_PING = '1'
-    expect(pingOptedOut()).toBe(true)
-  })
-
-  test('NODE_ENV=test and CI both opt out even without the env var', () => {
-    delete process.env.AGENTHYDRA_NO_PING
-    process.env.NODE_ENV = 'test'
-    delete process.env.CI
-    expect(pingOptedOut()).toBe(true)
-
-    process.env.NODE_ENV = 'production'
-    process.env.CI = 'true'
-    expect(pingOptedOut()).toBe(true)
-  })
-
-  test('opted in: pings Studio with the install id header and v/os/new params', () => {
-    delete process.env.AGENTHYDRA_NO_PING
-    delete process.env.NODE_ENV
-    delete process.env.CI
-    setSetting('app_install_id', '')
-    setSetting('app_ping_reported', '0')
-
-    const { url, headers } = buildLatestReleaseRequest()
-    expect(url.startsWith('https://studio.connectionsapi.com/v1/app/agenthydra/latest?')).toBe(true)
-    const params = new URL(url).searchParams
-    expect(params.get('v')).toBeTruthy()
-    expect(params.get('os')).toBeTruthy()
-    expect(params.get('new')).toBe('1') // first ping this install ever makes
-    expect(headers['X-Install-Id']).toBe(getSetting('app_install_id'))
-
-    setSetting('app_ping_reported', '1')
-    const second = buildLatestReleaseRequest()
-    expect(new URL(second.url).searchParams.get('new')).toBeNull() // never resent after success
-  })
-
-  test('opted out: falls back to GitHub directly, no install id, no telemetry params', () => {
-    delete process.env.NODE_ENV
-    delete process.env.CI
-    process.env.AGENTHYDRA_NO_PING = '1'
-
-    const { url, headers } = buildLatestReleaseRequest()
-    expect(url).toBe('https://api.github.com/repos/LunarWerxs/agenthydra/releases/latest')
-    expect(headers['X-Install-Id']).toBeUndefined()
   })
 })
 
-/**
- * The update check must survive its PRIMARY endpoint going away.
- *
- * GITHUB_LATEST_API existed here long before this suite, but only on the privacy path (ping
- * opted out). It was never a failure path, so a broken Studio proxy stranded this install
- * exactly like any single-endpoint app: polling a dead URL forever with nothing surfaced to the
- * user or the maintainer. That is the YTSort failure (2026-08), and these lock the fix.
- *
- * NODE_ENV/CI are overridden deliberately: under `bun test` pingOptedOut() is true, which makes
- * GitHub the PRIMARY request and would make a "fell back to GitHub" assertion pass for entirely
- * the wrong reason.
- */
-describe('update check falls back when the Studio proxy fails', () => {
-  const savedCi = process.env.CI
-  const savedNodeEnv = process.env.NODE_ENV
-  const savedFetch = globalThis.fetch
-
-  afterEach(() => {
-    if (savedCi === undefined) delete process.env.CI
-    else process.env.CI = savedCi
-    if (savedNodeEnv === undefined) delete process.env.NODE_ENV
-    else process.env.NODE_ENV = savedNodeEnv
-    globalThis.fetch = savedFetch
-    setSetting('app_install_id', '')
-    setSetting('app_ping_reported', '0')
+describe('updates "off"', () => {
+  test('a check asks nothing and reports no update, nothing to apply, and why', async () => {
+    const seen = stubFetch(OFF, release())
+    const status = await checkForUpdate({ fresh: true, channel: OFF })
+    expect(seen).toEqual([])
+    expect(status.ok).toBe(true)
+    expect(status.updateAvailable).toBe(false)
+    expect(status.canApply).toBe(false)
+    expect(status.remote).toBeNull()
+    expect(status.reason).toContain('Updates are off')
   })
 
-  function optIn() {
-    delete process.env.CI
-    process.env.NODE_ENV = 'production'
+  test('an apply refuses before any request or any file is touched', async () => {
+    const seen = stubFetch(OFF, release())
+    const { installDir, exePath } = scratchInstall()
+    let downloaded = false
+    const result = await applyUpdate({
+      channel: OFF,
+      installDir,
+      exePath,
+      downloadAndVerifyUpdate: async () => {
+        downloaded = true
+        throw new Error('download reached')
+      },
+    })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('Updates are off')
+    expect(seen).toEqual([])
+    expect(downloaded).toBe(false)
+    expect(readdirSync(installDir)).toEqual([exePath.split(/[\\/]/).pop() as string])
+  })
+})
+
+describe('updates "notify"', () => {
+  test('a check finds the new release but will not apply it, and says where to get it', async () => {
+    const seen = stubFetch(NOTIFY, release())
+    const status = await checkForUpdate({ fresh: true, channel: NOTIFY })
+    expect(seen.map((s) => s.url)).toEqual([latestReleaseApi(NOTIFY)])
+    expect(status.updateAvailable).toBe(true)
+    expect(status.canApply).toBe(false)
+    expect(status.reason).toContain('v999.0.0 is available')
+    expect(status.reason).toContain(releasesPage(NOTIFY))
+  })
+
+  test('an apply refuses before any request', async () => {
+    const seen = stubFetch(NOTIFY, release())
+    const { installDir, exePath } = scratchInstall()
+    const result = await applyUpdate({ channel: NOTIFY, installDir, exePath })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('only tells you')
+    expect(seen).toEqual([])
+  })
+})
+
+describe('updates "auto": only the channel repository\'s own release files', () => {
+  test('a release whose archive is under the channel can be applied', async () => {
+    stubFetch(AUTO, release())
+    const status = await checkForUpdate({ fresh: true, channel: AUTO })
+    expect(status.updateAvailable).toBe(true)
+    expect(status.canApply).toBe(true)
+  })
+
+  for (const [label, url] of [
+    [
+      "the upstream project's releases",
+      `https://github.com/LunarWerxs/AgentHydra/releases/download/v999.0.0/${ASSET}`,
+    ],
+    ['an unrelated host', `https://downloads.example.test/v999.0.0/${ASSET}`],
+  ] as const) {
+    test(`an archive on ${label} is reported and never applied`, async () => {
+      stubFetch(AUTO, release(url))
+      const status = await checkForUpdate({ fresh: true, channel: AUTO })
+      expect(status.updateAvailable).toBe(true)
+      expect(status.canApply).toBe(false)
+      expect(status.reason).toContain(`not a release download of ${repo}`)
+
+      const { installDir, exePath } = scratchInstall()
+      let downloaded = false
+      const result = await applyUpdate({
+        channel: AUTO,
+        installDir,
+        exePath,
+        downloadAndVerifyUpdate: async () => {
+          downloaded = true
+          throw new Error('download reached')
+        },
+      })
+      expect(result.ok).toBe(false)
+      expect(result.message).toContain(`refusing ${ASSET}`)
+      expect(downloaded).toBe(false)
+    })
   }
 
-  test('a dead Studio proxy falls through to GitHub instead of stranding the install', async () => {
-    optIn()
-    const seen: string[] = []
-    // `input: unknown` rather than RequestInfo: the server tsconfig has no DOM lib, so that
-    // global type does not exist here.
-    globalThis.fetch = (async (input: unknown) => {
-      const url =
-        typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input)
-      seen.push(url)
-      if (url.includes('studio.connectionsapi.com')) return new Response('gone', { status: 503 })
-      return new Response(JSON.stringify({ tag_name: 'v999.0.0', assets: [] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })
-    }) as unknown as typeof fetch
-
-    const status = await checkForUpdate({ fresh: true })
-    expect(seen.some((u) => u.includes('studio.connectionsapi.com'))).toBe(true)
-    expect(seen.some((u) => u.includes('api.github.com'))).toBe(true)
-    expect(status.updateAvailable).toBe(true)
-  })
-
-  test('a fallback response never marks the install-count ping reported', async () => {
-    optIn()
-    setSetting('app_ping_reported', '0')
-    // `input: unknown` rather than RequestInfo: the server tsconfig has no DOM lib, so that
-    // global type does not exist here.
-    globalThis.fetch = (async (input: unknown) => {
-      const url =
-        typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input)
-      if (url.includes('studio.connectionsapi.com')) return new Response('gone', { status: 503 })
-      return new Response(JSON.stringify({ tag_name: 'v999.0.0', assets: [] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })
-    }) as unknown as typeof fetch
-
-    await checkForUpdate({ fresh: true })
-    // Studio never served that response, so it never saw the ping. Marking it reported would
-    // burn this install's one-time `new=1` on a request the analytics side never received.
-    expect(getSetting('app_ping_reported')).not.toBe('1')
+  test('a checksum list from elsewhere is refused too, before the archive is fetched', async () => {
+    const seen = stubFetch(
+      AUTO,
+      release(undefined, 'https://downloads.example.test/v999.0.0/SHA256SUMS.txt'),
+    )
+    const { installDir, exePath } = scratchInstall()
+    let downloaded = false
+    const result = await applyUpdate({
+      channel: AUTO,
+      installDir,
+      exePath,
+      downloadAndVerifyUpdate: async () => {
+        downloaded = true
+        throw new Error('download reached')
+      },
+    })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain(`refusing ${CHECKSUM_MANIFEST}`)
+    expect(downloaded).toBe(false)
+    expect(seen.every((s) => s.url === latestReleaseApi(AUTO))).toBe(true)
   })
 })

@@ -7,6 +7,11 @@
 // shape the engine does, so updater.ts, the /api/update routes, the auto-update loop, and the web UI
 // all drive it unchanged.
 //
+// Which releases, and whether to look at all, is the release channel's to say (release-channel.ts):
+// the repository is the channel's and no other, and its `updates` policy decides whether a check
+// happens ("off" asks nothing), and whether a found release may be installed ("notify" never
+// installs). Every download URL must be one of that repository's own release files.
+//
 // The binary swap is the delicate part, done defensively:
 //   1. Stage the download+extract INSIDE the install dir (so every rename is same-volume — a temp
 //      dir on another drive would make renameSync throw EXDEV mid-swap).
@@ -27,7 +32,7 @@
 // from its own version's archive at boot.
 
 import { spawn } from 'node:child_process'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import {
   cpSync,
   existsSync,
@@ -38,12 +43,19 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import os from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { APP_ROOT, appEnv, IS_RELEASE, LAUNCHER_PATH, SERVICE_NAME, VERSION } from './config'
-import { getSetting, setSetting } from './db'
+import { APP_ROOT, IS_RELEASE, LAUNCHER_PATH, SERVICE_NAME, VERSION } from './config'
 import { desk2 } from './desk2'
 import { orchestratorBusy } from './orchestrator'
+import {
+  applyRefusal,
+  checkRefusal,
+  isChannelAssetUrl,
+  latestReleaseApi,
+  RELEASE_CHANNEL,
+  type ReleaseChannel,
+  releasesPage,
+} from './release-channel'
 import { retireLegacyTrayHost } from './tray-bootstrap.mjs'
 import { TRAY_HOST_CONFIG } from './tray-host'
 import {
@@ -54,143 +66,37 @@ import {
 } from './update-progress'
 import type { UpdateApplyResult, UpdateStatus } from './updater-engine.mjs'
 
-const REPO = 'LunarWerxs/agenthydra'
-const RELEASES_PAGE = `https://github.com/${REPO}/releases`
-/** LunarWerx's Studio proxy: relays GitHub's `releases/latest` JSON for this repo VERBATIM (so
- *  every reader below is unchanged), and logs one anonymous install-count row per hit (random
- *  install id, app version, coarse OS tag, and a CDN-derived coarse country — never the caller's
- *  IP; 90-day retention). This IS the app's update check, not an addition to it: replacing the
- *  former direct `api.github.com` call here means the periodic check that already ran adds zero
- *  extra network traffic. See README.md "Update check" for the user-facing disclosure. */
-const STUDIO_LATEST_API = 'https://studio.connectionsapi.com/v1/app/agenthydra/latest'
-/** The plain GitHub API, carrying no install id and no version/os telemetry. Serves two jobs:
- *  the PRIVACY path (pinging disabled, see {@link pingOptedOut}, so opting out still leaves
- *  update-checking working) and, since 2026-08, the RESILIENCE path — {@link fetchLatestRelease}
- *  retries here whenever the Studio proxy fails, so a proxy outage or a moved path can never
- *  strand an install the way YTSort's renamed update URL did. */
-const GITHUB_LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
-
-// ── anonymous install ping ──────────────────────────────────────────────────────────────────
+// ── the one request ─────────────────────────────────────────────────────────────────────────
 //
-// Piggybacks entirely on the update check above: no separate request, no separate timer. The
-// settings table (server/src/db.ts) already IS "the app's existing config/state location" — the
-// auto-update loop persists its own settings there — so the install id and the reported flag
-// live beside them rather than inventing a second store.
+// The check is a single unauthenticated GET of the channel repository's `releases/latest` on
+// GitHub's own API: no proxy in front of it, no install id, no version or OS tag riding along.
+// It used to go first through a third-party proxy that counted installs and fall back to GitHub
+// when that failed; the fork runs no such service and wants none, so GitHub is the only endpoint.
+// Installs that ran that build may still hold its `app_install_id` and `app_ping_reported`
+// settings rows. Nothing reads them any more, and they are left where they are.
 
-/** Windows build-number → "win11-26100" / "win10-19045", using Microsoft's Windows 11 cutover
- *  build (22000). Exported so the parsing logic is testable independent of the host OS. */
-export function formatWindowsTag(release: string): string {
-  const build = Number(release.split('.')[2])
-  if (!Number.isFinite(build)) return 'windows'
-  return `win${build >= 22000 ? 11 : 10}-${build}`
-}
-
-/** Coarse OS tag sent with the ping: Windows gets its build number, everything else gets its
- *  plain family. Never anything more identifying (no hostname, no arch, no locale). */
-export function coarseOsTag(): string {
-  if (process.platform === 'win32') return formatWindowsTag(os.release())
-  if (process.platform === 'darwin') return 'macos'
-  if (process.platform === 'linux') return 'linux'
-  return process.platform
-}
-
-/** Anonymous per-install id sent as `X-Install-Id`. Generated once and persisted in the settings
- *  table; reused for the life of the install. Never derived from hostname, MAC, username, or any
- *  other machine identifier. */
-export function installId(): string {
-  const existing = getSetting('app_install_id')
-  if (existing) return existing
-  const id = randomUUID()
-  setSetting('app_install_id', id)
-  return id
-}
-
-function pingAlreadyReported(): boolean {
-  return getSetting('app_ping_reported') === '1'
-}
-/** Called once, only after a ping the server actually received (HTTP success) — never before,
- *  so a request that never left the machine (offline, timeout) does not consume the one-time
- *  `new=1` signal. */
-function markPingReported(): void {
-  setSetting('app_ping_reported', '1')
-}
-
-/** True when the anonymous ping should be skipped: an explicit opt-out, or a dev/test/CI run
- *  (which must never inflate install-count analytics or depend on network access). Update
- *  CHECKING itself keeps working either way — it just falls back to asking GitHub directly,
- *  carrying no install id and no version/os telemetry. */
-export function pingOptedOut(): boolean {
-  return appEnv('NO_PING') === '1' || process.env.NODE_ENV === 'test' || !!process.env.CI
-}
-
-/** Build the request for "the latest release" — the one call that serves both jobs (update info
- *  + anonymous install ping) when pinging is allowed, or GitHub directly with no telemetry when
- *  it is not. Exported so the URL/header shape is unit-testable without a real network call. */
-export function buildLatestReleaseRequest(): { url: string; headers: Record<string, string> } {
-  const headers: Record<string, string> = {
-    accept: 'application/vnd.github+json',
-    'user-agent': `${SERVICE_NAME}/${VERSION}`,
+/** The request for "the latest release". Exported so its URL and headers are testable without a
+ *  network call. */
+export function latestReleaseRequest(channel: ReleaseChannel = RELEASE_CHANNEL): {
+  url: string
+  headers: Record<string, string>
+} {
+  return {
+    url: latestReleaseApi(channel),
+    headers: {
+      accept: 'application/vnd.github+json',
+      'user-agent': `${SERVICE_NAME}/${VERSION}`,
+    },
   }
-  if (pingOptedOut()) return { url: GITHUB_LATEST_API, headers }
-
-  headers['X-Install-Id'] = installId()
-  const params = new URLSearchParams({ v: VERSION, os: coarseOsTag() })
-  if (!pingAlreadyReported()) params.set('new', '1')
-  return { url: `${STUDIO_LATEST_API}?${params.toString()}`, headers }
 }
 
-/** Fire the request built above. Bounded to 5s so a slow/unreachable endpoint never turns an
- *  update check into a hang — every caller already wraps this in try/catch and treats a failure
- *  as "no answer", exactly as before this ping existed.
- *
- *  On a Studio failure this retries against {@link GITHUB_LATEST_API}. Note that constant was
- *  already here but only for the PRIVACY path (ping opted out); it was never a failure path, so
- *  until now a broken proxy stranded this install exactly like any other single-endpoint app.
- *
- *  Why it matters (YTSort, 2026-08): a shipped artifact whose only update URL later stopped
- *  resolving left every install silently polling a dead link for six months, with no signal to
- *  the users or the maintainer. GitHub's own API is the right backstop because it is the one
- *  URL here a rename cannot orphan — GitHub redirects both owner and repo renames.
- *
- *  `viaFallback` exists so the caller does NOT mark the install-count ping reported for a
- *  response Studio never served: that would burn this install's one-time `new=1` on a request
- *  the analytics side never saw. */
-async function fetchLatestRelease(): Promise<{ res: Response; viaFallback: boolean }> {
-  const { url, headers } = buildLatestReleaseRequest()
-  let res: Response | null = null
-  let primaryError: unknown = null
-  try {
-    res = await fetch(url, { headers, signal: AbortSignal.timeout(5000) })
-  } catch (e) {
-    primaryError = e
-  }
-  if (res?.ok) return { res, viaFallback: false }
-  // Already talking to GitHub (ping opted out) — there is no second opinion left to ask for.
-  if (url === GITHUB_LATEST_API) {
-    if (res) return { res, viaFallback: false }
-    throw primaryError
-  }
-  let fallback: Response
-  try {
-    fallback = await fetch(GITHUB_LATEST_API, {
-      headers: {
-        accept: 'application/vnd.github+json',
-        'user-agent': `${SERVICE_NAME}/${VERSION}`,
-      },
-      signal: AbortSignal.timeout(5000),
-    })
-  } catch (e) {
-    if (primaryError) throw primaryError
-    if (res) return { res, viaFallback: false }
-    throw e
-  }
-  // Backstop unhappy too: hand back the PRIMARY's response so the reason an operator reads
-  // names the endpoint that actually broke rather than the one standing in for it.
-  if (!fallback.ok) {
-    if (res) return { res, viaFallback: false }
-    throw primaryError
-  }
-  return { res: fallback, viaFallback: true }
+/** Fire the request built above. Bounded to 5s so a slow or unreachable API never turns an update
+ *  check into a hang; every caller wraps this in try/catch and treats a failure as "no answer". */
+async function fetchLatestRelease(
+  channel: ReleaseChannel = RELEASE_CHANNEL,
+): Promise<{ res: Response }> {
+  const { url, headers } = latestReleaseRequest(channel)
+  return { res: await fetch(url, { headers, signal: AbortSignal.timeout(5000) }) }
 }
 
 /** This binary's release target string (matches the release-asset naming: windows-x64, linux-arm64…). */
@@ -308,10 +214,13 @@ export function assetForThisPlatform(assets: GhAsset[]): GhAsset | null {
   return assets.find((a) => a.name.endsWith(`-${target}${extension}`)) ?? null
 }
 
-let cached: { value: UpdateStatus; at: number } | null = null
+let cached: { value: UpdateStatus; at: number; channel: ReleaseChannel } | null = null
 const CACHE_TTL_MS = 5 * 60 * 1000
 
-function baseStatus(overrides: Partial<UpdateStatus>): UpdateStatus {
+function baseStatus(
+  overrides: Partial<UpdateStatus>,
+  channel: ReleaseChannel = RELEASE_CHANNEL,
+): UpdateStatus {
   return {
     ok: true,
     service: SERVICE_NAME,
@@ -321,7 +230,8 @@ function baseStatus(overrides: Partial<UpdateStatus>): UpdateStatus {
     branch: null,
     upstream: null,
     // A non-null `remote` keeps the web UI from graying the controls out as "no update source".
-    remote: RELEASES_PAGE,
+    // With updates off there is none, and saying so is the truth.
+    remote: channel.updates === 'off' ? null : releasesPage(channel),
     dirty: false,
     updateAvailable: false,
     canApply: false,
@@ -332,52 +242,84 @@ function baseStatus(overrides: Partial<UpdateStatus>): UpdateStatus {
   }
 }
 
-export async function checkForUpdate(opts: { fresh?: boolean } = {}): Promise<UpdateStatus> {
-  if (!opts.fresh && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value
+/** What a found release means for this build: may it be installed, and what the person is told. */
+function verdictFor(
+  release: GhRelease,
+  channel: ReleaseChannel,
+): Pick<UpdateStatus, 'remoteCommit' | 'updateAvailable' | 'canApply' | 'reason'> {
+  const remoteVersion = release.tag_name?.replace(/^v/, '') ?? ''
+  const available = !!remoteVersion && isNewer(remoteVersion, VERSION)
+  const found = { remoteCommit: release.tag_name ?? null, updateAvailable: available }
+  if (!available) return { ...found, canApply: false, reason: null }
+  const page = releasesPage(channel)
+  // "notify": told, never installed (release-channel.ts).
+  const refused = applyRefusal(channel)
+  if (refused)
+    return { ...found, canApply: false, reason: `v${remoteVersion} is available. ${refused}` }
+  const asset = assetForThisPlatform(release.assets ?? [])
+  if (!asset)
+    return {
+      ...found,
+      canApply: false,
+      reason: `v${remoteVersion} is available, but no ${currentTarget()} build is attached to it — download it from ${page}.`,
+    }
+  if (!isChannelAssetUrl(asset.browser_download_url, channel))
+    return {
+      ...found,
+      canApply: false,
+      reason: `v${remoteVersion} is available, but its ${asset.name} is not a release download of ${channel.repo}, so it will not be installed.`,
+    }
+  return { ...found, canApply: true, reason: `v${remoteVersion} is available.` }
+}
+
+/**
+ * Is there a newer release, and may this build install it?
+ *
+ * With the channel's updates "off" this answers at once, from nothing: no request is made, cached
+ * or not, and the reason says why. `channel` exists for tests; the daemon always runs on the one
+ * it was built with.
+ */
+export async function checkForUpdate(
+  opts: { fresh?: boolean; channel?: ReleaseChannel } = {},
+): Promise<UpdateStatus> {
+  const channel = opts.channel ?? RELEASE_CHANNEL
+  const off = checkRefusal(channel)
+  if (off) return baseStatus({ reason: off }, channel)
+  if (!opts.fresh && cached && cached.channel === channel && Date.now() - cached.at < CACHE_TTL_MS)
+    return cached.value
 
   let release: GhRelease
   try {
-    const { res, viaFallback } = await fetchLatestRelease()
+    const { res } = await fetchLatestRelease(channel)
     if (!res.ok) {
-      return baseStatus({
-        ok: false,
-        reason:
-          // 429 is GitHub's SECONDARY rate limit and it is the same situation as the 403 primary
-          // one: transient, self-resolving, nothing the user broke. Reporting it as the generic
-          // "couldn't reach the API" made a wait-and-retry look like a dead endpoint, which is the
-          // kind of message that sends someone hunting for a network fault that isn't there.
-          res.status === 403 || res.status === 429
-            ? 'GitHub API rate limit reached — try the check again later.'
-            : `couldn't reach the GitHub Releases API (HTTP ${res.status}).`,
-      })
+      return baseStatus(
+        {
+          ok: false,
+          reason:
+            // 429 is GitHub's SECONDARY rate limit and it is the same situation as the 403 primary
+            // one: transient, self-resolving, nothing the user broke. Reporting it as the generic
+            // "couldn't reach the API" made a wait-and-retry look like a dead endpoint, which is the
+            // kind of message that sends someone hunting for a network fault that isn't there.
+            res.status === 403 || res.status === 429
+              ? 'GitHub API rate limit reached — try the check again later.'
+              : `couldn't reach the GitHub Releases API (HTTP ${res.status}).`,
+        },
+        channel,
+      )
     }
-    // The ping succeeded (the server answered) — record it before touching the body, so a
-    // malformed/unexpected JSON payload still counts as "this install was heard from".
-    // Not for a fallback response: Studio never served it, so it never saw the ping either.
-    if (!pingOptedOut() && !viaFallback) markPingReported()
     release = (await res.json()) as GhRelease
   } catch (e) {
-    return baseStatus({
-      ok: false,
-      reason: `couldn't reach the GitHub Releases API (${e instanceof Error ? e.message : String(e)}).`,
-    })
+    return baseStatus(
+      {
+        ok: false,
+        reason: `couldn't reach the GitHub Releases API (${e instanceof Error ? e.message : String(e)}).`,
+      },
+      channel,
+    )
   }
 
-  const remoteVersion = release.tag_name?.replace(/^v/, '') ?? ''
-  const available = !!remoteVersion && isNewer(remoteVersion, VERSION)
-  const asset = available ? assetForThisPlatform(release.assets ?? []) : null
-
-  const value = baseStatus({
-    remoteCommit: release.tag_name ?? null,
-    updateAvailable: available,
-    canApply: available && !!asset,
-    reason: !available
-      ? null
-      : asset
-        ? `v${remoteVersion} is available.`
-        : `v${remoteVersion} is available, but no ${currentTarget()} build is attached to it — download it from ${RELEASES_PAGE}.`,
-  })
-  cached = { value, at: Date.now() }
+  const value = baseStatus(verdictFor(release, channel), channel)
+  cached = { value, at: Date.now(), channel }
   return value
 }
 
@@ -977,7 +919,10 @@ export interface ApplyUpdateDeps {
   /** Path of the executable being replaced. Defaults to LAUNCHER_PATH in a release; a source
    *  checkout has none, so there applyUpdate refuses unless one is passed. */
   exePath?: string
-  checkForUpdate?: (opts?: { fresh?: boolean }) => Promise<UpdateStatus>
+  /** The release channel the update must come from and whose policy may refuse it. Defaults to
+   *  the one this build was made with; a test passes its own. */
+  channel?: ReleaseChannel
+  checkForUpdate?: (opts?: { fresh?: boolean; channel?: ReleaseChannel }) => Promise<UpdateStatus>
   /** Re-fetch used to read the asset list (checkForUpdate intentionally doesn't carry it). */
   fetchLatestRelease?: () => Promise<{ res: { ok: boolean; json: () => Promise<unknown> } }>
   downloadAndVerifyUpdate?: (
@@ -1079,9 +1024,10 @@ async function resolveUpdateToApply(
   doCheckForUpdate: NonNullable<ApplyUpdateDeps['checkForUpdate']>,
   doFetchLatestRelease: NonNullable<ApplyUpdateDeps['fetchLatestRelease']>,
   installDir: string,
+  channel: ReleaseChannel,
 ): Promise<ResolvedUpdate | UpdateApplyResult> {
   beginUpdateProgress('Checking for the latest release…')
-  const status = await doCheckForUpdate({ fresh: true })
+  const status = await doCheckForUpdate({ fresh: true, channel })
   if (!status.ok) return fail(status.reason ?? 'update check failed')
   const remoteVersion = (status.remoteCommit ?? '').replace(/^v/, '')
   // "Up to date" is not the same as "complete". An install missing a release-owned folder is
@@ -1102,8 +1048,6 @@ async function resolveUpdateToApply(
         : 'already up to date',
     )
   // Re-fetch the release to get the asset URL (checkForUpdate intentionally doesn't carry it).
-  // The check above already marked the ping reported on success, so this second hit never
-  // resends `new=1` — one "first ping" signal per install, no matter how many requests it takes.
   let asset: GhAsset | null = null
   let sums: GhAsset | null = null
   try {
@@ -1119,7 +1063,7 @@ async function resolveUpdateToApply(
   if (!asset)
     return fail(
       repairing.length
-        ? `this install is missing ${repairing.join(', ')}, but no ${currentTarget()} build is attached to v${remoteVersion} to restore it from - download the .zip from ${RELEASES_PAGE}`
+        ? `this install is missing ${repairing.join(', ')}, but no ${currentTarget()} build is attached to v${remoteVersion} to restore it from - download the .zip from ${releasesPage(channel)}`
         : `no ${currentTarget()} build attached to v${remoteVersion}`,
     )
   // Same rule install.ps1 applies: a release without its manifest cannot be verified, so it is not
@@ -1128,6 +1072,13 @@ async function resolveUpdateToApply(
     return fail(
       `v${remoteVersion} published no ${CHECKSUM_MANIFEST}, so the download cannot be verified - refusing to update`,
     )
+  // Both files come from the channel's own releases or not at all, before a byte is fetched: the
+  // release JSON names these URLs, and whoever answered the query wrote it (release-channel.ts).
+  for (const file of [asset, sums])
+    if (!isChannelAssetUrl(file.browser_download_url, channel))
+      return fail(
+        `refusing ${file.name}: ${file.browser_download_url} is not a release download of ${channel.repo}`,
+      )
 
   // Date.now() is unavailable here; reuse the check time as the swap-aside stamp.
   return { remoteVersion, asset, sums, stamp: String(status.checkedAt) }
@@ -1394,8 +1345,9 @@ export function ensureBunBeforeRelaunch(
 }
 
 export async function applyUpdate(deps: ApplyUpdateDeps = {}): Promise<UpdateApplyResult> {
+  const channel = deps.channel ?? RELEASE_CHANNEL
   const doCheckForUpdate = deps.checkForUpdate ?? checkForUpdate
-  const doFetchLatestRelease = deps.fetchLatestRelease ?? fetchLatestRelease
+  const doFetchLatestRelease = deps.fetchLatestRelease ?? (() => fetchLatestRelease(channel))
   const doDownloadAndVerifyUpdate = deps.downloadAndVerifyUpdate ?? downloadAndVerifyUpdate
   const isOrchestratorBusy = deps.orchestratorBusy ?? orchestratorBusy
   const rename = deps.rename ?? renameSync
@@ -1410,7 +1362,16 @@ export async function applyUpdate(deps: ApplyUpdateDeps = {}): Promise<UpdateApp
   const exePath = deps.exePath ?? (IS_RELEASE ? LAUNCHER_PATH : null)
   if (exePath === null)
     return fail('this is a source checkout, which updates through git, not a release download')
-  const resolved = await resolveUpdateToApply(doCheckForUpdate, doFetchLatestRelease, installDir)
+  // The channel's policy first, before any request: "off" checks nothing and "notify" installs
+  // nothing, and that holds for a repair of this same version too.
+  const refused = applyRefusal(channel)
+  if (refused) return fail(refused)
+  const resolved = await resolveUpdateToApply(
+    doCheckForUpdate,
+    doFetchLatestRelease,
+    installDir,
+    channel,
+  )
   // A refusal is already a finished result; only a ResolvedUpdate carries a version to install.
   if (!('remoteVersion' in resolved)) return resolved
 

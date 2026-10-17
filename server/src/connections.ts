@@ -131,7 +131,8 @@ export const NEVER_SYNCED = [
   'connections_sync',
   // A secret.
   'notify_smtp_pass',
-  // This install's identity. Syncing would merge two machines into one in the ping counts.
+  // An install id and a "ping sent" flag that an older build's update check wrote. Nothing reads them
+  // now (github-updater.ts), but old databases still hold them, and an install id never travels.
   'app_install_id',
   'app_ping_reported',
   // '' means auto-detect; anything else is an ABSOLUTE PATH to an editor on this machine.

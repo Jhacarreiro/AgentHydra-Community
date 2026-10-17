@@ -36,6 +36,7 @@ import {
   rollbackComponents,
   swapComponent,
 } from '../src/github-updater'
+import { type ReleaseChannel, releaseDownloadBase } from '../src/release-channel'
 
 const APP = RELEASE_COMPONENTS.find((c) => c.name === 'app')!
 const ORCH = RELEASE_COMPONENTS.find((c) => c.name === 'orchestrator')!
@@ -275,6 +276,11 @@ function applyFixture(): { root: string; bundle: string; install: string } {
 
 const FAKE_ASSET_NAME = `AgentHydra-9.9.9-${currentTarget()}${process.platform === 'win32' ? '.zip' : '.tar.gz'}`
 
+/** A channel that installs, so these tests reach the swap whatever the committed channel says. The
+ *  fake release's files are under its own releases/download, which is all the updater accepts. */
+const TEST_CHANNEL: ReleaseChannel = { repo: 'Example-Owner/Example-App', updates: 'auto' }
+const TEST_DOWNLOADS = `${releaseDownloadBase(TEST_CHANNEL)}/v9.9.9`
+
 /** `remoteCommit` matters for the repair path: it only engages when the latest release IS this
  *  build's version, so a "no update available" fake must say so with the REAL version. */
 function fakeCheckForUpdate(over: { updateAvailable?: boolean; remoteCommit?: string } = {}) {
@@ -287,7 +293,7 @@ function fakeCheckForUpdate(over: { updateAvailable?: boolean; remoteCommit?: st
     remoteCommit: over.remoteCommit ?? (available ? 'v9.9.9' : `v${VERSION}`),
     branch: null,
     upstream: null,
-    remote: 'https://github.com/LunarWerxs/agenthydra/releases',
+    remote: 'https://github.com/Example-Owner/Example-App/releases',
     dirty: false,
     updateAvailable: available,
     canApply: available,
@@ -302,8 +308,16 @@ function fakeFetchLatestRelease() {
       ok: true,
       json: async () => ({
         assets: [
-          { name: FAKE_ASSET_NAME, browser_download_url: 'https://example.invalid/a', size: 1 },
-          { name: CHECKSUM_MANIFEST, browser_download_url: 'https://example.invalid/s', size: 1 },
+          {
+            name: FAKE_ASSET_NAME,
+            browser_download_url: `${TEST_DOWNLOADS}/${FAKE_ASSET_NAME}`,
+            size: 1,
+          },
+          {
+            name: CHECKSUM_MANIFEST,
+            browser_download_url: `${TEST_DOWNLOADS}/${CHECKSUM_MANIFEST}`,
+            size: 1,
+          },
         ],
       }),
     },
@@ -316,6 +330,7 @@ test('applyUpdate refuses while a toolbox script is running and changes nothing 
     const result = await applyUpdate({
       installDir: install,
       exePath: join(install, 'AgentHydra.exe'),
+      channel: TEST_CHANNEL,
       checkForUpdate: fakeCheckForUpdate(),
       fetchLatestRelease: fakeFetchLatestRelease(),
       downloadAndVerifyUpdate: async () => ({
@@ -342,6 +357,7 @@ test('applyUpdate rolls back the executable AND every already-swapped component 
     const result = await applyUpdate({
       installDir: install,
       exePath: join(install, 'AgentHydra.exe'),
+      channel: TEST_CHANNEL,
       checkForUpdate: fakeCheckForUpdate(),
       fetchLatestRelease: fakeFetchLatestRelease(),
       downloadAndVerifyUpdate: async () => ({
@@ -449,6 +465,7 @@ test('applyUpdate reinstalls the CURRENT version when a component is missing', a
     const result = await applyUpdate({
       installDir: install,
       exePath: join(install, 'AgentHydra.exe'),
+      channel: TEST_CHANNEL,
       // No update available - the ONLY thing that used to matter, and the whole refusal.
       checkForUpdate: fakeCheckForUpdate({ updateAvailable: false }),
       fetchLatestRelease: fakeFetchLatestRelease(),
@@ -475,6 +492,7 @@ test('a missing component does NOT license a downgrade when the latest release i
     const result = await applyUpdate({
       installDir: install,
       exePath: join(install, 'AgentHydra.exe'),
+      channel: TEST_CHANNEL,
       checkForUpdate: fakeCheckForUpdate({ updateAvailable: false, remoteCommit: 'v0.0.1' }),
       fetchLatestRelease: fakeFetchLatestRelease(),
       downloadAndVerifyUpdate: async () => ({
@@ -501,6 +519,7 @@ test('a complete install on the current version is still refused as up to date',
     const result = await applyUpdate({
       installDir: install,
       exePath: join(install, 'AgentHydra.exe'),
+      channel: TEST_CHANNEL,
       checkForUpdate: fakeCheckForUpdate({ updateAvailable: false }),
       fetchLatestRelease: fakeFetchLatestRelease(),
       downloadAndVerifyUpdate: async () => ({
@@ -603,6 +622,7 @@ function applyDeps(
   return {
     installDir: install,
     exePath: join(install, 'AgentHydra.exe'),
+    channel: TEST_CHANNEL,
     checkForUpdate: fakeCheckForUpdate(),
     fetchLatestRelease: fakeFetchLatestRelease(),
     downloadAndVerifyUpdate: async () => ({
@@ -799,6 +819,7 @@ test('a release-install update swaps the launcher, not the daemon runtime, and r
     const result = await applyUpdate({
       installDir: install,
       exePath: launcherPath,
+      channel: TEST_CHANNEL,
       checkForUpdate: fakeCheckForUpdate(),
       fetchLatestRelease: fakeFetchLatestRelease(),
       downloadAndVerifyUpdate: async () => ({
