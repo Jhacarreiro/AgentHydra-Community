@@ -1,9 +1,9 @@
 // Command fakehub stands in for the hub in test-linux.sh and test-macos.sh. It serves the builds in a folder the way
 // the hub does, for one token: GET /api/codex-hub/{pusher,tray}[?platform=P] answers {"sha256","size"}, with
-// "signature" from the build's .sig when there is one (testdata/signbuild writes it), and .../download the file. No platform means windows-x64; an empty or unknown one is a 400; a platform with no build,
-// a 404. Files are read on each request, so a test can put a new build in place while the tray runs. With -header,
-// a request without that header gets a 403 first, as from an access proxy in front of the hub. Each request is
-// logged to stdout.
+// "signature" from the build's .sig when there is one (testdata/signbuild writes it), and .../download the file. No
+// platform means windows-x64; an empty or unknown one is a 400; a platform with no build, a 404. Files are read on each
+// request, so a test can put a new build in place while the tray runs. With -header, a request without that header gets
+// a 403 first, as from an access proxy in front of the hub. Each request is logged to stdout.
 //
 //	fakehub -dir builds -token T -addr-file hub.addr [-header "Name: value"]
 package main

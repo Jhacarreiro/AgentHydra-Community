@@ -61,8 +61,8 @@ export interface UpdateDeps {
 }
 
 /**
- * The public key (base64, codex-hub-signature.ts) the hub's builds must be signed with: AGENTHYDRA_CODEX_HUB_UPDATE_KEY,
- * else the one this build was compiled with; '' when there is none.
+ * The public key (base64, codex-hub-signature.ts) the hub's builds must be signed with:
+ * AGENTHYDRA_CODEX_HUB_UPDATE_KEY, else the one this build was compiled with; '' when there is none.
  */
 export function updateKey(): string {
   const compiled =

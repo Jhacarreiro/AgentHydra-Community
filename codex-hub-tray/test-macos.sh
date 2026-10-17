@@ -5,12 +5,12 @@
 #   ./test-macos.sh          (KEEP=1 keeps the scratch folder)
 #
 # It builds the app with build-macos.sh, then runs it against a fake hub (testdata/fakehub) serving a fake pusher
-# script, signed with a key made for the run (testdata/signbuild), with HOME set to a scratch folder, so the real ~/Applications, ~/Library and LaunchAgents are never
-# touched. launchctl, open and osascript are stand-ins that record what they were asked (the launchctl one starts
-# the program a bootstrapped LaunchAgent names, as launchd would), so nothing is loaded into the real launchd and
-# no browser, dialog or notification opens. With CODEX_HUB_E2E_LAUNCHCTL=1 it also loads a copy of the LaunchAgent
-# (its own label, HOME pointed at the scratch folder) into the real gui/<uid> domain to check that launchd restarts
-# a crashed tray and leaves a quit one alone, and unloads it again.
+# script, signed with a key made for the run (testdata/signbuild), with HOME set to a scratch folder, so the real
+# ~/Applications, ~/Library and LaunchAgents are never touched. launchctl, open and osascript are stand-ins that record
+# what they were asked (the launchctl one starts the program a bootstrapped LaunchAgent names, as launchd would), so
+# nothing is loaded into the real launchd and no browser, dialog or notification opens. With CODEX_HUB_E2E_LAUNCHCTL=1
+# it also loads a copy of the LaunchAgent (its own label, HOME pointed at the scratch folder) into the real gui/<uid>
+# domain to check that launchd restarts a crashed tray and leaves a quit one alone, and unloads it again.
 #
 # Each check prints PASS or FAIL; INFO lines are for reading. The script exits non-zero if any check failed.
 set -u
