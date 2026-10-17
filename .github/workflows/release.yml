@@ -27,6 +27,10 @@
 # - What building does NOT prove is that the bundle RUNS: the smoke job boots each bundle on real
 #   hardware for its OS, through the launcher, with the downloads refused and a seeded Bun, and
 #   asserts /api/health.
+# - Every build carries the release channel (release-channel.json): the repository it looks to for its
+#   updates and its repairs, and what it may do about a newer release. The `channel` job refuses a run in
+#   any other repository, and while the channel says updates are "off" every release is published as a
+#   pre-release, so it is never `releases/latest` (docs/RELEASING.md, "This repository's releases").
 name: Release
 
 on:
@@ -51,9 +55,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The repository a build belongs to is the one release-channel.json names. A run anywhere else (a fork of this
+  # repository, a copy) would publish builds that ask that other repository for their updates and repair downloads,
+  # so it stops here, before anything is built.
+  channel:
+    timeout-minutes: 5
+    name: check the release channel
+    runs-on: ubuntu-latest
+    outputs:
+      updates: ${{ steps.read.outputs.updates }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - id: read
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(jq -r '.repo // empty' release-channel.json)
+          updates=$(jq -r '.updates // empty' release-channel.json)
+          # GitHub ignores case in owner and name.
+          if [ -z "$repo" ] || [ "${repo,,}" != "${GITHUB_REPOSITORY,,}" ]; then
+            echo "::error::release-channel.json names '$repo', but this run is in $GITHUB_REPOSITORY. Builds from here would look for their updates in '$repo'. Point release-channel.json at this repository first."
+            exit 1
+          fi
+          case "$updates" in
+            off | notify | auto) ;;
+            *)
+              echo "::error::release-channel.json: updates is '$updates', not off, notify or auto"
+              exit 1
+              ;;
+          esac
+          echo "Release channel: $repo, updates $updates"
+          echo "updates=$updates" >> "$GITHUB_OUTPUT"
+
   # The newest Bun release, resolved once so every runner builds and smokes on the same Bun that the
   # bundles pin and download.
   bun:
+    needs: channel
     timeout-minutes: 5
     name: resolve the newest Bun
     runs-on: ubuntu-latest
@@ -278,7 +316,7 @@ jobs:
     timeout-minutes: 60
     name: publish the GitHub release
     if: github.ref_type == 'tag'
-    needs: [build, smoke]
+    needs: [channel, build, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -309,7 +347,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ inputs.prerelease && 'true' || 'false' }}
+          UPDATES: ${{ needs.channel.outputs.updates }}
         run: |
+          # While the channel says updates are off, a release is a pre-release whatever was asked: the builds in it
+          # never check for a newer one, and none of it is `releases/latest` until a release turns updates on.
+          if [ "$UPDATES" = "off" ]; then
+            PRERELEASE=true
+          fi
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # A release made ahead of its tag as a draft pre-release stays a pre-release: the tag push
             # that builds it carries no input, and publishing it as a full release would hand it to

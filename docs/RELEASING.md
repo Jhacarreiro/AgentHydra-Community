@@ -359,6 +359,9 @@ published as a GitHub **pre-release**. Every installed copy's updater asks only 
 its downloads are public for anyone who wants them. The site's sync also follows the latest release,
 so it keeps offering the previous one; skip step 7 until the release is promoted.
 
+While `release-channel.json` says `"updates": "off"`, every release is a pre-release this way, whatever was asked:
+`release.yml` publishes it as one. The steps below are for a tentative release once updates are on.
+
 1. **Before pushing the tag, make the release as a draft pre-release:**
    ```sh
    gh release create vX.Y.Z --draft --prerelease --title "AgentHydra X.Y.Z" --notes "Building."
@@ -416,6 +419,11 @@ launcher `.exe` for people plus the zip the installer and the updater take; the 
 expose a `.tar.gz`. `SHA256SUMS.txt` covers every asset (its lines name `out/<asset>`; both
 launchers match on the file name). `workflow_dispatch` runs the same build and smoke matrix without
 publishing a release.
+
+Its first job, `channel`, reads `release-channel.json` and stops the run unless `repo` is the repository the run is
+in (`$GITHUB_REPOSITORY`, compared without case), so a copy of this workflow in another repository cannot publish
+builds that look here, or anywhere else, for their updates. Its `updates` decides the publish: `off` makes the
+release a pre-release. `tests/release-channel-drift.test.ts` holds the workflow to both.
 
 **darwin-x64 (Intel mac) is build-only.** GitHub retired its Intel macOS runners, so the smoke job
 has no honest way to boot that target: it is packaged and archived like every other target, but

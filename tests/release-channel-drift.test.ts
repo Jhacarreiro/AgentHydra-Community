@@ -127,3 +127,31 @@ describe('no code points at the project this one was forked from', () => {
     // One `git ls-files` and a read of every tracked code file: about 100 ms here, so this is a bound, not a guess.
   }, 30_000)
 })
+
+describe('.github/workflows/release.yml', () => {
+  type Step = { id?: string; run?: string; env?: Record<string, string> }
+  type Job = { needs?: string | string[]; steps?: Step[] }
+  const wf = Bun.YAML.parse(read('.github/workflows/release.yml')) as { jobs: Record<string, Job> }
+  const needs = (job: Job) => [job.needs ?? []].flat()
+
+  test('a run in any repository but the channel one stops before anything is built', () => {
+    const guard = wf.jobs.channel?.steps?.find((s) => s.id === 'read')?.run ?? ''
+    expect(guard).toContain('release-channel.json')
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's own ${var,,}, checked as text
+    expect(guard).toContain('"${repo,,}" != "${GITHUB_REPOSITORY,,}"')
+    expect(guard).toContain('exit 1')
+    // Every other job waits on it: bun first, and everything else waits on bun or on the channel itself.
+    expect(needs(wf.jobs.bun as Job)).toContain('channel')
+    expect(needs(wf.jobs.release as Job)).toContain('channel')
+  })
+
+  test('while updates are off, a release is published as a pre-release', () => {
+    const publish = wf.jobs.release?.steps?.find((s) => s.env?.UPDATES)
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, checked as text
+    expect(publish?.env?.UPDATES).toBe('${{ needs.channel.outputs.updates }}')
+    const run = publish?.run ?? ''
+    expect(run).toMatch(/if \[ "\$UPDATES" = "off" \]; then\s+PRERELEASE=true/)
+    // The override comes before the first gh call that publishes.
+    expect(run.indexOf('PRERELEASE=true')).toBeLessThan(run.indexOf('gh release'))
+  })
+})
