@@ -270,6 +270,43 @@ jobs:
         working-directory: orchestrator
         run: python -m unittest discover -s scripts/tests -p "test_[${{ matrix.shard }}]*.py"
 
+  # hswarm/ is HydraSwarm, the Python worker swarm (hswarm/README.md): ~1,500 pytest cases against fake
+  # providers and a replay of Claude Code, no keys and no provider calls (tests marked `live` are left
+  # out by hswarm/pyproject.toml). Until this job no workflow ran them. Windows only, like the orchestrator:
+  # some of its tests run only there (text-mode blob writes, the sidecar's proactor event loop), and
+  # that is where HSwarm is developed and run. One job, not shards: the whole suite took about 2 minutes
+  # on Linux (2026-10-17). Installed editable with its `test` extra, as docs/LIVE-CHECKOUT.md installs
+  # it; pytest-asyncio from that extra runs the async tests.
+  #
+  # Python 3.14, not the orchestrator and desk2 jobs' 3.12: HSwarm runs on 3.14 (its README's
+  # measurements), and 3.13 began stripping a docstring's indentation at compile time. On 3.12
+  # hswarm_run's MCP description keeps it, 3,110 characters, and test_mcp_surface.py's 3,000 cap
+  # fails; on 3.14 it is 2,985.
+  hswarm:
+    needs: already
+    if: needs.already.outputs.verified != '1'
+    timeout-minutes: 60
+    name: hswarm tests (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Python (hswarm)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+
+      - name: Install hswarm and its test tools
+        run: pip install -e "./hswarm[test]"
+
+      # Same TEMP as the desk2 job: the runner's is the 8.3 short form (C:\Users\RUNNER~1\...), a PC's
+      # is the long form, and so is runner.temp.
+      - name: Test (hswarm)
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: python -m pytest hswarm/tests -q
+
   # desk2/ (AgentHydra 2.0's window) is its own bun workspace with its own lockfile and suite, and
   # the root `bun test` skips it (bunfig.toml), so without this job a change that breaks Desk 2
   # lands green. Windows only: its suite is developed and passes there, PowerShell launcher tests
