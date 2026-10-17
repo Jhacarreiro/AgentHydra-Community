@@ -6,7 +6,8 @@
  *   bun scripts/build-launcher.ts --outfile <path> [--version x.y.z]
  *
  * The version defaults to package.json's. It is baked in through a generated source file in a temp
- * folder, so the checked-in source never changes between releases.
+ * folder, so the checked-in source never changes between releases. The same file carries where the
+ * launcher downloads a missing part from: the release channel's downloads (release-channel.json).
  */
 import {
   copyFileSync,
@@ -20,6 +21,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import pkg from '../package.json'
+import { releaseDownloadBase } from '../server/src/release-channel'
 import { findRepoRoot } from '../tests/repo-root'
 
 const ROOT = findRepoRoot(import.meta.dir)
@@ -53,8 +55,13 @@ export interface BuildLauncherOptions {
   version?: string
 }
 
-/** The generated BuildInfo.cs: the version for the launcher's code and for Explorer's Details tab. */
-function buildInfoSource(version: string): string {
+/** The generated BuildInfo.cs: the version for the launcher's code and for Explorer's Details tab, and the
+ *  download base its repair fetches `v<version>/AgentHydra-<version>-windows-x64.zip` from. */
+export function buildInfoSource(version: string, releaseHost = releaseDownloadBase()): string {
+  // It lands inside a C# string literal. The channel's repository name is already held to GitHub's
+  // characters; this keeps a hand-passed value to the same.
+  if (!/^https:\/\/[A-Za-z0-9./_-]+$/.test(releaseHost))
+    throw new Error(`"${releaseHost}" is not a download base the launcher can carry.`)
   // Only the numeric core can be a file version (1.2.3-rc.1 is 1.2.3.0).
   const [major, minor, patch] = version.split(/[-+]/)[0]!.split('.')
   const fileVersion = `${major}.${minor}.${patch}.0`
@@ -66,6 +73,8 @@ function buildInfoSource(version: string): string {
     `[assembly: AssemblyInformationalVersion("${version}")]`,
     'namespace AgentHydra { static class BuildInfo { public const string Version = "' +
       version +
+      '"; public const string ReleaseHost = "' +
+      releaseHost +
       '"; } }',
     '',
   ].join('\r\n')

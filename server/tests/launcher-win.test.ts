@@ -25,7 +25,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildLauncher, findCsc } from '../../scripts/build-launcher'
+import { buildInfoSource, buildLauncher, findCsc } from '../../scripts/build-launcher'
+import { releaseDownloadBase } from '../../server/src/release-channel'
 
 setDefaultTimeout(90_000)
 
@@ -35,6 +36,32 @@ const BUNDLE = `AgentHydra-${VERSION}-windows-x64`
 
 const runnable = process.platform === 'win32' && findCsc() !== null
 const suite = runnable ? describe : describe.skip
+
+// The generated source needs no compiler, so it is checked everywhere.
+describe('BuildInfo.cs', () => {
+  test("carries the version and the release channel's downloads, which the repair fetches from", () => {
+    const source = buildInfoSource(VERSION)
+    expect(source).toContain(`public const string Version = "${VERSION}";`)
+    expect(source).toContain(`public const string ReleaseHost = "${releaseDownloadBase()}";`)
+    expect(source.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
+    const cs = readFileSync(
+      join(import.meta.dir, '..', '..', 'launcher', 'windows', 'AgentHydra.cs'),
+      'utf8',
+    )
+    expect(cs).toContain('Base("AGENTHYDRA_RELEASE_BASE", BuildInfo.ReleaseHost)')
+    expect(cs).not.toContain('const string ReleaseHost')
+    expect(cs.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
+  })
+
+  test('refuses a download base that would not stay a C# string', () => {
+    for (const host of [
+      'http://example.test/d',
+      'https://example.test/"; evil(); "',
+      'https://example.test/a\\b',
+    ])
+      expect(() => buildInfoSource(VERSION, host)).toThrow('download base')
+  })
+})
 
 /** A zip with every entry stored: all the launcher's Framework unzipper needs, and no library for the test to carry. */
 function zip(entries: Record<string, string | Uint8Array>): Uint8Array {

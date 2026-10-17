@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { writePosixLauncher } from '../../scripts/launcher-posix'
+import { releaseDownloadBase } from '../../server/src/release-channel'
 
 // The POSIX launcher (launcher/posix/agenthydra) is a shell script, so it is tested by running it
 // with a real sh against a local server standing in for GitHub's two download hosts. The bun it
@@ -274,6 +275,35 @@ function seedBun(install: string, version: string, text: string): void {
   chmodSync(join(install, 'runtime', 'bun'), 0o755)
   writeFileSync(join(install, 'runtime', 'bun.version'), `${version}\n`)
 }
+
+// What the packager writes: no shell needed, so it runs everywhere.
+describe('the packaged POSIX launcher', () => {
+  test("repairs from the release channel's downloads unless AGENTHYDRA_RELEASE_BASE says otherwise", () => {
+    const outfile = join(temp('ah-launcher-text'), 'agenthydra')
+    writePosixLauncher({ outfile, version: VERSION })
+    const text = readFileSync(outfile, 'utf8')
+    expect(text).toContain(`AH_VERSION='${VERSION}'`)
+    expect(text).toContain(`RELEASE_BASE=\${AGENTHYDRA_RELEASE_BASE:-${releaseDownloadBase()}}`)
+    expect(text).not.toContain('@VERSION@')
+    expect(text).not.toContain('@RELEASE_BASE@')
+    expect(text.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
+  })
+
+  test('refuses a download base the shell would read as more than a URL', () => {
+    const outfile = join(temp('ah-launcher-text'), 'agenthydra')
+    for (const releaseBase of [
+      'http://example.test/releases/download',
+      'https://example.test/x}; rm -rf ~; #',
+      'https://example.test/$(id)',
+      'https://example.test/a b',
+      '',
+    ])
+      expect(() => writePosixLauncher({ outfile, version: VERSION, releaseBase })).toThrow(
+        'download base',
+      )
+    expect(existsSync(outfile)).toBe(false)
+  })
+})
 
 describe.skipIf(!SH)('POSIX launcher', () => {
   test('--version prints the baked-in version and touches nothing', async () => {

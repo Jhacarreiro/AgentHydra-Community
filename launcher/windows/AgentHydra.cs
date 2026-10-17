@@ -3,7 +3,7 @@
 // the Bun this release pins (downloading it on first run), then runs `bun.exe app\server.js` with every
 // argument and passes the exit code through. Written for the .NET Framework 4 C# compiler every Windows
 // 10 and 11 ships (C# 5: no interpolated strings, no `?.`), compiled by scripts/build-launcher.ts, which
-// writes the version into BuildInfo.cs.
+// writes the version and the release channel's download base (release-channel.json) into BuildInfo.cs.
 
 using System;
 using System.Collections.Generic;
@@ -28,7 +28,6 @@ namespace AgentHydra
 
     static class Program
     {
-        const string ReleaseHost = "https://github.com/LunarWerxs/AgentHydra/releases/download";
         const string BunHost = "https://github.com/oven-sh/bun/releases/download";
         const string Target = "windows-x64";
 
@@ -187,7 +186,7 @@ namespace AgentHydra
             if (missing.Count == 0) return;
 
             string name = "AgentHydra-" + BuildInfo.Version + "-" + Target;
-            string baseUrl = Base("AGENTHYDRA_RELEASE_BASE", ReleaseHost) + "/v" + BuildInfo.Version + "/";
+            string baseUrl = Base("AGENTHYDRA_RELEASE_BASE", BuildInfo.ReleaseHost) + "/v" + BuildInfo.Version + "/";
             string work = Path.Combine(install, ".repair-" + Random());
             Directory.CreateDirectory(work);
             try

@@ -7,7 +7,9 @@
 
 AH_VERSION='@VERSION@'
 
-RELEASE_BASE=${AGENTHYDRA_RELEASE_BASE:-https://github.com/LunarWerxs/AgentHydra/releases/download}
+# Where this version's release archive is: the release channel's downloads (release-channel.json), filled in by
+# the packager like the version. AGENTHYDRA_RELEASE_BASE overrides it (the tests' local server, a mirror).
+RELEASE_BASE=${AGENTHYDRA_RELEASE_BASE:-@RELEASE_BASE@}
 BUN_BASE=${AGENTHYDRA_BUN_BASE:-https://github.com/oven-sh/bun/releases/download}
 RELEASE_BASE=${RELEASE_BASE%/}
 BUN_BASE=${BUN_BASE%/}
