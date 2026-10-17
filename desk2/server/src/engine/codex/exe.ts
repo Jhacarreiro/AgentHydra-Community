@@ -1,28 +1,13 @@
-// Where the Codex CLI is: the same order as AgentHydra's server/src/config.ts resolveCodexExe, which desk2 cannot
-// import. CODEX_PATH first, then the newest binary the Codex desktop app installed, then the npm one.
+// Where the Codex CLI is, and the environment it starts in: AgentHydra's own lookup (server/src/config.ts
+// resolveCodexExe and codexSpawnEnv), so Desk starts the Codex the daemon does. CODEX_PATH, Desk's own name for it,
+// first, then AGENTHYDRA_CODEX_PATH. On Windows the newest binary the Codex desktop app installed, then the npm one;
+// on a Mac or Linux PC a codex on PATH, then the places Homebrew, npm, bun, Volta and nvm put it, which a launchd or
+// systemd PATH misses. A codex found by path starts with its own folder ahead of PATH, where npm's launcher finds node.
 
-import { existsSync, readdirSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { resolveCodexExe } from '../../../../../server/src/config'
 
-export function codexExe(env: Record<string, string | undefined> = process.env): string {
-  const configured = env.CODEX_PATH?.trim()
-  if (configured) return configured
-  const local = env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local')
-  const bin = join(local, 'OpenAI', 'Codex', 'bin')
-  // The folders are content hashes: an update leaves the old one beside the new, so the newest binary wins.
-  let newest: { path: string; mtime: number } | null = null
-  try {
-    for (const dir of readdirSync(bin)) {
-      const path = join(bin, dir, 'codex.exe')
-      const mtime = statSync(path, { throwIfNoEntry: false })?.mtimeMs
-      if (mtime !== undefined && (!newest || mtime > newest.mtime)) newest = { path, mtime }
-    }
-  } catch {
-    // no desktop app
-  }
-  if (newest) return newest.path
-  const roaming = env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
-  for (const npm of [join(roaming, 'npm', 'codex.cmd'), join(roaming, 'npm', 'codex')]) if (existsSync(npm)) return npm
-  return 'codex'
+export { codexSpawnEnv } from '../../../../../server/src/config'
+
+export function codexExe(): string {
+  return process.env.CODEX_PATH?.trim() || resolveCodexExe()
 }

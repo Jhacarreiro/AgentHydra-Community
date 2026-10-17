@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { DEFAULT_HYDRA_URL } from '../../bridge/client'
-import { codexExe } from './exe'
+import { codexExe, codexSpawnEnv } from './exe'
 
 const RELAY = 'relay:'
 
@@ -159,7 +159,8 @@ function end(key: string, s: Shared, why: string): void {
 function processTransport(home: string, h: { line(l: string): void; ended(why: string): void; gone(): void }): Transport {
   const exe = codexExe()
   const child = spawn(exe, ['app-server'], {
-    env: { ...process.env, CODEX_HOME: home },
+    // Off Windows a codex found by path has its own folder ahead of PATH: npm's launcher is `#!/usr/bin/env node`.
+    env: { ...codexSpawnEnv(exe), CODEX_HOME: home },
     cwd: home,
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
