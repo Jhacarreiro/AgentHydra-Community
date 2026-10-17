@@ -119,6 +119,12 @@ describe('CliMayte workers', () => {
     expect(settled!.eta).toEqual({ minutes: 3, at: 1791069630000, tookS: 250 })
   })
 
+  test('what a worker is doing, when that began and when its last step came pass through', () => {
+    const doing = { doing: 'Waiting: Monitor bun test', doingSince: 1791069650000, doingKind: 'wait', lastStepAt: 1791069660000 }
+    const [w] = mapWorkers([{ ...raw[0], ...doing }])
+    expect(w).toMatchObject(doing)
+  })
+
   test('a settled worker has ended when it last changed and carries every token it was charged', () => {
     const done = workers.find((w) => w.id === 'w-00000003')!
     expect(done.endedAt).toBe(done.lastActivityAt)
