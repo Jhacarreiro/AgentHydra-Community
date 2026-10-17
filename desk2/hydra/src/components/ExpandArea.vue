@@ -18,9 +18,10 @@
 // The freed clip also fixes a second thing on the way past: popovers, selects and focus rings that
 // render inside an expanded block are no longer cut off at its edge.
 //
-// Deliberately NOT pushed up into the kit: that would rewrite a shared component vendored into
-// five sibling apps for a problem only this app currently has. If a sibling grows a sticky header
-// inside a collapsible, that is the moment to promote this and delete it from here.
+// Kept beside the components that use it rather than folded into shell/ExpandTransition.vue: only
+// these panels put a sticky header inside a collapsible, and the shell version has a twin in
+// orchestrator/web that would have to change with it. If another view grows a sticky header inside
+// a collapsible, that is the moment to move this into shell/ and delete it from here.
 //
 // THE TABLE'S OWN BOX BROKE STICKY TOO
 //
