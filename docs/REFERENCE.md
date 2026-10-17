@@ -559,7 +559,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, and only when each resume and turn says so; `full` also without them (Desk's bypass mode); `off` keeps the relay closed |
 | `AGENTHYDRA_CODEX_HUB_UPDATE` | on | on a PC running the compiled pusher: `off` keeps the installed build instead of following the hub's |
 | `AGENTHYDRA_CODEX_HUB_UPDATE_KEY` | the key the build was compiled with, if any | on a PC running the compiled pusher: the operator's public key (base64), which each hub build must be signed with (`scripts/codex-hub-sign.ts`); without one the pusher takes builds only from an `https://` hub |
-| `AGENTHYDRA_CODEX_HUB_RESTART` | `exit` under systemd or launchd, else `spawn` | on a Mac or Linux PC, how the compiled pusher hands over to a build it updated to: `exit` ends it with code 75 for the service manager to start the new file, `spawn` starts the new file itself |
+| `AGENTHYDRA_CODEX_HUB_RESTART` | `exit` under systemd or launchd, else `spawn` | on a Mac or Linux PC, how the compiled pusher hands over to a build it updated to: `exit` ends it with code 75 for the service manager to start the new file (a unit with `Restart=on-failure` or `always`, a LaunchAgent with `KeepAlive`), `spawn` starts the new file itself; set `spawn` under a unit or job that is not started again |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
 | `AGENTHYDRA_BOOT_DEADLINE_MS` | `120000` (full daemon) / `30000` (`--instances`) | startup-liveness watchdog deadline; if boot hasn't reached a bound port by then, the process logs its last-known phase and exits `87` for the supervisor to restart it (see `server/src/boot-watchdog.ts`) |
@@ -877,7 +877,11 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   systemd or launchd runs (`INVOCATION_ID` is set, or `XPC_SERVICE_NAME` names a job) exits with 75,
   for `Restart=on-failure` or `KeepAlive` to start the new file; any other starts it itself, with the
   same arguments and writing to the same output. `AGENTHYDRA_CODEX_HUB_RESTART` says which: `exit` or
-  `spawn`. `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
+  `spawn`. A systemd unit that runs the pusher therefore needs `Restart=on-failure` (or `always`), and a
+  LaunchAgent `KeepAlive`; under anything that is not started again, such as an XDG autostart entry
+  (which systemd runs as an `app-…@autostart.service` unit) or a plist with only `RunAtLoad`, set
+  `AGENTHYDRA_CODEX_HUB_RESTART=spawn`, or the pusher stops at its first update.
+  `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
 - **Signed builds:** each build is signed with the operator's ed25519 key, away from the hub.
   `bun scripts/codex-hub-sign.ts keygen <key file>` makes the key (PKCS#8, mode 0600, never written
   over) and prints its public key, base64 of its 32 bytes (`pubkey <key file>` prints it again).

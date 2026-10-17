@@ -152,7 +152,9 @@ export const RESTART_EXIT_CODE = 75
  * pusher exits with RESTART_EXIT_CODE for Restart=on-failure or KeepAlive to start the new file. systemd sets
  * INVOCATION_ID in a unit's environment and launchd XPC_SERVICE_NAME to the job's label; Terminal sets it to "0" and
  * an app launched from the Finder to `application.<id>`, which are not jobs that restart. AGENTHYDRA_CODEX_HUB_RESTART
- * says it outright: `exit`, or `spawn` for a pusher that starts its new build itself (the default anywhere else).
+ * says it outright: `exit`, or `spawn` for a pusher that starts its new build itself (the default anywhere else). A
+ * unit or job that is not started again (Restart=no, an XDG autostart entry, a plist with only RunAtLoad) needs
+ * `spawn`, or the pusher stops at its first update; neither variable says how the manager is set up.
  */
 export function restartPlan(
   env: NodeJS.ProcessEnv = process.env,
@@ -171,7 +173,8 @@ export function relaunchSelf(exe: string): void {
   const plan = restartPlan()
   if (plan === 'exit') {
     console.log(
-      `[codex-hub] exiting with ${RESTART_EXIT_CODE} for the service manager to start the new build`,
+      `[codex-hub] exiting with ${RESTART_EXIT_CODE} for the service manager to start the new build ` +
+        '(set AGENTHYDRA_CODEX_HUB_RESTART=spawn where nothing starts the pusher again)',
     )
     process.exit(RESTART_EXIT_CODE)
   }

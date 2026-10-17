@@ -383,6 +383,8 @@ test.skipIf(process.platform === 'win32')(
       const supervised = await relaunch(env)
       expect(supervised.status).toBe(RESTART_EXIT_CODE)
       expect(supervised.out).not.toContain('the new build started')
+      // A unit or job that is not started again stops pushing here: the log says what to set.
+      expect(supervised.out).toContain('AGENTHYDRA_CODEX_HUB_RESTART=spawn')
     }
   },
 )
