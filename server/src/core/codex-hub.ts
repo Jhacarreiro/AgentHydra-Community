@@ -20,6 +20,7 @@
 
 import { timingSafeEqual } from 'node:crypto'
 import {
+  createReadStream,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -442,6 +443,6 @@ function buildSignature(path: string): string | undefined {
 
 export async function sha256File(path: string): Promise<string> {
   const hasher = new Bun.CryptoHasher('sha256')
-  for await (const chunk of Bun.file(path).stream()) hasher.update(chunk)
+  for await (const chunk of createReadStream(path)) hasher.update(chunk as Buffer)
   return hasher.digest('hex')
 }
