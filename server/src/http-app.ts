@@ -14,5 +14,9 @@ import { Hono } from 'hono'
  * a wrapper would misattribute the summed complexity of a dozen unrelated handlers to itself. A
  * bare top-level `app.get(...)` statement (here or in a routes/*.ts module) has no such enclosing
  * function, so each handler is measured on its own, exactly as it was before this file existed.
+ *
+ * Only index.ts imports a routes module. Imported from anywhere else, its routes are registered
+ * when that module loads, which can be before index.ts mounts its /api guard, and a route
+ * registered before the guard answers without it (server/tests/api-guard-order.test.ts).
  */
 export const app = new Hono()

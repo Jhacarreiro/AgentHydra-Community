@@ -8,14 +8,13 @@
  * account ids hswarm reports (first 8 hex of sha256 over the account uuid, hswarm/accounts.py).
  */
 
-import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { listCliInstances } from '../core/cli-instances'
 import { readKnownAccounts } from '../core/known-accounts'
 import { readPastLogins } from '../core/login-history'
 import { type FleetInstanceEntry, fleetInstances } from '../fleet-instances'
-import { getHSwarmStatus, hswarmHome } from '../hswarm'
+import { getHSwarmStatus, hswarmAccountId, hswarmHome } from '../hswarm'
 import { app } from '../http-app'
 
 export interface HSwarmAccountRef {
@@ -25,11 +24,6 @@ export interface HSwarmAccountRef {
   kind?: 'desktop' | 'cli'
   /** Not signed in anywhere right now: named from the known-accounts store or a profile's login history. */
   former?: true
-}
-
-/** The id hswarm prints for an account: hswarm/accounts.py account_id. */
-export function hswarmAccountId(uuid: string): string {
-  return `acct-${createHash('sha256').update(uuid, 'utf8').digest('hex').slice(0, 8)}`
 }
 
 export interface HSwarmAccountSources {

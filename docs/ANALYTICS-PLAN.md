@@ -199,7 +199,7 @@ task line).
 | `id` | Dedupe key: `source:` + `message.id\|requestId` (Claude), rollout id + turn (Codex), `job/task/attempt` (HSwarm). `INSERT OR REPLACE` keeps the last-written usage, matching `accumulateUsageLine`. |
 | `ts` | Call time (epoch ms). Day and hour buckets derive from it in the query, using the asker's time zone. |
 | `pc` | Machine id (hostname hash, same scheme as HSwarm's `machine`) |
-| `account` | `acct-<sha256(account uuid)[:8]>`, the id HSwarm already uses (`routes/hswarm.ts` `hswarmAccountId`). `NULL` when unknown. The UI maps it to a label through the existing `/api/hswarm-accounts` logic, moved into the toolkit. |
+| `account` | `acct-<sha256(account uuid)[:8]>`, the id HSwarm already uses (`hswarm.ts` `hswarmAccountId`). `NULL` when unknown. The UI maps it to a label through the existing `/api/hswarm-accounts` logic, moved into the toolkit. |
 | `instance` | `desktop:<dir>`, `cli:<id>`, `codex:<id>` or `default` (`~/.claude`, [CLAUDE-CONFIG-LAYOUT.md](CLAUDE-CONFIG-LAYOUT.md)) |
 | `session` | CLI/desktop session id; for HSwarm, the caller session |
 | `agent` | `main` or `subagent` (+ subagent type when known) |

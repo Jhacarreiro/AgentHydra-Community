@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { hswarmAccountId } from '../src/hswarm'
 import { KitStore } from '../src/kit/store'
 import { labelSpendAccounts, SESSION_TOOLS } from '../src/mcp-session-tools'
-import { hswarmAccountId } from '../src/routes/hswarm'
 import { kitTokensFor } from '../src/routes/usage'
 import type { UsageSnapshot } from '../src/types'
 

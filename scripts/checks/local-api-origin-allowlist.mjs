@@ -26,6 +26,8 @@
 //     not asked to guard anything; the file that serves it is.
 //   · Only the guard is required. CORS matters too, but the guard is the boundary that REFUSES a
 //     request; a permissive CORS header behind a refusing guard leaks nothing.
+//   · Only that the guard is installed, not that it comes first. A route registered before it
+//     answers without it; server/tests/api-guard-order.test.ts holds the daemon to that.
 //
 // Self-contained by design: imports nothing from the arkitect core, and returns plain finding
 // objects, which the runner accepts as-is.
