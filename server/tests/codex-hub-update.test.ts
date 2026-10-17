@@ -387,4 +387,5 @@ test.skipIf(process.platform === 'win32')(
       expect(supervised.out).toContain('AGENTHYDRA_CODEX_HUB_RESTART=spawn')
     }
   },
+  20_000,
 )

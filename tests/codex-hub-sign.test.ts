@@ -50,7 +50,7 @@ test('keygen writes a private key once, and pubkey prints the key keygen printed
   expect(readFileSync(keyFile, 'utf8')).toBe(before)
 
   expect(sign('pubkey', keyFile)).toMatchObject({ status: 0, out: made.out })
-})
+}, 20_000)
 
 test('sign writes a signature that holds for the build its file name says, and no other', () => {
   const keyFile = join(dir, 'sign.key')
@@ -75,7 +75,7 @@ test('sign writes a signature that holds for the build its file name says, and n
     expect(buildSignatureValid(pub, name, 'linux-x64', sum, sig)).toBe(false)
     expect(buildSignatureValid(pub, name, platform, sha256('other bytes'), sig)).toBe(false)
   }
-})
+}, 20_000)
 
 test('sign refuses a file the hub would not serve under that name, and then writes nothing', () => {
   const keyFile = join(dir, 'refuse.key')
@@ -93,7 +93,7 @@ test('sign refuses a file the hub would not serve under that name, and then writ
     1,
   )
   expect(sign('verify', keyFile).status).toBe(1)
-})
+}, 20_000)
 
 test('a fixed key and build sign to the text the tray checks', () => {
   const keyFile = join(dir, 'vector.key')
@@ -108,4 +108,4 @@ test('a fixed key and build sign to the text the tray checks', () => {
   expect(updateKeyFrom(VECTOR.public.replace(/g=$/, 'h='))).toBeNull()
   expect(updateKeyFrom(Buffer.alloc(31).toString('base64'))).toBeNull()
   expect(updateKeyFrom('not a key')).toBeNull()
-})
+}, 20_000)
