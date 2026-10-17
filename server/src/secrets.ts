@@ -4,7 +4,8 @@
 // DECIDE NOT TO SEND a file. Transcripts need the same judgement for the same reason — an exported
 // session is something you hand to a person, and a session that once printed an API key still has
 // it in the file — so the patterns live here and both callers share them. One list, one place to
-// add to when a provider invents a new key format.
+// add to when a provider invents a new key format. scripts/audit-public.mjs, the gate on what this
+// repository publishes, reads the same list and adds the formats only a repository scan needs.
 //
 // WHAT THIS IS AND IS NOT. It is a guardrail, not a guarantee, and the context pack already says so
 // in exactly those words. It matches formats that are unmistakable — a PEM header, an AWS access
@@ -19,7 +20,7 @@
 // unusable; showing a prefix is what makes it actionable.
 
 /** One recognisable secret format. `kind` is what the UI names it; it is never a guess. */
-interface SecretPattern {
+export interface SecretPattern {
   kind: string
   /** Global, because a single message can carry several. Cloned per scan — see scanSecrets. */
   source: RegExp
@@ -27,7 +28,7 @@ interface SecretPattern {
   keep: number
 }
 
-const PATTERNS: readonly SecretPattern[] = [
+export const PATTERNS: readonly SecretPattern[] = [
   { kind: 'private-key', source: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, keep: 0 },
   { kind: 'aws-access-key-id', source: /\bAKIA[0-9A-Z]{16}\b/g, keep: 4 },
   { kind: 'api-token', source: /\b(?:sk|rk)-[A-Za-z0-9_-]{20,}\b/g, keep: 3 },
