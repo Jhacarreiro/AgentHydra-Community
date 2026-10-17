@@ -58,7 +58,7 @@ func loadConfig() config {
 	if c.Hub == "" {
 		c.Hub = hubURL
 	}
-	// A PC set up by the earlier script (install-codex-hub.ps1) has the token in its user environment.
+	// A PC that ran the pusher before the tray may have the token in its user environment.
 	if c.Token == "" {
 		c.Token = strings.TrimSpace(os.Getenv("AGENTHYDRA_CODEX_HUB_TOKEN"))
 	}

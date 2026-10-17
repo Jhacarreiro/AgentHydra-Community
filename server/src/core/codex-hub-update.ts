@@ -146,7 +146,7 @@ export const RESTART_EXIT_CODE = 75
 
 /**
  * Who starts the new build once it is in place. On Windows the scheduled task that runs the pusher
- * (install-codex-hub.ps1, every few minutes, one at a time): a process started from here would stay in the task's
+ * (every few minutes, one at a time): a process started from here would stay in the task's
  * job, which may end with this one. Under a service manager the manager (`exit`): systemd kills what is left in the
  * unit when its main process exits 0, and launchd starts the job again beside a copy started from here, so the
  * pusher exits with RESTART_EXIT_CODE for Restart=on-failure or KeepAlive to start the new file. systemd sets

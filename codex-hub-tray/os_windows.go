@@ -23,7 +23,7 @@ const (
 	runKey    = `Software\Microsoft\Windows\CurrentVersion\Run`
 	runValue  = "Codex Hub"
 	mutexName = `Local\CodexHubTray`
-	// The scheduled task an earlier setup (install-codex-hub.ps1) made; the tray takes its place.
+	// The name of a scheduled task that ran the pusher on a PC set up before the tray; the tray takes its place.
 	oldTask = "Codex hub push"
 )
 
