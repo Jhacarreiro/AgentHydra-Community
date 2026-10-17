@@ -863,7 +863,8 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   empty or unknown one is a 400. A platform the hub has no build for answers 404, and the PC keeps what
   it has. Only a build named
   `codex-hub-push`, `codex-hub-push.exe` or `codex-hub-push-<platform>` updates itself. A different build
-  is downloaded beside it, checked against that hash, and started once with `--version`; only a build
+  is downloaded beside it (no more than the announced size, within 15 minutes), checked against that
+  hash, and started once with `--version`; only a build
   that starts and prints its own name (`codex-hub-push`; the tray's, `codex-hub-tray`) replaces the
   running one, leaving the previous file as `.old` until the next start. That `--version` run gets the
   hub address and token set empty, which a `.env` in its working folder does not fill in, so a build that

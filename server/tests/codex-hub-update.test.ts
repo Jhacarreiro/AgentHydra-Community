@@ -160,6 +160,51 @@ test('a download that is not the signed build, or a --version cut off at the tim
   expect(readFileSync(exe, 'utf8')).toBe('new build')
 })
 
+test('a download stops at the size the hub announced, has a time limit, and leaves nothing when it fails', async () => {
+  // Someone on the way sends the hub's signed hash, then bytes with no end in sight (here, 64 MB).
+  let sent = 0
+  let signal: AbortSignal | null | undefined
+  const endless: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (!new URL(String(input)).pathname.endsWith('/download')) return toHub(input, init)
+    signal = init?.signal
+    return new Response(
+      new ReadableStream({
+        pull(c) {
+          if (sent >= 64 << 20) return c.close()
+          sent += 1 << 16
+          c.enqueue(new Uint8Array(1 << 16))
+        },
+      }),
+    )
+  }) as typeof fetch
+  const refused = new Set<string>()
+  expect(await updateOnce(cfg, deps({ fetch: endless, refused }))).toBe('failed')
+  expect(sent).toBeLessThan(1 << 20)
+  expect(signal).toBeInstanceOf(AbortSignal)
+  expect(existsSync(`${exe}.new`)).toBe(false)
+
+  // The connection breaks off, or the time runs out, halfway through.
+  const broken: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+    new URL(String(input)).pathname.endsWith('/download')
+      ? new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode('new'))
+              c.error(new Error('the connection was reset'))
+            },
+          }),
+        )
+      : toHub(input, init)) as typeof fetch
+  await expect(updateOnce(cfg, deps({ fetch: broken, refused }))).rejects.toThrow(
+    'the connection was reset',
+  )
+  expect(existsSync(`${exe}.new`)).toBe(false)
+  expect(readFileSync(exe, 'utf8')).toBe('old build')
+
+  expect(refused.size).toBe(0)
+  expect(await updateOnce(cfg, deps({ refused }))).toBe('updated')
+})
+
 test.skipIf(process.platform === 'win32')(
   "a downloaded build's --version gets no hub address or token, from the pusher or from a .env",
   async () => {

@@ -19,7 +19,8 @@
 // AGENTHYDRA_CODEX_HUB_UPDATE=off keeps the installed build.
 
 import { type SpawnSyncReturns, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, renameSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, renameSync, rmSync } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { appEnv } from '../config'
 import { sha256File } from './codex-hub'
 import type { CodexHubPushConfig } from './codex-hub-push'
@@ -29,6 +30,9 @@ import { buildSignatureValid, updateKeyFrom } from './codex-hub-signature'
 declare const AGENTHYDRA_CODEX_HUB_UPDATE_KEY: string | undefined
 
 const CHECK_EVERY_MS = 6 * 60 * 60_000
+// How long the hub has to answer, and to send a build (60-90 MB); past that the next check tries again.
+const ASK_TIMEOUT_MS = 30_000
+const DOWNLOAD_TIMEOUT_MS = 15 * 60_000
 // A new exe is scanned by the antivirus on its first start.
 const VERSION_TIMEOUT_MS = 60_000
 /** What `codex-hub-push --version` prints first: how a downloaded build shows it starts. */
@@ -109,6 +113,26 @@ export function probeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEn
   return out
 }
 
+/**
+ * Writes a response's body to path, reading no more than limit bytes, and says how many it read. Someone on the way
+ * can send the hub's signed hash and then bytes without end: the caller's limit is one past the announced size.
+ */
+async function saveAtMost(res: Response, path: string, limit: number): Promise<number> {
+  const out = await open(path, 'w')
+  let read = 0
+  try {
+    if (res.body)
+      for await (const chunk of res.body) {
+        read += chunk.byteLength
+        if (read > limit) break
+        await out.write(chunk)
+      }
+  } finally {
+    await out.close()
+  }
+  return read
+}
+
 const runVersion = (exe: string) =>
   spawnSync(exe, ['--version'], {
     encoding: 'utf8',
@@ -181,12 +205,17 @@ export async function updateOnce(
   const platform = deps.platform ?? buildPlatform()
   const headers = { ...cfg.headers, authorization: `Bearer ${cfg.token}` }
   const query = `?platform=${encodeURIComponent(platform)}`
-  const meta = await doFetch(`${cfg.url}/api/codex-hub/pusher${query}`, { headers })
+  const meta = await doFetch(`${cfg.url}/api/codex-hub/pusher${query}`, {
+    headers,
+    signal: AbortSignal.timeout(ASK_TIMEOUT_MS),
+  })
   if (meta.status === 404) return 'none'
   if (!meta.ok) throw new Error(`the hub answered ${meta.status} for its pusher build`)
   const want = (await meta.json()) as { sha256?: string; size?: number; signature?: string }
   if (typeof want.sha256 !== 'string') throw new Error('the hub sent no hash for its pusher build')
-  const sha256 = want.sha256
+  if (typeof want.size !== 'number' || !Number.isSafeInteger(want.size) || want.size < 0)
+    throw new Error('the hub sent no size for its pusher build')
+  const { sha256, size } = want
   const signature = typeof want.signature === 'string' ? want.signature : ''
   if ((await sha256File(exe)) === sha256) return 'current'
   // A build that failed its checks here fails them again: it is not fetched until the hub hands out another, or
@@ -213,10 +242,20 @@ export async function updateOnce(
         ? `the hub build is not signed with this build's update key for the pusher on ${platform}`
         : 'the hub build is not signed',
     )
-  const res = await doFetch(`${cfg.url}/api/codex-hub/pusher/download${query}`, { headers })
+  const res = await doFetch(`${cfg.url}/api/codex-hub/pusher/download${query}`, {
+    headers,
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+  })
   if (!res.ok) return drop(`the download answered ${res.status}`)
-  await Bun.write(next, res)
-  if (statSync(next).size !== want.size || (await sha256File(next)) !== sha256)
+  let got: number
+  try {
+    got = await saveAtMost(res, next, size + 1)
+  } catch (error) {
+    // Broken off on the way, or out of time: nothing is left behind, and the next check fetches it again.
+    rmSync(next, { force: true })
+    throw error
+  }
+  if (got !== size || (await sha256File(next)) !== sha256)
     return drop('the download does not match the hub hash')
   if (process.platform !== 'win32') chmodSync(next, 0o755)
   const tried = (deps.run ?? runVersion)(next)
