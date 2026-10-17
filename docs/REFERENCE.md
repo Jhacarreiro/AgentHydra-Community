@@ -804,9 +804,16 @@ A chat from another PC can be continued in Desk while that PC is on. Its pusher 
 hub (`/api/codex-hub/relay`); when Desk continues one of its chats, the hub asks the PC to start its own
 `codex app-server` and carries the JSON-RPC lines between it and Desk unread, so the turn runs on the PC, with
 its files and its Codex login, and its approvals and questions are answered in Desk. The PC only lets the hub
-resume, read, start and stop turns in existing threads (never start a thread, change config or sign in), and
-by default refuses a turn without approvals or outside the sandbox (`AGENTHYDRA_CODEX_HUB_RELAY`). A turn
-that ends is pushed at once. The Codex app on the PC holds a chat it has open, so close it there first. Nothing
+resume, read, start and stop turns in existing threads (never start a thread, change config or sign in). It
+rebuilds each request from the params Desk sends with it and refuses one that carries anything else, such as
+`config`, `history`, `path`, `modelProvider`, instructions, `approvalsReviewer`, a turn's `cwd` or an input
+read from a file on the PC. Resume's `cwd` is left out, so the thread keeps its own folder, and `initialize`
+goes on with `experimentalApi` off. By default it also refuses a turn without approvals or outside the
+sandbox (`AGENTHYDRA_CODEX_HUB_RELAY`): `approvalPolicy` `never`, `sandbox` `danger-full-access` or
+`sandboxPolicy` `dangerFullAccess`. Granular approvals, `externalSandbox` and extra `writableRoots` are
+refused in every mode. A line from the hub that is not one JSON object is dropped, and so is an answer to
+anything but a request the PC's Codex asked and still waits on. A turn that ends is pushed at once. The Codex
+app on the PC holds a chat it has open, so close it there first. Nothing
 on the hub can rename or archive a chat on its PC.
 
 - **Hub:** set `AGENTHYDRA_CODEX_HUB_TOKEN`. `POST /api/codex-hub/push` takes a PC's list and the rollouts
