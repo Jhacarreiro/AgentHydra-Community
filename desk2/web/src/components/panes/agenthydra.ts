@@ -68,7 +68,10 @@ export type AhSettingsPatch = Partial<Omit<AhSettings, ReadOnly>> & { notifySmtp
 interface AhUpdateStatus {
   currentVersion: string | null
   currentCommit: string | null
+  /** Where updates come from; null when there is nowhere, and `reason` then says why when the daemon knows. */
   remote: string | null
+  /** A source checkout's remote is not the release channel's repository, so it was not asked (server/src/updater.ts). */
+  remoteRefused?: boolean
   updateAvailable: boolean
   canApply: boolean
   reason: string | null
@@ -97,6 +100,13 @@ const PRIVACY_KEY = 'agenthydra.privacyMode'
 const THEME_KEY = 'lunarwerx-theme'
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/** The daemon's reasons come as sentences ("Updates are off in this build: …") and as fragments ("no update remote
+ *  configured"): either reads as one sentence here. */
+const asSentence = (s: string) => {
+  const t = s.trim()
+  return t.charAt(0).toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.')
+}
 
 export function useAgentHydraSettings(api: PaneApi) {
   const settings = ref<AhSettings | null>(null)
@@ -176,7 +186,7 @@ export function useAgentHydraSettings(api: PaneApi) {
     if (checking.value || applying.value) return 'checking'
     const s = update.value
     if (!s) return 'unknown'
-    if (!s.remote) return 'no-source'
+    if (!s.remote || s.remoteRefused) return 'no-source'
     if (s.updateAvailable) return s.canApply ? 'available' : 'blocked'
     return 'up-to-date'
   })
@@ -374,9 +384,10 @@ export function useAgentHydraSettings(api: PaneApi) {
     if (applying.value) return [progressLabel.value ?? 'Updating…']
     const u = update.value
     const lines = [applyNote.value, applyError.value].filter((l): l is string => !!l)
-    if (updateState.value === 'blocked') lines.push(`An update is waiting but cannot be applied: ${u?.reason ?? 'blocked'}.`)
+    if (updateState.value === 'blocked') lines.push(`An update is waiting but cannot be applied: ${(u?.reason ?? 'blocked').replace(/[.\s]+$/, '')}.`)
     if (updateState.value === 'available') lines.push('An update is waiting. Click the number to install it; AgentHydra restarts.')
-    if (updateState.value === 'no-source') lines.push('This install is not linked to a Git remote, so there is nowhere to pull new versions from.')
+    // A release build with updates off, or a checkout whose remote is another repository: the daemon says why.
+    if (updateState.value === 'no-source') lines.push(u?.reason ? asSentence(u.reason) : 'This install is not linked to a Git remote, so there is nowhere to pull new versions from.')
     return lines
   }
 
