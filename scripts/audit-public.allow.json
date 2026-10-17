@@ -203,37 +203,37 @@
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_balance.py",
       "fp": "050e252cb12ac150",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_balance.py",
       "fp": "478abec743056916",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_balance.py",
       "fp": "9179c2f0bc078193",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_balance.py",
       "fp": "d2e87fa970598005",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_chats.py",
       "fp": "478abec743056916",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_chats.py",
       "fp": "d2e87fa970598005",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.path",
@@ -245,61 +245,61 @@
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_courier.py",
       "fp": "478abec743056916",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_courier_row_budget.py",
       "fp": "478abec743056916",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_dashboard.py",
       "fp": "478abec743056916",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_dashboard.py",
       "fp": "d2e87fa970598005",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_fan_out.py",
       "fp": "2aadd1a288035f9b",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_fan_out.py",
       "fp": "39933bd1c4867f04",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_fan_out.py",
       "fp": "39baed188991bf0a",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_fan_out.py",
       "fp": "581d5f1930c81e73",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_fan_out.py",
       "fp": "9293c9abc55b4ceb",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_fan_out.py",
       "fp": "93e6a69832b27998",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.path",
@@ -311,55 +311,55 @@
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_holds.py",
       "fp": "050e252cb12ac150",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_holds.py",
       "fp": "0b4b386746e222df",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_interview.py",
       "fp": "478abec743056916",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_mutationlib.py",
       "fp": "050e252cb12ac150",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_overlord.py",
       "fp": "478abec743056916",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_overlord.py",
       "fp": "d2e87fa970598005",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_sweep.py",
       "fp": "8b6c3927e376ecb5",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_sweep.py",
       "fp": "a9049291ab749737",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.email",
       "path": "orchestrator/scripts/tests/test_sweep.py",
       "fp": "c6184f99de7d0d12",
-      "reason": "Test fixture: addresses of one letter at a one-letter domain, standing for accounts in the orchestrator's tests. They are nobody's."
+      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
     },
     {
       "rule": "pii.path",
@@ -473,13 +473,13 @@
       "rule": "pii.email",
       "path": "server/tests/instance-pick.test.ts",
       "fp": "b972b3805b538e19",
-      "reason": "Test fixture: one-letter account addresses that stand for two accounts. They are nobody's."
+      "reason": "Test fixture: a one-letter placeholder at y.com, used both as one row's name and as another row's email to show which spelling wins. y.com and b.com are registered domains, not RFC 2606 names, but the test sends no mail and neither address names a person."
     },
     {
       "rule": "pii.email",
       "path": "server/tests/instance-pick.test.ts",
       "fp": "fb98d44ad7501a95",
-      "reason": "Test fixture: one-letter account addresses that stand for two accounts. They are nobody's."
+      "reason": "Test fixture: a one-letter placeholder at b.com, one row's account email in the name-against-email ordering test. y.com and b.com are registered domains, not RFC 2606 names, but the test sends no mail and neither address names a person."
     },
     {
       "rule": "pii.path",
@@ -527,7 +527,7 @@
       "rule": "pii.email",
       "path": "server/tests/session-keepalive.test.ts",
       "fp": "fb98d44ad7501a95",
-      "reason": "Test fixture: a one-letter account address that stands for an account. It is nobody's."
+      "reason": "Test fixture: a one-letter placeholder at b.com as the account of a usage snapshot. b.com is a registered domain, not an RFC 2606 name, but the test sends no mail and the address names no person."
     },
     {
       "rule": "secret.token",
