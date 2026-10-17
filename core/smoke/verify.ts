@@ -1,4 +1,4 @@
-// One round of the rebuild's frontier loop (core/LOOP.md): typecheck the core, start it hidden with its own log (unless
+// One round of the rebuild's smoke check: typecheck the core, start it hidden with its own log (unless
 // one already answers on CORE_PORT), wait for it, run smoke.ts --json against it, then stop the copy it started. The last
 // line is smoke's stages, or a failed boot that says why (the typecheck's errors, or the core's own log).
 //   bun core/smoke/verify.ts [scenario ...]
@@ -54,8 +54,8 @@ if (!(await answers())) {
     bootFail({ log: readFileSync(log, 'utf8').trim().split('\n').slice(-30) })
   }
 }
-// The whole round is also kept (tmpdir/agenthydra-core-smoke.out): the loop file keeps only its frontier, and the
-// next round's workers need every stage that is not green yet.
+// The whole round is also kept (tmpdir/agenthydra-core-smoke.out): the last line is only the stages, and whoever fixes
+// the next one needs every stage that is not green yet.
 const out = join(tmpdir(), 'agenthydra-core-smoke.out')
 try {
   const smoke = spawn(

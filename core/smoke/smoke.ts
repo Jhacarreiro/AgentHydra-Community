@@ -3,7 +3,7 @@
 // `CORE_URL=http://127.0.0.1:7798/api AH_URL=http://127.0.0.1:7787/api`). Each scenario runs in its own throwaway chat
 // and folder, all at once, on the owner's real accounts; every chat it makes is deleted and every Codex thread
 // archived. Prints PASS/FAIL per scenario with its evidence (states, replies to fixed-word prompts, error sentences),
-// never an account label or address. `--json` ends with the stages in pipeline order for frontier.py.
+// never an account label or address. `--json` ends with the stages in pipeline order.
 //   bun core/smoke/smoke.ts [--json] [scenario ...]
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn } from 'node:child_process'
