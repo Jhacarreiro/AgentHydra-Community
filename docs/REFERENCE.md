@@ -10,6 +10,7 @@ this file is for running, configuring and hacking on it.
 - [Keeping the daemon alive](#keeping-the-daemon-alive)
 - [Auto-update](#auto-update)
 - [Instance appearance](#instance-appearance)
+- [Codex chats from other PCs (Codex hub)](#codex-chats-from-other-pcs-codex-hub)
 - [Stack](#stack)
 - [Layout](#layout)
 - [Checks](#checks)
@@ -794,7 +795,36 @@ hours are still being rolled up), `window` the resolved span and how it was reso
 `notes` any place the answer is narrower than asked. A low figure beside a lagging source is
 partial, not true.
 
-### Codex chats from other PCs (Codex hub)
+### Usage across PCs (`POST /api/kit/sync`)
+
+Each PC writes its own hourly rows as one gzip shard, `kit/<machine>.jsonl.gz`, into the private git
+repo HSwarm's usage sync already uses (`HSWARM_SYNC_REPO`, the `sync` branch checked out under the
+HSwarm home's `sync-tree`), and imports every other PC's shard as rows carrying that PC's `pc`, so
+the Analytics tab and `pc=` filters can show all PCs or one. The kit lives in a `kit/` subfolder so
+HSwarm's own shards at the tree root are never touched. An import replaces that PC's rows, hour range
+by hour range: importing the same shard twice changes nothing and a shard that shrank removes what
+it no longer holds. Sync is off, with the reason in `notes`, when `HSWARM_SYNC_REPO` is unset, is not
+a git checkout, or is this (public) repo: a shard carries project paths and session ids, so name a
+private repo.
+
+A PC counts only once it runs an AgentHydra with this sync (2.x) and has written its `kit/` shard. The
+HSwarm shards at the tree root (`<machine>.jsonl`) are HSwarm's own ledger and carry no other usage, so
+a PC that has only those adds nothing to the Analytics tab or the home screen's stats.
+
+The request takes no body (any is ignored). The pass is forced, ignoring the 15-minute spacing; a call
+that arrives while a pass runs joins it. It answers `200` with
+
+```json
+{ "on": true, "notes": [], "exported": 1234, "imported": { "other-pc": 980 }, "committed": true, "pushed": true }
+```
+
+`on` is false when sync is off; `notes` holds that reason or a step that failed (pull, import,
+commit, push), and the pass carries on past a failed step; `exported` is the number of this PC's
+hourly rows in its shard; `imported` maps each PC whose shard changed to the rows imported (a PC
+whose shard is unchanged is absent); `committed` and `pushed` say whether the shard reached git. An
+unexpected failure is a `500` with `{ "error": … }`.
+
+## Codex chats from other PCs (Codex hub)
 
 A Codex chat lives on the PC that ran it, so a daemon on a server or another PC never sees it. Codex's own
 remote control pairs one PC with the ChatGPT app over OpenAI's encrypted relay and has no API for anything
@@ -826,11 +856,44 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   socket. Desk's end, `GET /api/codex-relay/<pc>/app-server` (a WebSocket, same token), and
   `GET /api/codex-relay/pcs` (each PC, its last push and whether its relay is open) sit outside that prefix.
   Like the rest of the API it answers loopback Hosts only, so a hub on another machine sits behind a
-  proxy that forwards `/api/codex-hub/` only, with a loopback Host and WebSocket upgrades passed through.
+  reverse proxy that forwards two paths with a loopback Host, each with its own authentication, and nothing
+  else: `/api/codex-hub/`, WebSocket upgrades passed through, where the hub token is the authentication (a
+  service token for an access proxy in front of it goes in each PC's `AGENTHYDRA_CODEX_HUB_HEADERS`), and
+  `/codex-hub/pair`, the pairing page, which hands out that token and so is served only behind the
+  operator's own sign-in (see **Pairing and the tray app** below).
 - **Each PC:** set `AGENTHYDRA_CODEX_HUB_URL` and the same token. The daemon pushes every two minutes;
   a PC that does not run the daemon can run `bun server/src/codex-hub-push-main.ts` (`--once` for one
   round). The first push sends every rollout, later ones only what changed; a chat archived or deleted
   on the PC leaves the hub at its next push. Add PCs by repeating this on each with its own name.
+- **Pairing and the tray app:** the tray app (`codex-hub-tray/`, for Windows, macOS and Linux) sets a PC up
+  without the token being copied by hand. It listens on a free port on 127.0.0.1 and opens the hub's pairing
+  page in the browser, `GET /codex-hub/pair?port=<port>&state=<32 hex digits>&pc=<name>`, when it starts
+  without a token and at Connect this PC in its menu. The page is a form that holds the hub token and
+  posts it, with the state, to `http://127.0.0.1:<port>/paired` and nowhere else (its CSP's `form-action`);
+  it is not cached or shown in a frame, a bad port or state is a 400, and a hub without a token answers 404.
+  The tray checks the token with the hub and keeps it in its `tray.json` (in a `codex-hub` folder under
+  `%LOCALAPPDATA%`, `~/Library/Application Support` or `~/.local/share`). Whoever opens that page has the
+  token, and with it can push as any PC and open its relay socket, so the page is outside `/api/codex-hub/`
+  and is served only through the operator's authenticating reverse proxy (a sign-in such as Cloudflare
+  Access), never through the `/api/codex-hub/` forward and never to the home network. Its guard
+  (`pairGuard` in `server/src/routes/codex-hub.ts`) takes a Host of `127.0.0.1`, `localhost` or `::1` on
+  any port, or none, and an Origin on one of those or none (`null` is refused), and refuses
+  `Sec-Fetch-Site: cross-site` on a fetch but not on a navigation, which the sign-in's redirect makes
+  cross-site. So the proxy forwards the page with a loopback Host (`127.0.0.1:7787`) and the Origin
+  removed or empty. The tray has its addresses and key from its build, set with `-ldflags -X`:
+  `main.hubURL`, the hub it pushes to (the `/api/codex-hub/` forward); `main.pairURL`, the pairing page as
+  the browser reaches it behind the sign-in (without one the tray cannot pair, and takes the token from
+  `tray.json`); `main.inboxURL`, the page its menu's Open the inbox opens (without one the item is hidden);
+  `main.updateKey` (see **Signed builds**); and, once the hub has moved, `main.oldHubURLs` (see **Moving
+  the hub**). The build notes at the top of `codex-hub-tray/main.go` give the Windows and Linux commands,
+  and `codex-hub-tray/build-macos.sh` builds the Mac app on a Mac from `HUB_URL`, `PAIR_URL`, `INBOX_URL`,
+  `UPDATE_KEY` and `BUNDLE_ID`; all of them write to `codex-hub-tray/dist/`. Opened once, the tray installs
+  itself for the user and starts at each log in (the Run key on Windows, a LaunchAgent on a Mac, an XDG
+  autostart entry on Linux, or a systemd `--user` unit where there is no desktop). It runs the compiled
+  pusher with the hub and token from its config and `AGENTHYDRA_CODEX_HUB_UPDATE=off`, and keeps both
+  builds itself: it fetches the hub's pusher and tray builds for its platform, the first pusher included,
+  so the hub needs a pusher build for each platform its trays run on (see **Pusher updates**), replaces
+  the pusher while it is stopped, and replaces itself and starts again.
 - **Two PCs with one name:** the hub keeps a PC by its name, and two can send one (WSL beside the Windows
   PC it runs on, two Linux PCs called `ubuntu`, two pushers on one PC: see the next point). So each
   pusher makes a random install id once, keeps it in the config dir (`codex-hub-install` for the daemon's
@@ -911,35 +974,6 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   hub: over `http://` it keeps what it has, logs once that its build has no update key, and says so in
   amber in its menu.
 
-### Usage across PCs (`POST /api/kit/sync`)
-
-Each PC writes its own hourly rows as one gzip shard, `kit/<machine>.jsonl.gz`, into the private git
-repo HSwarm's usage sync already uses (`HSWARM_SYNC_REPO`, the `sync` branch checked out under the
-HSwarm home's `sync-tree`), and imports every other PC's shard as rows carrying that PC's `pc`, so
-the Analytics tab and `pc=` filters can show all PCs or one. The kit lives in a `kit/` subfolder so
-HSwarm's own shards at the tree root are never touched. An import replaces that PC's rows, hour range
-by hour range: importing the same shard twice changes nothing and a shard that shrank removes what
-it no longer holds. Sync is off, with the reason in `notes`, when `HSWARM_SYNC_REPO` is unset, is not
-a git checkout, or is this (public) repo: a shard carries project paths and session ids, so name a
-private repo.
-
-A PC counts only once it runs an AgentHydra with this sync (2.x) and has written its `kit/` shard. The
-HSwarm shards at the tree root (`<machine>.jsonl`) are HSwarm's own ledger and carry no other usage, so
-a PC that has only those adds nothing to the Analytics tab or the home screen's stats.
-
-The request takes no body (any is ignored). The pass is forced, ignoring the 15-minute spacing; a call
-that arrives while a pass runs joins it. It answers `200` with
-
-```json
-{ "on": true, "notes": [], "exported": 1234, "imported": { "other-pc": 980 }, "committed": true, "pushed": true }
-```
-
-`on` is false when sync is off; `notes` holds that reason or a step that failed (pull, import,
-commit, push), and the pass carries on past a failed step; `exported` is the number of this PC's
-hourly rows in its shard; `imported` maps each PC whose shard changed to the rows imported (a PC
-whose shard is unchanged is absent); `committed` and `pushed` say whether the shard reached git. An
-unexpected failure is a `500` with `{ "error": … }`.
-
 ## Known noise in an instance's own log
 
 Every Claude Desktop instance keeps its own `logs/main.log` under its profile folder. One line there
@@ -996,6 +1030,9 @@ misc/          the Windows launcher toolkit (tray .ps1 / .vbs / .ico / Create-Sh
                back a real path at runtime: misc\ when there is one, else written out of
                app/server.js once. Adding a runtime dependency on a misc\ file without adding
                it to that list ships a release where the feature is simply gone.
+codex-hub-tray/
+               the Codex hub's tray app (Go, Windows/macOS/Linux): pairs a PC with a hub and keeps its pusher
+               running and its builds current (see Codex chats from other PCs); builds go to its dist/
 scripts/       repo tooling (screenshots/: regenerate the README images)
 ```
 
