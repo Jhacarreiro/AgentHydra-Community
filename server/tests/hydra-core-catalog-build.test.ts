@@ -98,3 +98,59 @@ test('sources.json adds project rules and extra skill and agent folders, and not
     'generated-skills.json',
   ])
 })
+
+test('a rebuild removes the catalog files of sources the builder no longer has', () => {
+  const core = '.agenthydra/core'
+  const owner = {
+    id: 'person:creator-owner',
+    kind: 'person',
+    name: 'Owner',
+    when: 'Asks the owner',
+    how: 'core_use',
+    source: 'old build',
+    tags: [],
+    cost: 'free',
+    tier: 'owner',
+    family: 'creator',
+    modes: ['consult'],
+    load: { type: 'none' },
+  }
+  for (const name of ['dredd', 'crainium', 'pinned', 'boardroom', 'owners'])
+    put(`${core}/catalog/generated-${name}.json`, name === 'owners' ? [owner] : [])
+  put(`${core}/catalog/hand-extra.json`, [])
+  put(
+    `${core}/knowledge/pinned/old-ruling.md`,
+    '# Old ruling\n\nSource: C:/lane/brief-a.json (Connections pinned prompt, split by build.mjs)\n\nBody\n',
+  )
+  put(`${core}/knowledge/pinned/mine.md`, '# My own note\n\nKept.\n')
+  expect(loadCatalog(join(home, core)).entries.has('person:creator-owner')).toBe(true)
+  const built = run()
+  expect(built.status).toBe(0)
+  expect(built.stdout).toContain('generated-owners.json: removed')
+  const dir = join(home, core, 'catalog')
+  expect(
+    readdirSync(dir)
+      .filter((f) => /^(generated|hand)-/.test(f))
+      .sort(),
+  ).toEqual([
+    'generated-agents.json',
+    'generated-managers.json',
+    'generated-people.json',
+    'generated-repos.json',
+    'generated-skills.json',
+    'hand-extra.json',
+  ])
+  expect(loadCatalog(join(home, core)).entries.has('person:creator-owner')).toBe(false)
+  expect(readdirSync(join(home, core, 'knowledge', 'pinned'))).toEqual(['mine.md'])
+})
+
+test('a rebuild removes the pinned folder once only builder-written rulings were in it', () => {
+  const core = '.agenthydra/core'
+  put(`${core}/catalog/generated-pinned.json`, [])
+  put(
+    `${core}/knowledge/pinned/old-ruling.md`,
+    '# Old ruling\n\nSource: /lane/brief-a.json (Connections pinned prompt, split by build.mjs)\n\nBody\n',
+  )
+  expect(run().status).toBe(0)
+  expect(readdirSync(join(home, core, 'knowledge'))).toEqual([])
+})

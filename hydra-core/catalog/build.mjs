@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Hydra Core catalog builder (node 22, no dependencies).
-//   node catalog/build.mjs           rebuild catalog/generated-<source>.json (never touches hand-*.json)
+//   node catalog/build.mjs           rebuild catalog/generated-<source>.json, drop any other generated-*.json (never touches hand-*.json)
 //   node catalog/build.mjs --check   validate generated + hand files, print counts, exit 1 when invalid or too small
 // Every parser tolerates missing fields: an entry that cannot be made valid is skipped and counted, never fatal.
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, rmdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -114,6 +114,7 @@ export function validate(e) {
 
 // ---------- source runner ----------
 const allSkips = {}
+const written = new Set()
 function runSource(name, fn) {
   const skips = { count: 0, reasons: {}, examples: [] }
   const seen = new Set()
@@ -133,6 +134,7 @@ function runSource(name, fn) {
   try { fn(add, skip) } catch (err) { skip('source failed: ' + str(err && err.message).split('\n')[0].slice(0, 120)) }
   mkdirSync(CATALOG, { recursive: true })
   writeFileSync(`${CATALOG}/generated-${name}.json`, JSON.stringify(out, null, 2) + '\n')
+  written.add(`generated-${name}.json`)
   allSkips[name] = skips
   console.log(`${name}: ${out.length} entries, ${skips.count} skipped`)
 }
@@ -264,6 +266,24 @@ function repos(add, skip) {
   }
 }
 
+// ---------- retired sources ----------
+// Older builders also wrote generated-dredd, -crainium, -pinned, -boardroom and -owners.json, and the catalog loader and
+// the Stop hook read every generated-*.json, so a file no source writes now would keep its entries live. The pinned
+// source also split rulings into <core>/knowledge/pinned/<slug>.md; only the files it wrote (its Source line) go.
+function retire() {
+  for (const d of safeDir(CATALOG)) {
+    if (!d.isFile() || !/^generated-.*\.json$/.test(d.name) || written.has(d.name)) continue
+    rmSync(`${CATALOG}/${d.name}`, { force: true })
+    console.log(`${d.name}: removed, no source writes it now`)
+  }
+  const pinnedDir = `${CORE}/knowledge/pinned`
+  for (const f of safeDir(pinnedDir)) {
+    const path = `${pinnedDir}/${f.name}`
+    if (f.isFile() && f.name.endsWith('.md') && /^Source: .* split by build\.mjs\)$/m.test((safeRead(path) || '').split('\n', 4).join('\n'))) rmSync(path, { force: true })
+  }
+  try { rmdirSync(pinnedDir) } catch {}  // only when nothing else is in it
+}
+
 // ---------- build ----------
 function build() {
   runSource('managers', managers)
@@ -271,6 +291,7 @@ function build() {
   runSource('skills', skills)
   runSource('agents', agents)
   runSource('repos', repos)
+  retire()
   writeFileSync(`${CATALOG}/skips.json`, JSON.stringify(allSkips, null, 2) + '\n')
 }
 

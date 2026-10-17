@@ -50,7 +50,8 @@ Paths may start with `~`.
 
 ## Commands
 
-- `node hydra-core/catalog/build.mjs` rewrites `<core>/catalog/generated-*.json` and `skips.json`.
+- `node hydra-core/catalog/build.mjs` rewrites `<core>/catalog/generated-*.json` and `skips.json`. A generated file
+  that no source writes now (one an older build left behind) is removed; `hand-*.json` files are never touched.
 - `node hydra-core/catalog/build.mjs --check` validates generated and hand files; exit 1 when invalid.
 
 </details>
