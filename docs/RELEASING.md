@@ -153,14 +153,17 @@ node scripts/consolidate-releases.mjs --apply
 ```
 
 The git tags stay; only the release pages change. Versions with no CHANGELOG section are listed in
-the plan but not changed.
+the plan but not changed. The repository is the release channel's; `--repo` can name another for a dry run, but
+`--apply` refuses every repository except the channel's. Under the calendar version line a minor line is a month,
+so a month's patch releases fold into its `YYYY.M.0`.
 
 ## Pushing `main` is the release
 
-Auto-update (see the README's Auto-update section) applies each update as a `git pull --ff-only`
-against `origin/main`. There is no separate publish step for that path: as soon as `main` moves,
-every instance with auto-update enabled will fast-forward to it on its next check. Treat a push to
-`main` as user-facing, not as a staging step.
+Auto-update (see the README's Auto-update section) applies each update to a source checkout as a
+`git pull --ff-only` of the branch it tracks, and only when that remote is the release channel's repository
+(`server/src/updater.ts`). There is no separate publish step for that path: as soon as `main` moves, every
+checkout with auto-update enabled will fast-forward to it on its next check. Treat a push to `main` as
+user-facing, not as a staging step.
 
 ## The pre-push gate
 
@@ -254,16 +257,10 @@ from the dirty tree. Both hooks have suites under `tests/githooks/`.
    job had no checkout of the repo, so `scripts/smoke-release.ts` was missing on every native leg,
    and 2.0.1 shipped instead. Prove a workflow change with a dispatch on `main` first
    (`gh workflow run release.yml --ref main`): it builds and smokes and publishes nothing.
-7. **Once the Release run is green, tell the site.** The download buttons on
-   `agenthydra.github.io` link the versioned release FILES, and its static HTML (what crawlers,
-   AI answer engines and no-JS visitors read) only moves when its sync workflow runs. It runs
-   daily on its own; this makes it the same minute:
-   ```sh
-   gh workflow run sync-version.yml --repo AgentHydra/agenthydra.github.io
-   ```
-   The release job cannot do this itself - a cross-repo trigger from Actions needs a PAT the
-   default token does not carry - but whoever pushed the tag has a `gh` login that can, which is
-   how SageThumbs' `release.ps1` has always done it.
+7. **There is no site to tell.** The project this one was forked from runs a download site whose sync
+   workflow is dispatched here; that site and its workflow are not this repository's, so this step is skipped.
+   Should this repository get a site that links its release files, dispatch its sync here, from the `gh`
+   login that pushed the tag (a cross-repo trigger from Actions needs a PAT the default token does not carry).
 
 ## The install script depends on SHA256SUMS.txt
 
@@ -333,7 +330,7 @@ The in-app update for a 2.0 release install works as follows:
 5. It never touches `runtime/`: the launcher owns it and will download Bun on next start if needed.
 6. The relaunch is handled by the launcher: if `app/bun-version` differs from `runtime/bun.version`, it downloads the new Bun.
 
-**The 1.x→2.0 migration path** (run end to end by `scripts/upgrade-e2e-1x.ts`, below): an install on 1.13.0 (the last 1.x release) receives 2.0.0 from its old updater. That old updater:
+**The 1.x→2.0 migration path** (upstream's; see the note below on its retired harness): an install on 1.13.0 (the last 1.x release) receives 2.0.0 from its old updater. That old updater:
 
 1. Downloads the 2.0 zip, checks that its `AgentHydra.exe --version` prints 2.0.0, and swaps the exe (`process.execPath`): the 1.x exe goes aside and 2.0's launcher takes its place.
 2. Swaps `orchestrator/` and reconciles `misc/`, the only components it knows. It does not move `app/` or `desk2/`.
@@ -345,14 +342,14 @@ So the 1.x updater successfully installs 2.0. The 2.0 updater adds `runtime/*.ol
 
 A 2.x update whose launcher pins a new bun runs the new launcher with `--ensure-bun` (hidden, several minutes allowed) before it relaunches, so the successor starts in seconds; if that fails it is logged and the relaunch goes ahead anyway. A 1.x install cannot do that: its old updater relaunches straight into the 2.0 launcher, which downloads the release zip and bun first, so the old daemon's 60 s ack deadline can pass and it stays up on the port. The 2.0 daemon that finally starts waits for the port, and if its own predecessor (the pointer owner it was relaunched from, answering /api/health on that port) still holds it, ends that process by pid and binds the same port; any other holder is left alone.
 
-**Run the 1.x upgrade before a 2.x release becomes the latest** (a pre-release is never offered to 1.x): `bun scripts/upgrade-e2e-1x.ts` (Windows; needs git, csc.exe
-and openssl, which Git for Windows has). It builds 1.13.0 from its tag, packages this checkout, and
-serves a fake GitHub release locally without changing any system setting: a CONNECT proxy for
-api.github.com on the 1.13 process, and a .NET config shim beside the launcher for its two download
-hosts. It runs two scenarios: a plain first run, where the ack arrives and 1.13 exits itself (about 75 s
-on 2026-10-06), and one with Bun held back 90 s, where the ack deadline passes and the 2.0 daemon takes
-over (about 167 s). It exits 0 only when both end with the checkout's version healthy on the same port, the full layout on
-disk, no 1.13 process left and Desk 2 answering. Its first run found the checksum-list bug above.
+**The 1.x upgrade harness is retired here.** `scripts/upgrade-e2e-1x.ts` built the upstream project's 1.13.0
+from its tag, packaged a checkout and served it to the 1.13 updater as a fake GitHub release, to prove that 1.x
+installs reach 2.0. No install of this repository was ever 1.x: its first release is `2026.10.0`. A 1.x updater
+asks the upstream repository for its releases, never this one, so the harness tested the other project's
+upgrade path, and it carried that project's download URLs in its fake hosts. It was removed rather than pointed
+at this repository's channel, where it would prove nothing. `git log -- scripts/upgrade-e2e-1x.ts` has it. The
+1.x paragraphs above describe the upstream migration for whoever reads the history; the 2.x behaviour in them
+(the `--ensure-bun` relaunch, the predecessor that is ended by pid) still holds.
 
 ## A tentative release
 
