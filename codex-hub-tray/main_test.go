@@ -96,6 +96,54 @@ func fakeHub(t *testing.T, token string, platforms *[]string) *httptest.Server {
 	return srv
 }
 
+// The tray's own requests carry the extra headers the pusher sends (AGENTHYDRA_CODEX_HUB_HEADERS), as a hub behind an
+// access proxy needs: the build checks, the download and the token check made while pairing.
+func TestHubRequestsCarryTheExtraHeaders(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]http.Header{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Clone()
+		mu.Unlock()
+		if r.Header.Get("X-Hub-Access") != "e2e-access" {
+			http.Error(w, "the access proxy wants its header", http.StatusForbidden)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/download") {
+			w.Write([]byte("not the announced build"))
+			return
+		}
+		json.NewEncoder(w).Encode(release{SHA256: strings.Repeat("ab", 32), Size: 1})
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config{Hub: srv.URL, Token: "token-0123456789abcdef"}
+	t.Setenv("AGENTHYDRA_CODEX_HUB_HEADERS", `{"X-Hub-Access":"e2e-access","Authorization":"not this"}`)
+	rel, err := latest(cfg, "tray")
+	if err != nil || rel == nil {
+		t.Fatalf("latest: %v %v", rel, err)
+	}
+	if err := tokenWorks(cfg); err != nil {
+		t.Fatalf("tokenWorks: %v", err)
+	}
+	download(cfg, "tray", rel, filepath.Join(t.TempDir(), "codex-hub-tray"))
+	for _, path := range []string{"/api/codex-hub/tray", "/api/codex-hub/pusher", "/api/codex-hub/tray/download"} {
+		h := seen[path]
+		if h == nil {
+			t.Errorf("%s was not asked", path)
+			continue
+		}
+		if h.Get("X-Hub-Access") != "e2e-access" || h.Get("Authorization") != "Bearer "+cfg.Token {
+			t.Errorf("%s: X-Hub-Access %q, Authorization %q", path, h.Get("X-Hub-Access"), h.Get("Authorization"))
+		}
+	}
+
+	// A value that is not a JSON object of strings is left out, and the request still goes.
+	t.Setenv("AGENTHYDRA_CODEX_HUB_HEADERS", `X-Hub-Access: e2e-access`)
+	if _, err := latest(cfg, "tray"); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("latest with a broken header list: %v", err)
+	}
+}
+
 func TestTokenUsable(t *testing.T) {
 	// The hub takes any token its operator set, trimmed.
 	for _, ok := range []string{"x", "short", "has spaces inside", "tökén ñ", "Hub_Token-0123456789~!", strings.Repeat("é", 512)} {

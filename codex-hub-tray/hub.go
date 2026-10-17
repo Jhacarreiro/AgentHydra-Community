@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -62,10 +64,47 @@ func platformName(goos, goarch string) string {
 	return goos + "-" + goarch
 }
 
+// hubHeaders are the extra headers every request to the hub carries, from AGENTHYDRA_CODEX_HUB_HEADERS: a JSON object
+// of header names to values, such as an access proxy's service token in front of the hub, as the pusher reads it
+// (codexHubPushConfig in server/src/core/codex-hub-push.ts). The pusher gets the variable with the rest of the tray's
+// environment.
+func hubHeaders() map[string]string {
+	raw := strings.TrimSpace(os.Getenv("AGENTHYDRA_CODEX_HUB_HEADERS"))
+	if raw == "" {
+		return nil
+	}
+	var h map[string]string
+	if err := json.Unmarshal([]byte(raw), &h); err != nil {
+		badHeaders.Do(func() {
+			log.Println("AGENTHYDRA_CODEX_HUB_HEADERS must be a JSON object of header names to values; the tray sends none")
+		})
+		return nil
+	}
+	return h
+}
+
+var badHeaders sync.Once
+
+// hubGet is a request for path on the hub with the extra headers and the token, which wins over a header of the same
+// name, as in the pusher.
+func hubGet(c config, path string) (*http.Request, error) {
+	req, err := http.NewRequest("GET", c.Hub+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range hubHeaders() {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	return req, nil
+}
+
 // latest is the build the hub hands out for name ("pusher" or "tray"); nil when it hands out none.
 func latest(c config, name string) (*release, error) {
-	req, _ := http.NewRequest("GET", c.Hub+"/api/codex-hub/"+name+"?platform="+platform, nil)
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req, err := hubGet(c, "/api/codex-hub/"+name+"?platform="+platform)
+	if err != nil {
+		return nil, err
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -113,8 +152,10 @@ func exeSystem(head []byte) string {
 func download(c config, name string, want *release, dest string) (string, error) {
 	next := dest + ".new"
 	os.Remove(next)
-	req, _ := http.NewRequest("GET", c.Hub+"/api/codex-hub/"+name+"/download?platform="+platform, nil)
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req, err := hubGet(c, "/api/codex-hub/"+name+"/download?platform="+platform)
+	if err != nil {
+		return "", err
+	}
 	long := &http.Client{Timeout: 15 * time.Minute}
 	res, err := long.Do(req)
 	if err != nil {

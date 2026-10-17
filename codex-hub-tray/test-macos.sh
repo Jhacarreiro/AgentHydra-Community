@@ -45,6 +45,9 @@ PUSH="$APP/codex-hub-push"
 LOG="$APP/tray.log"
 AGENT="$HOME/Library/LaunchAgents/$ID.plist"
 TOKEN="e2e-Token_0123456789abcdef"
+# The hub sits behind an access proxy that wants a header of its own on every request, the tray's included.
+ACCESS="X-Hub-Access: e2e-access"
+export AGENTHYDRA_CODEX_HUB_HEADERS='{"X-Hub-Access":"e2e-access"}'
 
 failures=0
 pass() { echo "PASS: $*"; }
@@ -126,7 +129,7 @@ export PATH="$T/fake:$REAL_PATH"
 
 # The hub, and the app built as it would be for the operator.
 go build -o "$T/bin/fakehub" ./testdata/fakehub || exit 1
-"$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
+"$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
 BG+=($!)
 wait_for 10 test -s "$T/hub.addr" || { echo "FAIL: the fake hub did not start"; exit 1; }
 HUB=$(cat "$T/hub.addr")
@@ -212,10 +215,12 @@ check "the pusher is executable (755)" test "$(mode "$PUSH")" = 755
 check "the pusher gets the hub" grep -qx "AGENTHYDRA_CODEX_HUB_URL=$HUB" "$APP/pusher-env"
 check "  ...the token" grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN" "$APP/pusher-env"
 check "  ...UPDATE=off" grep -qx "AGENTHYDRA_CODEX_HUB_UPDATE=off" "$APP/pusher-env"
+check "  ...and the hub's extra headers" grep -qx "AGENTHYDRA_CODEX_HUB_HEADERS=$AGENTHYDRA_CODEX_HUB_HEADERS" "$APP/pusher-env"
 check "the pusher leads a process group of its own" test "$(ps -o pgid= -p "$PUSH1" | tr -d ' ')" = "$PUSH1"
 check "the hub was asked for platform=$P (pusher)" grep -q "GET /api/codex-hub/pusher platform=$P 200" "$T/hub.log"
 check "the hub was asked for platform=$P (tray, none there: 404)" wait_for 10 grep -q "GET /api/codex-hub/tray platform=$P 404" "$T/hub.log"
 check "the hub was never asked without a platform" bash -c "! grep -q 'platform= ' '$T/hub.log'"
+check "the tray's own requests carry the hub's extra headers (no 403)" bash -c "! grep -q ' 403\$' '$T/hub.log'"
 
 echo "== second instance"
 start=$SECONDS

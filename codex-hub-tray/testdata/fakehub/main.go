@@ -1,10 +1,11 @@
 // Command fakehub stands in for the hub in test-linux.sh and test-macos.sh. It serves the builds in a folder the way
 // the hub does, for one token: GET /api/codex-hub/{pusher,tray}[?platform=P] answers {"sha256","size"} and
 // .../download the file. No platform means windows-x64; an empty or unknown one is a 400; a platform with no build,
-// a 404. Files are read on each request, so a test can put a new build in place while the tray runs. Each request
-// is logged to stdout.
+// a 404. Files are read on each request, so a test can put a new build in place while the tray runs. With -header,
+// a request without that header gets a 403 first, as from an access proxy in front of the hub. Each request is
+// logged to stdout.
 //
-//	fakehub -dir builds -token T -addr-file hub.addr
+//	fakehub -dir builds -token T -addr-file hub.addr [-header "Name: value"]
 package main
 
 import (
@@ -38,6 +39,7 @@ func main() {
 	dir := flag.String("dir", ".", "folder with the builds")
 	token := flag.String("token", "", "the hub token")
 	addrFile := flag.String("addr-file", "", "where to write the hub's address")
+	header := flag.String("header", "", `a header every request must carry ("Name: value")`)
 	flag.Parse()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -50,17 +52,20 @@ func main() {
 	}
 	fmt.Println("fakehub: listening on", addr)
 	http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		status := serve(w, r, *dir, *token)
+		status := serve(w, r, *dir, *token, *header)
 		fmt.Printf("fakehub: %s %s platform=%s %d\n", r.Method, r.URL.Path, r.URL.Query().Get("platform"), status)
 	}))
 }
 
-func serve(w http.ResponseWriter, r *http.Request, dir, token string) int {
+func serve(w http.ResponseWriter, r *http.Request, dir, token, header string) int {
 	fail := func(status int, msg string) int {
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": msg})
 		return status
+	}
+	if name, value, ok := strings.Cut(header, ":"); ok && r.Header.Get(strings.TrimSpace(name)) != strings.TrimSpace(value) {
+		return fail(http.StatusForbidden, "the access proxy wants its header")
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/codex-hub/")
 	name, download := strings.CutSuffix(path, "/download")

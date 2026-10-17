@@ -31,6 +31,9 @@ PUSH="$APP/codex-hub-push"
 LOG="$APP/tray.log"
 DESKTOP="$HOME/.config/autostart/codex-hub-tray.desktop"
 TOKEN="e2e-Token_0123456789abcdef"
+# The hub sits behind an access proxy that wants a header of its own on every request, the tray's included.
+ACCESS="X-Hub-Access: e2e-access"
+export AGENTHYDRA_CODEX_HUB_HEADERS='{"X-Hub-Access":"e2e-access"}'
 case "$(uname -m)" in
 x86_64 | amd64) P=linux-x64 ;;
 aarch64 | arm64) P=linux-arm64 ;;
@@ -91,7 +94,7 @@ go build -o "$T/bin/fakehub" ./testdata/fakehub || exit 1
 go build -o "$T/bin/sniwatcher" ./testdata/sniwatcher || exit 1
 "$T/bin/sniwatcher" >"$T/sni.log" 2>&1 &
 BG+=($!)
-"$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
+"$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
 BG+=($!)
 wait_for 10 test -s "$T/hub.addr" || { echo "FAIL: the fake hub did not start"; exit 1; }
 HUB=$(cat "$T/hub.addr")
@@ -152,10 +155,12 @@ check "the pusher gets the hub, the token and no updates of its own" \
 	grep -qx "AGENTHYDRA_CODEX_HUB_URL=$HUB" "$APP/pusher-env"
 check "  ...the token" grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN" "$APP/pusher-env"
 check "  ...UPDATE=off" grep -qx "AGENTHYDRA_CODEX_HUB_UPDATE=off" "$APP/pusher-env"
+check "  ...and the hub's extra headers" grep -qx "AGENTHYDRA_CODEX_HUB_HEADERS=$AGENTHYDRA_CODEX_HUB_HEADERS" "$APP/pusher-env"
 check "the pusher leads a process group of its own" test "$(ps -o pgid= -p "$PUSH1" | tr -d ' ')" = "$PUSH1"
 check "the hub was asked for platform=$P (pusher)" grep -q "GET /api/codex-hub/pusher platform=$P 200" "$T/hub.log"
 check "the hub was asked for platform=$P (tray)" wait_for 10 grep -q "GET /api/codex-hub/tray platform=$P 200" "$T/hub.log"
 check "the hub was never asked without a platform" bash -c "! grep -q 'platform= ' '$T/hub.log'"
+check "the tray's own requests carry the hub's extra headers (no 403)" bash -c "! grep -q ' 403\$' '$T/hub.log'"
 check "the tray host shows a 32x32 icon that is not blank" \
 	wait_for 10 grep -Eq 'icon 32x32 visible [1-9][0-9]* title "Codex Hub"' "$T/sni.log"
 check "the tray holds its lock" locked
@@ -285,9 +290,11 @@ check "SIGTERM stops the headless tray" wait_for 10 dead "$PID5"
 check "  ...and its pusher" wait_for 10 dead "$PUSH5"
 
 echo "== the fake hub"
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=")
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=$P")
+check "it refuses a request without the access header (403)" test "$code" = 403
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "$ACCESS" -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=")
 check "it refuses an empty platform (400), as the hub does" test "$code" = 400
-code=$(curl -s -o "$T/none.json" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher")
+code=$(curl -s -o "$T/none.json" -w '%{http_code}' -H "$ACCESS" -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher")
 check "no platform is windows-x64 (no build of it here: 404)" bash -c "[ '$code' = 404 ] && grep -q windows-x64 '$T/none.json'"
 
 echo
