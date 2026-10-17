@@ -46,10 +46,14 @@ and nothing in a build reaches for the one it was forked from: not the update ch
 ```
 
 - `repo` is the one place the repository is named. [server/src/release-channel.ts](../server/src/release-channel.ts)
-  reads it and derives every URL from it: the update check, the releases page, the download base, the changelog and
-  issue links. The daemon and the window compile it in. The launchers get the download base written in when they are
-  built (`scripts/build-launcher.ts`, `scripts/launcher-posix.ts`). `install.ps1` carries a copy, since `irm | iex`
-  runs it with no checkout beside it, and `tests/release-channel-drift.test.ts` holds that copy to the file.
+  reads it and derives the daemon's URLs from it: the update check, the releases page, the download base, the
+  changelog and issue links. The daemon compiles it in (`bun build` inlines the JSON into `server.js`). The launchers
+  get the download base written in when they are built (`scripts/build-launcher.ts`, `scripts/launcher-posix.ts`),
+  and the node release scripts read the file through `scripts/release-channel.mjs`. What cannot import it carries a
+  copy: `install.ps1`, since `irm | iex` runs it with no checkout beside it; the window's links
+  (`desk2/shared/release-links.ts`), since a release runs Desk's server from `desk2/` as source; the tray's
+  `changelogUrl` (`misc/AgentHydra-Tray.json`); and the release workflow's guard.
+  `tests/release-channel-drift.test.ts` holds every copy to the file.
 - `updates` is what a release build may do about a newer release:
   - `off`: no check and no download. The updater says why, the auto-update loop records its check and installs
     nothing, and `install.ps1` refuses to download (`-FromZip` still installs). This is the state while the

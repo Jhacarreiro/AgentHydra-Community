@@ -5,17 +5,17 @@
 // compiled updater, both launchers' repair download, install.ps1, the release scripts, the tray's and the window's
 // changelog links), and every copy named upstream. A copy left behind is a build that updates itself, or repairs a
 // missing folder, from somebody else's releases. So nothing names the repository except the file, and each consumer
-// derives what it needs from it here: the daemon and the window through the JSON import below (a `bun build` or a
-// Vite build inlines it, so a release carries the channel it was built with and no file beside it can redirect it),
-// the launchers through a value the build writes into them (scripts/build-launcher.ts, scripts/launcher-posix.ts),
-// and the node release scripts by reading the same file. tests/release-channel.test.ts holds the copies that cannot
-// import this (install.ps1, the tray's config) to the same value.
+// derives what it needs from it: the daemon here, through the JSON import below (`bun build` inlines it into
+// server.js, so a release carries the channel it was built with and no file beside it can redirect it), the
+// launchers through a value the build writes into them (scripts/build-launcher.ts, scripts/launcher-posix.ts), and
+// the node release scripts by reading the same file (scripts/release-channel.mjs). What cannot import this keeps a
+// copy: install.ps1, the tray's config (misc/AgentHydra-Tray.json), Desk's links (desk2/shared/release-links.ts,
+// since a release runs Desk's server from desk2/ as source) and the release workflow.
+// tests/release-channel-drift.test.ts holds every copy to the file.
 //
 // `updates` is what a RELEASE build does: "off" makes no update check and downloads nothing (the state while the
 // repository has published no releases), "notify" checks and tells but never installs, "auto" installs when Settings
 // lets it. A source checkout updates through git and is held to the repository instead (server/src/updater.ts).
-//
-// Kept free of node imports on purpose: Desk's window imports it too.
 import channelFile from '../../release-channel.json'
 
 export type UpdatePolicy = 'off' | 'notify' | 'auto'
