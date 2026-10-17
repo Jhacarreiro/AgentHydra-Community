@@ -1,4 +1,6 @@
 // Strings for the HSwarm tab's tools view (components/hswarm/HSwarmTools.vue).
+import { PROJECT_HOMEPAGE } from '@desk/shared/release-links'
+
 export default {
   tabAsk: 'Ask',
   tabDoctor: 'Doctor',
@@ -82,6 +84,6 @@ export default {
   },
   helpQuestion: {
     title: 'Where can I ask a question?',
-    body: 'Ask in the LunarWerx Discord (https://discord.gg/PsWpeNUzhk), or open an issue on GitHub. Check the full guide at https://github.com/Lunarwerx/HSwarm#readme for everything in more depth.',
+    body: `Ask in the LunarWerx Discord (https://discord.gg/PsWpeNUzhk), or open an issue on GitHub (${PROJECT_HOMEPAGE}/issues). Check the full guide at ${PROJECT_HOMEPAGE}#readme for everything in more depth.`,
   },
 }

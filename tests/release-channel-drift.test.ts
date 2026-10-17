@@ -93,7 +93,12 @@ describe('links', () => {
 // Code only: the CHANGELOG and the docs tell the history, which names the project this one came from, and tests
 // name it as the case that must be refused.
 describe('no code points at the project this one was forked from', () => {
-  const FORBIDDEN = [/lunarwerxs\/agenthydra/i, /connectionsapi\.com\/v1\/app\//i]
+  // HSwarm's own repository there too: hswarm/ came with the fork, and its help links open this repository.
+  const FORBIDDEN = [
+    /lunarwerxs\/agenthydra/i,
+    /lunarwerxs?\/hswarm/i,
+    /connectionsapi\.com\/v1\/app\//i,
+  ]
   // Each stays on purpose, and the reason is beside it.
   const ALLOWED = new Set([
     // The Go module path of the Codex hub tray: a name, never fetched; renaming it moves every import with it.
