@@ -56,6 +56,8 @@ export interface HubFile {
 
 export interface HubPush {
   pc: string
+  /** How long its pusher waits between pushes; its name is held for three of them (hubNameHoldMs). */
+  intervalMs?: number
   threads: HubThread[]
   files?: HubFile[]
 }
@@ -64,6 +66,8 @@ export interface HubManifest {
   pc: string
   /** The install id of the pusher that sent it (HUB_INSTALL_HEADER); absent when it sent none. */
   install?: string
+  /** The interval its pusher sent, up to HUB_PUSH_INTERVAL_MAX_MS; absent when it sent none. */
+  intervalMs?: number
   pushedAt: string
   threads: HubThread[]
   /** Relative rollout path -> the `updatedAt` of the thread row it was copied for. */
@@ -91,8 +95,10 @@ const TIME_END = 253_402_300_800
  * every Desk session on it, and each push deleted the other's rollouts. The id tells them apart.
  */
 export const HUB_INSTALL_HEADER = 'x-codex-hub-install'
-/** How long after its last push an install keeps its name from another one: five pushes at the default interval. */
+/** The least an install keeps its name from another one after its last push: five pushes at the default interval. */
 const HUB_NAME_HOLD_MS = 10 * 60_000
+/** The longest a pusher waits between pushes (codex-hub-push.ts); three of them, a day, is the longest hold. */
+export const HUB_PUSH_INTERVAL_MAX_MS = 8 * 60 * 60_000
 const INSTALL_ID = /^[A-Za-z0-9_-]{8,64}$/
 
 export function codexHubToken(): string | null {
@@ -123,9 +129,24 @@ export function hubNameTaken(pc: string): string {
   return `another PC already pushes as ${pc}; set AGENTHYDRA_CODEX_HUB_PC to give this one a name of its own`
 }
 
+/** A pusher's interval as it sent it, up to HUB_PUSH_INTERVAL_MAX_MS, or null for none or for what is not one. */
+function cleanInterval(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? Math.min(raw, HUB_PUSH_INTERVAL_MAX_MS)
+    : null
+}
+
+/**
+ * How long a push holds its PC's name: three of its pusher's intervals, so one that pushes every half hour with its
+ * relay off still holds it at its next push, and HUB_NAME_HOLD_MS at least, the hold for one that sent none.
+ */
+function hubNameHoldMs(intervalMs: unknown): number {
+  return Math.max(HUB_NAME_HOLD_MS, 3 * (cleanInterval(intervalMs) ?? 0))
+}
+
 /**
  * Whether install `claim` is refused PC `key`'s name. Another install holds it while its relay socket is open, and
- * for HUB_NAME_HOLD_MS after its last push; once it has gone (the PC set up again, with a new id) the name passes to
+ * for hubNameHoldMs after its last push; once it has gone (the PC set up again, with a new id) the name passes to
  * the next. A pusher that sends no id, as the first ones did, is never refused and holds its name against no one.
  */
 export function hubNameRefused(
@@ -140,7 +161,7 @@ export function hubNameRefused(
   return (
     !!last?.install &&
     last.install !== claim &&
-    Date.now() - Date.parse(last.pushedAt) < HUB_NAME_HOLD_MS
+    Date.now() - Date.parse(last.pushedAt) < hubNameHoldMs(last.intervalMs)
   )
 }
 
@@ -313,9 +334,11 @@ export function acceptCodexHubPush(
     )
     .map(([rel]) => rel)
 
+  const intervalMs = cleanInterval(push.intervalMs)
   const manifest: HubManifest = {
     pc,
     ...(install ? { install } : {}),
+    ...(intervalMs ? { intervalMs } : {}),
     pushedAt: new Date().toISOString(),
     threads,
     files,

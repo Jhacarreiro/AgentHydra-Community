@@ -555,7 +555,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HUB_URL` | unset | the hub this PC pushes its Codex chats to (`https://hub.example.test`); with the token set, the daemon pushes every interval |
 | `AGENTHYDRA_CODEX_HUB_PC` | the computer's name: on a Mac its Bonjour name (`scutil --get LocalHostName`), which no network changes; elsewhere less a `.local`, `.lan`, `.home` or `.localdomain` suffix | the name this PC's chats are listed under on the hub. A Mac or Linux PC that already pushed under a longer name (`mac-lan`) is listed once more under the new one: delete its old `<config dir>/codex-hub/<pc>/` folder on the hub, or set this to the old name |
 | `AGENTHYDRA_CODEX_HUB_HEADERS` | unset | JSON object of extra headers for each push, e.g. a Cloudflare Access service token in front of the hub |
-| `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes |
+| `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes, at most 480 (eight hours); the [Codex hub](#codex-chats-from-other-pcs-codex-hub) holds this PC's name for three of them after each push |
 | `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, and only when each resume and turn says so; `full` also without them (Desk's bypass mode); `off` keeps the relay closed |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
@@ -832,14 +832,17 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   PC it runs on, two Linux PCs called `ubuntu`, the daemon's pusher beside a standalone one). So each
   pusher makes a random install id once, keeps it in the config dir (`codex-hub-install` for the daemon's
   pusher, `codex-hub-push-install` for the standalone one, so those two are two installs), and sends it
-  with every push and relay connect as `x-codex-hub-install`; the hub keeps it in the PC's
-  `manifest.json`. While one install holds a name (its relay socket is open, or it pushed in the last
-  10 minutes), another install's push under that name is answered 409 and its relay socket closed with
-  4409, so neither replaces the other's socket or deletes its rollouts. The refused pusher logs
+  with every push and relay connect as `x-codex-hub-install`, and its interval with every push; the hub
+  keeps both in the PC's `manifest.json`. While one install holds a name (its relay socket is open, or it
+  pushed within the last three of its intervals, and 10 minutes at least, so one with
+  `AGENTHYDRA_CODEX_HUB_RELAY=off` and a long interval still holds it at its next push), another
+  install's push under that name is answered 409 and its relay socket closed with 4409, so neither
+  replaces the other's socket or deletes its rollouts. The refused pusher logs
   `another PC already pushes as <name>; set AGENTHYDRA_CODEX_HUB_PC ...`, asks again at its next push and
   connects again after five minutes, not five seconds. Once the install that held the name has stopped
-  for 10 minutes (the PC set up again, with a new id), the next one takes it. A pusher from before install
-  ids sends none: it is taken as before and holds its name against no one.
+  for that long (the PC set up again, with a new id), the next one takes it: after 10 minutes at the
+  default interval, after a day at the longest. A pusher from before install ids sends none: it is taken
+  as before and holds its name against no one.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 

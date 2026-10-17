@@ -4,12 +4,17 @@
 // boxes called `ubuntu`, the daemon's pusher beside a standalone one. Each pusher sends an install id it made once,
 // and the hub keeps the name for the install that holds it: another one's push is refused with 409 and its relay
 // socket closed with 4409, instead of the two replacing each other's relay socket and rollouts.
-import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test'
+import { afterAll, beforeAll, expect, setSystemTime, spyOn, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { websocket } from 'hono/bun'
-import { acceptCodexHubPush, CODEX_HUB_DIR, hubPcKey } from '../src/core/codex-hub'
+import {
+  acceptCodexHubPush,
+  CODEX_HUB_DIR,
+  hubPcKey,
+  readCodexHubManifest,
+} from '../src/core/codex-hub'
 import {
   type CodexHubPushConfig,
   codexHubPushConfig,
@@ -146,6 +151,75 @@ test('an install that stopped pushing leaves its name to the next after ten minu
   })
 })
 
+test('a pusher that pushes every half hour with its relay off keeps its name between pushes', () => {
+  const root = hubRoot()
+  const dir = join(root, 'same-pc')
+  const every = 30 * 60_000
+  const start = Date.now()
+  const at = (min: number) => setSystemTime(new Date(start + min * 60_000))
+  const push = (chat: string, install: string) =>
+    acceptCodexHubPush({ ...pushOf('Same-PC', chat), intervalMs: every }, root, undefined, install)
+  try {
+    // The other PC starts eleven minutes later, on the same cadence, and is refused at each push of its own.
+    for (const min of [0, 30, 60]) {
+      at(min)
+      expect(push('a', A)).toMatchObject({ ok: true })
+      at(min + 11)
+      expect(push('b', B)).toMatchObject({ status: 409 })
+    }
+    expect(JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'))).toMatchObject({
+      install: A,
+      intervalMs: every,
+    })
+    expect(existsSync(join(dir, ...rolloutPath('a').split('/')))).toBe(true)
+
+    // The first stops: its name is held for three of its intervals after its last push, then passes on.
+    at(60 + 89)
+    expect(push('b', B)).toMatchObject({ status: 409 })
+    at(60 + 91)
+    expect(push('b', B)).toMatchObject({ ok: true })
+  } finally {
+    setSystemTime()
+  }
+})
+
+test('the hold follows a sane interval only: a pusher waits at most eight hours, the hub holds at most a day', () => {
+  const root = hubRoot()
+  const start = Date.now()
+  const saved = {
+    url: process.env.AGENTHYDRA_CODEX_HUB_URL,
+    min: process.env.AGENTHYDRA_CODEX_HUB_INTERVAL_MIN,
+  }
+  const push = (pc: string, chat: string, install: string, intervalMs?: unknown) =>
+    acceptCodexHubPush({ ...pushOf(pc, chat), intervalMs }, root, undefined, install)
+  try {
+    process.env.AGENTHYDRA_CODEX_HUB_URL = 'https://hub.example.test'
+    process.env.AGENTHYDRA_CODEX_HUB_INTERVAL_MIN = String(7 * 24 * 60)
+    expect(codexHubPushConfig()?.intervalMs).toBe(8 * 60 * 60_000)
+
+    // A push that claims a week is held for a day; one whose interval is not a number, as one that sent none.
+    push('Week-PC', 'a', A, 7 * 24 * 60 * 60_000)
+    push('Odd-PC', 'a', A, 'often')
+    expect(
+      JSON.parse(readFileSync(join(root, 'odd-pc', 'manifest.json'), 'utf8')).intervalMs,
+    ).toBeUndefined()
+    setSystemTime(new Date(start + 11 * 60_000))
+    expect(push('Odd-PC', 'b', B)).toMatchObject({ ok: true })
+    setSystemTime(new Date(start + 23 * 60 * 60_000))
+    expect(push('Week-PC', 'b', B)).toMatchObject({ status: 409 })
+    setSystemTime(new Date(start + 25 * 60 * 60_000))
+    expect(push('Week-PC', 'b', B)).toMatchObject({ ok: true })
+  } finally {
+    setSystemTime()
+    for (const [name, value] of [
+      ['AGENTHYDRA_CODEX_HUB_URL', saved.url],
+      ['AGENTHYDRA_CODEX_HUB_INTERVAL_MIN', saved.min],
+    ] as const)
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+  }
+})
+
 test('a pusher that sends no id is taken as before, and holds its name against no one', () => {
   const root = hubRoot()
   acceptCodexHubPush(pushOf('Same-PC', 'first'), root, undefined, A)
@@ -219,6 +293,11 @@ test('the relay keeps the PC that holds a name; the other is closed with 4409, s
     expect(
       await pushCodexHubOnce(cfg(A), { connect: rpc, fetch: toHub, codexHome: scratch }),
     ).toEqual({ threads: 0, sent: 0, missing: 0 })
+    // It sends its interval, which the hub's hold on its name follows.
+    expect(readCodexHubManifest(join(CODEX_HUB_DIR, key))).toMatchObject({
+      install: A,
+      intervalMs: 60_000,
+    })
 
     // A pusher from before install ids is let in as before, though the first PC's push holds the name.
     first.stop()

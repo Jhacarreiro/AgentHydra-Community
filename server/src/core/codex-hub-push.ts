@@ -11,7 +11,13 @@ import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import { appEnv, CODEX_HOME, CONFIG_DIR } from '../config'
 import type { HubFile, HubThread } from './codex-hub'
-import { hubInstallHeaders, hubInstallId, hubNameTaken, relativeRolloutPath } from './codex-hub'
+import {
+  HUB_PUSH_INTERVAL_MAX_MS,
+  hubInstallHeaders,
+  hubInstallId,
+  hubNameTaken,
+  relativeRolloutPath,
+} from './codex-hub'
 import { startCodexHubRelay } from './codex-hub-relay-pc'
 import { type CodexRpc, connectCodexRpc } from './codex-rpc'
 
@@ -35,6 +41,7 @@ export interface CodexHubPushConfig {
   install?: string | null
   /** Extra request headers, e.g. a Cloudflare Access service token in front of the hub. */
   headers: Record<string, string>
+  /** Sent with each push too: the hub holds this PC's name for three of them after it (codex-hub.ts hubNameHoldMs). */
   intervalMs: number
 }
 
@@ -123,7 +130,12 @@ export function codexHubPushConfig(
     pc: appEnv('CODEX_HUB_PC')?.trim() || defaultPcName(),
     install: pusherInstallId(PUSHER_INSTALL_FILES[pusher]),
     headers,
-    intervalMs: Math.max(1, Number.isFinite(minutes) ? minutes : 2) * 60_000,
+    // Eight hours at most: the hub holds this PC's name for three intervals after a push (codex-hub.ts
+    // hubNameHoldMs), and for a day at most.
+    intervalMs: Math.min(
+      Math.max(1, Number.isFinite(minutes) ? minutes : 2) * 60_000,
+      HUB_PUSH_INTERVAL_MAX_MS,
+    ),
   }
 }
 
@@ -211,7 +223,7 @@ export async function pushCodexHubOnce(
         'content-type': 'application/json',
         authorization: `Bearer ${cfg.token}`,
       },
-      body: JSON.stringify({ pc: cfg.pc, threads, files }),
+      body: JSON.stringify({ pc: cfg.pc, intervalMs: cfg.intervalMs, threads, files }),
     })
     if (res.status === 413 && files.length) return 'too-large'
     // Another PC holds this name on the hub; the next round asks again, and gets it once that PC has gone.
