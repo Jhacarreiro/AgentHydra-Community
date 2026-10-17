@@ -24,8 +24,9 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { appEnv, CODEX_HOME, codexSpawnEnv, resolveCodexExe } from '../config'
+import { hubInstallHeaders, hubNameTaken } from './codex-hub'
 import type { CodexHubPushConfig } from './codex-hub-push'
-import type { RelayFromPc, RelayToPc } from './codex-hub-relay'
+import { RELAY_NAME_TAKEN, type RelayFromPc, type RelayToPc } from './codex-hub-relay'
 import { type CodexRpc, takeHomeTurn } from './codex-rpc'
 
 export type RelayMode = 'off' | 'ask' | 'full'
@@ -228,6 +229,8 @@ interface RelayDeps {
   mode?: RelayMode
   /** A turn ended on this PC: its rollout changed. */
   onTurnDone?: () => void
+  /** The first and the longest wait before connecting again; tests shorten them. */
+  retryMs?: { min: number; max: number }
 }
 
 const LOCAL_ID = 'hub-pc-'
@@ -324,9 +327,10 @@ export function startCodexHubRelay(
   const connect =
     deps.connect ?? ((url, headers) => new WebSocket(url, { headers } as unknown as string[]))
   const sessions = new Map<string, Session>()
+  const { min: retryMin, max: retryMax } = deps.retryMs ?? { min: RETRY_MIN_MS, max: RETRY_MAX_MS }
   let ws: WebSocket | null = null
   let stopped = false
-  let retryMs = RETRY_MIN_MS
+  let retryMs = retryMin
   let retry: ReturnType<typeof setTimeout> | null = null
 
   const send = (msg: RelayFromPc) => {
@@ -480,20 +484,26 @@ export function startCodexHubRelay(
     if (stopped) return
     const socket = connect(relayUrl(cfg.url, cfg.pc), {
       ...cfg.headers,
+      ...hubInstallHeaders(cfg.install),
       authorization: `Bearer ${cfg.token}`,
     })
     ws = socket
     socket.addEventListener('open', () => {
-      retryMs = RETRY_MIN_MS
+      retryMs = retryMin
     })
     socket.addEventListener('message', (e) => onMessage(String((e as MessageEvent).data)))
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (e) => {
       if (ws !== socket) return
       ws = null
       for (const sid of [...sessions.keys()]) endSession(sid, 'The hub connection closed.', false)
       if (stopped) return
+      // Another PC holds this name on the hub: asking again in a few seconds would not change that.
+      if (e.code === RELAY_NAME_TAKEN) {
+        console.error(`[codex-hub] relay to ${cfg.url} refused: ${hubNameTaken(cfg.pc)}`)
+        retryMs = retryMax
+      }
       retry = setTimeout(dial, retryMs)
-      retryMs = Math.min(retryMs * 2, RETRY_MAX_MS)
+      retryMs = Math.min(retryMs * 2, retryMax)
     })
   }
   dial()

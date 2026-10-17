@@ -827,6 +827,18 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   a PC that does not run the daemon can run `bun server/src/codex-hub-push-main.ts` (`--once` for one
   round). The first push sends every rollout, later ones only what changed; a chat archived or deleted
   on the PC leaves the hub at its next push. Add PCs by repeating this on each with its own name.
+- **Two PCs with one name:** the hub keeps a PC by its name, and two can send one (WSL beside the Windows
+  PC it runs on, two Linux PCs called `ubuntu`, the daemon's pusher beside a standalone one). So each
+  pusher makes a random install id once, keeps it in the config dir (`codex-hub-install` for the daemon's
+  pusher, `codex-hub-push-install` for the standalone one, so those two are two installs), and sends it
+  with every push and relay connect as `x-codex-hub-install`; the hub keeps it in the PC's
+  `manifest.json`. While one install holds a name (its relay socket is open, or it pushed in the last
+  10 minutes), another install's push under that name is answered 409 and its relay socket closed with
+  4409, so neither replaces the other's socket or deletes its rollouts. The refused pusher logs
+  `another PC already pushes as <name>; set AGENTHYDRA_CODEX_HUB_PC ...`, asks again at its next push and
+  connects again after five minutes, not five seconds. Once the install that held the name has stopped
+  for 10 minutes (the PC set up again, with a new id), the next one takes it. A pusher from before install
+  ids sends none: it is taken as before and holds its name against no one.
 
 ### Usage across PCs (`POST /api/kit/sync`)
 

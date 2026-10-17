@@ -5,12 +5,13 @@
 // Runs inside the daemon when AGENTHYDRA_CODEX_HUB_URL is set, and on its own as
 // `bun server/src/codex-hub-push-main.ts` on a PC that does not run AgentHydra from source.
 
-import { readFileSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { join } from 'node:path'
-import { appEnv, CODEX_HOME } from '../config'
+import { dirname, join } from 'node:path'
+import { appEnv, CODEX_HOME, CONFIG_DIR } from '../config'
 import type { HubFile, HubThread } from './codex-hub'
-import { relativeRolloutPath } from './codex-hub'
+import { hubInstallHeaders, hubInstallId, hubNameTaken, relativeRolloutPath } from './codex-hub'
 import { startCodexHubRelay } from './codex-hub-relay-pc'
 import { type CodexRpc, connectCodexRpc } from './codex-rpc'
 
@@ -30,6 +31,8 @@ export interface CodexHubPushConfig {
   token: string
   /** The name this PC is listed under on the hub. */
   pc: string
+  /** This pusher's install id (pusherInstallId), sent with each push and relay connect; none when absent or null. */
+  install?: string | null
   /** Extra request headers, e.g. a Cloudflare Access service token in front of the hub. */
   headers: Record<string, string>
   intervalMs: number
@@ -65,7 +68,40 @@ export function defaultPcName(
   return host.replace(/(?:\.(?:local|lan|home|localdomain))+$/i, '') || host
 }
 
-export function codexHubPushConfig(): CodexHubPushConfig | null {
+/**
+ * Where each pusher keeps its install id: the daemon's and the standalone one's apart, so the two on one PC are two
+ * installs, not one whose sockets replace each other.
+ */
+export const PUSHER_INSTALL_FILES = {
+  daemon: join(CONFIG_DIR, 'codex-hub-install'),
+  standalone: join(CONFIG_DIR, 'codex-hub-push-install'),
+} as const
+
+/**
+ * This pusher's install id, made at random once and kept in `file`: the hub tells two PCs that send one name apart
+ * by it (codex-hub.ts hubNameRefused). Null when the file can be neither read nor made: the pusher then sends none,
+ * as the first pushers did, rather than a new one at each start that its own last push would hold the name against.
+ */
+export function pusherInstallId(file: string): string | null {
+  try {
+    const kept = hubInstallId(readFileSync(file, 'utf8'))
+    if (kept) return kept
+  } catch {
+    // not made yet
+  }
+  const id = randomUUID()
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, `${id}\n`)
+    return id
+  } catch {
+    return null
+  }
+}
+
+export function codexHubPushConfig(
+  pusher: keyof typeof PUSHER_INSTALL_FILES = 'daemon',
+): CodexHubPushConfig | null {
   const url = appEnv('CODEX_HUB_URL')?.trim()
   const token = appEnv('CODEX_HUB_TOKEN')?.trim()
   if (!url || !token) return null
@@ -85,6 +121,7 @@ export function codexHubPushConfig(): CodexHubPushConfig | null {
     url: url.replace(/\/+$/, ''),
     token,
     pc: appEnv('CODEX_HUB_PC')?.trim() || defaultPcName(),
+    install: pusherInstallId(PUSHER_INSTALL_FILES[pusher]),
     headers,
     intervalMs: Math.max(1, Number.isFinite(minutes) ? minutes : 2) * 60_000,
   }
@@ -170,12 +207,15 @@ export async function pushCodexHubOnce(
       method: 'POST',
       headers: {
         ...cfg.headers,
+        ...hubInstallHeaders(cfg.install),
         'content-type': 'application/json',
         authorization: `Bearer ${cfg.token}`,
       },
       body: JSON.stringify({ pc: cfg.pc, threads, files }),
     })
     if (res.status === 413 && files.length) return 'too-large'
+    // Another PC holds this name on the hub; the next round asks again, and gets it once that PC has gone.
+    if (res.status === 409) throw new Error(hubNameTaken(cfg.pc))
     if (!res.ok)
       throw new Error(`Codex hub answered ${res.status} ${(await res.text()).slice(0, 200)}`)
     return ((await res.json()) as { want?: string[] }).want ?? []

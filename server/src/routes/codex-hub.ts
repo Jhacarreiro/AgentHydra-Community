@@ -9,14 +9,21 @@ import type { Context, Next } from 'hono'
 import { upgradeWebSocket, websocket } from 'hono/bun'
 import {
   acceptCodexHubPush,
+  CODEX_HUB_DIR,
   codexHubHomes,
   codexHubToken,
+  HUB_INSTALL_HEADER,
+  hubInstallId,
+  hubNameRefused,
+  hubNameTaken,
   hubPcKey,
   hubTokenMatches,
+  ROLLOUT_UNPACKED_MAX,
 } from '../core/codex-hub'
 import {
   openRelaySession,
   type PcLink,
+  RELAY_NAME_TAKEN,
   type RelaySession,
   relayFromPc,
   relayPcConnected,
@@ -65,7 +72,12 @@ app.post('/api/codex-hub/push', requireHubToken, async (c) => {
   } catch {
     return c.json({ error: 'body must be JSON' }, 400)
   }
-  const result = acceptCodexHubPush(body)
+  const result = acceptCodexHubPush(
+    body,
+    CODEX_HUB_DIR,
+    ROLLOUT_UNPACKED_MAX,
+    hubInstallId(c.req.header(HUB_INSTALL_HEADER)),
+  )
   if (!result.ok) return c.json({ error: result.error }, result.status)
   return c.json({ pc: result.pc, stored: result.stored, want: result.want })
 })
@@ -89,11 +101,17 @@ app.get(
   '/api/codex-hub/relay',
   requireHubToken,
   upgradeWebSocket((c) => {
-    const key = hubPcKey(c.req.query('pc') ?? '')
+    const pc = (c.req.query('pc') ?? '').trim()
+    const key = hubPcKey(pc)
+    const install = hubInstallId(c.req.header(HUB_INSTALL_HEADER))
     let link: PcLink | null = null
     return {
       onOpen(_event, ws) {
         if (!key) return ws.close(4400, 'pc is required')
+        // Another PC holds this name: replacing its socket would end its Desk sessions, and it would replace this
+        // one in turn a few seconds later.
+        if (hubNameRefused(key, install))
+          return ws.close(RELAY_NAME_TAKEN, reason(hubNameTaken(pc)))
         const pcLink: PcLink = {
           // A dropped line leaves an app-server on the PC waiting for it: every session on this socket ends instead.
           send: (msg) => {
@@ -103,7 +121,7 @@ app.get(
           close: (why) => ws.close(1000, reason(why)),
         }
         link = pcLink
-        relayPcConnected(key, link)
+        relayPcConnected(key, link, install)
       },
       onMessage(event) {
         if (link) relayFromPc(link, String(event.data))

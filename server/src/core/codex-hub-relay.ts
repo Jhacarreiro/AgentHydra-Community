@@ -14,6 +14,8 @@
 //   PC -> hub  { t: 'line', sid, line }  one line from its stdout
 //              { t: 'exit', sid, why }   it ended, or never started
 // The PC decides what its app-server may be asked (codex-hub-relay-pc.ts): the hub is not trusted with more.
+// A socket from another install under a name one already holds is closed with RELAY_NAME_TAKEN (codex-hub.ts
+// hubNameRefused) and never replaces the PC's own.
 
 import { randomUUID } from 'node:crypto'
 
@@ -50,12 +52,26 @@ interface Session {
   desk: DeskEnd
 }
 
-const pcs = new Map<string, PcLink>()
+/** The close code for a socket refused because another install holds its PC's name. */
+export const RELAY_NAME_TAKEN = 4409
+
+interface Pc {
+  link: PcLink
+  /** The install id its pusher sent, or null for one from before install ids. */
+  install: string | null
+}
+
+const pcs = new Map<string, Pc>()
 const sessions = new Map<string, Session>()
 
 /** PC keys with a live relay socket. */
 export function relayPcs(): Set<string> {
   return new Set(pcs.keys())
+}
+
+/** The install id behind PC `key`'s live socket: null for a pusher that sent none, undefined with no socket. */
+export function relayPcInstall(key: string): string | null | undefined {
+  return pcs.get(key)?.install
 }
 
 function endSession(sid: string, why: string): void {
@@ -65,16 +81,19 @@ function endSession(sid: string, why: string): void {
   s.desk.closed(why)
 }
 
-/** A PC connected. A second socket from the same PC replaces the first (a reconnect the hub has not noticed yet). */
-export function relayPcConnected(key: string, link: PcLink): void {
-  const old = pcs.get(key)
-  pcs.set(key, link)
+/**
+ * A PC connected. A second socket from the same PC replaces the first (a reconnect the hub has not noticed yet);
+ * one from another install under the same name was refused before it got here (routes/codex-hub.ts).
+ */
+export function relayPcConnected(key: string, link: PcLink, install: string | null = null): void {
+  const old = pcs.get(key)?.link
+  pcs.set(key, { link, install })
   if (old && old !== link) relayPcGone(key, old, 'The PC connected again.')
 }
 
 /** A PC's socket closed: every session on it ends. `link` guards against a replaced socket's late close. */
 export function relayPcGone(key: string, link: PcLink, why = 'The PC went offline.'): void {
-  if (pcs.get(key) === link) pcs.delete(key)
+  if (pcs.get(key)?.link === link) pcs.delete(key)
   for (const [sid, s] of [...sessions]) if (s.link === link) endSession(sid, why)
   try {
     link.close(why)
@@ -100,7 +119,7 @@ export function relayFromPc(link: PcLink, raw: string): void {
 
 /** Starts an app-server on PC `key` for Desk; null when that PC is not connected. */
 export function openRelaySession(key: string, desk: DeskEnd): RelaySession | null {
-  const link = pcs.get(key)
+  const link = pcs.get(key)?.link
   if (!link) return null
   const sid = randomUUID()
   sessions.set(sid, { pc: key, link, desk })
