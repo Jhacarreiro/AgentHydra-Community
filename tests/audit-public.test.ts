@@ -587,6 +587,31 @@ describe('--history', () => {
   )
 
   test(
+    'a path with a space is the same file in tree and history, so one allow entry clears it in both',
+    () => {
+      const dir = repo('spaces')
+      const base = commit(dir, {}, 'base')
+      // git ends a patch header for such a path with a TAB; that TAB must not become part of it.
+      const paths = ['docs/my notes.md', 'docs/café menu.md']
+      commit(dir, Object.fromEntries(paths.map((p) => [p, `host ${IP.ten}\n`])), 'notes')
+      const entries = paths.map((path) => ({
+        rule: 'net.private-ipv4',
+        path,
+        fp: fingerprint(IP.ten),
+        reason: 'a synthetic address',
+      }))
+      const tree = auditTree(dir, 'HEAD', ctxWith()).findings
+      const history = auditHistory(dir, [`${base}..HEAD`], ctxWith()).findings
+      for (const findings of [tree, history]) {
+        expect(findings.map((f) => f.path).sort()).toEqual([...paths].sort())
+        expect(applyAllow(findings, entries)).toEqual([])
+        expect(findings.every((f) => Boolean(f.allowed))).toBe(true)
+      }
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'history that contains the license boundary is a finding',
     () => {
       const dir = repo('boundary')

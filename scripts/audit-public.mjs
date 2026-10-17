@@ -813,7 +813,9 @@ function readHistory(cwd, revArgs) {
       continue
     }
     if (line.startsWith('+++ ')) {
-      const target = line.slice(4)
+      // git ends this header with a TAB when the path holds a space, so that patch can tell where
+      // the name stops. The TAB is not part of the path: a path with a TAB of its own is C-quoted.
+      const target = line.slice(4).replace(/\t$/, '')
       file = target === '/dev/null' ? null : fileOf(unquotePath(target).replace(/^b\//, ''))
       continue
     }
