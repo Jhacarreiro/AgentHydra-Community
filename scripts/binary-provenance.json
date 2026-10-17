@@ -1,0 +1,93 @@
+{
+  "//": "Every binary file this repository tracks: where it came from, how it is made and under what license. scripts/audit-public.mjs fails on a binary with no entry here, or whose blob or sha256 no longer matches its entry.",
+  "binaries": [
+    {
+      "path": ".github/og-image.png",
+      "blob": "eb10e1041a84440425eb1f71d9315fec78933c3e",
+      "sha256": "386e6f582e02e20137eabc13461e11f9cdbdc35ff03178572528cd17b3fa5a96",
+      "source": "The social preview card, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit 83b0c52a, last changed in 366e292c). It shows upstream's name, site and logo.",
+      "build": "Committed as an image; misc/Make-Icon.ps1 says it is derived from the brand vector misc/brand/icon.svg, and no script in this repository generates it.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": ".github/screenshots/analytics.png",
+      "blob": "aa243fb80e7a4472e20311a4491bf94da4b9409c",
+      "sha256": "5ef6fab80f2b7a60f15d19d88d2415c37467bb1f06f646201988944ec5ccabd9",
+      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (last changed in upstream commit 2c6cc887).",
+      "build": "scripts/screenshots/capture.mjs (bun run screenshots) shoots the built window with every /api/ response replaced by invented data from scripts/screenshots/page-fixtures.js.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": ".github/screenshots/instances.png",
+      "blob": "b6af231bfb3cc9fe7604b218ce66d661fd070b03",
+      "sha256": "c7384143fc9b3fca426ca712981aac7b1ab0915366222a7a7a75a42329141761",
+      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (last changed in upstream commit 2c6cc887).",
+      "build": "scripts/screenshots/capture.mjs (bun run screenshots) shoots the built window with every /api/ response replaced by invented data from scripts/screenshots/page-fixtures.js.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": ".github/screenshots/new.png",
+      "blob": "1b42c637b4d835ef3b497b16abedcce158718d01",
+      "sha256": "23af7d33f489f6e3b6a4445ee77cb2f08c6d42d01bfb49026cd3fde8a0723202",
+      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit d9502d15).",
+      "build": "desk2/scripts/window-shots.ts (bun run screenshots in desk2/) shoots the window's demo world (#/gallery/shell) from a server that answers no /api/ request.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": ".github/screenshots/window.png",
+      "blob": "9b2601bb9eb9fa52f4d211e654d8957919e868ee",
+      "sha256": "1ce03a8124880f825616b452ba8c638e947b7220c3b55e5f7fa384fb5d00e8ae",
+      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit d9502d15).",
+      "build": "desk2/scripts/window-shots.ts (bun run screenshots in desk2/) shoots the window's demo world (#/gallery/shell) from a server that answers no /api/ request.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": "desk2/hydra/public/favicon.ico",
+      "blob": "f5c73bd6e318d1b35e9267ca76d0d7f72420c67e",
+      "sha256": "29f2e9f1cfccc4d08642c523e95fb8940e0d58d014a4f2f31bf86bc9dddd2e0d",
+      "source": "The AgentHydra icon, inherited from LunarWerxs/AgentHydra at 3a65ba8e (misc/AgentHydra.ico came with upstream commit 366e292c; desk2/hydra and desk2/web got copies in 5fdeda83 and 31523bc0). misc/AgentHydra.ico and the two favicon.ico files are the same bytes.",
+      "build": "misc/Make-Icon.ps1 builds it (16/24/32/48 px frames plus a 256 px PNG) from misc/AgentHydra-icon.png; the desk2 favicons are copies of misc/AgentHydra.ico.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": "desk2/hydra/public/fonts/inter-latin-ext.woff2",
+      "blob": "479d010d2902fa3a5b48e84a973db1978b2e9949",
+      "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956",
+      "source": "Inter 4.001 by The Inter Project Authors (https://github.com/rsms/inter), Latin Extended subset. Byte-identical to files/inter-latin-ext-wght-normal.woff2 in the npm package @fontsource-variable/inter 5.3.0. Added in upstream commit 5fdeda83.",
+      "build": "Vendored as-is, the variable-weight file; desk2/hydra/src/style.css declares it.",
+      "license": "SIL Open Font License 1.1 (the font's own name table points at https://openfontlicense.org)."
+    },
+    {
+      "path": "desk2/hydra/public/fonts/inter-latin.woff2",
+      "blob": "d15208de03cd1ad7c5199f0a0ce915fe841e4722",
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+      "source": "Inter 4.001 by The Inter Project Authors (https://github.com/rsms/inter), Latin subset. Byte-identical to files/inter-latin-wght-normal.woff2 in the npm package @fontsource-variable/inter 5.3.0. Added in upstream commit 5fdeda83.",
+      "build": "Vendored as-is, the variable-weight file; desk2/hydra/src/style.css declares it.",
+      "license": "SIL Open Font License 1.1 (the font's own name table points at https://openfontlicense.org)."
+    },
+    {
+      "path": "desk2/web/public/favicon.ico",
+      "blob": "f5c73bd6e318d1b35e9267ca76d0d7f72420c67e",
+      "sha256": "29f2e9f1cfccc4d08642c523e95fb8940e0d58d014a4f2f31bf86bc9dddd2e0d",
+      "source": "The AgentHydra icon, inherited from LunarWerxs/AgentHydra at 3a65ba8e (misc/AgentHydra.ico came with upstream commit 366e292c; desk2/hydra and desk2/web got copies in 5fdeda83 and 31523bc0). misc/AgentHydra.ico and the two favicon.ico files are the same bytes.",
+      "build": "misc/Make-Icon.ps1 builds it (16/24/32/48 px frames plus a 256 px PNG) from misc/AgentHydra-icon.png; the desk2 favicons are copies of misc/AgentHydra.ico.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": "misc/AgentHydra-icon.png",
+      "blob": "00e9d37bf7ccd1c966320107d3af0a73fcdd3741",
+      "sha256": "557ecc7b1ae83b512be472f1b21e625685cad3b7e25f036d7b007a8ec8c947a4",
+      "source": "The AgentHydra logo as a PNG, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit 366e292c).",
+      "build": "A 1024x1024 render of the brand vector misc/brand/icon.svg (magick -background none misc/brand/icon.svg -resize 1024x1024 -depth 8 PNG32:misc/AgentHydra-icon.png, per misc/Make-Icon.ps1).",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    },
+    {
+      "path": "misc/AgentHydra.ico",
+      "blob": "f5c73bd6e318d1b35e9267ca76d0d7f72420c67e",
+      "sha256": "29f2e9f1cfccc4d08642c523e95fb8940e0d58d014a4f2f31bf86bc9dddd2e0d",
+      "source": "The AgentHydra icon, inherited from LunarWerxs/AgentHydra at 3a65ba8e (misc/AgentHydra.ico came with upstream commit 366e292c; desk2/hydra and desk2/web got copies in 5fdeda83 and 31523bc0). misc/AgentHydra.ico and the two favicon.ico files are the same bytes.",
+      "build": "misc/Make-Icon.ps1 builds it (16/24/32/48 px frames plus a 256 px PNG) from misc/AgentHydra-icon.png; the desk2 favicons are copies of misc/AgentHydra.ico.",
+      "license": "MIT, as part of the repository at 3a65ba8e."
+    }
+  ]
+}

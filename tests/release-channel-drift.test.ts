@@ -105,6 +105,8 @@ describe('no code points at the project this one was forked from', () => {
     'codex-hub-tray/go.mod',
     // A comment on the public-push guard, about the repository that guard was written for.
     '.githooks/check-public-push.mjs',
+    // The public audit's binary provenance record: it says which images came with the fork, and from where.
+    'scripts/binary-provenance.json',
   ])
   const isDocOrTest = (file: string) =>
     /\.md$/i.test(file) ||
