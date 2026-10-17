@@ -27,7 +27,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const HEADER_WIDTHS = Array.from({ length: 41 }, (_, i) => 1100 - i * 20)
 const CHAT_MIN = 300
 const SHOTS: { name: string; at: number }[] = [{ name: 'wide', at: 1300 }, { name: 'mid', at: 560 }, { name: 'narrow', at: CHAT_MIN }]
-const RIGHT_BUTTONS = ['Changes', 'Browser and servers', 'Connections', 'View options', 'Hide session details', 'Show session details']
+const RIGHT_BUTTONS = ['Changes', 'Browser and servers', 'View options', 'Hide session details', 'Show session details']
 // `left`: the window's width left of the title bar's content (CHROME_COLLAPSED unless given), so a header width becomes a window
 // width. Beside the sidebar at SIDEBAR_MIN the title bar starts after the chrome bar's CHROME_OPEN, plus 9px.
 const SCENES: { scene: string; shape: string; split: boolean; left?: number }[] = [
@@ -165,11 +165,10 @@ function overlapFailures(controls: Control[]): string[] {
   return out
 }
 
-/** The Connections logo and the folder pill keep their smallest widths. */
+/** The folder pill keeps its smallest width. */
 function minimumWidthFailures(controls: Control[]): string[] {
   const out: string[] = []
   for (const c of controls) {
-    if (c.name.startsWith('Connections workspace') && c.w < 19) out.push(`${c.name} shows ${c.w.toFixed(1)}px, less than its logo`)
     if (c.name === 'folder' && c.w < 63.5) out.push(`folder pill ${c.w.toFixed(1)}px, neither 64px nor hidden`)
   }
   return out
@@ -239,17 +238,11 @@ try {
   const send = (method: string, params: object = {}) => new Promise<any>((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })) })
   ws.onmessage = (e) => {
     const m = JSON.parse(String(e.data))
-    if (m.method === 'Fetch.requestPaused') {
-      const body = { connectors: [{ id: 'connections', name: 'Connections', enabled: true, state: 'ready' }] }
-      void send('Fetch.fulfillRequest', { requestId: m.params.requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: btoa(JSON.stringify(body)) })
-      return
-    }
     if (m.id && pending.has(m.id)) { pending.get(m.id)!(m.result ?? m); pending.delete(m.id) }
   }
   const ev = async (expression: string) => (await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })).result?.value
   await send('Page.enable')
   await send('Runtime.enable')
-  await send('Fetch.enable', { patterns: [{ urlPattern: `http://127.0.0.1:${PORT}/api/connectors*` }] })
 
   const SEPARATOR = `document.querySelector('[role="separator"][aria-label="Resize the chat and the pane"]')`
 

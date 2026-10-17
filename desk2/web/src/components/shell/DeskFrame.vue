@@ -13,7 +13,6 @@ const ChangesPane = lazyPanel(() => import('@/components/panes/ChangesPane.vue')
 const ServersPane = lazyPanel(() => import('@/components/servers/ServersPane.vue'))
 const loadInfoPane = () => import('@/components/servers/info/InfoPane.vue')
 const InfoPane = lazyPanel(loadInfoPane)
-const ConnectionsPane = lazyPanel(() => import('@/components/connectors/ConnectionsPane.vue'))
 const FourmanPane = lazyPanel(() => import('@/components/fourman/FourmanPane.vue'))
 import type { ServerFocus } from '@/components/servers/store'
 import type { DevSelection } from '@/components/servers/info/selection'
@@ -1152,14 +1151,14 @@ function moveSidebar(side: SidebarSide) {
           </main>
 
           <!-- Servers and Changes-with-RepoYeti take the full height of the chat area, from the title bar row down, so the title bar's
-               buttons end at the pane's left edge; plain Changes, Connections and CliMayte sit under the title bar. When
+               buttons end at the pane's left edge; plain Changes and CliMayte sit under the title bar. When
                the window draws its own title bar (lib/host-window.ts) that row is the window's, across the whole width,
                with the pane buttons beside the window's buttons, so every pane starts under it. -->
           <aside
             v-if="asideOpen"
             class="relative col-start-2 flex min-h-0 min-w-0 shrink-0 border-s border-border"
             :class="split ? (ownFrame ? 'row-start-2' : 'row-span-2 row-start-1') : 'row-start-2 w-95'"
-            :aria-label="pane === 'diff' ? 'Changes' : pane === 'servers' ? 'Servers' : pane === 'connections' ? 'Connections' : pane === 'todo' ? 'To-do' : 'CliMayte'"
+            :aria-label="pane === 'diff' ? 'Changes' : pane === 'servers' ? 'Servers' : pane === 'todo' ? 'To-do' : 'CliMayte'"
           >
             <div
               v-if="split"
@@ -1175,7 +1174,6 @@ function moveSidebar(side: SidebarSide) {
             />
             <ChangesPane v-if="pane === 'diff' && chat" :key="chat.cwd" :cwd="chat.cwd" @close="pane = null" />
             <ServersPane v-else-if="pane === 'servers' && serversDir" :key="chat?.id ?? viewKey" :chat-id="chat?.id ?? viewKey" :cwd="serversDir" :focus="serversFocus" :ai-browser="aiBrowser" :paused="pageOpen" @close="pane = null" />
-            <ConnectionsPane v-else-if="pane === 'connections' && chat" :key="chat.id" :chat="chat" />
             <FourmanPane v-else-if="pane === 'todo' && todoDir" :key="todoDir" :cwd="todoDir" @close="pane = null" />
             <CliMaytePanel v-else :origin-session-id="chat?.sessionId" :worker-ids="chat?.workerIds" />
           </aside>

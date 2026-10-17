@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { connectorList, refreshConnectorList } from '../../src/components/connectors/connections-api'
+import { connectorList, refreshConnectorList } from '../../src/components/connectors/connector-list'
 import { saveGlobals } from '../save-globals'
 
 const restore = saveGlobals('fetch')

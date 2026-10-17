@@ -42,7 +42,7 @@ test('an enabled installed connector is started once; disabled, absent and runni
   const installed = fake('repoyeti', 'installed')
   const off = fake('redesign', 'installed')
   const absent = fake('devwebui', 'absent')
-  const running = fake('connections', 'running')
+  const running = fake('browser', 'running')
   await boot([installed, off, absent, running], ['redesign'])
   expect([installed.starts, off.starts, absent.starts, running.starts]).toEqual([1, 0, 0, 0])
 })

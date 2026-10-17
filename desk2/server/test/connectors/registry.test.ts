@@ -156,9 +156,9 @@ describe('the poll and the enabled flags', () => {
   })
 
   test('the list is in CONNECTOR_IDS order, a connector with no chat() gives nothing', () => {
-    const r = createRegistry({ home: temp(), defs: [fake('connections'), fake('devwebui', { chat: undefined }), fake('repoyeti')] })
+    const r = createRegistry({ home: temp(), defs: [fake('browser'), fake('devwebui', { chat: undefined }), fake('repoyeti')] })
     r.stop()
-    expect(r.list().map((v) => v.id)).toEqual(['repoyeti', 'devwebui', 'connections'])
+    expect(r.list().map((v) => v.id)).toEqual(['repoyeti', 'devwebui', 'browser'])
   })
 
   test('disabled flags persist in connectors.json and are read back', async () => {

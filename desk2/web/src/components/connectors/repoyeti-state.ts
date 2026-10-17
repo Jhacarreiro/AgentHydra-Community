@@ -1,7 +1,7 @@
-// RepoYeti's connector entry, read from the shared connector list (connections-api.ts) and used by the Changes pane's switch and the RepoYeti side.
+// RepoYeti's connector entry, read from the shared connector list (connector-list.ts) and used by the Changes pane's switch and the RepoYeti side.
 import { computed, ref } from 'vue'
 import { REPOYETI_REGISTER, connectorAction, type ConnectorAction, type ConnectorView, type RepoYetiRegisterResult } from '@shared/connectors'
-import { connectorList, refreshConnectorList, watchConnectors } from './connections-api'
+import { connectorList, refreshConnectorList, watchConnectors } from './connector-list'
 import { parseChangesTab, pollDelay, repoYetiOf, type ChangesTab } from './logic'
 
 export const repoYeti = computed(() => repoYetiOf(connectorList.value))

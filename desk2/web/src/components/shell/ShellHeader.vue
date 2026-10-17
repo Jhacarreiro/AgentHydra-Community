@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
 import type { AccountInfo, ChatSummary, ExternalSession } from '@shared/protocol'
-import { icons, settingsIcons, shellGlyphs, shellIcons } from '@/lib/icons'
+import { icons, shellGlyphs, shellIcons } from '@/lib/icons'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { chatRow, elapsedLabel, glyphDotClass, resetClock, rowMenu, statusGlyph, type RowMenuItem } from '@/components/sidebar/logic'
@@ -11,9 +11,6 @@ import { chatServices } from '@/components/sidebar/services'
 import { resumable } from '@/components/external/logic'
 import AccountSubmenu from './AccountSubmenu.vue'
 import WorkspacePicker from './WorkspacePicker.vue'
-import ConnectionsChip from '@/components/connectors/ConnectionsChip.vue'
-import { connectorList } from '@/components/connectors/connections-api'
-import { CONNECTIONS_LOGO_URL, showConnectionsChip } from '@/components/connectors/connections-logic'
 import { ListTodo, PanelRightClose, PanelRightOpen, Search } from '@lucide/vue'
 import { findAsk, findShown } from '@/components/session-header/state'
 import { fourmanAvailable } from '@/components/fourman/store'
@@ -25,7 +22,7 @@ import { isMuted, toggleMuted } from '@/lib/chat-audio'
 // The title bar inside the pane (h32): session title (click to rename), its menu, the folder pill,
 // Hydra Desk's status cue, and on the right the 26px pane buttons. Hydra Desk 2: an outside session's
 // title bar has one, the session header's fold (components/session-header).
-export type RightPane = 'diff' | 'climayte' | 'servers' | 'connections' | 'todo'
+export type RightPane = 'diff' | 'climayte' | 'servers' | 'todo'
 
 const props = withDefaults(
   defineProps<{
@@ -63,11 +60,11 @@ const emit = defineEmits<{
 const menu = computed(() => (props.chat ? rowMenu({ ...chatRow(props.chat), muted: isMuted(props.chat.id) }, props.groups, null, null, chatServices.value) : []))
 // The right block's floor: its buttons, 26px each and 4px apart, counted as they show (a floor short of them let the
 // centred title run under Changes once the rail button joined them). An alert shrinks into whatever room is left beside them.
-// The title group's hide points (@max-[553px] the folder pill, 462 the status text, 379 the glyph, 347 the Connections chip,
-// 319 the smaller More button and the CliMayte count) are where its items stop fitting beside all six buttons (176px). The
-// gap before the buttons never closes: an alert with no room left still sits in it.
+// The title group's hide points (@max-[553px] the folder pill, 462 the status text, 379 the glyph, 319 the smaller More
+// button and the CliMayte count) were set where its items stop fitting beside six buttons (176px); with fewer buttons they
+// hide a little early, never late. The gap before the buttons never closes: an alert with no room left still sits in it.
 const side = computed(() => {
-  const n = props.chat ? 4 + Number(fourmanAvailable.value) + Number(connectionsShown.value) : props.external ? 1 : 0
+  const n = props.chat ? 4 + Number(fourmanAvailable.value) : props.external ? 1 : 0
   return `${n ? n * 26 + (n - 1) * 4 : 0}px`
 })
 
@@ -135,9 +132,6 @@ function onMenuClosed(e: Event) {
   e.preventDefault()
   setTimeout(startRename, 0)
 }
-
-const connectionsShown = computed(() => showConnectionsChip(connectorList.value))
-const logoFailed = ref(false)
 
 // The running-tasks count on Session details while the rail is shut (open, the rail says it): gray, not the accent (owner,
 // 2026-10-08: "an annoying blue icon, make it grey"); a solid gray so the icon under its corner does not show through.
@@ -230,7 +224,6 @@ const PANE_BTN =
           <span class="tnum">{{ chat.climayteActive }}</span>
         </button>
       </Tip>
-      <div class="contents @max-[347px]:hidden"><ConnectionsChip :chat="chat" /></div>
     </template>
     <template v-else-if="external">
       <span class="truncate px-1 font-medium text-text">{{ external.title }}</span>
@@ -270,12 +263,6 @@ const PANE_BTN =
       <Tip v-if="fourmanAvailable" label="To-do">
         <button type="button" :class="PANE_BTN" aria-label="To-do" :aria-pressed="pane === 'todo'" @click="emit('toggle-pane', 'todo')">
           <ListTodo class="size-4" />
-        </button>
-      </Tip>
-      <Tip v-if="connectionsShown" label="Connections">
-        <button type="button" :class="PANE_BTN" aria-label="Connections" :aria-pressed="pane === 'connections'" @click="emit('toggle-pane', 'connections')">
-          <img v-if="!logoFailed" :src="CONNECTIONS_LOGO_URL" alt="" class="size-4" @error="logoFailed = true" />
-          <component :is="settingsIcons.connections" v-else class="size-4" />
         </button>
       </Tip>
       <Tip label="View options">

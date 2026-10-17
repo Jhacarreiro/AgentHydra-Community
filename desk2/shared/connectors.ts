@@ -6,8 +6,8 @@
 
 export const CONNECTORS = '/api/connectors'
 
-export type ConnectorId = 'repoyeti' | 'redesign' | 'devwebui' | 'connections' | 'browser' | 'teardown'
-export const CONNECTOR_IDS: readonly ConnectorId[] = ['repoyeti', 'redesign', 'devwebui', 'connections', 'browser', 'teardown']
+export type ConnectorId = 'repoyeti' | 'redesign' | 'devwebui' | 'browser' | 'teardown'
+export const CONNECTOR_IDS: readonly ConnectorId[] = ['repoyeti', 'redesign', 'devwebui', 'browser', 'teardown']
 
 /**
  * running: it answers. installed: on this machine, not answering. absent: not on this machine.
@@ -56,62 +56,6 @@ export type ConnectorView = ConnectorInfo & ConnectorStatus
 /** What GET /api/connectors answers, in CONNECTOR_IDS order. */
 export interface ConnectorsResponse {
   connectors: ConnectorView[]
-}
-
-// The Connections chip on every chat: which Connections workspace the chat's tools act as, and switching it.
-
-/** GET ?chat=<chat id>: the ConnectionsWorkspace of that chat (its folder's when it has no pin of its own). */
-export const CONNECTIONS_WORKSPACE = `${CONNECTORS}/connections/workspace`
-/** GET: { companies: ConnectionsCompany[] }, every workspace the signed-in account belongs to. */
-export const CONNECTIONS_COMPANIES = `${CONNECTORS}/connections/companies`
-/** POST ConnectionsSwitch: answers the chat's new ConnectionsWorkspace. */
-export const CONNECTIONS_SWITCH = `${CONNECTORS}/connections/switch`
-
-/** POST ConnectionsDefaultSet: the folder's default workspace for NEW chats (Desk's own setting, not Connections'); answers the chat's ConnectionsWorkspace. */
-export const CONNECTIONS_DEFAULT = `${CONNECTORS}/connections/default`
-
-export interface ConnectionsDefaultSet {
-  chat: string
-  /** companyId (or name) to make the default for new chats in the chat's folder; null clears the default. */
-  company: string | null
-}
-
-export interface ConnectionsCompany {
-  companyId: string
-  projectId?: string
-  name: string
-}
-
-export interface ConnectionsWorkspace {
-  /** This machine is signed in to Connections. False: the chip offers Sign in. */
-  signedIn: boolean
-  /** The workspace the chat's Connections tools act as; null is "No workspace". */
-  company: ConnectionsCompany | null
-  /** chat: pinned for this chat alone. folder: the workspace of the chat's folder. null: none. */
-  scope: 'chat' | 'folder' | null
-  /** Connections' Bypass permissions, read from whoami; null when it does not say. Desk never writes it: only Studio changes it. */
-  bypassPermissions?: boolean | null
-  /** companyId of the default for NEW chats in the chat's folder (Desk's own setting); absent when none. */
-  defaultCompanyId?: string
-}
-
-export interface ConnectionsSwitch {
-  chat: string
-  /** companyId (or name) to use; null clears it. */
-  company: string | null
-  /** chat: this chat alone. folder: every chat in this folder, and the folder's default from now on. */
-  scope: 'chat' | 'folder'
-}
-
-/** POST { chat }: starts Connections' browser sign-in for this machine; answers ConnectionsSignin. */
-export const CONNECTIONS_SIGNIN = `${CONNECTORS}/connections/signin`
-
-export interface ConnectionsSignin {
-  /** The approval page to open; null when the machine is already signed in. */
-  url: string | null
-  /** Connections already opened `url` in the system browser itself, so the page does not open it again. */
-  opened: boolean
-  signedIn: boolean
 }
 
 // The RepoYeti pane: Desk adds the chat's folder to RepoYeti, server-side (RepoYeti's loopback guard refuses a browser).

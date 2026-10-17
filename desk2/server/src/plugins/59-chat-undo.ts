@@ -1,6 +1,6 @@
 // GET /api/chats/:id/file-undo: the files this chat changed (Edit, Write, MultiEdit) with +/- each and whether each is
 // safe to put back; POST { paths }: puts the ready ones back. The truth is the chat's own transcript (chat-undo/plan.ts).
-// Own page only. The chat is read from the engine's own route, as the Connections plugin does.
+// Own page only. The chat is read from the engine's own route.
 
 import { readFileSync } from 'node:fs'
 import type { Hono } from 'hono'

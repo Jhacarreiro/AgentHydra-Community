@@ -1,6 +1,6 @@
 // What one connector is on the server side (shared/connectors.ts says what a connector is to the page). Each one
 // is a file in server/src/connectors/defs/ named after its id (repoyeti.ts, redesign.ts, devwebui.ts,
-// connections.ts) whose default export is a ConnectorFactory; the registry loads that folder, so adding a
+// browser.ts) whose default export is a ConnectorFactory; the registry loads that folder, so adding a
 // connector touches no shared list. It polls them in the background, so a chat's buildOptions, which is
 // synchronous, reads the last status instead of probing.
 
