@@ -1,10 +1,10 @@
 // tests/githooks/hook-tests-live-here.test.ts - no test file may sit under .githooks/.
 //
-// `bun test` does not descend into dot-directories. The AH-24 kit-sync hook suite was written at
-// .githooks/tests/check-kit-sync-staged.test.ts on 2026-09-06, passed whenever someone named it by
-// path, and was never once collected by `bun run test` or CI: a green suite that had two fewer
-// tests in it than the tree suggested. Found 2026-09-12 when two more hook suites were about to be
-// parked beside it. All three live here now, and this guard fails the moment one goes back.
+// `bun test` does not descend into dot-directories. A pre-commit hook suite was written under
+// .githooks/tests/ on 2026-09-06, passed whenever someone named it by path, and was never once
+// collected by `bun run test` or CI: a green suite that had two fewer tests in it than the tree
+// suggested. Found 2026-09-12 when two more hook suites were about to be parked beside it. The hook
+// suites live here now, and this guard fails the moment one goes back.
 
 import { expect, test } from 'bun:test'
 import { existsSync, readdirSync } from 'node:fs'

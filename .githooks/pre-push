@@ -5,31 +5,28 @@
 # 1. Refuse a push to a PUBLIC remote unless AGENTHYDRA_PUSH_PUBLIC=1 is set for this command.
 #    The heading is printed either way; the rule is announce-then-do.
 # 2. Refuse a release tag (v*.*.*) while docs/todo/TODO.md has an open section. No override.
-# 3. Run the host-only lane GitHub structurally cannot: kit drift in what the push carries
-#    (check-kit-sync-pushed.mjs, the same report `check:local` reads), on every push.
-#    A release tag in the push also needs CI to have passed on the exact commit the tag points to:
-#    `gh` is asked for a ci.yml run on that sha whose conclusion is success. When there is one, only
-#    `check:local` runs, because every other lane of `check:deep` (Biome, i18n, every typecheck,
+# 3. Refuse a release tag scripts/release-notes.mjs would refuse to publish. No override.
+# 4. A release tag in the push also needs CI to have passed on the exact commit the tag points to:
+#    `gh` is asked for a ci.yml run on that sha whose conclusion is success. When there is one,
+#    nothing more runs here, because every lane of `check:deep` (Biome, i18n, every typecheck,
 #    `bun test`, orchestrator/server's tests, the orchestrator Python suite) is a ci.yml step and
 #    already passed on that very commit. Re-running them here was a duplicate 25-minute gate on
 #    every release (measured on 1.7.0, 2026-10-02), after docs/RELEASING.md had already made "push
 #    main, wait for green CI" the step before tagging. When it cannot be confirmed (no gh, not
 #    signed in, offline, a remote that is not GitHub, no run on that sha, a run still going or not
-#    green), one line says why and the whole `check:deep` runs, which includes the kit check.
+#    green), one line says why and the whole `check:deep` runs. A push with no release tag in it
+#    is done once rules 1 to 3 pass.
 #
-# Rules 1 and 2 and their history live in .githooks/check-public-push.mjs. Git hands this hook the
+# Rules 1 to 3 and their history live in .githooks/check-public-push.mjs. Git hands this hook the
 # remote's name and URL as arguments and the refs on stdin; both are passed straight through.
 #
-# FAIL CLOSED. The kit-sync and Biome pre-commit guards step aside when their runtime is missing,
-# because a commit is local and cheap to redo. A push is neither, so with no node and no bun on
-# PATH this refuses rather than guessing, and says how to proceed.
-#
-# Rule 3 needs the private lunarwerx-ui kit as a sibling checkout (the same path check:kit reads).
-# Without it, as on every contributor's machine and in CI, it says so and steps aside: those lanes
-# cannot run there at all. With it, a missing bun is refused, like rule 1's missing runtime.
+# FAIL CLOSED. The Biome pre-commit guard steps aside when its runtime is missing, because a commit
+# is local and cheap to redo. A push is neither, so with no node and no bun on PATH this refuses
+# rather than guessing, and says how to proceed; and a release tag that needs `check:deep` with no
+# bun on PATH to run it is refused, not waved through.
 remote="$1"
 url="$2"
-# stdin can only be read once, and rule 3 needs the refs as well as the guard.
+# stdin can only be read once, and rule 4 needs the refs as well as the guard.
 refs=$(cat)
 
 if command -v node >/dev/null 2>&1; then
@@ -66,36 +63,17 @@ for sha in $(printf '%s\n' "$refs" | awk '$2 !~ /^0+$/ && $3 ~ /^refs\/tags\/v[0
   fi
 done
 
+if [ -z "$release_commits" ] && [ -z "$unpeeled" ]; then
+  exit 0
+fi
+
 # Git runs this hook with GIT_DIR exported (and, from a linked worktree, GIT_WORK_TREE and
-# GIT_INDEX_FILE too). The lanes below are not git commands on this repo: their tests build
-# throwaway repos and the kit check asks the kit's own git, and every one inherited these and aimed
-# git at this checkout instead. Pushing the 1.5.0 tag from a worktree (2026-10-01) read a clean kit
-# as dirty and failed 29 git-backed tests. The lanes find this repo from the working directory.
+# GIT_INDEX_FILE too). `check:deep` is not a git command on this repo: its tests build throwaway
+# repos, and every one inherited these and aimed git at this checkout instead. Pushing the 1.5.0
+# tag from a worktree (2026-10-01) failed 29 git-backed tests that way. `check:deep` finds this
+# repo from the working directory.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
-
-kit=../../lunarwerx-ui/sync.mjs
-if [ ! -f "$kit" ]; then
-  echo "pre-push: no lunarwerx-ui kit checkout at $kit, so the host-only kit lanes cannot run here; skipped." >&2
-  exit 0
-fi
-if ! command -v bun >/dev/null 2>&1; then
-  echo "pre-push: the lunarwerx-ui kit is checked out but bun is not on PATH, so the kit lanes cannot run. Refused; install bun." >&2
-  exit 1
-fi
-
-# The kit drift lane judges what this push carries (check-kit-sync-pushed.mjs), not every file in a
-# working tree other sessions are editing: `check:local` over the whole tree let one session's
-# unfinished edit to a synced file block every other session's push.
-kit_drift() {
-  printf '%s\n' "$refs" | node .githooks/check-kit-sync-pushed.mjs "$remote" agenthydra orchestrator
-}
-
-if [ -z "$release_commits" ] && [ -z "$unpeeled" ]; then
-  echo "› kit drift (what this push carries)…" >&2
-  kit_drift || exit 1
-  exit 0
-fi
 
 # A release tag: has ci.yml passed on the commit it points to? `why` stays empty only when every
 # tagged commit has a ci.yml run whose conclusion is success.
@@ -131,9 +109,11 @@ else
 fi
 
 if [ -z "$why" ]; then
-  echo "› kit drift (what this push carries; CI already ran every other check:deep lane on this commit)…" >&2
-  kit_drift || exit 1
-else
-  echo "pre-push: CI not confirmed, so the full check:deep runs (25+ minutes): $why." >&2
-  bun run check:deep || exit 1
+  exit 0
 fi
+echo "pre-push: CI not confirmed, so the full check:deep runs (25+ minutes): $why." >&2
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-push: bun is not on PATH, so check:deep cannot run. Refused; install bun, or push the tag once CI has passed on its commit." >&2
+  exit 1
+fi
+bun run check:deep || exit 1

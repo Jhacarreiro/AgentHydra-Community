@@ -1,8 +1,9 @@
 // tests/githooks/pre-push-public-guard.test.ts - the pre-push gate. A PUBLIC remote, or one whose
 // visibility cannot be proven, refuses the push and prints the heading; AGENTHYDRA_PUSH_PUBLIC=1
 // announces and proceeds; a private remote is untouched; a release tag is refused while
-// docs/todo/TODO.md has an open section, and nothing overrides that; and a release tag that
-// scripts/release-notes.mjs would refuse (below 2.0.0, or a long section with no TL;DR) never lands.
+// docs/todo/TODO.md has an open section, and nothing overrides that; a release tag that
+// scripts/release-notes.mjs would refuse (below 2.0.0, or a long section with no TL;DR) never lands;
+// and a release tag whose CI the hook cannot confirm lands only once `check:deep` passes.
 //
 // Drives the real, on-disk `.githooks/pre-push` and `.githooks/check-public-push.mjs` (copied
 // fresh at test time, never duplicated by hand) against a throwaway repo pushing to a throwaway
@@ -14,12 +15,14 @@
 // there passes by hand and never runs (see hook-tests-live-here.test.ts).
 //
 // Revert check: delete the `if (verdict !== "private")` block in check-public-push.mjs and the
-// first four tests fail; delete the release-tag block and the tag tests fail.
+// first four tests fail; delete the release-tag block and the tag tests fail; drop the
+// `bun run check:deep` lane from pre-push and the check:deep tests fail.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -63,7 +66,6 @@ const HEADING = '# WARNING: THIS REPOSITORY IS **PUBLIC**'
 
 const REAL_PREPUSH = join(REPO_ROOT, '.githooks', 'pre-push')
 const REAL_GUARD = join(REPO_ROOT, '.githooks', 'check-public-push.mjs')
-const REAL_KIT_SYNC = join(REPO_ROOT, '.githooks', 'check-kit-sync-pushed.mjs')
 
 type Env = Record<string, string>
 
@@ -98,6 +100,26 @@ function push(repo: string, env: Env, ...refs: string[]): PushResult {
     { cwd: repo, encoding: 'utf8', timeout: HOOK_TEST_TIMEOUT, env: envFor(env) },
   )
   return { status: r.status ?? 1, output: `${r.stdout ?? ''}${r.stderr ?? ''}` }
+}
+
+/** A stand-in `check:deep` in `dir`, run by the hook as `bun run check:deep` when it cannot confirm
+ *  CI on a release tag. It writes the GIT_ variables it inherits to `record` (so the file existing
+ *  means it ran) and exits with `code`. Left untracked: the hook runs it from the working tree. */
+function stubCheckDeep(dir: string, record: string, code = 0) {
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ private: true, scripts: { 'check:deep': 'node check-deep.mjs' } }),
+  )
+  writeFileSync(
+    join(dir, 'check-deep.mjs'),
+    [
+      "import { writeFileSync } from 'node:fs'",
+      `const git = Object.keys(process.env).filter((k) => k.startsWith('GIT_')).map((k) => k + '=' + process.env[k])`,
+      `writeFileSync(${JSON.stringify(record.replace(/\\/g, '/'))}, git.join(String.fromCharCode(10)))`,
+      `process.exit(${code})`,
+      '',
+    ].join('\n'),
+  )
 }
 
 function originHas(origin: string, ref: string): boolean {
@@ -205,6 +227,12 @@ describe('.githooks/pre-push: a public remote is announced and refused', () => {
   describe('a release tag is refused while the work queue has an open section', () => {
     const PRIVATE = { AGENTHYDRA_VISIBILITY_STUB: 'private' }
 
+    // The origin is a local path, so the hook cannot confirm CI on a tag and runs check:deep; here
+    // it passes, so what these tests see is rules 2 and 3 alone.
+    beforeEach(() => {
+      stubCheckDeep(repo, join(sandbox, 'check-deep.txt'))
+    })
+
     function writeTodo(repo: string, body: string) {
       mkdirSync(join(repo, 'docs', 'todo'), { recursive: true })
       writeFileSync(join(repo, 'docs', 'todo', 'TODO.md'), body)
@@ -300,149 +328,88 @@ describe('.githooks/pre-push: a public remote is announced and refused', () => {
       HOOK_TEST_TIMEOUT,
     )
   })
+
+  describe('a release tag whose CI cannot be confirmed waits for check:deep', () => {
+    const PRIVATE = { AGENTHYDRA_VISIBILITY_STUB: 'private' }
+    let record: string
+
+    beforeEach(() => {
+      record = join(sandbox, 'check-deep.txt')
+    })
+
+    test(
+      'a local origin: CI cannot be confirmed, check:deep fails, and the tag never lands',
+      () => {
+        stubCheckDeep(repo, record, 1)
+        git(repo, {}, 'tag', 'v1.2.3')
+        const r = push(repo, PRIVATE, 'v1.2.3')
+        expect(r.status).not.toBe(0)
+        expect(r.output).toContain('CI not confirmed, so the full check:deep runs')
+        expect(existsSync(record)).toBe(true)
+        expect(originHas(origin, 'refs/tags/v1.2.3')).toBe(false)
+      },
+      HOOK_TEST_TIMEOUT,
+    )
+
+    test(
+      'check:deep passes: the tag ships',
+      () => {
+        stubCheckDeep(repo, record)
+        git(repo, {}, 'tag', 'v1.2.3')
+        const r = push(repo, PRIVATE, 'v1.2.3')
+        expect(r.status).toBe(0)
+        expect(existsSync(record)).toBe(true)
+        expect(originHas(origin, 'refs/tags/v1.2.3')).toBe(true)
+      },
+      HOOK_TEST_TIMEOUT,
+    )
+
+    test(
+      'a push with no release tag in it never runs check:deep',
+      () => {
+        stubCheckDeep(repo, record, 1)
+        git(repo, {}, 'tag', 'checkpoint')
+        const r = push(repo, PRIVATE, 'main', 'checkpoint')
+        expect(r.status).toBe(0)
+        expect(existsSync(record)).toBe(false)
+        expect(originHas(origin, 'refs/heads/main')).toBe(true)
+      },
+      HOOK_TEST_TIMEOUT,
+    )
+  })
 })
 
-describe('.githooks/pre-push: the lanes run free of the hook git environment', () => {
+describe('.githooks/pre-push: check:deep runs free of the hook git environment', () => {
   test(
-    'a push from a linked worktree hands the lanes no GIT_DIR, so their own git finds their own repo',
+    'a release tag pushed from a linked worktree hands check:deep no GIT_DIR, so its own git finds its own repo',
     () => {
-      // The hook only reaches its lanes with a kit beside the checkout (../../lunarwerx-ui), and that
-      // kit's stand-in sync.mjs, which the kit drift lane runs, records the git variables it inherits.
-      // Pushing the 1.5.0 tag from a worktree, every git-backed test and the kit check inherited
-      // GIT_DIR and looked at the pushing checkout instead of their own repos (2026-10-01).
+      // Pushing the 1.5.0 tag from a worktree, every git-backed test inherited GIT_DIR and looked at
+      // the pushing checkout instead of its own throwaway repo (2026-10-01). The stand-in
+      // check:deep records the git variables it inherits.
       const base = prepushRoot('lanes')
       const repo = join(base, 'ah', 'repo')
       const wt = join(base, 'ah', 'wt')
       const origin = join(base, 'origin')
-      const seen = join(base, 'seen.txt').replace(/\\/g, '/')
-      mkdirSync(join(base, 'lunarwerx-ui'), { recursive: true })
-      writeFileSync(
-        join(base, 'lunarwerx-ui', 'sync.mjs'),
-        [
-          "import { writeFileSync } from 'node:fs'",
-          `const git = Object.keys(process.env).filter((k) => k.startsWith('GIT_')).map((k) => k + '=' + process.env[k])`,
-          `writeFileSync(${JSON.stringify(seen)}, git.join(String.fromCharCode(10)))`,
-          '',
-        ].join('\n'),
-      )
+      const seen = join(base, 'seen.txt')
 
       mkdirSync(join(repo, '.githooks'), { recursive: true })
       git(base, {}, 'init', '-q', '--bare', origin)
       writeFileSync(join(repo, '.githooks', 'pre-push'), readFileSync(REAL_PREPUSH))
       writeFileSync(join(repo, '.githooks', 'check-public-push.mjs'), readFileSync(REAL_GUARD))
-      writeFileSync(
-        join(repo, '.githooks', 'check-kit-sync-pushed.mjs'),
-        readFileSync(REAL_KIT_SYNC),
-      )
       chmodSync(join(repo, '.githooks', 'pre-push'), 0o755)
       git(repo, {}, 'init', '-q', '-b', 'main')
       git(repo, {}, 'config', 'core.hooksPath', '.githooks')
       git(repo, {}, 'remote', 'add', 'origin', origin)
       git(repo, {}, 'add', '-A')
       git(repo, {}, 'commit', '-q', '-m', 'init')
+      git(repo, {}, 'tag', 'v1.0.0')
       git(repo, {}, 'worktree', 'add', '-q', '--detach', wt)
+      stubCheckDeep(wt, seen)
 
-      const r = push(wt, { AGENTHYDRA_VISIBILITY_STUB: 'private' }, 'HEAD:refs/heads/side')
+      const r = push(wt, { AGENTHYDRA_VISIBILITY_STUB: 'private' }, 'v1.0.0')
       expect(r.status).toBe(0)
       const inherited = readFileSync(seen, 'utf8')
       expect(inherited).not.toMatch(/^GIT_(DIR|WORK_TREE|INDEX_FILE)=/m)
-    },
-    HOOK_TEST_TIMEOUT,
-  )
-})
-
-// The kit drift lane refuses a push only for drift the push itself carries. Drift it does not carry is
-// another session's work in the shared tree. On 2026-10-11 one session's untracked probe test under the
-// kit-synced server/tests/server-lib/ ("! orphan" in the kit's report) refused every other session's
-// push, because the lane read only "! differs" lines and took the rest for a failed check.
-describe('check-kit-sync-pushed.mjs: only drift the push carries refuses it', () => {
-  let repo: string
-  let refs: string
-  const at = (rel: string) => join(repo, rel).replace(/\\/g, '/')
-
-  beforeAll(() => {
-    const base = prepushRoot('kitdrift')
-    repo = join(base, 'ah', 'repo')
-    const origin = join(base, 'origin')
-    // A stand-in kit beside the checkout, as the lane finds it: its --check prints the report it is handed.
-    mkdirSync(join(base, 'lunarwerx-ui'), { recursive: true })
-    writeFileSync(
-      join(base, 'lunarwerx-ui', 'sync.mjs'),
-      'const r = process.env.KIT_STUB_REPORT ?? ""\nconsole.log(r)\nprocess.exit(r ? 1 : 0)\n',
-    )
-    mkdirSync(join(repo, 'server', 'lib'), { recursive: true })
-    git(base, {}, 'init', '-q', '--bare', origin)
-    git(repo, {}, 'init', '-q', '-b', 'main')
-    git(repo, {}, 'remote', 'add', 'origin', origin)
-    writeFileSync(join(repo, 'server', 'lib', 'carried.ts'), 'one\n')
-    writeFileSync(join(repo, 'server', 'lib', 'edited.ts'), 'one\n')
-    git(repo, {}, 'add', '-A')
-    git(repo, {}, 'commit', '-q', '-m', 'on the remote')
-    git(repo, {}, 'push', '-q', 'origin', 'main')
-    // What this push carries: a changed synced file and a new one.
-    writeFileSync(join(repo, 'server', 'lib', 'carried.ts'), 'two\n')
-    writeFileSync(join(repo, 'server', 'lib', 'added.ts'), 'new\n')
-    git(repo, {}, 'add', '-A')
-    git(repo, {}, 'commit', '-q', '-m', 'the push')
-    // What it does not: another session's uncommitted edit and its untracked probe.
-    writeFileSync(join(repo, 'server', 'lib', 'edited.ts'), 'unfinished\n')
-    writeFileSync(join(repo, 'server', 'lib', 'probe.test.ts'), 'scratch\n')
-    const head = git(repo, {}, 'rev-parse', 'HEAD').trim()
-    refs = `refs/heads/main ${head} refs/heads/main 0000000000000000000000000000000000000000\n`
-  }, HOOK_TEST_TIMEOUT)
-
-  test.each([
-    [
-      'an untracked orphan the push does not add',
-      'orphan  ',
-      'server/lib/probe.test.ts',
-      0,
-      'left alone',
-    ],
-    [
-      'an uncommitted edit the push does not carry',
-      'differs ',
-      'server/lib/edited.ts',
-      0,
-      'left alone',
-    ],
-    ['a synced file the push changes', 'differs ', 'server/lib/carried.ts', 1, 'this push carries'],
-    [
-      'a file the push adds that the kit does not ship',
-      'orphan  ',
-      'server/lib/added.ts',
-      1,
-      'this push carries',
-    ],
-  ])(
-    '%s',
-    (_name, kind, rel, status, said) => {
-      const r = spawnSync('node', [REAL_KIT_SYNC, 'origin', 'agenthydra'], {
-        cwd: repo,
-        input: refs,
-        encoding: 'utf8',
-        timeout: HOOK_TEST_TIMEOUT,
-        env: { ...envFor({}), KIT_STUB_REPORT: `[check] agenthydra\n      ! ${kind} ${at(rel)}\n` },
-      })
-      expect(r.status).toBe(status)
-      expect(r.stderr).toContain(said)
-      expect(r.stderr).toContain(at(rel))
-    },
-    HOOK_TEST_TIMEOUT,
-  )
-
-  test(
-    'a failed check that names no file still refuses',
-    () => {
-      const r = spawnSync('node', [REAL_KIT_SYNC, 'origin', 'agenthydra'], {
-        cwd: repo,
-        input: refs,
-        encoding: 'utf8',
-        timeout: HOOK_TEST_TIMEOUT,
-        env: { ...envFor({}), KIT_STUB_REPORT: 'sync.mjs: kit.config.json could not be read' },
-      })
-      expect(r.status).toBe(1)
-      expect(r.stderr).toContain('kit check for agenthydra failed')
     },
     HOOK_TEST_TIMEOUT,
   )
