@@ -1,0 +1,5 @@
+{
+  "repo": "Jhacarreiro/AgentHydra-Community",
+  "updates": "off",
+  "notes": "Where this build's releases come from, and what it may do about a newer one. updates: \"off\" (no update check and no download: the repository has published no releases yet), \"notify\" (check and tell, never install) or \"auto\" (check, and install when Settings allows it). Read through server/src/release-channel.ts; docs/RELEASING.md says when to change it."
+}
