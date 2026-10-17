@@ -1,7 +1,8 @@
 # The live checkout
 
 The app you run loads its code from a checkout that nobody edits: `live/`, a git worktree of this
-repository on branch `live` whose upstream is `origin/main`. It only ever moves by
+repository on branch `live` whose upstream is `<remote>/main`, where `<remote>` is the git remote that is the
+release channel's repository (the `repo` of [release-channel.json](../release-channel.json)). It only ever moves by
 `git pull --ff-only`, so a restart can only load code that was committed and pushed. Workers and chats
 keep editing the working checkout, `app/`. (Why: field notes 74 and 75 in
 [CLIMAYTE-FIELD-NOTES.md](CLIMAYTE-FIELD-NOTES.md). A restart once loaded a half-written file and every
@@ -24,7 +25,7 @@ the updater (2026-10-10).
 | HSwarm: the `hswarm` command (`pip install -e`) and every chat's MCP connect step (`headersHelper` in the `mcpServers` map, [CLAUDE-CONFIG-LAYOUT.md](CLAUDE-CONFIG-LAYOUT.md)) | `live\hswarm` | Not moved by `-Apply` (step 6 below). The shared MCP server on 7793 runs its own copy of the committed code, in `~\.hswarm\code`. |
 | `AgentHydra Daemon Supervisor`, `AgentHydra Daemon Watchdog` tasks | `live\misc\Supervisor-Tick.vbs`, `live\scripts\watchdog.vbs` | Same `wscript` switches, same triggers. |
 | `Orchestrator-*` tasks (the dashboard's only where `jobs.dashboard.enabled` is on; elsewhere it is a helper) | the job wrappers in the state dir, which run `live\orchestrator\...` | Wrappers are rewritten by text, not regenerated. |
-| Anything not on `origin/main` (for example an uncommitted script) | stays on `app/` | `-Plan` warns about each one. Push it, then rerun `-Apply`. |
+| Anything not on `<remote>/main` (for example an uncommitted script) | stays on `app/` | `-Plan` warns about each one. Push it, then rerun `-Apply`. |
 | Orchestrator state | `%USERPROFILE%\.agenthydra\orchestrator\state`, one place, or the working checkout's own folder with `-StateDir` ([below](#keeping-the-state-where-it-is)) | `app\orchestrator\state` and `live\orchestrator\state` are junctions to it, and `ORCHESTRATOR_STATE_DIR` is set for the user. |
 | Daemon data, HSwarm state | `~\.agenthydra\data`, `~\.hswarm` | Already outside both checkouts. Nothing moves. |
 
@@ -34,6 +35,15 @@ the updater (2026-10-10).
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-checkout.ps1 -Plan    # default: prints every change, changes nothing
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\live-checkout.ps1 -Apply   # makes them; safe to rerun
 ```
+
+Which remote: `-Remote <name>` names it. Without it the script takes the remote whose URL is the channel's
+repository on GitHub: `origin` when it is one of several such remotes, and with several and no `origin` it asks for
+`-Remote`. It judges the URL git would really contact, after `url.<base>.insteadOf` rewrites, and compares owner and
+name without case. A remote that is anything else is refused, and so is a checkout with no such remote: this project
+began as a fork, so `origin` can still be the project it came from, and `live/` would then run that project's code. A
+`live/` made when its upstream was another remote is moved to the channel's (`branch --set-upstream-to`); if it
+already took commits that remote's `main` lacks, its fast-forward is refused and `-Apply` stops. `-Undo` needs no
+remote.
 
 `-Apply` creates the worktree, runs `bun install` and the web build there, then the same two in its
 `desk2\` (Desk 2, the window, has its own packages), all through `fairjob` when it is installed. It moves the state, sets the variable, rewrites the job wrappers, the tasks and the shortcuts.
@@ -50,9 +60,10 @@ dashboard keeps its log open), `-Apply` stops before the move, names the process
 ## How code reaches the running app
 
 1. Land the change on `main` and push it (`cycle.py --land`).
-2. Then either let the updater take it (Settings, or auto-update: `git pull --ff-only origin main` in
+2. Then either let the updater take it (Settings, or auto-update: `git pull --ff-only` from that remote in
    `live/`, `bun install`, then `bun install` and `bun run build` in `live/desk2`, restart), or rerun
-   `-Apply`, which pulls and builds the same way, then the restart step above.
+   `-Apply`, which pulls and builds the same way, then the restart step above. The updater pulls only from the
+   channel's repository too: with any other remote its check says so and nothing is pulled.
 3. If `live/` already has the commit but the daemon started before it (`GET /api/health` shows
    `restartNeeded: true`, `bootCommit` older than `diskCommit`), restart it in place with
    `POST /api/daemon/restart` (the app header's Restart). The new daemon starts first and takes over the

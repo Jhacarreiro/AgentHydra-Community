@@ -2,7 +2,8 @@
 .SYNOPSIS
   Move what the owner RUNS (daemon, tray, supervisor, watchdog, orchestrator jobs and dashboard)
   onto a second, clean checkout that only ever receives pushed code: a git worktree on branch
-  `live` whose upstream is origin/main. See docs/LIVE-CHECKOUT.md.
+  `live` whose upstream is <remote>/main, the remote that is the release channel's repository
+  (release-channel.json). See docs/LIVE-CHECKOUT.md.
 
 .DESCRIPTION
   WHY (docs/CLIMAYTE-FIELD-NOTES.md, notes 74-75): the running app loaded its code straight from
@@ -16,6 +17,11 @@
   -Undo  points tasks, job wrappers and launchers back to the working checkout. The orchestrator
          state stays in its one canonical place (reached from both checkouts by a junction).
          `-Undo -Plan` previews it.
+
+  The live checkout follows only the release channel's repository on GitHub (the "repo" of
+  release-channel.json). -Remote names the git remote to follow; by default it is the remote whose
+  URL is that repository, and a remote that is anything else is refused. This project began as a
+  fork, so a checkout's origin can still be the project it came from.
 
   Orchestrator state is kept in exactly ONE place: %USERPROFILE%\.agenthydra\orchestrator\state
   (or the user's ORCHESTRATOR_STATE_DIR when already set). Both checkouts' orchestrator\state are
@@ -32,7 +38,10 @@ param(
   [string]$LivePath = '',
   # Where the one orchestrator state dir goes. Default: the user's ORCHESTRATOR_STATE_DIR, else
   # %USERPROFILE%\.agenthydra\orchestrator\state.
-  [string]$StateDir = ''
+  [string]$StateDir = '',
+  # The git remote the live checkout follows (its main branch). Default: the remote whose URL is the
+  # release channel's repository on GitHub. Any other remote is refused.
+  [string]$Remote = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,20 +96,66 @@ Info "working checkout : $App"
 Info "live checkout    : $Live"
 Info "orchestrator state (the one place): $Canonical"
 
-$originMain = Invoke-Git @('rev-parse', '--verify', '--quiet', 'origin/main') $App
-if ($originMain.Code -ne 0) { Problem 'origin/main does not exist in this repository (git fetch origin first).' }
-else { Info ("origin/main      : " + $originMain.Out.Substring(0, 12)) }
+# ---------------------------------------------------------------------------------------------
+# Which remote. The live checkout runs whatever this remote's main holds, so it must be the release
+# channel's own repository: the "repo" of release-channel.json, matched against the URL git would
+# really contact (ls-remote --get-url applies url.<base>.insteadOf and talks to nobody). Owner and
+# name compare without case, as GitHub's do.
+# ---------------------------------------------------------------------------------------------
+function Get-GitHubSlug([string]$url) {
+  if ("$url".Trim() -match '^(?:https?://|ssh://|git://)?(?:[\w.-]+@)?github\.com[/:]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$') {
+    return "$($Matches[1])/$($Matches[2])"
+  }
+  return $null
+}
+
+# -Undo moves nothing onto the live checkout, so it needs no remote: only the forward direction checks it.
+$ChannelRepo = $null
+if ($Direction -eq 'forward') {
+  $channelFile = Join-Path $here 'release-channel.json'
+  try { $ChannelRepo = [string](Get-Content -LiteralPath $channelFile -Raw | ConvertFrom-Json).repo } catch { $ChannelRepo = $null }
+  if (-not $ChannelRepo) { Problem "could not read the repository from $channelFile." }
+  else { Info "channel repo     : $ChannelRepo (release-channel.json)" }
+
+  $remoteGiven = [bool]$Remote
+  if ($ChannelRepo -and -not $Remote) {
+    $matching = @(foreach ($name in @((Invoke-Git @('remote') $App).Out -split "`n" | Where-Object { $_ })) {
+        if ((Get-GitHubSlug (Invoke-Git @('ls-remote', '--get-url', $name) $App).Out) -ieq $ChannelRepo) { $name }
+      })
+    if ($matching -contains 'origin') { $Remote = 'origin' }
+    elseif ($matching.Count -eq 1) { $Remote = $matching[0] }
+    elseif ($matching.Count -gt 1) { Problem ("several remotes are ${ChannelRepo}: " + ($matching -join ', ') + '. Pass -Remote <name>.') }
+    else { Problem "no remote of this repository is $ChannelRepo. Add one (git remote add <name> https://github.com/$ChannelRepo.git) and rerun." }
+  }
+  if ($ChannelRepo -and $Remote -and $remoteGiven) {
+    $given = Invoke-Git @('ls-remote', '--get-url', $Remote) $App
+    $slug = Get-GitHubSlug $given.Out
+    if ((Invoke-Git @('remote', 'get-url', $Remote) $App).Code -ne 0) { Problem "-Remote ${Remote}: no such remote in this repository." }
+    elseif ($slug -ine $ChannelRepo) {
+      $what = if ($slug) { $slug } else { $given.Out }
+      Problem "-Remote $Remote is $what, not $ChannelRepo (release-channel.json). The live checkout follows only the channel's repository."
+    }
+  }
+  if ($Remote -and $script:Problems.Count -eq 0) {
+    Info "remote           : $Remote"
+    $remoteMain = Invoke-Git @('rev-parse', '--verify', '--quiet', "$Remote/main") $App
+    if ($remoteMain.Code -ne 0) { Problem "$Remote/main does not exist in this repository (git fetch $Remote first)." }
+    else { Info ("$Remote/main".PadRight(17) + ": " + $remoteMain.Out.Substring(0, 12)) }
+  }
+}
+if (-not $Remote) { $Remote = '<remote>' }
+$Upstream = "$Remote/main"
 
 # ---------------------------------------------------------------------------------------------
 # Path mapping. Forward: <app>\orchestrator\state\... -> the canonical state dir; any other
-# <app>\<rel> -> <live>\<rel> ONLY when <rel> is tracked on origin/main (the live checkout has
+# <app>\<rel> -> <live>\<rel> ONLY when <rel> is tracked on <remote>/main (the live checkout has
 # nothing else); anything untracked stays on app\ and is reported. Back: <live>\ -> <app>\.
 # ---------------------------------------------------------------------------------------------
 $script:Tracked = @{}
 function Test-Tracked([string]$rel) {
   $key = ($rel -replace '\\', '/').TrimEnd('/')
   if (-not $script:Tracked.ContainsKey($key)) {
-    $r = Invoke-Git @('cat-file', '-e', "origin/main:$key") $App
+    $r = Invoke-Git @('cat-file', '-e', "${Upstream}:$key") $App
     $script:Tracked[$key] = ($r.Code -eq 0)
   }
   return $script:Tracked[$key]
@@ -198,7 +253,7 @@ function Invoke-Heavy([string]$what, [string]$dir) {
 # 1. The live worktree
 # =============================================================================================
 $headBefore = $null
-Section 'Live checkout (git worktree on branch live, upstream origin/main, ff-only)'
+Section "Live checkout (git worktree on branch live, upstream $Upstream, ff-only)"
 if ($Direction -eq 'back') {
   Info "left in place. To remove it later: cmd /c rmdir `"$LiveState`"  then  git -C `"$App`" worktree remove `"$Live`""
 } elseif (Test-Path -LiteralPath $Live) {
@@ -210,34 +265,34 @@ if ($Direction -eq 'back') {
   } elseif ($branch.Out -ne 'live') {
     Problem "$Live is on branch '$($branch.Out)', not 'live'."
   } else {
-    if ($up.Out -ne 'origin/main') { Step "git -C `"$Live`" branch --set-upstream-to=origin/main live   (upstream is '$($up.Out)')" }
+    if ($up.Out -ne $Upstream) { Step "git -C `"$Live`" branch --set-upstream-to=$Upstream live   (upstream is '$($up.Out)')" }
     $dirty = Invoke-Git @('status', '--porcelain', '--untracked-files=no') $Live
     if ($dirty.Out) { Problem "$Live has local edits; the live checkout only ever takes ff-only pulls. Discard them there first." }
     $headBefore = (Invoke-Git @('rev-parse', 'HEAD') $Live).Out
     Info ("exists, on live at " + $headBefore.Substring(0, 12))
-    Step "git -C `"$App`" fetch origin main; git -C `"$Live`" pull --ff-only"
+    Step "git -C `"$App`" fetch $Remote main; git -C `"$Live`" pull --ff-only"
   }
 } else {
   if (-not (Test-Path -LiteralPath (Split-Path $Live -Parent))) { Problem "parent folder of $Live does not exist." }
   $hasBranch = (Invoke-Git @('show-ref', '--verify', '--quiet', 'refs/heads/live') $App).Code -eq 0
-  Step "git -C `"$App`" fetch origin main"
+  Step "git -C `"$App`" fetch $Remote main"
   if ($hasBranch) { Step "git -C `"$App`" worktree add `"$Live`" live   (branch live already exists)" }
-  else { Step "git -C `"$App`" worktree add -b live `"$Live`" origin/main" }
-  Step "git -C `"$App`" branch --set-upstream-to=origin/main live"
+  else { Step "git -C `"$App`" worktree add -b live `"$Live`" $Upstream" }
+  Step "git -C `"$App`" branch --set-upstream-to=$Upstream live"
 }
 
 if (-not $DryRun -and $Direction -eq 'forward' -and $script:Problems.Count -eq 0) {
-  $r = Invoke-Git @('fetch', 'origin', 'main') $App
-  if ($r.Code -ne 0) { Fail 'git fetch origin main failed.' }
+  $r = Invoke-Git @('fetch', $Remote, 'main') $App
+  if ($r.Code -ne 0) { Fail "git fetch $Remote main failed." }
   if (-not (Test-Path -LiteralPath $Live)) {
     $hasBranch = (Invoke-Git @('show-ref', '--verify', '--quiet', 'refs/heads/live') $App).Code -eq 0
-    $r = if ($hasBranch) { Invoke-Git @('worktree', 'add', $Live, 'live') $App } else { Invoke-Git @('worktree', 'add', '-b', 'live', $Live, 'origin/main') $App }
+    $r = if ($hasBranch) { Invoke-Git @('worktree', 'add', $Live, 'live') $App } else { Invoke-Git @('worktree', 'add', '-b', 'live', $Live, $Upstream) $App }
     if ($r.Code -ne 0) { Fail "git worktree add $Live failed." }
   }
-  $r = Invoke-Git @('branch', '--set-upstream-to=origin/main', 'live') $App
-  if ($r.Code -ne 0) { Fail 'could not set the upstream of branch live to origin/main.' }
+  $r = Invoke-Git @('branch', "--set-upstream-to=$Upstream", 'live') $App
+  if ($r.Code -ne 0) { Fail "could not set the upstream of branch live to $Upstream." }
   $r = Invoke-Git @('pull', '--ff-only') $Live
-  if ($r.Code -ne 0) { Fail "git pull --ff-only in $Live failed (the live branch must only ever fast-forward to origin/main)." }
+  if ($r.Code -ne 0) { Fail "git pull --ff-only in $Live failed (the live branch must only ever fast-forward to $Upstream)." }
 }
 
 # =============================================================================================
@@ -422,7 +477,7 @@ else {
       $new = $new -replace '^@echo off\r?\n', ("@echo off" + $nl + "set `"ORCHESTRATOR_STATE_DIR=$Canonical`"" + $nl)
       $pin = $true
     }
-    foreach ($k in ($hit.Kept | Select-Object -Unique)) { Warn "$($f.Name) keeps app\$k (not on origin/main, so the live checkout has no copy)" }
+    foreach ($k in ($hit.Kept | Select-Object -Unique)) { Warn "$($f.Name) keeps app\$k (not on $Upstream, so the live checkout has no copy)" }
     if ($new -ceq $text) { Info "$($f.Name): no change"; continue }
     $what = if ($Direction -eq 'back') { "$($hit.Back) live path(s) -> app" }
             else { "$($hit.State) path(s) -> state dir, $($hit.Live) -> live" + $(if ($pin) { ', pins ORCHESTRATOR_STATE_DIR' } else { '' }) }
@@ -447,7 +502,7 @@ foreach ($t in $tasks) {
     $exe = Convert-PathText $a.Execute; $kept = @($script:Hit.Kept)
     $arg = Convert-PathText $a.Arguments; $kept += @($script:Hit.Kept)
     $wd = Convert-PathText $a.WorkingDirectory; $kept += @($script:Hit.Kept)
-    foreach ($k in $kept) { Warn "$($t.TaskName) keeps app\$k (not on origin/main)" }
+    foreach ($k in $kept) { Warn "$($t.TaskName) keeps app\$k (not on $Upstream)" }
     Info "    old: $($a.Execute) $($a.Arguments)$(if ($a.WorkingDirectory) { "   [in $($a.WorkingDirectory)]" })"
     Info "    new: $exe $arg$(if ($wd) { "   [in $wd]" })"
     $p = @{ Execute = $exe }
@@ -479,7 +534,7 @@ foreach ($f in $lnks) {
   $wd = Convert-PathText $l.WorkingDirectory; $h3 = $script:Hit
   if ($tp -ceq $l.TargetPath -and $ar -ceq $l.Arguments -and $wd -ceq $l.WorkingDirectory) { continue }
   $anyLauncher = $true
-  foreach ($k in @($h1.Kept) + @($h2.Kept) + @($h3.Kept)) { Warn "$($f.Name) keeps app\$k (not on origin/main)" }
+  foreach ($k in @($h1.Kept) + @($h2.Kept) + @($h3.Kept)) { Warn "$($f.Name) keeps app\$k (not on $Upstream)" }
   Info "$($f.FullName)"
   Info "    old: $($l.TargetPath) $($l.Arguments)   [in $($l.WorkingDirectory)]"
   Info "    new: $tp $ar   [in $wd]"
