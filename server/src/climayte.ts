@@ -94,6 +94,7 @@ import {
   type RunReply,
   type RunSetting,
   type RunTask,
+  repeatedGroup,
   repeatOf,
   requestIdProblem,
   runDefaultsOf,
@@ -1232,8 +1233,10 @@ export function climayteRun(input: {
   if (!Number.isInteger(cap) || cap < 1 || cap > 4) throw new Error('perAccount must be 1..4')
   assertKnownAccounts(input.accounts)
   const now = Date.now()
-  // Only a named group can repeat: an unnamed one is new by definition. A request sent again (its
-  // requestId) is always the worker it made, copies or not.
+  // Only a named group repeats by its words (repeatOf): an unnamed one is new by definition. A request
+  // sent again (its requestId) is always the worker it made, copies or not, and with no group named
+  // it answers in that worker's group, which a task new in it joins (repeatedGroup): a new name held
+  // none of them, so climayte_status and climayte_cancel by the group answered found nothing.
   const named = input.group?.trim()
   const repeats = input.tasks.map(
     (t) =>
@@ -1248,7 +1251,7 @@ export function climayteRun(input: {
         fresh.map((i) => i + 1),
       )
     : []
-  const group = named || `g-${hex(6)}`
+  const group = named || repeatedGroup(repeats) || `g-${hex(6)}`
   // Joining a group keeps its cap unless the caller names a new one. A group nobody gave a cap
   // has none on record and takes the default, which scales with each account's plan (groupCap).
   if (input.perAccount !== undefined) perAccount[group] = cap

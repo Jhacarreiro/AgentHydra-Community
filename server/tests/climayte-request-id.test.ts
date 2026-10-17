@@ -76,6 +76,35 @@ describe('a start or a message sent again with its requestId is taken once', () 
     expect(climayteList({ group: 'request-id-cancelled' })).toHaveLength(1)
   })
 
+  test('sent again with no group, it answers in the group its first send made, which status and cancel then reach', () => {
+    setCliMayteAccountsProvider(() => [])
+    const task = (prompt: string, requestId: string) => ({ prompt, cwd, title: prompt, requestId })
+    const first = climayteRun({ tasks: [task('an unnamed task', 'run-sent:30:g')] })
+    groups.add(first.group)
+    const id = first.workers[0]?.id as string
+    // Answered with a new random group, the retry's climayte_status { group } listed nothing.
+    const again = climayteRun({ tasks: [task('an unnamed task', 'run-sent:30:g')] })
+    expect(again.workers.map((w) => [w.id, w.repeat])).toEqual([[id, true]])
+    expect(again.group).toBe(first.group)
+    // A retry that brings one more task: the new worker joins that group, so the group answered
+    // holds every worker the answer lists.
+    const more = climayteRun({
+      tasks: [task('an unnamed task', 'run-sent:30:g'), task('one more', 'run-sent:31:h')],
+    })
+    groups.add(more.group)
+    expect(more.group).toBe(first.group)
+    expect(more.workers[1]?.repeat).toBeUndefined()
+    const listed = climayteList({ group: more.group }) as Array<{ id: string }>
+    expect(listed.map((w) => w.id).sort()).toEqual(more.workers.map((w) => w.id).sort())
+    // A request that repeats nothing is still a group of its own.
+    const other = climayteRun({ tasks: [task('an unnamed task', 'run-sent:32:i')] })
+    groups.add(other.group)
+    expect(other.group).not.toBe(first.group)
+    expect(climayteCancel({ group: more.group }).cancelled.sort()).toEqual(
+      more.workers.map((w) => w.id).sort(),
+    )
+  })
+
   test('a message sent again is queued once, and its id stays off the worker views', () => {
     setCliMayteAccountsProvider(() => [])
     const run = climayteRun({

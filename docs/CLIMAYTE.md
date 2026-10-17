@@ -1797,7 +1797,11 @@ the chat failed, and it looked like the account was broken. Now:
   A task the same `group` was sent in the last 10 minutes (`REPEAT_WINDOW_MS`: same title, prompt
   and cwd, not cancelled or failed) answers with the worker already made, marked `repeat: true`,
   and starts nothing; the answer carries `repeated` and a `note`. `copies: true` makes new ones
-  anyway (field note 62).
+  anyway (field note 62). A task whose `requestId` an earlier dispatch carried answers with the
+  worker that one made, whatever its state, copies or not (`madeFor`); a dispatch that names no
+  `group` then answers in that worker's group, and a task new in it joins it, so a status, cancel
+  or waiter by the answered group reaches every worker listed (`repeatedGroup`; a dispatch whose
+  repeats come from several groups still gets a new one).
   The body's `origin` (only ever the caller the MCP tool resolved) is validated and stored; the
   answer carries `ping: { on: true, to? } | { on: false, why }`. `POST /api/corch/waves` the same.
 - `POST /api/corch/adopt` `{ group, origin }` → `climayteAdopt` (`climayte_status {group, ping:true}`);
