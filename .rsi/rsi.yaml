@@ -84,22 +84,3 @@ metrics:
     measure: 'bun -e "const m = await import(''./server/src/climayte-lib.ts''); console.log(JSON.stringify({chars: m.WORKER_BRIEF.length}))"'
     pick: 'json:$.chars'
     light: true
-  # What AgentHydra's own pages (Desk, the HSwarm console, the orchestrator) cost the person reading them, by its own
-  # price check. Every trial on it runs the checker on a real app, so a wrong number met on the way is a pricecheck fix.
-  - id: pricecheck.own_pages.points
-    kind: count
-    better: lower
-    unit: points
-    measure: "python scripts/rsi/pricecheck-own-pages.py"
-    pick: 'json:$.points'
-    gate: exact
-    light: true
-  # How often pricecheck's advice went bad (undone, misled, or marked wrong or undone), across every project with advice.
-  - id: pricecheck.advice.bad_rate
-    kind: count
-    better: lower
-    unit: share
-    measure: "python scripts/rsi/pricecheck-advice-bad-rate.py"
-    pick: 'json:$.bad_rate'
-    gate: exact
-    repeat: 1

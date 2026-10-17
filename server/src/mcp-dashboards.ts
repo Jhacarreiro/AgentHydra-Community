@@ -29,7 +29,7 @@ async function callingChat(deskChat: unknown): Promise<DeskChat | null> {
 const NO_FOLDER =
   'no folder to use: pass cwd, the working folder you are in (any folder inside the project); this process is not a Desk chat, so none is known'
 
-export async function folderOf(
+async function folderOf(
   a: Record<string, unknown>,
 ): Promise<{ cwd: string; chat: DeskChat | null }> {
   const chat = await callingChat(a.deskChat)
@@ -38,7 +38,7 @@ export async function folderOf(
   return { cwd, chat }
 }
 
-export const CWD = {
+const CWD = {
   type: 'string',
   description:
     'Any folder inside the project (the checkout is found from it). Omit it inside a Desk chat.',

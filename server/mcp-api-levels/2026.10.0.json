@@ -1280,40 +1280,6 @@
       }
     },
     {
-      "name": "dredd",
-      "since": "2026.10.0",
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "enum": [
-              "docket",
-              "plan",
-              "convene",
-              "hearing",
-              "resolve",
-              "collect",
-              "status",
-              "stop",
-              "dockets",
-              "doctor",
-              "bench",
-              "boardroom"
-            ],
-            "type": "string"
-          },
-          "params": {
-            "additionalProperties": true,
-            "type": "object"
-          }
-        },
-        "required": [
-          "action"
-        ],
-        "type": "object"
-      }
-    },
-    {
       "name": "export_session",
       "since": "1.2.0",
       "inputSchema": {
@@ -3052,29 +3018,6 @@
           }
         },
         "required": [],
-        "type": "object"
-      }
-    },
-    {
-      "name": "sue",
-      "since": "2026.10.0",
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "type": "string"
-          },
-          "cwd": {
-            "type": "string"
-          },
-          "params": {
-            "additionalProperties": true,
-            "type": "object"
-          }
-        },
-        "required": [
-          "action"
-        ],
         "type": "object"
       }
     },

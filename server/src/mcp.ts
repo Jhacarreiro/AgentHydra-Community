@@ -64,7 +64,6 @@ import { findTools } from './mcp-find'
 import { FREE_TOOLS } from './mcp-free'
 import { MANAGER_TOOLS } from './mcp-managers'
 import { withOutputShaping } from './mcp-output'
-import { PRICECHECK_TOOLS } from './mcp-pricecheck'
 import { ROUTINES_TOOLS } from './mcp-routines'
 import {
   CALLER_AWARE_TOOLS,
@@ -80,7 +79,6 @@ import {
 import { SESSION_TOOLS } from './mcp-session-tools'
 import type { McpEngineTool } from './mcp-stdio.mjs'
 import { runMcpStdio } from './mcp-stdio.mjs'
-import { SUE_DREDD_TOOLS } from './mcp-sue-dredd'
 import type { UsageSnapshot } from './types'
 
 // Tests, index.ts and main.ts import these from here, where they have always lived.
@@ -1996,8 +1994,6 @@ export const TOOLS: HydraTool[] = [
     () => LISTED_TOOLS,
   ),
   ...DASHBOARD_TOOLS,
-  ...PRICECHECK_TOOLS,
-  ...SUE_DREDD_TOOLS,
   ...MANAGER_TOOLS,
   ...CORE_TOOLS,
   {
