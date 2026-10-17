@@ -17,7 +17,11 @@
 //
 // `--apply` runs `gh release edit <tag> --notes-file <file>` for each edit and
 // `gh release delete <tag> --yes` for each folded patch (NEVER --cleanup-tag: the git tags stay),
-// and never changes which release is latest. `--out` defaults to a temp folder. `--repo` overridable.
+// and never changes which release is latest. `--out` defaults to a temp folder.
+//
+// The repository is the release channel's (release-channel.json). `--repo` may name another one for a dry run, to
+// read its pages, but `--apply` refuses any repository but the channel's: this project began as a fork, and its
+// script must never rewrite or delete the release pages of the project it came from.
 //
 // usage: node scripts/consolidate-releases.mjs [--apply] [--out <dir>] [--repo <repo>]
 
@@ -26,8 +30,15 @@ import { join, dirname } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { formatReleaseBody, formatLineBody, compareVersions, changelogSection } from './release-notes.mjs'
+import { readReleaseChannel, sameRepo } from './release-channel.mjs'
 
-const REPO = 'LunarWerxs/AgentHydra'
+const REPO = readReleaseChannel().repo
+
+/** Why `--apply` may not change the releases of `repo`, or null when it may: only the channel's own repository. */
+export function applyRefusal(repo, channelRepo = REPO) {
+  if (sameRepo(repo, channelRepo)) return null
+  return `refusing --apply against ${repo}: release-channel.json names ${channelRepo}, the only repository whose releases this script changes`
+}
 
 /** Fetch releases from GitHub. */
 async function fetchReleases(repo) {
@@ -137,6 +148,8 @@ async function consolidate(options = {}) {
 
 /** Apply the consolidation (edit and delete releases). */
 async function apply(plan, bodies, repo) {
+  const refused = applyRefusal(repo)
+  if (refused) throw new Error(refused)
   for (const tag of plan.edit) {
     const body = bodies[tag]
     if (!body) {
@@ -193,6 +206,12 @@ if (invokedDirectly) {
       const idx = args.indexOf('--repo')
       return idx >= 0 ? args[idx + 1] : REPO
     })(),
+  }
+  // Before anything is read: an apply against another repository stops here, not after the dry run.
+  const refused = options.apply ? applyRefusal(options.repo) : null
+  if (refused) {
+    console.error(refused)
+    process.exit(2)
   }
 
   consolidate(options).then(({ plan, bodies, outDir, latestTag }) => {

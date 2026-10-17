@@ -36,11 +36,13 @@
 //        node scripts/release-notes.mjs --check-unreleased [CHANGELOG.md]  exit 1 when [Unreleased] is long with no TL;DR
 
 import { readFileSync } from 'node:fs'
+import { readReleaseChannel } from './release-channel.mjs'
 
 /** The lowest version AgentHydra may release: 2.0 is the AgentHydra window that was Hydra Desk 2. */
 export const MIN_RELEASE = '2.0.0'
 
-const REPO = 'LunarWerxs/AgentHydra'
+// The page's icon is this repository's own copy at the release's tag: the release channel names the repository.
+const REPO = readReleaseChannel().repo
 const DISCORD = 'https://discord.gg/PsWpeNUzhk'
 const HEADING_EMOJI = {
   Added: '🆕 Added',

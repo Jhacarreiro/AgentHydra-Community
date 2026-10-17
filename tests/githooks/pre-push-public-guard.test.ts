@@ -278,12 +278,15 @@ describe('.githooks/pre-push: a public remote is announced and refused', () => {
     test(
       "release-notes.mjs's refusals stop the tag: a 1.x version, or a long section with no TL;DR",
       () => {
-        // The real script beside the hook, as in this repo; the throwaway repo above has none.
+        // The real script beside the hook, as in this repo; the throwaway repo above has none. It reads the
+        // repository from the release channel, so the channel's file and its reader come with it.
         mkdirSync(join(repo, 'scripts'), { recursive: true })
-        writeFileSync(
-          join(repo, 'scripts', 'release-notes.mjs'),
-          readFileSync(join(REPO_ROOT, 'scripts', 'release-notes.mjs')),
-        )
+        for (const rel of [
+          'scripts/release-notes.mjs',
+          'scripts/release-channel.mjs',
+          'release-channel.json',
+        ])
+          writeFileSync(join(repo, rel), readFileSync(join(REPO_ROOT, rel)))
         const bullets = '### Added\n\n- **One.** a\n- **Two.** b\n- **Three.** c\n'
         const tldr = '**TL;DR**\n\n- **One**\n\n**Everything in 2.0.0**\n\n'
         writeFileSync(

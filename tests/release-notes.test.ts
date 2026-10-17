@@ -10,6 +10,7 @@ import {
   renderSectionDetails,
   unreleasedRefusal,
 } from '../scripts/release-notes.mjs'
+import { RELEASE_CHANNEL } from '../server/src/release-channel'
 
 const changelog = (section: string) =>
   `# Changelog\n\n## [Unreleased]\n\n${section}\n\n## [1.13.0] - 2026-10-06\n\n### Added\n\n- **Old.** Old.\n`
@@ -190,5 +191,18 @@ describe('release notes', () => {
     const body = formatLineBody(dups, '0.35.0', ['0.35.1'], { history: true })
     const tldrMatch = body.match(/- \*\*Headline one\*\*/g)
     expect(tldrMatch?.length).toBe(1)
+  })
+})
+
+describe("the page's links", () => {
+  test("the icon is the release channel's repository's copy at the release's tag", () => {
+    const body = formatReleaseBody(
+      changelog(LONG.replace('## [2.0.0]', '## [2026.10.0]')),
+      '2026.10.0',
+    )
+    expect(body).toContain(
+      `https://raw.githubusercontent.com/${RELEASE_CHANNEL.repo}/v2026.10.0/misc/AgentHydra-icon.png`,
+    )
+    expect(body.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
   })
 })

@@ -3,6 +3,8 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+// @ts-expect-error - a plain node module with runtime exports
+import { readReleaseChannel } from '../scripts/release-channel.mjs'
 import { githubSlug, RELEASE_CHANNEL } from '../server/src/release-channel'
 import { REPO_ROOT } from './repo-root'
 
@@ -59,5 +61,14 @@ describe('install.ps1', () => {
     expect(off).toBeLessThan(ps1.indexOf('Invoke-RestMethod'))
     expect(ps1).toContain('"https://github.com/$Repo/releases/download/$tag/$($file.name)"')
     expect(ps1.indexOf('$expectedUrl')).toBeLessThan(ps1.indexOf('Invoke-WebRequest'))
+  })
+})
+
+describe('scripts/release-channel.mjs', () => {
+  test('the node release scripts read the channel the TypeScript loader reads', () => {
+    expect(readReleaseChannel()).toEqual({
+      repo: RELEASE_CHANNEL.repo,
+      updates: RELEASE_CHANNEL.updates,
+    })
   })
 })
