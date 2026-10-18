@@ -250,7 +250,8 @@ user-facing, not as a staging step.
 ## The pre-push gate
 
 `.githooks/pre-push` (enabled by `core.hooksPath`, which `bun install`'s `prepare` sets) runs on
-every push and enforces two rules that used to be memory only, then, for a release tag, checks CI:
+every push. Its guard, `.githooks/check-public-push.mjs`, enforces six rules, and then, for a
+release tag, the hook checks CI:
 
 1. **A public remote is announced and refused.** The hook looks the remote up on GitHub; when it
    is public, or cannot be proven private (not GitHub, a timeout, a rate limit), it prints
@@ -260,20 +261,32 @@ every push and enforces two rules that used to be memory only, then, for a relea
 2. **A `v*.*.*` tag is refused while `docs/todo/TODO.md` has an open section.** Nothing pending
    ships past a release. There is no override: finish the item and delete its section, or the
    owner deletes it. The queue is gitignored, so this can only fire on a machine that holds it.
-   A tag is also refused when `scripts/release-notes.mjs` would refuse it: below 2.0.0, no
-   CHANGELOG section, or a long section with no TL;DR (read from the tagged commit).
-3. **A release tag needs green CI on its commit.** With a `v*.*.*` tag in the push, the hook asks
-   `gh` for a `ci.yml` run on the exact commit the tag points to whose conclusion is success. If
-   there is one, nothing more runs locally: every lane of `bun run check:deep` (Biome, the i18n
-   check, every typecheck, `bun test` with orchestrator/server's tests, the orchestrator Python
-   suite) is a `ci.yml` step that already passed on that commit, so re-running them made every
-   release wait on a duplicate 25-minute gate (measured on 1.7.0, 2026-10-02).
-   If it cannot be confirmed (`gh` missing or not signed in, offline, no run on that commit, a run
-   still going or not green), the hook prints one line saying why and runs the full
-   `bun run check:deep`, and refuses the tag when bun is not on PATH to run it. A tag on a
-   docs-only commit has no CI run (`ci.yml` ignores `docs/**` and `*.md`), so it takes that
-   fallback; tag the version-bump commit, which CI runs. A push with no release tag in it is done
-   once rules 1 and 2 pass.
+3. **A `v*.*.*` tag is refused when `scripts/release-notes.mjs` would refuse it:** below 2.0.0, no
+   CHANGELOG section, or a long section with no TL;DR (read from the tagged commit). No override.
+4. **No ref may carry upstream's relicensing commit.** On every push to any remote, a ref whose
+   history contains `aee9dfc4` is refused, override or not. The audit config's `licenseBoundary`
+   can add a commit to this check, never take that one away.
+5. **The public audit runs on what the push carries.** `scripts/audit-public.mjs --push` reads the
+   commits the remote does not have yet, from the base on, on every remote, private ones too. A
+   finding refuses the push until it is fixed or allowed in `scripts/audit-public.allow.json`, and
+   an audit that gives no verdict (it cannot load, start or finish) refuses it as well.
+6. **No tag may point into the MIT base's own history.** Every commit up to `3a65ba8e` is
+   upstream's, and so are its tags (`v0.1.0` to `v2.0.4`, `orchestrator-v1-final`); a
+   `git push --tags` or `--mirror` would publish them as this repository's, and a `v2.0.x` one
+   would pass rule 3 and start `release.yml`. Push branches by name. No override.
+
+**A release tag then needs green CI on its commit.** With a `v*.*.*` tag in the push, the hook asks
+`gh` for a `ci.yml` run on the exact commit the tag points to whose conclusion is success. If there
+is one, nothing more runs locally: every lane of `bun run check:deep` (Biome, every typecheck,
+`bun test` with orchestrator/server's tests, the orchestrator Python suite) is a `ci.yml` step that
+already passed on that commit, so re-running them made every release wait on a duplicate 25-minute
+gate (measured on 1.7.0, 2026-10-02). `ci.yml` also builds the window, whose build runs the i18n
+check of AgentHydra's pages; `check:deep` does not. If CI cannot be confirmed (`gh` missing or not
+signed in, offline, no run on that commit, a run still going or not green), the hook prints one
+line saying why and runs the full `bun run check:deep`, and refuses the tag when bun is not on PATH
+to run it. A tag on a docs-only commit has no CI run (`ci.yml` ignores `docs/**` and `*.md`), so it
+takes that fallback; tag the version-bump commit, which CI runs. A push with no release tag in it is
+done once the guard's six rules pass.
 
 A commit whose subject starts with `wip: bundle` must also list every file in it under `Mine:` and
 `Swept:` (`.githooks/commit-msg`); `bun run save:bundle -- --mine <paths>` writes that message
