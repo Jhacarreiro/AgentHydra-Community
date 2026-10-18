@@ -503,8 +503,15 @@ export const RELEASE_COMPONENTS: readonly ReleaseComponent[] = [
   // never swap: Desk 2's chat hosts are detached processes running desk2/runtime/bun(.exe) that outlive
   // its server on purpose, so renaming the whole folder fails on Windows. A busy file is moved aside the
   // way the daemon's own exe is. Desk 2's data (~/.hydra-desk-2, %LOCALAPPDATA%\HydraDesk2) is outside
-  // the folder and never touched. Every platform ships both.
-  { name: 'desk2', strategy: 'reconcile', preserve: [], repairBare: true },
+  // the folder and never touched. Every platform ships both. The Agent SDK is not in the bundle: Desk 2 fetched it
+  // into node_modules the first time a chat needed it (desk2/server/src/host/sdk-package.ts) and it stays across an
+  // update; when the new release pins another version, Desk 2 fetches that one in its place.
+  {
+    name: 'desk2',
+    strategy: 'reconcile',
+    preserve: ['node_modules/@anthropic-ai/claude-agent-sdk'],
+    repairBare: true,
+  },
 ]
 
 /** The components this platform's release archive is expected to carry. */

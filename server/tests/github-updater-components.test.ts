@@ -651,6 +651,31 @@ test('a bundle with desk2/ is installed with Desk 2 stopped before and started a
   }
 })
 
+test('the Agent SDK Desk 2 fetched into node_modules stays across an update; the rest of node_modules is the release', () => {
+  const { root, bundle, install } = fixture()
+  try {
+    // A release ships no SDK (desk2/server/src/host/sdk-package.ts fetches it on first need), only the pin.
+    put(bundle, 'desk2/node_modules/zod/index.js', 'new zod')
+    put(bundle, 'desk2/sdk-pin.json', '{"version":"9.9.9"}')
+    put(install, 'desk2/node_modules/zod/index.js', 'old zod')
+    put(install, 'desk2/node_modules/retired/index.js', 'retired')
+    put(install, 'desk2/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', 'fetched sdk')
+    put(install, 'desk2/node_modules/@anthropic-ai/claude-agent-sdk/.agenthydra-sdk.json', '{}')
+    const output: string[] = []
+    const r = reconcileComponent(bundle, install, DESK2, '9.9.9', output)
+    expect(r.installed).toBe(true)
+    const nm = join(install, 'desk2/node_modules')
+    expect(readFileSync(join(nm, '@anthropic-ai/claude-agent-sdk/sdk.mjs'), 'utf8')).toBe(
+      'fetched sdk',
+    )
+    expect(existsSync(join(nm, '@anthropic-ai/claude-agent-sdk/.agenthydra-sdk.json'))).toBe(true)
+    expect(readFileSync(join(nm, 'zod/index.js'), 'utf8')).toBe('new zod')
+    expect(existsSync(join(nm, 'retired/index.js'))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('Desk 2 comes back with its window only when one was open', async () => {
   const { root, bundle, install } = applyFixture()
   try {
