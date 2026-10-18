@@ -1,5 +1,5 @@
 {
-  "//": "Findings of scripts/audit-public.mjs that someone looked at and found fine. Each entry clears one value (by fingerprint) in one file for one rule. Never write the value here.",
+  "//": "Findings of scripts/audit-public.mjs that someone looked at and found fine. Each entry clears one value (by fingerprint) in one file for one rule. Never write the value here. An entry that clears nothing in the tree or in any commit since the base fails the full run (bun run audit:public): take it out.",
   "entries": [
     {
       "rule": "net.private-ipv4",
@@ -8,94 +8,16 @@
       "reason": "Test fixture: a LAN hub address the tray's tests use for a hub on another machine. It is no real host."
     },
     {
-      "rule": "pii.path",
-      "path": "desk2/README.md",
-      "fp": "ea93d6adb1146423",
-      "reason": "Upstream's projects folder named as an example of a folder that holds projects. It names no account; the defaults that used it are handled apart."
-    },
-    {
-      "rule": "pii.email",
-      "path": "desk2/server/src/browser/agent/registry.ts",
-      "fp": "b3e42cde35dfe0ba",
-      "reason": "An example address in a tool description that shows how to note what a saved browser profile is logged into."
-    },
-    {
-      "rule": "pii.path",
-      "path": "desk2/server/src/devservers/company.ts",
-      "fp": "ea93d6adb1146423",
-      "reason": "Upstream's projects folder named as an example of a folder that holds projects. It names no account; the defaults that used it are handled apart."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/src/devservers/settings.ts",
-      "fp": "552354592821b7e6",
-      "reason": "An example LAN address in the error message that says what linkHost accepts. It is no real host."
-    },
-    {
-      "rule": "pii.path",
-      "path": "desk2/server/src/projects/attribute.ts",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Upstream's projects folder named as an example of a folder that holds projects. It names no account; the defaults that used it are handled apart."
-    },
-    {
-      "rule": "pii.path",
-      "path": "desk2/server/src/projects/projects.ts",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Upstream's projects folder named as an example of a folder that holds projects. It names no account; the defaults that used it are handled apart."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/test/browser/secret.test.ts",
-      "fp": "0546412d61ba57f1",
-      "reason": "Test fixture: a non-loopback peer the browser secret check must refuse."
-    },
-    {
       "rule": "net.private-ipv4",
       "path": "desk2/server/test/devservers/advertised-url.test.ts",
       "fp": "552354592821b7e6",
-      "reason": "Test fixture: the Network URL a dev server prints, which the test parses."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/test/devservers/idle.test.ts",
-      "fp": "4f4393c6b387ecd2",
-      "reason": "Test fixture: netstat lines for LAN connections that the idle detector reads."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/test/devservers/idle.test.ts",
-      "fp": "552354592821b7e6",
-      "reason": "Test fixture: netstat lines for LAN connections that the idle detector reads."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/test/guard.test.ts",
-      "fp": "552354592821b7e6",
-      "reason": "Test fixture: a LAN Host header the guard must refuse."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/test/localhost/ports.test.ts",
-      "fp": "0546412d61ba57f1",
-      "reason": "Test fixture: netstat, Get-NetTCPConnection and lsof lines for a LAN listener that the port list must skip."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/test/localhost/ports.test.ts",
-      "fp": "552354592821b7e6",
-      "reason": "Test fixture: netstat, Get-NetTCPConnection and lsof lines for a LAN listener that the port list must skip."
+      "reason": "Test fixture: the LAN Network URL a dev server prints. The ranking under test puts a private address between loopback and every other one, so it has to be a private address. It is no real host."
     },
     {
       "rule": "pii.path",
       "path": "desk2/web/src/dev/sections/ComposerSection.vue",
       "fp": "8ce423cd71247c2b",
-      "reason": "Demo data for the composer's dev gallery page: invented recent folders under a projects folder. It names no account."
-    },
-    {
-      "rule": "pii.path",
-      "path": "desk2/web/test/composer/folders.test.ts",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Test fixture: a projects-folder path used as a working directory or search root, in the spellings the code must treat alike. It names no account."
+      "reason": "Demo data for the composer's dev gallery page, which only a dev build serves: recent folders under upstream's projects folder. It names no account."
     },
     {
       "rule": "secret.token",
@@ -134,18 +56,6 @@
       "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
     },
     {
-      "rule": "net.private-ipv4",
-      "path": "hswarm/tests/test_redaction.py",
-      "fp": "f5047344122f0dee",
-      "reason": "Test fixture: input text for the IP address redactor."
-    },
-    {
-      "rule": "pii.email",
-      "path": "hswarm/tests/test_runtimes.py",
-      "fp": "de37640540f69d2f",
-      "reason": "Test fixture: an ssh target (user@host), not a mailbox, that the runtime parser must split."
-    },
-    {
       "rule": "secret.token",
       "path": "hswarm/tests/test_settings.py",
       "fp": "bd3071e71ff9d09d",
@@ -158,12 +68,6 @@
       "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
     },
     {
-      "rule": "pii.path",
-      "path": "hswarm/tests/test_tools.py",
-      "fp": "ea93d6adb1146423",
-      "reason": "A test's comment quoting the glob a worker once ran under a projects folder, which the test reproduces. It names no account."
-    },
-    {
       "rule": "secret.token",
       "path": "hswarm/tests/test_triage.py",
       "fp": "922000e9bdfb3a96",
@@ -174,204 +78,6 @@
       "path": "hswarm/tests/test_vault_console.py",
       "fp": "42784ef4a8e10d51",
       "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "pii.path",
-      "path": "misc/tray-host-native/README.md",
-      "fp": "ea93d6adb1146423",
-      "reason": "An example tray config whose appRoot is a projects-folder path. It names no account."
-    },
-    {
-      "rule": "pii.path",
-      "path": "misc/tray-host-native/src/sha256.rs",
-      "fp": "ea93d6adb1146423",
-      "reason": "A test vector: the hash of a projects-folder path that the tray's mutex name is checked against. It names no account."
-    },
-    {
-      "rule": "pii.path",
-      "path": "orchestrator/README.md",
-      "fp": "ea93d6adb1146423",
-      "reason": "An example of where an orchestrator checkout may have lived, in the upgrade notes. It names no account."
-    },
-    {
-      "rule": "pii.path",
-      "path": "orchestrator/scripts/audit_twins.py",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Upstream's projects folder named as an example of a folder that holds projects. It names no account; the defaults that used it are handled apart."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_balance.py",
-      "fp": "050e252cb12ac150",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_balance.py",
-      "fp": "478abec743056916",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_balance.py",
-      "fp": "9179c2f0bc078193",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_balance.py",
-      "fp": "d2e87fa970598005",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_chats.py",
-      "fp": "478abec743056916",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_chats.py",
-      "fp": "d2e87fa970598005",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.path",
-      "path": "orchestrator/scripts/tests/test_chips.py",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Test fixture: a projects-folder path used as a working directory or search root, in the spellings the code must treat alike. It names no account."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_courier.py",
-      "fp": "478abec743056916",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_courier_row_budget.py",
-      "fp": "478abec743056916",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_dashboard.py",
-      "fp": "478abec743056916",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_dashboard.py",
-      "fp": "d2e87fa970598005",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_fan_out.py",
-      "fp": "2aadd1a288035f9b",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_fan_out.py",
-      "fp": "39933bd1c4867f04",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_fan_out.py",
-      "fp": "39baed188991bf0a",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_fan_out.py",
-      "fp": "581d5f1930c81e73",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_fan_out.py",
-      "fp": "9293c9abc55b4ceb",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_fan_out.py",
-      "fp": "93e6a69832b27998",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com under a stock first name, the account of one of the six instances the fan-out tests share work between. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.path",
-      "path": "orchestrator/scripts/tests/test_gatelib.py",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Test fixture: a projects-folder path used as a working directory or search root, in the spellings the code must treat alike. It names no account."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_holds.py",
-      "fp": "050e252cb12ac150",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_holds.py",
-      "fp": "0b4b386746e222df",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_interview.py",
-      "fp": "478abec743056916",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_mutationlib.py",
-      "fp": "050e252cb12ac150",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_overlord.py",
-      "fp": "478abec743056916",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_overlord.py",
-      "fp": "d2e87fa970598005",
-      "reason": "Test fixture in upstream's orchestrator tests: a one-letter placeholder at x.com for the account a test instance is signed in to. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_sweep.py",
-      "fp": "8b6c3927e376ecb5",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_sweep.py",
-      "fp": "a9049291ab749737",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.email",
-      "path": "orchestrator/scripts/tests/test_sweep.py",
-      "fp": "c6184f99de7d0d12",
-      "reason": "Test fixture in upstream's orchestrator tests: a placeholder at x.com named after the test instance it is the account of, or the sample the account-string parser is fed. x.com is a real, registered domain, not an RFC 2606 name, but the tests send no mail and the address names no person. These fixtures could move to example.invalid."
-    },
-    {
-      "rule": "pii.path",
-      "path": "server/src/analytics.ts",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Upstream's projects folder named as an example of a folder that holds projects. It names no account; the defaults that used it are handled apart."
-    },
-    {
-      "rule": "pii.path",
-      "path": "server/src/chat-settings-carry.ts",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Upstream's projects folder named as an example of a folder that holds projects. It names no account; the defaults that used it are handled apart."
     },
     {
       "rule": "infra.internal-host",
@@ -398,42 +104,6 @@
       "reason": "The placeholder name the SMTP client says in EHLO instead of the machine's real host name, which is the point of it."
     },
     {
-      "rule": "pii.email",
-      "path": "server/src/usage-service.ts",
-      "fp": "b972b3805b538e19",
-      "reason": "A one-letter example address in a doc comment that shows the label shape being parsed."
-    },
-    {
-      "rule": "pii.path",
-      "path": "server/tests/box-doctor-roots.test.ts",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Test fixture: a projects-folder path used as a working directory or search root, in the spellings the code must treat alike. It names no account."
-    },
-    {
-      "rule": "pii.path",
-      "path": "server/tests/box-doctor-roots.test.ts",
-      "fp": "ea93d6adb1146423",
-      "reason": "Test fixture: a projects-folder path used as a working directory or search root, in the spellings the code must treat alike. It names no account."
-    },
-    {
-      "rule": "pii.path",
-      "path": "server/tests/climayte-wave.test.ts",
-      "fp": "99af18b62ebbd9e9",
-      "reason": "Test fixture: a plan file path directly under /home, which names no account."
-    },
-    {
-      "rule": "infra.internal-host",
-      "path": "server/tests/climayte.test.ts",
-      "fp": "e7e22941c1d09491",
-      "reason": "Test fixture: an MCP URL on a made-up laptop name under .local, standing for another PC's daemon."
-    },
-    {
-      "rule": "net.private-ipv4",
-      "path": "server/tests/climayte.test.ts",
-      "fp": "552354592821b7e6",
-      "reason": "Test fixture: the MCP URL of a second PC's daemon, which CliMayte must recognise as AgentHydra's own endpoint."
-    },
-    {
       "rule": "net.private-ipv4",
       "path": "server/tests/codex-hub-hardening.test.ts",
       "fp": "6c49454dcdd640a9",
@@ -452,40 +122,10 @@
       "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
     },
     {
-      "rule": "net.private-ipv4",
-      "path": "server/tests/hardening.test.ts",
-      "fp": "552354592821b7e6",
-      "reason": "Test fixture: a non-loopback bind address that validateBindHost must refuse."
-    },
-    {
       "rule": "secret.token",
       "path": "server/tests/incidents.test.ts",
       "fp": "d67ee745ad52ec11",
       "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "pii.path",
-      "path": "server/tests/instance-origin-join.test.ts",
-      "fp": "ea93d6adb1146423",
-      "reason": "Test fixture: a projects-folder path used as a working directory or search root, in the spellings the code must treat alike. It names no account."
-    },
-    {
-      "rule": "pii.email",
-      "path": "server/tests/instance-pick.test.ts",
-      "fp": "b972b3805b538e19",
-      "reason": "Test fixture: a one-letter placeholder at y.com, used both as one row's name and as another row's email to show which spelling wins. y.com and b.com are registered domains, not RFC 2606 names, but the test sends no mail and neither address names a person."
-    },
-    {
-      "rule": "pii.email",
-      "path": "server/tests/instance-pick.test.ts",
-      "fp": "fb98d44ad7501a95",
-      "reason": "Test fixture: a one-letter placeholder at b.com, one row's account email in the name-against-email ordering test. y.com and b.com are registered domains, not RFC 2606 names, but the test sends no mail and neither address names a person."
-    },
-    {
-      "rule": "pii.path",
-      "path": "server/tests/live-registry-pid-recycling.test.ts",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Test fixture: a projects-folder path used as a working directory or search root, in the spellings the code must treat alike. It names no account."
     },
     {
       "rule": "secret.token",
@@ -516,18 +156,6 @@
       "path": "server/tests/secrets-export.test.ts",
       "fp": "d67ee745ad52ec11",
       "reason": "Test fixture for the secret scanner itself: the alphabet-run tokens, AWS's documented example access key id, and bare PEM header strings with no key body."
-    },
-    {
-      "rule": "pii.email",
-      "path": "server/tests/server-lib/updater-engine.test.ts",
-      "fp": "04e862e7ef575200",
-      "reason": "Test fixture: the one-letter git identity the updater tests commit into their throwaway repositories with."
-    },
-    {
-      "rule": "pii.email",
-      "path": "server/tests/session-keepalive.test.ts",
-      "fp": "fb98d44ad7501a95",
-      "reason": "Test fixture: a one-letter placeholder at b.com as the account of a usage snapshot. b.com is a registered domain, not an RFC 2606 name, but the test sends no mail and the address names no person."
     },
     {
       "rule": "secret.token",

@@ -120,7 +120,7 @@ export function cleanSettingsPatch(patch: unknown, current?: DevWebSettings): Pa
 function cleanLinkHost(value: unknown): string {
   if (typeof value !== 'string') throw new DevServerError('linkHost must be text', 400)
   const host = value.trim()
-  if (host.length > 253 || /[\s/\\?#@]/.test(host)) throw new DevServerError('linkHost must be a host name or address, such as my-pc or 192.168.1.20', 400)
+  if (host.length > 253 || /[\s/\\?#@]/.test(host)) throw new DevServerError("linkHost must be a host name or address, such as my-pc or this PC's LAN address", 400)
   return host
 }
 
