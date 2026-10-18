@@ -94,14 +94,30 @@ Every bundle (`AgentHydra-<version>-<target>`, a `.zip` on Windows, a `.tar.gz` 
   `.exe` beside the archive, which is the same launcher;
 - `desk2/`, AgentHydra 2.0's window: its server source, `shared/`, production `node_modules`
   (installed hoisted, for the target's OS and CPU, with Claude Code's platform binary removed: Desk 2
-  resolves or downloads it itself), the built `web/dist` and `hydra/dist`, and on Windows `launcher/`
-  with `HydraDesk2.exe` (built by the release, below). Windows opens it in its native window; Linux and macOS run its server on
+  resolves or downloads it itself; and without the Claude Agent SDK, below), `sdk-pin.json`, the
+  AgentHydra modules its server imports (`agenthydra-server/`, which the staged `@agenthydra/server`
+  alias points at; the packager refuses a bundle in which any of those imports does not resolve), the
+  built `web/dist` and `hydra/dist`, and on Windows `launcher/` with `HydraDesk2.exe` (built by the
+  release, below). Windows opens it in its native window; Linux and macOS run its server on
   the launcher's Bun and open the default browser. Desk 2's dev-servers service (for managing dev
   servers) runs as a hidden service started by Desk 2 itself.
+- the licence files at the bundle's root: `LICENSE`, `THIRD-PARTY-NOTICES.md`, `LICENSES/`, and
+  `THIRD-PARTY-LICENSES`, which `scripts/third-party-licenses.ts` writes: every third-party package
+  whose code the bundle holds (the npm packages inlined into `app/server.js` and
+  `desk2/agenthydra-server/`, Desk's `node_modules`, what vite built into its dists, and on Windows the
+  crates of the Rust programs, read with `cargo metadata`), with its licence and text. The packager
+  fails the bundle when a package has no licence, no licence text, or one off the allowlist in that
+  script. A packaging machine without cargo passes `--third-party <list.json>`, written where the
+  programs were built. An in-app update installs the new release's licence files with the rest.
 
-**No Bun and no Claude Code binary ship.** The launcher downloads the Bun that `app/bun-version`
-names (from oven-sh/bun's release, its SHA-256 checked) into `runtime/` the first time it runs, and
-again whenever an update brings a new pin. `runtime/` is created by the launcher, is never in an
+**No Bun, no Claude Code binary and no Claude Agent SDK ship.** The SDK's licence reserves all
+rights, so the bundle carries only `desk2/sdk-pin.json`, the version and sha512 `desk2/bun.lock`
+resolved; the first time a chat needs it, Desk downloads that tarball from the npm registry (or the
+mirror `npm_config_registry` names), checks it against the pin and unpacks it into
+`desk2/node_modules`, where an in-app update leaves it. A source checkout has no pin and uses what
+`bun install` put there. The launcher downloads the Bun that `app/bun-version` names (from
+oven-sh/bun's release, its SHA-256 checked) into `runtime/` the first time it runs, and again
+whenever an update brings a new pin. `runtime/` is created by the launcher, is never in an
 archive and is never replaced by the updater. Run on its own, the lone `.exe` finds no `app/` and
 installs everything from its own version's archive first. `release.yml` resolves the newest Bun
 release once and passes it to the packager as `--bun-version`, and builds and smokes on that same
