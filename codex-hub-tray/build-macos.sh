@@ -7,7 +7,8 @@
 #   codex-hub-tray-darwin-arm64     the builds the hub serves for updates, put in <config>/codex-hub/.pusher/
 #   codex-hub-tray-darwin-x64
 #   THIRD-PARTY-LICENSES-macos.txt  the Go modules both builds link and Go's own licence, also inside the app with
-#                                   the repository's LICENSE (Contents/Resources), so the zip and each install carry them
+#                                   the repository's LICENSE and NOTICE (Contents/Resources), so the zip and each
+#                                   install carry them
 #
 # The addresses come from HUB_URL, PAIR_URL and INBOX_URL, the public key the hub's builds are signed with from
 # UPDATE_KEY (scripts/codex-hub-sign.ts prints it; two, comma-separated, while moving to a new key; required, as in
@@ -41,11 +42,11 @@ done
 
 BUNDLE_ID=${BUNDLE_ID:-com.example.codex-hub-tray}
 OUT=${OUT:-dist}
-# The AgentHydra checkout this folder is in, for its LICENSE and its licence tool (build.sh passes its own).
+# The AgentHydra checkout this folder is in, for its LICENSE, its NOTICE and its licence tool (build.sh passes its own).
 REPO_ROOT=${REPO_ROOT:-..}
 LICENCE_TOOL="$REPO_ROOT/scripts/third-party-licenses.ts"
-if [ ! -f "$LICENCE_TOOL" ] || [ ! -f "$REPO_ROOT/LICENSE" ]; then
-	echo "$REPO_ROOT has no scripts/third-party-licenses.ts or LICENSE: set REPO_ROOT to the AgentHydra checkout this folder came from." >&2
+if [ ! -f "$LICENCE_TOOL" ] || [ ! -f "$REPO_ROOT/LICENSE" ] || [ ! -f "$REPO_ROOT/NOTICE" ]; then
+	echo "$REPO_ROOT has no scripts/third-party-licenses.ts, LICENSE or NOTICE: set REPO_ROOT to the AgentHydra checkout this folder came from." >&2
 	exit 1
 fi
 # Go supports macOS 11 and later; without this the C side would require the macOS this build runs on.
@@ -99,6 +100,7 @@ CGO_ENABLED=1 bun "$LICENCE_TOOL" --go ".=Codex Hub.app (x86_64)" --goos darwin 
 rm -f "$OUT/licences-arm64.json"
 mkdir -p "$APP/Contents/Resources"
 cp "$REPO_ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
+cp "$REPO_ROOT/NOTICE" "$APP/Contents/Resources/NOTICE"
 cp "$OUT/THIRD-PARTY-LICENSES-macos.txt" "$APP/Contents/Resources/THIRD-PARTY-LICENSES.txt"
 codesign --force --sign - "$APP"
 codesign --verify --strict "$APP"

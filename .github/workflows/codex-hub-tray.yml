@@ -10,9 +10,9 @@ name: Codex hub tray
 on:
   push:
     branches: [main]
-    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE']
+    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE', 'NOTICE']
   pull_request:
-    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE']
+    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE', 'NOTICE']
   workflow_dispatch:
 
 concurrency:

@@ -106,7 +106,7 @@ Every bundle (`AgentHydra-<version>-<target>`, a `.zip` on Windows, a `.tar.gz` 
   release, below). Windows opens it in its native window; Linux and macOS run its server on
   the launcher's Bun and open the default browser. Desk 2's dev-servers service (for managing dev
   servers) runs as a hidden service started by Desk 2 itself.
-- the licence files at the bundle's root: `LICENSE`, `THIRD-PARTY-NOTICES.md`, `LICENSES/`, and
+- the licence files at the bundle's root: `LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES.md`, `LICENSES/`, and
   `THIRD-PARTY-LICENSES`, which `scripts/third-party-licenses.ts` writes: every third-party package
   whose code the bundle holds (the npm packages inlined into `app/server.js` and
   `desk2/agenthydra-server/`, Desk's `node_modules`, what vite built into its dists, and on Windows the

@@ -778,6 +778,7 @@ export function reconcileComponent(
 /** The licence files at a release's top level, beside the executable (scripts/package-release.ts puts them there). */
 export const RELEASE_NOTICES = [
   'LICENSE',
+  'NOTICE',
   'THIRD-PARTY-NOTICES.md',
   'THIRD-PARTY-LICENSES',
   'LICENSES',

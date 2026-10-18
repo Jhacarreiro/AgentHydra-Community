@@ -5,10 +5,13 @@
 import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 
-/** The files every bundle carries at its root: the licence, the notices for adapted code, the licence texts. */
-export const LICENCE_FILES = ['LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES'] as const
+/**
+ * The files every bundle carries at its root: the licence, the notice of where this project comes from, the notices
+ * for adapted code, the licence texts.
+ */
+export const LICENCE_FILES = ['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md', 'LICENSES'] as const
 
-/** Copies LICENSE, THIRD-PARTY-NOTICES.md and LICENSES/ from the checkout to the bundle's root. */
+/** Copies LICENSE, NOTICE, THIRD-PARTY-NOTICES.md and LICENSES/ from the checkout to the bundle's root. */
 export function stageLicenceFiles(root: string, stage: string): void {
   for (const name of LICENCE_FILES) {
     const from = join(root, name)

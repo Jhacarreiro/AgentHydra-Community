@@ -23,7 +23,7 @@
 # It writes codex-hub-tray.exe, codex-hub-tray-linux-x64 and codex-hub-tray-linux-arm64, the names the hub serves
 # them under from <config dir>/codex-hub/.pusher/, each one's THIRD-PARTY-LICENSES-<target>.txt (the Go modules it
 # links and Go's own licence, made by the repository's scripts/third-party-licenses.ts, so Bun is needed), the
-# repository's LICENSE, and SHA256SUMS of all of them. Hand a build out with its licence files. "macos" runs build-macos.sh, which needs cgo and
+# repository's LICENSE and NOTICE, and SHA256SUMS of all of them. Hand a build out with its licence files. "macos" runs build-macos.sh, which needs cgo and
 # the Xcode command line tools, so it builds on a Mac only; its two hub builds go into SHA256SUMS too. The zip a new
 # Mac is handed holds file times, so it is not the same bytes twice and stays out of SHA256SUMS: its hash goes into
 # SHA256SUMS-macos-zip, for comparing the copy a Mac gets with the one built here.
@@ -94,8 +94,8 @@ REPO_ROOT=${REPO_ROOT:-..}
 export REPO_ROOT
 LICENCE_TOOL="$REPO_ROOT/scripts/third-party-licenses.ts"
 command -v bun >/dev/null || fail "bun is missing: it writes each build's THIRD-PARTY-LICENSES file (and signs the builds after)"
-[ -f "$LICENCE_TOOL" ] && [ -f "$REPO_ROOT/LICENSE" ] ||
-	fail "$REPO_ROOT has no scripts/third-party-licenses.ts or LICENSE: set REPO_ROOT to the AgentHydra checkout this folder came from"
+[ -f "$LICENCE_TOOL" ] && [ -f "$REPO_ROOT/LICENSE" ] && [ -f "$REPO_ROOT/NOTICE" ] ||
+	fail "$REPO_ROOT has no scripts/third-party-licenses.ts, LICENSE or NOTICE: set REPO_ROOT to the AgentHydra checkout this folder came from"
 [ -n "${HUB_URL:-}" ] || echo "warning: HUB_URL is empty; each PC then needs the hub's address in its tray.json" >&2
 [ -n "${PAIR_URL:-}" ] || echo "warning: PAIR_URL is empty; Connect this PC then has no page to open" >&2
 case "${PAIR_URL:-}" in
@@ -115,7 +115,8 @@ licences() { # goos goarch target file
 
 mkdir -p "$OUT"
 cp "$REPO_ROOT/LICENSE" "$OUT/LICENSE"
-built=(LICENSE)
+cp "$REPO_ROOT/NOTICE" "$OUT/NOTICE"
+built=(LICENSE NOTICE)
 for target in $TARGETS; do
 	case "$target" in
 	windows-x64) goos=windows goarch=amd64 file=codex-hub-tray.exe extra=-H=windowsgui ;;

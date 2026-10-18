@@ -48,7 +48,7 @@ credit no outside author. Here a contribution keeps its author's name. The full 
 
 AgentHydra Community is maintained independently by [@Jhacarreiro](https://github.com/Jhacarreiro) and its
 contributors. It is not affiliated with or endorsed by LunarWerx Studios, and it keeps the original copyright
-notices ([LICENSE](LICENSE)).
+notices ([LICENSE](LICENSE)). [NOTICE](NOTICE) says where it comes from.
 
 ![The window: the sidebar lists every chat grouped by project, and the open chat shows its to-dos and a permission prompt](.github/screenshots/window.png)
 
@@ -195,7 +195,7 @@ server, your proxy and sign-in, building and installing the tray, and changing t
   approvals or outside the sandbox. Close the chat in the Codex app on that PC first.
 - **The tray app** (`codex-hub-tray/`, Go) is built by whoever runs the hub, with `codex-hub-tray/build.sh`, the
   hub's addresses and your own signing key's public half; the script stops without a key unless you set
-  `ALLOW_NO_KEY=1`. No release includes it. Each build comes with AgentHydra's `LICENSE` and a
+  `ALLOW_NO_KEY=1`. No release includes it. Each build comes with AgentHydra's `LICENSE`, its `NOTICE` and a
   `THIRD-PARTY-LICENSES` file for its system (inside the macOS app), to hand out with it. Two builds of one commit
   with the same addresses and key are the same bytes, so you can check what a PC runs (a Mac's zip has a checksum
   file of its own instead). Opened once, it
@@ -273,7 +273,7 @@ downloaded or built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
 
   A checkout from before these programs left the tree loses its copies when it updates. Build them, or run
   `misc\Create-Shortcut.ps1` again, so the AgentHydra shortcut opens again.
-- **Licences in a release:** every bundle carries `LICENSE` (MIT), `THIRD-PARTY-NOTICES.md` for the code AgentHydra
+- **Licences in a release:** every bundle carries `LICENSE` (MIT), `NOTICE` (where this project comes from), `THIRD-PARTY-NOTICES.md` for the code AgentHydra
   adapts from other projects, `LICENSES/`, and `THIRD-PARTY-LICENSES`. That last file gives the name, version,
   licence and licence text of every third-party package whose code is in the bundle: its npm packages and, in the
   Windows bundle, the Rust crates of its programs and Rust's own licences. A release is not built if any of them has
@@ -436,7 +436,7 @@ refuses what it objects to; CI runs it again on every push and pull request, aft
   merged with its author's own commits; a contribution a maintainer adapts or rewrites still credits its author.
 - **Security:** report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes.
 - **Code of conduct:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-- **Licence:** [MIT](LICENSE). Third-party material and its licences are listed in
+- **Licence:** [MIT](LICENSE), with where this project comes from in [NOTICE](NOTICE). Third-party material and its licences are listed in
   [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and each release also carries `THIRD-PARTY-LICENSES` for every
   third-party package inside it.
 

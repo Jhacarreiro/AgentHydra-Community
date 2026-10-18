@@ -284,12 +284,12 @@ missing `HUB_URL` or `PAIR_URL`, a pairing page over `http://`, and a tray built
   serves them as.
 - `THIRD-PARTY-LICENSES-windows-x64.txt`, `-linux-x64.txt` and `-linux-arm64.txt`: the licence and licence text of
   each Go module that build links (`fyne.io/systray` everywhere, `golang.org/x/sys` on Windows, `godbus/dbus` on
-  Linux), and Go's own. `LICENSE` is AgentHydra's. These ship with each build: hand them out with it (step 5).
+  Linux), and Go's own. `LICENSE` is AgentHydra's, and `NOTICE` says where this project comes from. These ship with each build: hand them out with it (step 5).
 - `SHA256SUMS`, of the builds and the licence files.
 - On a Mac (`TARGETS=macos`, which runs `build-macos.sh`): `Codex Hub.app`, its zip to hand out, and
   `codex-hub-tray-darwin-arm64` and `codex-hub-tray-darwin-x64` for the hub. A Mac build needs the Xcode command line
   tools and Bun. `THIRD-PARTY-LICENSES-macos.txt` lists what either architecture links; it is also inside the app,
-  with `LICENSE`, in `Contents/Resources`, so the zip and every Mac that installs from it carry both. The darwin
+  with `LICENSE` and `NOTICE`, in `Contents/Resources`, so the zip and every Mac that installs from it carry them. The darwin
   builds and that file go into `SHA256SUMS`; the zip's hash goes into `SHA256SUMS-macos-zip` (see below).
 
 ### The same bytes every time
@@ -353,8 +353,8 @@ makes it check now.
 
 ## 5. Setting up a PC: install the tray and connect
 
-Give each PC its tray build in a way you trust, with `LICENSE` and the `THIRD-PARTY-LICENSES` file for its system
-(a Mac's zip has both inside): copy them over yourself, or put them behind the same sign-in as the pairing page. The
+Give each PC its tray build in a way you trust, with `LICENSE`, `NOTICE` and the `THIRD-PARTY-LICENSES` file for its
+system (a Mac's zip has them inside): copy them over yourself, or put them behind the same sign-in as the pairing page. The
 hub's updates replace only the program, so when an update changes a licence file (a new module or Go version in
 `go.mod`), hand out the new one too. The hub's own download needs the token, which a new PC does not have yet. Before you open the file,
 compare its SHA-256 with your `SHA256SUMS`, or, for a Mac's zip, with your `SHA256SUMS-macos-zip`.

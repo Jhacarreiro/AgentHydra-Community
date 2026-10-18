@@ -107,12 +107,12 @@ $ReleaseComponents = @(
 )
 
 # --- the release's licence files ----------------------------------------------------------
-# A release carries them at its top level, beside the exe: LICENSE, THIRD-PARTY-NOTICES.md and
-# LICENSES/ (scripts/release-bundle.ts) and THIRD-PARTY-LICENSES (scripts/package-release.ts).
+# A release carries them at its top level, beside the exe: LICENSE, NOTICE, THIRD-PARTY-NOTICES.md
+# and LICENSES/ (scripts/release-bundle.ts) and THIRD-PARTY-LICENSES (scripts/package-release.ts).
 # They are no component, so the swap below leaves them in staging; they are copied in after it.
 # server/src/github-updater.ts's RELEASE_NOTICES is the same list for an in-app update, and
 # server/tests/github-updater-components.test.ts checks that the two agree.
-$ReleaseNotices = @('LICENSE', 'THIRD-PARTY-NOTICES.md', 'THIRD-PARTY-LICENSES', 'LICENSES')
+$ReleaseNotices = @('LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md', 'THIRD-PARTY-LICENSES', 'LICENSES')
 
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Note([string]$Message) { Write-Host "    $Message" -ForegroundColor DarkGray }

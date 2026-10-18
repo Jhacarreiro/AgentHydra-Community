@@ -112,7 +112,7 @@ describe('the daemon modules Desk imports', () => {
 })
 
 describe('the licence files', () => {
-  test('every bundle gets LICENSE, THIRD-PARTY-NOTICES.md and LICENSES/ from the checkout', () => {
+  test('every bundle gets LICENSE, NOTICE, THIRD-PARTY-NOTICES.md and LICENSES/ from the checkout', () => {
     const root = findRepoRoot(import.meta.dir)
     const stage = tree({ 'app/server.js': '' })
     stageLicenceFiles(root, stage)
@@ -120,11 +120,14 @@ describe('the licence files', () => {
     expect(readFileSync(join(stage, 'LICENSE'), 'utf8')).toBe(
       readFileSync(join(root, 'LICENSE'), 'utf8'),
     )
+    expect(readFileSync(join(stage, 'NOTICE'), 'utf8')).toContain(
+      'Originally derived from the last MIT-licensed revision of AgentHydra (3a65ba8e).',
+    )
     expect(existsSync(join(stage, 'LICENSES/Apache-2.0.txt'))).toBe(true)
   })
 
   test('a checkout without one of them cannot be packaged', () => {
-    const root = tree({ LICENSE: 'MIT', 'LICENSES/x.txt': 'x' })
+    const root = tree({ LICENSE: 'MIT', NOTICE: 'derived from', 'LICENSES/x.txt': 'x' })
     expect(() => stageLicenceFiles(root, tree({ x: '' }))).toThrow(
       'THIRD-PARTY-NOTICES.md is missing',
     )

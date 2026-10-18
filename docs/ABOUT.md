@@ -203,7 +203,7 @@ Each path is where the feature is defined.
   launcher downloads Bun into `runtime/` on first run and, once updates are on, restores any missing part from the
   release archive, verified against `SHA256SUMS.txt` (while they are off it downloads no part of the app, and a
   release has no lone `.exe`), Desk fetches the SDK version `desk2/sdk-pin.json` pins when a chat first needs it, and
-  the packager fails a Windows archive over 30 MB. Every bundle carries `LICENSE`, `THIRD-PARTY-NOTICES.md`,
+  the packager fails a Windows archive over 30 MB. Every bundle carries `LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES.md`,
   `LICENSES/` and `THIRD-PARTY-LICENSES`, the licence and text of every third-party package inside it, and is not
   built when one falls outside the permissive allowlist. - `launcher/windows/AgentHydra.cs`,
   `server/src/misc-assets.ts`, `scripts/package-release.ts`, `scripts/third-party-licenses.ts`,

@@ -160,6 +160,7 @@ Everything else in AgentHydra at `3a65ba8e` stays, under the MIT licence and wit
 readers, instance and account management, CliMayte, HSwarm, analytics, the orchestrator, the launchers, the tray
 host and the installer. The AgentHydra name is kept where it describes the software and where renaming would
 break existing installs: data folders, `AGENTHYDRA_*` variables and executable names. `LICENSE` keeps the original
-copyright line and adds one for this fork's changes.
+copyright line and adds one for this fork's changes, and [NOTICE](../NOTICE) says in three sentences where this
+project comes from; every release and every install carries both.
 
 </details>

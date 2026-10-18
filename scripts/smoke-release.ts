@@ -168,6 +168,7 @@ try {
     join(bundle, 'app/bun-version'),
     join(bundle, 'desk2/server/src/index.ts'),
     join(bundle, 'LICENSE'),
+    join(bundle, 'NOTICE'),
     join(bundle, 'THIRD-PARTY-NOTICES.md'),
     join(bundle, 'LICENSES/Apache-2.0.txt'),
     join(bundle, 'THIRD-PARTY-LICENSES'),
