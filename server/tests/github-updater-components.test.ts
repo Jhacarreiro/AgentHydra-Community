@@ -701,6 +701,7 @@ test("an update brings the release's licence files to the install, and LICENSES/
   const { root, bundle, install } = applyFixture()
   try {
     put(bundle, 'LICENSE', 'new licence')
+    put(bundle, 'NOTICE', 'new origin notice')
     put(bundle, 'THIRD-PARTY-NOTICES.md', 'new notices')
     put(bundle, 'THIRD-PARTY-LICENSES', 'new list')
     put(bundle, 'LICENSES/MIT.txt', 'mit')
@@ -711,12 +712,14 @@ test("an update brings the release's licence files to the install, and LICENSES/
     const result = await applyUpdate(applyDeps(install, bundle, { desk }))
     expect(result.ok).toBe(true)
     expect(readFileSync(join(install, 'LICENSE'), 'utf8')).toBe('new licence')
+    // An install from before NOTICE existed gets it from its first update that carries one.
+    expect(readFileSync(join(install, 'NOTICE'), 'utf8')).toBe('new origin notice')
     expect(readFileSync(join(install, 'THIRD-PARTY-NOTICES.md'), 'utf8')).toBe('new notices')
     expect(readFileSync(join(install, 'THIRD-PARTY-LICENSES'), 'utf8')).toBe('new list')
     expect(readdirSync(join(install, 'LICENSES'))).toEqual(['MIT.txt'])
     expect(readFileSync(join(install, 'notes.txt'), 'utf8')).toBe('the person kept this here')
     expect(result.output).toContain(
-      'installed LICENSE, THIRD-PARTY-NOTICES.md, THIRD-PARTY-LICENSES, LICENSES',
+      'installed LICENSE, NOTICE, THIRD-PARTY-NOTICES.md, THIRD-PARTY-LICENSES, LICENSES',
     )
   } finally {
     rmSync(root, { recursive: true, force: true })

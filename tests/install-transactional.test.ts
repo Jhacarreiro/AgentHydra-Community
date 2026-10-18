@@ -143,6 +143,7 @@ function buildReleaseDir(baseDir: string, version: string, opts: ReleaseDirOpts 
   // The licence files a release carries at its top level (scripts/release-bundle.ts,
   // scripts/package-release.ts), each marked with the version so an upgrade is visible.
   writeFileSync(join(dir, 'LICENSE'), `MIT licence of ${version}\n`)
+  writeFileSync(join(dir, 'NOTICE'), `origin notice of ${version}\n`)
   writeFileSync(join(dir, 'THIRD-PARTY-NOTICES.md'), `notices of ${version}\n`)
   writeFileSync(join(dir, 'THIRD-PARTY-LICENSES'), `packages of ${version}\n`)
   mkdirSync(join(dir, 'LICENSES'), { recursive: true })
@@ -266,6 +267,7 @@ for (const host of PS_HOSTS) {
 
       expect(runInstall(host, args(buildReleaseZip(work, '0.22.0'))).status).toBe(0)
       expect(readFileSync(join(installDir, 'LICENSE'), 'utf8')).toBe('MIT licence of 0.22.0\n')
+      expect(readFileSync(join(installDir, 'NOTICE'), 'utf8')).toBe('origin notice of 0.22.0\n')
       expect(readFileSync(join(installDir, 'THIRD-PARTY-NOTICES.md'), 'utf8')).toBe(
         'notices of 0.22.0\n',
       )
@@ -276,6 +278,7 @@ for (const host of PS_HOSTS) {
 
       expect(runInstall(host, args(buildReleaseZip(work, '0.22.1'))).status).toBe(0)
       expect(readFileSync(join(installDir, 'LICENSE'), 'utf8')).toBe('MIT licence of 0.22.1\n')
+      expect(readFileSync(join(installDir, 'NOTICE'), 'utf8')).toBe('origin notice of 0.22.1\n')
       expect(readdirSync(join(installDir, 'LICENSES'))).toEqual(['0.22.1.txt'])
       expect(leftoverArtifacts(installDir)).toEqual([])
     }, 240_000)
