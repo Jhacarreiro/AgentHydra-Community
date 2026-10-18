@@ -78,15 +78,15 @@ real agent homes (`~/.claude`, `~/.claude-instances`, `~/.codex`, `~/.hswarm`, `
 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` the shell started with) and a remove of the working folder; point a test at its
 scratch folder instead. desk2's suites have their own preload (desk2/AGENTS.md).
 
-## Releases, CHANGELOG and READMEs (owner, 2026-10-06)
+## Releases, CHANGELOG and READMEs
 
-- **AgentHydra is 2.0: never release 1.x.** The window that was Hydra Desk 2 (`desk2/`) is
-  AgentHydra 2.0, first published as 2.0.1 (2.0.0's tag build stopped before publishing), a pre-release;
-  2.0.2 (2026-10-08) is the first full release, the one installed copies update to. Every
-  release ships Desk 2. The pre-push hook and `release.yml` refuse a tag below 2.0.0, and a tag build whose Windows
-  zip has no `desk2/` does not publish. 1.11.0 to 1.13.0 went out on the closed line from another PC,
-  with Desk 2's entries in their notes though their downloads had no Desk 2. See
-  [docs/RELEASING.md](docs/RELEASING.md).
+- **This repository's releases come from its own channel and its own version line.** Versions are calendar
+  versions, `YYYY.M.PATCH`, starting at `2026.10.0`; never tag one of upstream's numbers (`0.x`, `1.x`, `2.0.x`).
+  The pre-push hook and `release.yml` refuse a tag below 2.0.0 and nothing more, so the rest is on you.
+  `release-channel.json` names the repository releases come from (Jhacarreiro/AgentHydra-Community) and what a build
+  may do about a newer one; it says `"updates": "off"` until the first release, and a release whose own commit says
+  `off` is published as a pre-release. Every release ships Desk 2 (`desk2/`) as the window, and a tag build whose
+  Windows zip has no `desk2/` does not publish. See [docs/RELEASING.md](docs/RELEASING.md).
 - **Release notes, CHANGELOG sections and READMEs open with a TL;DR, and the detail is folded**,
   as SageThumbs does it ("I ain't fucking reading that 10,000-mile-long detailed bullshit list just
   to figure out that you fixed two little things"). A CHANGELOG version section opens with
@@ -99,7 +99,8 @@ scratch folder instead. desk2's suites have their own preload (desk2/AGENTS.md).
 
 ## Public repository
 
-This repo is PUBLIC (LunarWerxs/AgentHydra), `desk2/` included.
+This repo is PUBLIC (Jhacarreiro/AgentHydra-Community), `desk2/` included. It is a fork of AgentHydra built on
+`3a65ba8e`, upstream's last MIT commit ([docs/FORK.md](docs/FORK.md)).
 
 - No real identities in tests, fixtures, comments or docs: use `example.com` /
   `example.test` addresses, a neutral name such as "Example Owner", and
@@ -108,10 +109,13 @@ This repo is PUBLIC (LunarWerxs/AgentHydra), `desk2/` included.
 - A test that must check a real local account (`server/tests/instances-crypto.test.ts`)
   compares a SHA-256 of the address, never the address itself.
 - Screenshots of real chats stay on the PC that took them and are never committed.
-- History was rewritten on 2026-10-05 to purge 68 such screenshots; main runs
-  from `f53bbcda` and tags v1.9.0-v1.9.2 were moved. Never rebase or merge a
-  branch made before that onto the new main: it brings the screenshots back.
-  With no unpushed commits, `git fetch` then `git reset --soft origin/main`
-  (the newest files are identical); the owner's land tool (`cycle.py`, kept outside
-  this repo) replays only a session's own commits across such a rewrite. Values scrubbed on 2026-10-05
-  (emails, names, user folders, chat text) are still in older history.
+- Nothing upstream wrote after `3a65ba8e` comes into this repository: no merge or rebase onto upstream's `main`, and
+  no code, text or changelog entry copied or adapted from it, since it is no longer MIT. Nothing from a private
+  repository either. `bun run audit:public` checks the tree and every commit since the base, and the pre-push hook
+  runs it on every push and refuses any ref whose history contains the relicensing commit `aee9dfc4`. A finding that
+  is fine goes in `scripts/audit-public.allow.json` with its reason, never its value.
+- Upstream rewrote its history on 2026-10-05 to purge 68 such screenshots (its `main` then ran from `f53bbcda`, and
+  tags v1.9.0-v1.9.2 were moved). This repository carries the rewritten history. Never rebase or merge a branch made
+  from upstream's history before that rewrite: it brings the screenshots back. Values scrubbed on 2026-10-05
+  (emails, names, user folders, chat text) are still in the commits before the scrub, which this repository also
+  carries; the audit's history mode reads only the commits after `3a65ba8e`.

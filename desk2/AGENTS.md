@@ -1,21 +1,21 @@
-# AgentHydra 2.0 (Hydra Desk 2, the other owner's copy of desk/)
+# AgentHydra 2.0's window (Desk 2, which began as a copy of Hydra Desk)
 
 This folder is AgentHydra's window, AgentHydra 2.0: called Hydra Desk 2 until 2026-10-06, when the owner
 named it AgentHydra. What a person sees says AgentHydra (the window title, the shortcut, the launcher's
 messages); the folder, port, data folders, `HydraDesk2.exe` and the mutexes keep Desk 2's names, each a
-migration of its own if ever renamed. It began as a copy of the owner's Hydra Desk (`../desk`) made on
-2026-10-04 so the other owner can try new things on it without touching the owner's app. Both run side by side: Desk 2 is on port 7798, keeps
-its data in `~/.hydra-desk-2/`, opens in its own native window (`launcher/HydraDesk2.exe`, a WebView2
-host built from `launcher/host`, its data in `%LOCALAPPDATA%\HydraDesk2\webview`), and has its own
-"AgentHydra" shortcut. SPEC.md is the design it started from and still describes what is
-unchanged; what Desk 2 adds is in README.md under "What Desk 2 adds". shared/protocol.ts is the contract
-between server/ and web/.
+migration of its own if ever renamed. It began on 2026-10-04 as a copy of Hydra Desk, an app that is not part of
+this repository, and runs apart from it: Desk 2 is on port 7798, keeps its data in `~/.hydra-desk-2/`, opens in its
+own native window (`launcher/HydraDesk2.exe`, a WebView2 host built from `launcher/host`, its data in
+`%LOCALAPPDATA%\HydraDesk2\webview`), and has its own "AgentHydra" shortcut. SPEC.md is the design it started
+from and still describes what is unchanged; what Desk 2 adds is in README.md under "What Desk 2 adds".
+shared/protocol.ts is the contract between server/ and web/.
 
-- This folder is part of the PUBLIC AgentHydra repo. Everything committed here is published: no real
-  emails, account addresses, keys or chat content in files, tests or screenshots.
-- `hydra/` is Desk 2's own copy of AgentHydra's window (`../web`, copied 2026-10-04 at 779aa0fd), built into
-  `hydra/dist` and served by Desk 2 at `/ah/`; its `/ah/api/*` goes on to the one AgentHydra daemon
-  (`server/src/plugins/45-agenthydra.ts`). Change it freely here; never edit `../web` from a Desk 2 task.
+- This folder is part of the PUBLIC AgentHydra Community repository (see the root AGENTS.md, "Public
+  repository"). Everything committed here is published: no real emails, account addresses, keys or chat content in
+  files, tests or screenshots, and nothing upstream wrote after the MIT base `3a65ba8e`.
+- `hydra/` is Desk 2's own copy of AgentHydra's old window (the root `web/`, copied 2026-10-04 at 779aa0fd and
+  removed in 2.0.0), built into `hydra/dist` and served by Desk 2 at `/ah/`; its `/ah/api/*` goes on to the one
+  AgentHydra daemon (`server/src/plugins/45-agenthydra.ts`). Change it freely here.
   The daemon is not copied: two would both run work on the same accounts. The copy has no Sessions tab
   (removed 2026-10-04): Desk's cloud list and its session header (`web/src/components/session-header`)
   replace it, and the copy's "open this chat" goes to Desk (`hydra/src/lib/desk-embed.ts`). Desk owns the one
@@ -52,7 +52,7 @@ between server/ and web/.
   (README, "Dev servers in the sidebar").
 - Work that touches free accounts leaves them measurably better (owner, 2026-10-07: "free instances should always
   have a mild imperative for RSI"): the RSI metrics `free.route.wrapper_chars` and `free.claude.calls_per_new_chat`
-  (`.rsi/rsi.yaml`) are the ones to move, and `python <hydra>/ph.py rsi next --here` picks among them.
+  (`.rsi/rsi.yaml`) are the ones to move.
 - After changing a tooltip, menu, popover, sidebar row or lazy overlay: `bun run build`, then
   `bun run e2e:gestures` (the first gesture on every untouched trigger, headless; see the README).
 - `web/dist` and `hydra/dist` are what the running window serves, so `bun run build` never builds into them:
@@ -87,8 +87,8 @@ between server/ and web/.
   (in both copies of kit-base.css) AND in that app's `lib/utils.ts` tailwind-merge
   extension: tailwind-merge reads an unknown `text-*` as a colour, and `cn()` then drops the colour beside it
   (2026-10-13); each app's `utils.test.ts` reads the theme and fails on a step it does not know.
-- `desk/` is the owner's: a change meant for both apps is made in each, and never by editing `desk/` from
-  a Desk 2 task. Desk's design notes and audit tools (`desk/docs`, `desk/tools`) were not copied.
+- Hydra Desk itself (`desk/`), its design notes and its audit tools are not part of this repository and were never
+  copied here; Desk 2 is the only window to change.
 - Bun for everything (`bun install`, `bun test`, `bun run`). Tests set `HYDRA_DESK_HOME` to a temp
   folder; never write to the real `~/.hydra-desk-2/` from a test.
 - Every `bun test` run from `desk2/` preloads `server/test/preload.ts` (`desk2/bunfig.toml`): removing the folder the

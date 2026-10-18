@@ -65,7 +65,7 @@ dashboard keeps its log open), `-Apply` stops before the move, names the process
 
 ## How code reaches the running app
 
-1. Land the change on `main` and push it (`cycle.py --land`).
+1. Land the change on `main` and push it.
 2. Then either let the updater take it (Settings, or auto-update: `git pull --ff-only` from that remote in
    `live/`, `bun install`, then `bun install` and `bun run build` in `live/desk2`, restart), or rerun
    `-Apply`, which pulls and builds the same way, then the restart step above. The updater does not rebuild the
