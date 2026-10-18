@@ -1,7 +1,8 @@
 name: Codex hub tray
 
 # The Codex hub's tray app (codex-hub-tray/, Go): go vet and go test, its end-to-end test against a fake hub on
-# Linux (test-linux.sh), and its reproducible build (build.sh), which must give the same SHA-256 twice from one commit.
+# Linux (test-linux.sh), and its reproducible build (build.sh), which must give the same SHA-256 twice from one commit,
+# for the builds and for the licence files beside them.
 # ci.yml has no Go in it, so a change to the tray is checked here, and only a change that touches it.
 #
 # The builds here carry example addresses and an example public key (the key whose seed is the bytes 0 to 31, which
@@ -9,9 +10,9 @@ name: Codex hub tray
 on:
   push:
     branches: [main]
-    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml']
+    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE']
   pull_request:
-    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml']
+    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE']
   workflow_dispatch:
 
 concurrency:
@@ -45,6 +46,12 @@ jobs:
           go-version-file: codex-hub-tray/go.mod
           cache-dependency-path: codex-hub-tray/go.sum
 
+      # build.sh writes each build's licence file with scripts/third-party-licenses.ts, which runs on Bun.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.3
+
       - name: go vet (Linux, Windows and the test helpers)
         run: |
           go vet ./...
@@ -66,7 +73,8 @@ jobs:
           OUT="$RUNNER_TEMP/first" ./build.sh
           cp -r . "$RUNNER_TEMP/another folder"
           rm -rf "$RUNNER_TEMP/another folder/dist"
-          GOCACHE="$RUNNER_TEMP/empty-cache" OUT="$RUNNER_TEMP/second" "$RUNNER_TEMP/another folder/build.sh"
+          GOCACHE="$RUNNER_TEMP/empty-cache" OUT="$RUNNER_TEMP/second" REPO_ROOT="$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/another folder/build.sh"
           diff "$RUNNER_TEMP/first/SHA256SUMS" "$RUNNER_TEMP/second/SHA256SUMS"
           {
             echo '### Tray builds (example addresses and key)'
@@ -92,6 +100,12 @@ jobs:
           go-version-file: codex-hub-tray/go.mod
           cache-dependency-path: codex-hub-tray/go.sum
 
+      # build.sh writes each build's licence file with scripts/third-party-licenses.ts, which runs on Bun.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.3
+
       - name: go vet
         run: go vet ./...
 
@@ -105,7 +119,8 @@ jobs:
           TARGETS=macos OUT="$RUNNER_TEMP/first" ./build.sh
           cp -R . "$RUNNER_TEMP/another folder"
           rm -rf "$RUNNER_TEMP/another folder/dist"
-          GOCACHE="$RUNNER_TEMP/empty-cache" TARGETS=macos OUT="$RUNNER_TEMP/second" "$RUNNER_TEMP/another folder/build.sh"
+          GOCACHE="$RUNNER_TEMP/empty-cache" TARGETS=macos OUT="$RUNNER_TEMP/second" REPO_ROOT="$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/another folder/build.sh"
           diff "$RUNNER_TEMP/first/SHA256SUMS" "$RUNNER_TEMP/second/SHA256SUMS"
           (cd "$RUNNER_TEMP/first" && shasum -a 256 -c SHA256SUMS-macos-zip)
           {

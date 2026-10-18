@@ -40,11 +40,11 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   to one AgentHydra you pick as the hub, which lists, searches and opens them beside its own, each marked with its
   PC. While that PC is on, Desk continues one of its chats there, on that PC's files and Codex sign-in, asking for
   approvals as usual. Nothing changes until a hub is set up.
-- **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click.** No release includes
-  it: you build it from this repository with your hub's addresses and update key, for Windows, macOS or Linux.
-  Opened once on a PC, it installs itself, starts at login, and takes the hub's token from the pairing page you
-  serve behind your own sign-in, so nothing is copied by hand. Its icon shows whether the PC is sending, not
-  connected, or cannot reach the hub.
+- **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click.** No release includes it:
+  you build it from this repository with your hub's addresses and update key, for Windows, macOS or Linux, and each
+  build comes with its licence files. Opened once on a PC, it installs itself, starts at login, and takes the hub's
+  token from the pairing page you serve behind your own sign-in, so nothing is copied by hand. Its icon shows
+  whether the PC is sending, not connected, or cannot reach the hub.
 - **A PC's Codex pusher and tray app update themselves from the hub.** Put a new build on the hub and each PC
   fetches the one for its own system, checks its signature and makes sure it starts before it replaces the old
   one. A PC that has your public key refuses a build without your signature, and any PC can keep the build it has

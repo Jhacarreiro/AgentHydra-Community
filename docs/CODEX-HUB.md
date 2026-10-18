@@ -249,7 +249,8 @@ makes such a tray only when you set `ALLOW_NO_KEY=1`.
 ## 4. Building the tray, and the builds the hub hands out
 
 The tray is Go (`codex-hub-tray/`). `build.sh` builds it with your addresses and public key. It uses the Go named on
-the `toolchain` line of `go.mod`, and the go command downloads that Go if it is not the one installed:
+the `toolchain` line of `go.mod`, and the go command downloads that Go if it is not the one installed. It also needs
+Bun, which writes each build's licence file:
 
 ```sh
 cd codex-hub-tray
@@ -274,16 +275,22 @@ and not exported never reaches `build.sh`.
 | `BUNDLE_ID` | macOS only: the app's identifier, which also names its LaunchAgent |
 | `TARGETS` | `windows-x64 linux-x64 linux-arm64` by default, plus `macos` on a Mac |
 | `OUT` | the output folder, `dist` by default, which git ignores (a build holds your addresses) |
+| `REPO_ROOT` | the AgentHydra checkout `codex-hub-tray/` is in, `..` by default; set it to build from a copy elsewhere |
 
 `build.sh` stops when `UPDATE_KEY` is empty, unless `ALLOW_NO_KEY=1`, or when it is not a key. It warns about a
 missing `HUB_URL` or `PAIR_URL`, a pairing page over `http://`, and a tray built without a key. Its output in `dist/`:
 
 - `codex-hub-tray.exe` (Windows), `codex-hub-tray-linux-x64` and `codex-hub-tray-linux-arm64`, under the names the hub
   serves them as.
-- `SHA256SUMS`.
+- `THIRD-PARTY-LICENSES-windows-x64.txt`, `-linux-x64.txt` and `-linux-arm64.txt`: the licence and licence text of
+  each Go module that build links (`fyne.io/systray` everywhere, `golang.org/x/sys` on Windows, `godbus/dbus` on
+  Linux), and Go's own. `LICENSE` is AgentHydra's. These ship with each build: hand them out with it (step 5).
+- `SHA256SUMS`, of the builds and the licence files.
 - On a Mac (`TARGETS=macos`, which runs `build-macos.sh`): `Codex Hub.app`, its zip to hand out, and
   `codex-hub-tray-darwin-arm64` and `codex-hub-tray-darwin-x64` for the hub. A Mac build needs the Xcode command line
-  tools. The darwin builds go into `SHA256SUMS`; the zip's hash goes into `SHA256SUMS-macos-zip` (see below).
+  tools and Bun. `THIRD-PARTY-LICENSES-macos.txt` lists what either architecture links; it is also inside the app,
+  with `LICENSE`, in `Contents/Resources`, so the zip and every Mac that installs from it carry both. The darwin
+  builds and that file go into `SHA256SUMS`; the zip's hash goes into `SHA256SUMS-macos-zip` (see below).
 
 ### The same bytes every time
 
@@ -295,10 +302,11 @@ The machine that builds puts nothing of itself into a build:
 - cgo is off for the Windows and Linux targets;
 - `GOFLAGS`, `GOAMD64` and `GOARM64` from the environment are not used.
 
-So anyone can rebuild a commit with the same addresses and key, and compare. To compare the tray a PC runs, use the
-SHA-256 in its menu (Version, first eight characters) or its file. On every change to `codex-hub-tray/`, the workflow
-builds twice, the second time from another folder with an empty build cache, and compares `SHA256SUMS`. On a Mac only
-the two darwin builds are compared. The zip holds file times, so it is not the same bytes twice: its hash is kept
+The licence files come from the same `go.mod` and Go, so they are the same text every time too. So anyone can rebuild
+a commit with the same addresses and key, and compare. To compare the tray a PC runs, use the SHA-256 in its menu
+(Version, first eight characters) or its file. On every change to `codex-hub-tray/`, the workflow builds twice, the
+second time from another folder with an empty build cache, and compares `SHA256SUMS`. On a Mac only the two darwin
+builds and the licence file are compared. The zip holds file times, so it is not the same bytes twice: its hash is kept
 apart, in `SHA256SUMS-macos-zip`, only for checking that the copy you hand a Mac is the one you built.
 
 ### The pusher builds
@@ -345,8 +353,10 @@ makes it check now.
 
 ## 5. Setting up a PC: install the tray and connect
 
-Give each PC its tray build in a way you trust: copy it over yourself, or put it behind the same sign-in as the
-pairing page. The hub's own download needs the token, which a new PC does not have yet. Before you open the file,
+Give each PC its tray build in a way you trust, with `LICENSE` and the `THIRD-PARTY-LICENSES` file for its system
+(a Mac's zip has both inside): copy them over yourself, or put them behind the same sign-in as the pairing page. The
+hub's updates replace only the program, so when an update changes a licence file (a new module or Go version in
+`go.mod`), hand out the new one too. The hub's own download needs the token, which a new PC does not have yet. Before you open the file,
 compare its SHA-256 with your `SHA256SUMS`, or, for a Mac's zip, with your `SHA256SUMS-macos-zip`.
 
 ### Pairing from the Connect button

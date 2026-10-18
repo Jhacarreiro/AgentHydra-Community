@@ -194,8 +194,10 @@ server, your proxy and sign-in, building and installing the tray, and changing t
   approvals or outside the sandbox. Close the chat in the Codex app on that PC first.
 - **The tray app** (`codex-hub-tray/`, Go) is built by whoever runs the hub, with `codex-hub-tray/build.sh`, the
   hub's addresses and your own signing key's public half; the script stops without a key unless you set
-  `ALLOW_NO_KEY=1`. No release includes it. Two builds of one commit with the same addresses and key are the same
-  bytes, so you can check what a PC runs (a Mac's zip has a checksum file of its own instead). Opened once, it
+  `ALLOW_NO_KEY=1`. No release includes it. Each build comes with AgentHydra's `LICENSE` and a
+  `THIRD-PARTY-LICENSES` file for its system (inside the macOS app), to hand out with it. Two builds of one commit
+  with the same addresses and key are the same bytes, so you can check what a PC runs (a Mac's zip has a checksum
+  file of its own instead). Opened once, it
   installs itself for the user, starts at login, opens the pairing page to get the token, runs the pusher, shows in
   its icon whether the PC is sending, and takes new pusher and tray builds from the hub, only ones your key signed.
   A build can trust two keys, so the PCs move to a new key without being set up again.

@@ -14,13 +14,16 @@
 #   BUNDLE_ID     macOS only: the app's identifier, which also names its LaunchAgent (com.example.codex-hub-tray)
 #   TARGETS       what to build: windows-x64 linux-x64 linux-arm64 (the default), and macos on a Mac
 #   OUT           where (dist, which git ignores: a build holds the operator's addresses)
+#   REPO_ROOT     the AgentHydra checkout this folder is in (.., the default), for a build made from a copy of it
 #
 #   HUB_URL=https://hub.example.test PAIR_URL=https://inbox.example.test/codex-hub/pair \
 #     INBOX_URL=https://inbox.example.test UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key) \
 #     ./build.sh
 #
 # It writes codex-hub-tray.exe, codex-hub-tray-linux-x64 and codex-hub-tray-linux-arm64, the names the hub serves
-# them under from <config dir>/codex-hub/.pusher/, and SHA256SUMS. "macos" runs build-macos.sh, which needs cgo and
+# them under from <config dir>/codex-hub/.pusher/, each one's THIRD-PARTY-LICENSES-<target>.txt (the Go modules it
+# links and Go's own licence, made by the repository's scripts/third-party-licenses.ts, so Bun is needed), the
+# repository's LICENSE, and SHA256SUMS of all of them. Hand a build out with its licence files. "macos" runs build-macos.sh, which needs cgo and
 # the Xcode command line tools, so it builds on a Mac only; its two hub builds go into SHA256SUMS too. The zip a new
 # Mac is handed holds file times, so it is not the same bytes twice and stays out of SHA256SUMS: its hash goes into
 # SHA256SUMS-macos-zip, for comparing the copy a Mac gets with the one built here.
@@ -86,6 +89,13 @@ if [ -z "${UPDATE_KEY:-}" ]; then
 	*) echo "warning: UPDATE_KEY is empty (ALLOW_NO_KEY=1); the tray takes no builds from a hub that is not https" >&2 ;;
 	esac
 fi
+# The licence files come from the repository's own tool, which runs on Bun, as the signing script does.
+REPO_ROOT=${REPO_ROOT:-..}
+export REPO_ROOT
+LICENCE_TOOL="$REPO_ROOT/scripts/third-party-licenses.ts"
+command -v bun >/dev/null || fail "bun is missing: it writes each build's THIRD-PARTY-LICENSES file (and signs the builds after)"
+[ -f "$LICENCE_TOOL" ] && [ -f "$REPO_ROOT/LICENSE" ] ||
+	fail "$REPO_ROOT has no scripts/third-party-licenses.ts or LICENSE: set REPO_ROOT to the AgentHydra checkout this folder came from"
 [ -n "${HUB_URL:-}" ] || echo "warning: HUB_URL is empty; each PC then needs the hub's address in its tray.json" >&2
 [ -n "${PAIR_URL:-}" ] || echo "warning: PAIR_URL is empty; Connect this PC then has no page to open" >&2
 case "${PAIR_URL:-}" in
@@ -96,8 +106,16 @@ FLAGS="-s -w -buildid= -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-}
 FLAGS="$FLAGS -X main.updateKey=${UPDATE_KEY:-} -X main.oldHubURLs=${OLD_HUB_URLS:-}"
 [ -z "${BUNDLE_ID:-}" ] || FLAGS="$FLAGS -X main.bundleID=$BUNDLE_ID"
 
+# One build's third-party licences, beside it: every Go module it links for its system, and Go's own licence. They
+# come from the same go.mod and Go as the build, so they are the same text every time too.
+licences() { # goos goarch target file
+	CGO_ENABLED=0 bun "$LICENCE_TOOL" --go ".=$4" --goos "$1" --goarch "$2" \
+		--title "Codex hub tray: $4, for $3" --out "$OUT/THIRD-PARTY-LICENSES-$3.txt" >/dev/null
+}
+
 mkdir -p "$OUT"
-built=()
+cp "$REPO_ROOT/LICENSE" "$OUT/LICENSE"
+built=(LICENSE)
 for target in $TARGETS; do
 	case "$target" in
 	windows-x64) goos=windows goarch=amd64 file=codex-hub-tray.exe extra=-H=windowsgui ;;
@@ -106,14 +124,15 @@ for target in $TARGETS; do
 	macos)
 		[ "$(uname -s)" = Darwin ] || fail "macos builds on a Mac only: the menu bar code needs cgo and Cocoa"
 		OUT=$OUT ./build-macos.sh
-		built+=(codex-hub-tray-darwin-arm64 codex-hub-tray-darwin-x64)
+		built+=(codex-hub-tray-darwin-arm64 codex-hub-tray-darwin-x64 THIRD-PARTY-LICENSES-macos.txt)
 		continue
 		;;
 	*) fail "unknown target $target (windows-x64, linux-x64, linux-arm64, macos)" ;;
 	esac
 	echo "building $target"
 	CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -buildvcs=false -ldflags "$FLAGS $extra" -o "$OUT/$file" .
-	built+=("$file")
+	licences "$goos" "$goarch" "$target" "$file"
+	built+=("$file" "THIRD-PARTY-LICENSES-$target.txt")
 done
 
 if command -v sha256sum >/dev/null; then sum() { sha256sum "$@"; }; else sum() { shasum -a 256 "$@"; }; fi
