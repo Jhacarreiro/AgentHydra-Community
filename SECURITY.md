@@ -4,7 +4,9 @@
 
 - Report a vulnerability privately, through GitHub's private vulnerability reporting on this repository:
   [Report a vulnerability](https://github.com/Jhacarreiro/AgentHydra-Community/security/advisories/new).
-- Do not open a public issue, pull request or discussion for it until a fix is out.
+- If that page says private reporting is not available, open an issue that only asks for a private security
+  contact, with no details of the problem, and a maintainer will answer with one.
+- Do not open a public issue, pull request or discussion about the problem itself until a fix is out.
 - Fixes go into the next release and its CHANGELOG entry, with credit to the reporter if they want it.
 
 <details>
