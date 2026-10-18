@@ -77,7 +77,8 @@ bun run audit:public                              # the tree, and every commit s
 Each of these only worked with a service the upstream owner runs, or with a private repository nobody else has:
 
 - **The update relay and its install-id ping:** update checks went through an upstream-run proxy with an install
-  id; they now go to this repository's releases only, and stay off until it publishes one.
+  id; a release build now asks only this repository's releases, and not at all until it publishes one, and a source
+  checkout asks only this repository, with git.
 - **Connections settings sync, its `@cnct/connect` dependency, and Desk's Connections connector, chip and pane:**
   they needed an account on LunarWerx's own Connections service.
 - **The price check, Sue and Dredd MCP tools:** they ran code from a private checkout beside the repository.

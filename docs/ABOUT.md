@@ -23,9 +23,12 @@ goes through `fan_out` or a visible desktop chat.
 
 There is no hosted service or account sign-up: it reads the local stores the CLIs and desktop apps already write and
 talks to localhost, with a Windows system-tray launcher and an MCP server so agents can drive all of it themselves.
-What does leave the machine is listed in the README's network section: the update check (off until this repository
-publishes releases), Bun and Claude Code downloads, a daily price list, usage lookups for your own accounts, and
-whatever you turn on. Nothing goes to a service the original publisher runs.
+What does leave the machine is listed in the README's network section: the update check (a release build's is off
+until this repository publishes releases; a source checkout's `git ls-remote` runs on its timer either way), Bun and
+Claude Code downloads, the Claude upkeep pass on Windows (Claude Desktop's own update feed, about hourly, with the
+device id, version and OS version the app sends; the install's own updater and an npm update of the CLI when they
+are behind), a daily price list, usage lookups for your own accounts, and whatever you turn on. Nothing goes to a
+service the original publisher runs.
 
 What this fork adds first is one home server for several PCs: a Codex hub that collects every PC's Codex chats and
 continues them on the PC they belong to, a tray app that pairs each PC with the hub, Claude Code cloud sessions
@@ -237,9 +240,11 @@ Each path is where the feature is defined.
   own home. The harness's one-time `?token=` never leaves the daemon. - `server/src/core/dsh-instances.ts`,
   `desk2/hydra/src/components/DshInstanceRows.vue`
 - **Claude version drift across the fleet** - Flags a running Desktop behind the newest installed Claude build, or a
-  live chat on an older engine, as an incident (never killed), hard-links a closed profile's staged build up to the
-  newest verified copy and updates the npm CLI when nothing runs from it; `AGENTHYDRA_VERSION_AUTOFIX=0` makes it flag
-  only. - `server/src/version-drift.ts`, `server/src/routes/versions.ts`, `server/src/mcp.ts`
+  live chat on an older engine, as an incident (never killed), runs the classic install's own `Update.exe --update`
+  when Claude Desktop's update feed offers a newer build, hard-links a closed profile's staged build up to the newest
+  verified copy and updates the npm CLI when nothing runs from it; `AGENTHYDRA_VERSION_AUTOFIX=0` makes it flag only,
+  though it still asks the feed. - `server/src/version-drift.ts`, `server/src/routes/versions.ts`,
+  `server/src/mcp.ts`
 - **Stale-daemon detection with one-click restart** - A source install running older code than its checkout says so
   in `/api/health`, every MCP result and the app header, with a one-click Restart; a startup watchdog exits with a
   distinct code if boot hangs before the port binds, so the tray supervisor restarts it. -

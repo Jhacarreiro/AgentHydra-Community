@@ -65,8 +65,8 @@ notices ([LICENSE](LICENSE)).
 - **Where the time and money went:** cost by day, model, project and account, and what is wasting it
 - **Every Claude and Codex account in one table:** plan, 5-hour and weekly quota, open, quit, create
 - **For agents too:** the whole thing over MCP, including "which account am I, and how much is left"
-- **Nothing phones home:** updates are off until this project publishes releases, no install id is sent, and
-  nothing talks to a LunarWerx service
+- **Nothing goes to the original project:** no LunarWerx service, and no install id except to a Codex hub you run
+  yourself; what does reach the network is listed under [Install](#install)
 - **A public audit** checks every file, and every commit since the MIT base, for secrets, personal data and
   anything from upstream's relicensing on
 
@@ -242,7 +242,8 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
   downloads nothing (the setting until the first release), `notify` tells you about a newer release, and `auto`
   installs it, taking only files from this repository's release downloads, checked against that release's
   `SHA256SUMS.txt`. A source checkout updates with `git pull --ff-only` of the branch it tracks, and only when that
-  remote is this repository on GitHub; any other remote is reported in Settings and never contacted.
+  remote is this repository on GitHub; any other remote is reported in Settings and never contacted. It checks
+  that remote whether auto-update is on or off: turning it on only lets the update apply.
 - **Requirements:** Bun only for a source checkout. The `claude` CLI and/or Claude Desktop for the
   Claude features. Optional: Codex Desktop/CLI, OpenCode, Hermes Agent, the DeepSeek Harness
   (`~/.dsh`), whose sessions show up when their stores exist. Windows for the tray; macOS and Linux
@@ -251,21 +252,31 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
 - **Instance actions are real:** open, quit, create and delete act on your real Claude Desktop
   instances; delete asks you to type the name.
 - **Network.** AgentHydra reads local files and talks to `localhost`. Nothing goes to a LunarWerx service, and no
-  install id, ping or other data about your machine is sent anywhere. What does leave the machine:
-  - **The update check:** one unauthenticated request to `api.github.com` for this repository's latest release,
-    only when the release channel allows checking (not while it says `off`). A source checkout's check is a
-    `git fetch` of this repository.
+  install id or ping goes to any service you did not set up yourself. What does leave the machine on its own:
+  - **The update check:** a release build makes one unauthenticated request to `api.github.com` for this
+    repository's latest release, only when the release channel allows checking (never while it says `off`). A
+    source checkout checks with `git ls-remote` of the branch it tracks, and a `git fetch` of it when it has moved,
+    on the update-check timer (every six hours by default) even while auto-update is off, and only when that
+    remote is this repository on GitHub.
   - **A launcher repair:** a launcher that finds part of its install missing downloads its own version's archive
     from this repository's releases, whatever the update setting. While no releases exist, that download fails
     and the launcher says so.
   - **Bun** from Bun's GitHub releases on a release build's first run, and **Claude Code** from the npm registry
     when a chat first needs it.
+  - **Claude upkeep:** on Windows with Claude Desktop's classic install, about once an hour AgentHydra asks Claude
+    Desktop's own update feed at `api.anthropic.com` for its newest build, with the device id, version and OS
+    version the app itself sends there. When the install is behind, it runs the install's own updater, which
+    downloads the new build from Anthropic, and it updates the npm Claude Code CLI to the Desktop's version while
+    nothing runs from it. `AGENTHYDRA_VERSION_AUTOFIX=0` keeps the feed check but turns both updates into a
+    notice. On any system, an npm-installed Claude Code CLI that stops starting is repaired at its own version
+    from the npm registry.
   - **Model prices:** once a day, LiteLLM's public price list from `raw.githubusercontent.com`, so new models
     are priced; `AGENTHYDRA_PRICES_URL` points it at your own copy. Without it, the bundled table is used.
   - **Your own accounts:** usage and plan lookups for the Claude and Codex accounts you sign in, with their own
     logins, to Anthropic (`api.anthropic.com`, and `platform.claude.com` to renew a closed Desktop profile's
     login) and OpenAI (`chatgpt.com`).
-  - **Only what you turn on:** cloud sessions (Anthropic's API), the Codex hub (your hub), Login sync (the store
+  - **Only what you turn on:** cloud sessions (Anthropic's API), the Codex hub (your hub, which gets each PC's
+    name, taken from its computer name unless you set one, and a random install id), Login sync (the store
     you deploy), usage sync between PCs (a private git repository you name), email alerts (your SMTP server),
     HSwarm (the model providers whose keys you add, and their sites' icons), Free instances (claude.ai and
     chatgpt.com, plus the Python and Node packages they install once), orchestrator remote access (your sign-in
