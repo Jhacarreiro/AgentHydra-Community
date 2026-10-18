@@ -232,7 +232,8 @@ Claude families (`haiku`, `sonnet`) follow new models by themselves, and so do C
 resolves to, and what is new or gone since the last scan (exit code 3 when something is new; `hswarm doctor` carries a
 `free_model_watch` line, and Desk notifies once per new model). To measure a new one, run
 `python -m hswarm.free_ab pick --profile critical --n 30`, then `arm --model <slug>` (and an arm of the model used
-today), `judge` and `report`, then `compare --arms <today's> <new>`, which scores both on only the tasks both served;
+today; an arm turns `route_via_free` on for its own run, since running one is the request to use the accounts),
+`judge` and `report`, then `compare --arms <today's> <new>`, which scores both on only the tasks both served;
 when the new one wins there, adopt it with one setting, `route_via_free_tool_asks`. Pinned names such as `luna-thinking` stay where an A/B chose
 them until another A/B moves them.
 

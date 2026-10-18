@@ -14,6 +14,8 @@ The four commands, in order (all state lives under ~/.hswarm/free-ab/<run>/, nev
          (any free_chat name: gpt-instant, gpt-thinking, gpt-auto, luna-thinking, or a slug). --check asks every ChatGPT
          thread that answers early to check its claims (the claim check route_via_free_check_profiles turns on per
          profile); without it the profile's own setting applies. --label names the arm, to run one model twice.
+         Running an arm is the request to use the Free accounts, so it turns route_via_free on for its own run (it is off
+         by default); settings.toml is left as it is.
   python -m hswarm.free_ab judge  --run NAME --arm luna-thinking [--budget 20]
       -> judge_tasks_<model>.json, then `hswarm run` on it: a blind critical-profile worker with the task's own
          tools grades the two answers, shown in random order as A/B.
@@ -174,6 +176,9 @@ async def _arm_one(run: str, model: str, i: int, r: dict, stamp: str, label: str
 async def _arm(a) -> list[dict]:
     from . import free_client, free_route
     free_client.CHECK_READS = int(a.check_reads)
+    # Off by default, and with it off consult() asks no account: every row came back unserved and the run printed
+    # "0 of N served on Free" without saying why. This run was asked for, so the route is on for it.
+    config.ROUTE_VIA_FREE = True
     config.ROUTE_VIA_FREE_TOOLS = tuple(WEB_TOOLS)
     every = ("routine", "general", "decision", "research", "code", "critical")
     config.ROUTE_VIA_FREE_TOOL_PROFILES = every

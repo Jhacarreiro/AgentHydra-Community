@@ -1,13 +1,15 @@
 """Offline: the Free A/B tool (free_ab.py) on synthetic jobs, answers and judge files. No network, throwaway HOME."""
 from __future__ import annotations
 
+import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hswarm import config, free_ab, free_route  # noqa: E402
+from hswarm import config, free_ab, free_client, free_route  # noqa: E402
 from hswarm.spec import Task  # noqa: E402
 
 
@@ -42,6 +44,33 @@ def test_pick_keeps_ok_api_answers_of_the_profile_with_free_tools_and_drops_dupl
     got = free_ab.pick("critical", "read", n=10)
     assert [c["task"]["prompt"] for c in got] == ["keep me"]
     assert got[0]["api"]["answer"] == "API answer"
+
+
+def test_arm_turns_the_free_route_on_for_its_own_run(tmp_path, monkeypatch):
+    # route_via_free is off by default. An arm that left it off asked no account and wrote "0 of N served on Free".
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    _job(config.JOBS_DIR, "j1", [_task("a", cwd, "read the notes")], {"a": _ok()})
+    free_ab._write_jsonl(free_ab.run_dir("r1") / "candidates.jsonl", free_ab.pick("critical", "read", n=10))
+    # The arm sets these for its process; monkeypatch puts each back after the test.
+    for name in ("ROUTE_VIA_FREE", "ROUTE_VIA_FREE_TOOLS", "ROUTE_VIA_FREE_TOOL_PROFILES", "ROUTE_VIA_FREE_PROFILES",
+                 "ROUTE_VIA_FREE_TOOL_ASKS", "ROUTE_VIA_FREE_CHECK_PROFILES"):
+        monkeypatch.setattr(config, name, getattr(config, name))
+    monkeypatch.setattr(free_client, "CHECK_READS", free_client.CHECK_READS)
+    monkeypatch.setenv("AGENTHYDRA_URL", "http://127.0.0.1:9")  # never called: consult below is a stand-in
+    assert config.ROUTE_VIA_FREE is False
+    asked: list[bool] = []
+
+    async def consult(job_id, task):
+        asked.append(free_route.eligible(task))
+        return None, {"error": "stand-in"}
+
+    monkeypatch.setattr(free_route, "consult", consult)
+    rows = asyncio.run(free_ab._arm(argparse.Namespace(
+        run="r1", model="luna-thinking", provider=None, check_reads=8, conc=2, check=False, label=None)))
+    assert asked == [True]
+    assert [r["id"] for r in rows] == ["a"]
+    assert not config.SETTINGS_FILE.exists()  # turned on for the run, not written to settings.toml
 
 
 def _rep_inputs(wins: dict, errors=(0, 0)):
@@ -84,7 +113,10 @@ def test_verdict_loses_when_free_errors_exceed_the_apis():
     assert free_ab.verdict(rep).startswith("loses")
 
 
-def test_judge_builder_shuffles_deterministically_and_never_names_the_free_answer(tmp_path):
+def test_judge_builder_shuffles_deterministically_and_never_names_the_free_answer(tmp_path, monkeypatch):
+    # With the route on and a daemon named, so the eligibility check below is about the judge task, not the defaults.
+    monkeypatch.setattr(config, "ROUTE_VIA_FREE", True)
+    monkeypatch.setenv("AGENTHYDRA_URL", "http://127.0.0.1:9")
     cands, arm = [], []
     for i in range(12):
         t = _task(f"t{i}", tmp_path, f"prompt {i}")
