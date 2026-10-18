@@ -343,7 +343,7 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
 Some parts reach outside your PC or depend on someone else's terms, so each one waits for you to set it up.
 
 <details>
-<summary><b>Read more: remote access, Free instances, Login sync</b></summary>
+<summary><b>Read more: remote access, Free instances, Login sync, third-party connectors</b></summary>
 
 - **Orchestrator remote access** (the dashboard from a phone): a fresh clone has no sign-in provider, no relay
   and no tunnel. The gateway serves loopback only and refuses to open a tunnel, and the tray's Remote access
@@ -371,6 +371,10 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
   before you turn it on.**
 - **Login sync** keeps your CLI and Claude Desktop logins the same on your PCs through a store you deploy yourself
   ([cloud/login-sync-worker](cloud/login-sync-worker/README.md)). There is no built-in store.
+- **Desk's RepoYeti and ReDesign connectors** are third-party apps by LunarWerx, not part of this project. Each is
+  off until you turn on its **Use it in Desk** switch in Settings → Connectors, or press Install or Start on its
+  row. Until then Desk only checks whether a copy already answers on this PC: it downloads and starts nothing and
+  gives chats none of its tools. Installing one downloads that app's release from its own GitHub repository.
 - **Orchestrator jobs** use only folders you name: the to-do sweep is registered when `PROJECTHYDRA_HOME` points
   at your Project Hydra clone, and harvested to-dos are filed into repositories only under `ORCH_HARVEST_ROOTS`.
 
