@@ -6,7 +6,9 @@
 // the way the tray pairs (codex-hub-tray/pair.go: a loopback listener that the page's form posts the token to),
 // pushes its own chat through pushCodexHubOnce from its own app-server (the recorded stand-in, tests/mocks), and
 // keeps a relay socket open. The hub then lists each chat under the PC it came from. A push, a relay or a build
-// request without the token, with a wrong one, or with one the hub no longer has is refused and writes nothing.
+// request without the token, with a wrong one, or with one the hub no longer has is refused and writes nothing. With
+// the token, a request that sends no install id pushes and relays under any PC's name, a connected one's too: the
+// token is what keeps a PC's copy and relay, not the hub's hold on its name (docs/CODEX-HUB.md, step 7).
 //
 // Not on Windows: the daemon starts its tray host there at boot, which a test must not do.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -345,6 +347,7 @@ const firstToken = token()
 let port = 0
 let officeToken = ''
 let laptopToken = ''
+let officeRelay: ReturnType<typeof relayOf> | null = null
 
 describe.skipIf(process.platform === 'win32')('a hub on a home server, with two PCs', () => {
   beforeAll(async () => {
@@ -424,7 +427,7 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with two 
         )
       }
 
-      relayOf(office, officeToken)
+      officeRelay = relayOf(office, officeToken)
       relayOf(laptop, laptopToken)
       await until(async () => (await relayPcs()).every((p) => p.relay), 'both relays')
       expect((await relayPcs()).map(({ pc, chats, relay }) => ({ pc, chats, relay }))).toEqual([
@@ -506,6 +509,42 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with two 
       }
       // The office PC's chat is still the one it pushed.
       expect((await hubChats()).find((c) => c.pc === 'Office-PC')?.id).toBe(office.chat.id)
+    },
+    SLOW_MS,
+  )
+
+  test(
+    "the token, not a PC's hold on its name, is what keeps its copy and relay: one sent without an install id takes both",
+    async () => {
+      const bearer = { authorization: `Bearer ${firstToken}` }
+      // A push under the office PC's name while its relay is open, with no install id: taken, and its copy goes.
+      const res = await fetch(`${hubUrl()}/api/codex-hub/push`, {
+        method: 'POST',
+        headers: { ...bearer, 'content-type': 'application/json' },
+        body: JSON.stringify({ pc: 'Office-PC', threads: [] }),
+      })
+      expect(res.status).toBe(200)
+      expect((await hubChats()).map((c) => c.pc)).toEqual(['Laptop'])
+      const day = join(HUB_DIR, 'office-pc', 'sessions', '2026', '10', '18')
+      expect(existsSync(join(day, `rollout-2026-10-18T09-00-00-${office.chat.id}.jsonl`))).toBe(
+        false,
+      )
+
+      // A relay for its name with no install id closes the office PC's own, which then connects again.
+      const closesBefore = officeRelay!.closes.length
+      expect(await socketOpens('/api/codex-hub/relay?pc=Office-PC', bearer)).toBe(true)
+      await until(
+        async () => officeRelay!.closes.length > closesBefore,
+        "the office PC's relay closed",
+      )
+      await until(
+        async () => (await relayPcs()).find((p) => p.pc === 'Office-PC')?.relay === true,
+        "the office PC's relay back",
+      )
+
+      // Its next push puts its chat back.
+      expect(await push(office, officeToken)).toEqual({ threads: 1, sent: 1, missing: 0 })
+      expect((await hubChats()).map((c) => c.pc)).toEqual(['Laptop', 'Office-PC'])
     },
     SLOW_MS,
   )
