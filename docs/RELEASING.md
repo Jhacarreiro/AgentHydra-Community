@@ -251,12 +251,14 @@ Auto-update (see the README's Auto-update section) applies each update to a sour
 `git pull --ff-only` of the branch it tracks, and only when that remote is the release channel's repository
 (`server/src/updater.ts`). There is no separate publish step for that path: as soon as `main` moves, every
 checkout with auto-update enabled will fast-forward to it on its next check. Treat a push to `main` as
-user-facing, not as a staging step.
+user-facing, not as a staging step. One push could not be followed: the one that replaced upstream's history with
+the import commit. A checkout made before it shares no commit with `main` and has to be cloned again
+([FORK.md](FORK.md)).
 
 ## The pre-push gate
 
 `.githooks/pre-push` (enabled by `core.hooksPath`, which `bun install`'s `prepare` sets) runs on
-every push. Its guard, `.githooks/check-public-push.mjs`, enforces six rules, and then, for a
+every push. Its guard, `.githooks/check-public-push.mjs`, enforces seven rules, and then, for a
 release tag, the hook checks CI:
 
 1. **A public remote is announced and refused.** The hook looks the remote up on GitHub; when it
@@ -272,14 +274,29 @@ release tag, the hook checks CI:
 4. **No ref may carry upstream's relicensing commit.** On every push to any remote, a ref whose
    history contains `aee9dfc4` is refused, override or not. The audit config's `licenseBoundary`
    can add a commit to this check, never take that one away.
-5. **The public audit runs on what the push carries.** `scripts/audit-public.mjs --push` reads the
-   commits the remote does not have yet, from the base on, on every remote, private ones too. A
-   finding refuses the push until it is fixed or allowed in `scripts/audit-public.allow.json`, and
-   an audit that gives no verdict (it cannot load, start or finish) refuses it as well.
-6. **No tag may point into the MIT base's own history.** Every commit up to `3a65ba8e` is
-   upstream's, and so are its tags (`v0.1.0` to `v2.0.4`, `orchestrator-v1-final`); a
-   `git push --tags` or `--mirror` would publish them as this repository's, and a `v2.0.x` one
-   would pass rule 3 and start `release.yml`. Push branches by name. No override.
+5. **The public audit runs on what the push carries.** `scripts/audit-public.mjs --push` first
+   checks the import commit at the root of this history (the config's `base`): it must be in the
+   clone, have no parent and have `3a65ba8e`'s tree, and every pushed commit must be built on it.
+   Then it reads the commits the remote does not have yet, after the import commit, on every
+   remote, private ones too. A finding refuses the push until it is fixed or allowed in
+   `scripts/audit-public.allow.json`, and an audit that gives no verdict (it cannot load, start or
+   finish, or that check fails, as in a shallow clone) refuses it as well.
+6. **No tag may point at upstream's work.** Every commit up to `3a65ba8e` is upstream's, and so
+   are its tags (`v0.1.0` to `v2.0.4`, `orchestrator-v1-final`); a `git push --tags` or `--mirror`
+   from a clone that also fetched upstream would publish them as this repository's, and a
+   `v2.0.x` one would pass rule 3 and start `release.yml`. The import commit is upstream's work
+   too: its tree is `3a65ba8e`'s, upstream's own `release.yml` included, and a tag runs the
+   workflow of the commit it points to. So a tag is refused when its commit is `3a65ba8e` or in its
+   history, or when its tree is `3a65ba8e`'s (`d6eda7b9`). The audit config's `upstreamBase` and
+   `baseTree` can add a commit and a tree, never take these away; its `base` is not read here. A
+   clone without `3a65ba8e` has none of upstream's tags, so only the tree is checked there. Tag a
+   release on this repository's own commits, and push branches by name. No override.
+7. **No ref may carry upstream's history.** This history starts at the import commit, which has
+   no parent; upstream's history up to `3a65ba8e` stays in upstream's repository. On every push to
+   any remote, a ref whose history shares a commit with `3a65ba8e` (`3a65ba8e` itself or any
+   commit before it) is refused, and so is a merge that brings that history in. The audit
+   config's `upstreamBase` can add a commit to this check, never take that one away. A clone
+   without `3a65ba8e` holds none of that history and passes. No override.
 
 **A release tag then needs green CI on its commit.** With a `v*.*.*` tag in the push, the hook asks
 `gh` for a `ci.yml` run on the exact commit the tag points to whose conclusion is success. If there
@@ -292,7 +309,7 @@ signed in, offline, no run on that commit, a run still going or not green), the 
 line saying why and runs the full `bun run check:deep`, and refuses the tag when bun is not on PATH
 to run it. A tag on a docs-only commit has no CI run (`ci.yml` ignores `docs/**` and `*.md`), so it
 takes that fallback; tag the version-bump commit, which CI runs. A push with no release tag in it is
-done once the guard's six rules pass.
+done once the guard's seven rules pass.
 
 A commit whose subject starts with `wip: bundle` must also list every file in it under `Mine:` and
 `Swept:` (`.githooks/commit-msg`); `bun run save:bundle -- --mine <paths>` writes that message
