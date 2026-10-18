@@ -81,7 +81,7 @@ function registry(tgz: Buffer) {
     fetch(req) {
       if (new URL(req.url).pathname === `/${SDK_PACKAGE}/-/claude-agent-sdk-${VERSION}.tgz`) {
         hits.tarball++
-        return new Response(tgz)
+        return new Response(new Uint8Array(tgz))
       }
       return new Response('not found', { status: 404 })
     },
