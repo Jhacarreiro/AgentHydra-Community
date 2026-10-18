@@ -21,7 +21,9 @@
 #
 # It writes codex-hub-tray.exe, codex-hub-tray-linux-x64 and codex-hub-tray-linux-arm64, the names the hub serves
 # them under from <config dir>/codex-hub/.pusher/, and SHA256SUMS. "macos" runs build-macos.sh, which needs cgo and
-# the Xcode command line tools, so it builds on a Mac only; its two hub builds go into SHA256SUMS too.
+# the Xcode command line tools, so it builds on a Mac only; its two hub builds go into SHA256SUMS too. The zip a new
+# Mac is handed holds file times, so it is not the same bytes twice and stays out of SHA256SUMS: its hash goes into
+# SHA256SUMS-macos-zip, for comparing the copy a Mac gets with the one built here.
 #
 # Two builds are the same because nothing of the machine goes in: -trimpath leaves out this checkout's folder,
 # -buildvcs=false the commit and whether the tree had changes, -buildid= the build id; cgo is off for these targets,
@@ -116,6 +118,13 @@ done
 
 if command -v sha256sum >/dev/null; then sum() { sha256sum "$@"; }; else sum() { shasum -a 256 "$@"; }; fi
 (cd "$OUT" && sum "${built[@]}") >"$OUT/SHA256SUMS"
+# An earlier Mac build's line would name a zip this build did not make.
+rm -f "$OUT/SHA256SUMS-macos-zip"
+[[ " $TARGETS " != *" macos "* ]] || (cd "$OUT" && sum codex-hub-tray-macos.zip) >"$OUT/SHA256SUMS-macos-zip"
 echo
 echo "$(go version), from $(git rev-parse --short HEAD 2>/dev/null || echo "a tree outside git")"
 cat "$OUT/SHA256SUMS"
+if [ -f "$OUT/SHA256SUMS-macos-zip" ]; then
+	echo "and, not the same bytes twice (it holds file times), the zip to check a Mac's copy against:"
+	cat "$OUT/SHA256SUMS-macos-zip"
+fi

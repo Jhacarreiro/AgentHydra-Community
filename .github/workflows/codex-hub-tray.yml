@@ -99,7 +99,7 @@ jobs:
         run: go test ./...
 
       # build-macos.sh through build.sh: the app, its zip and the hub's two darwin builds. Only the hub's builds are
-      # compared; the zip holds file times.
+      # compared; the zip holds file times, so its hash is in SHA256SUMS-macos-zip, which must check out.
       - name: Reproducible build
         run: |
           TARGETS=macos OUT="$RUNNER_TEMP/first" ./build.sh
@@ -107,10 +107,13 @@ jobs:
           rm -rf "$RUNNER_TEMP/another folder/dist"
           GOCACHE="$RUNNER_TEMP/empty-cache" TARGETS=macos OUT="$RUNNER_TEMP/second" "$RUNNER_TEMP/another folder/build.sh"
           diff "$RUNNER_TEMP/first/SHA256SUMS" "$RUNNER_TEMP/second/SHA256SUMS"
+          (cd "$RUNNER_TEMP/first" && shasum -a 256 -c SHA256SUMS-macos-zip)
           {
             echo '### Tray builds (example addresses and key)'
             echo '```'
             go version
             cat "$RUNNER_TEMP/first/SHA256SUMS"
+            echo '# the zip, not the same bytes twice:'
+            cat "$RUNNER_TEMP/first/SHA256SUMS-macos-zip"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
