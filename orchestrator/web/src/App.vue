@@ -286,6 +286,6 @@ watch(
         </template>
       </div>
     </div>
-    <AppFooter discord="https://lunarwerx.com/discord/agenthydra" />
+    <AppFooter />
   </TooltipProvider>
 </template>

@@ -5,7 +5,7 @@ export default {
   deskInstanceMissing: 'Instance #{num} is not in the Instances tables',
   tabInstances: 'Instances',
   queue: 'Queue',
-  discord: 'Join the LunarWerx Discord',
+  projectRepo: 'AgentHydra Community on GitHub',
   shellFullWidth: 'Use the full window width',
   shellFitWidth: 'Back to the centered width',
   restartNeeded: 'Restart to load new code',

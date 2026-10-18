@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BarChart3, Boxes, Layers, Maximize2, Minimize2, RotateCw } from '@lucide/vue'
+import { BarChart3, Boxes, GitFork, Layers, Maximize2, Minimize2, RotateCw } from '@lucide/vue'
 import {
   type Component,
   computed,
@@ -10,7 +10,7 @@ import {
   ref,
   watch,
 } from 'vue'
-import { CHANGELOG_URL } from '@desk/shared/release-links'
+import { CHANGELOG_URL, PROJECT_HOMEPAGE } from '@desk/shared/release-links'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 import PageSettingsDialog from '@/components/PageSettingsDialog.vue'
@@ -53,7 +53,6 @@ import { pendingSessionJump, takeSessionJump } from '@/lib/session-jump'
 import { REBRAND_NOTICE_KEY } from '@/lib/storage-rebrand'
 import { useTheme } from '@/lib/theme'
 import { applyWindowSizeHint } from '@/lib/window-size-hint'
-import DiscordMark from '@/shell/DiscordMark.vue'
 import Sidebar from '@/shell/Sidebar.vue'
 import { usePushPanel } from '@/shell/usePushPanel'
 
@@ -67,9 +66,6 @@ const QueueView = lazyView(() => import('@/components/QueueView.vue'))
 const AnalyticsView = lazyView(() => import('@/components/AnalyticsView.vue'))
 const HSwarmView = lazyView(() => import('@/components/HSwarmView.vue'))
 const InstancesView = lazyView(() => import('@/components/InstancesView.vue'))
-
-// The studio's one invite link, never expiring (the same one every product carries).
-const DISCORD_URL = 'https://lunarwerx.com/discord/agenthydra'
 
 // A portable (--app) window forwarded into an already-running Chromium instance ignores
 // --window-size and the saved placement; the daemon/tray tag its URL with the size it should
@@ -403,12 +399,11 @@ onUnmounted(stopAvailabilityPolling)
         >
           <component :is="fullWidth ? Minimize2 : Maximize2" />
         </Button>
-        <!-- The studio's Discord, as a plain icon: this is the page people keep open and come
-             back to, so it carries the invite quietly rather than the landing pages' floating
-             badge (owner, 2026-09-27). -->
+        <!-- The project's repository, as a plain icon: this is the page people keep open and come
+             back to, so the way to its source, issues and releases stays one click away. -->
         <Button variant="ghost" size="icon-sm" as-child>
-          <a :href="DISCORD_URL" target="_blank" rel="noopener noreferrer" :title="$t('app.discord')" :aria-label="$t('app.discord')">
-            <DiscordMark />
+          <a :href="PROJECT_HOMEPAGE" target="_blank" rel="noopener noreferrer" :title="$t('app.projectRepo')" :aria-label="$t('app.projectRepo')">
+            <GitFork />
           </a>
         </Button>
       </div>

@@ -1,12 +1,18 @@
 // tests/release-channel-drift.test.ts - the copies of the release channel that cannot import
-// server/src/release-channel.ts (PowerShell, the tray's JSON, Desk's links, the workflow) say what
-// release-channel.json says, and no code names the repository this project was forked from, or the update
-// proxy it used to ask.
+// server/src/release-channel.ts (PowerShell, the tray's JSON, Desk's and the orchestrator page's links, the
+// workflow) say what release-channel.json says, and no code names the repository this project was forked from,
+// or the update proxy it used to ask.
 import { describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { CHANGELOG_URL, PROJECT_HOMEPAGE, PROJECT_REPO } from '../desk2/shared/release-links'
+import {
+  CHANGELOG_URL,
+  PROJECT_HOMEPAGE,
+  PROJECT_NAME,
+  PROJECT_REPO,
+} from '../desk2/shared/release-links'
+import * as orchestratorLinks from '../orchestrator/web/src/lib/project-links'
 // @ts-expect-error - a plain node module with runtime exports
 import { readReleaseChannel } from '../scripts/release-channel.mjs'
 import { changelogUrl, githubSlug, RELEASE_CHANNEL, repoUrl } from '../server/src/release-channel'
@@ -87,6 +93,12 @@ describe('links', () => {
     expect(PROJECT_REPO).toBe(RELEASE_CHANNEL.repo)
     expect(PROJECT_HOMEPAGE).toBe(repoUrl())
     expect(CHANGELOG_URL).toBe(changelogUrl())
+  })
+
+  test("the orchestrator page's footer names and links what Desk's window does", () => {
+    expect(orchestratorLinks.PROJECT_REPO).toBe(RELEASE_CHANNEL.repo)
+    expect(orchestratorLinks.PROJECT_HOMEPAGE).toBe(repoUrl())
+    expect(orchestratorLinks.PROJECT_NAME).toBe(PROJECT_NAME)
   })
 })
 
