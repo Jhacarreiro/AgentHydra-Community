@@ -1,5 +1,6 @@
-// Which of a profile's pages belong to which chat. Every chat of a workspace drives one shared Chrome; the Connections
-// MCP gives each chat its own page and records who drives which in a ledger beside the profile (Desk only reads it):
+// Which of a profile's pages belong to which chat. Every chat of a workspace drives one shared Chrome; the browser_*
+// tools (agent/) give each chat its own page and record who drives which in a ledger beside the profile (ledger.ts
+// writes it, this file reads it, in the format of the Connections browser engine they were ported from):
 //
 //   <profile user-data-dir>/.connections-tabs.json   { v: 1, tabs: { '<CDP targetId>': { chat: '<owner>', at: '<ISO>' } } }
 //

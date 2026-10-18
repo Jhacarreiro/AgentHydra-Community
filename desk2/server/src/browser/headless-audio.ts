@@ -1,4 +1,4 @@
-// Which chats make sound through the Connections MCP's headless Chrome profiles, and the mute that silences only a
+// Which chats make sound through the browser_* tools' headless Chrome profiles, and the mute that silences only a
 // chat's own pages. Windows only: a helper (audio-helper/) reports each audio session's peak meter; a profile is audible
 // while its Chrome's audio service session peaks above zero, and the page that plays is found through the profile's
 // .connections-tabs.json ledger (ownership.ts). These are the pure rules, tested on fabricated rows.

@@ -1,4 +1,6 @@
-// A read-only reader of the Connections MCP's saved-browser store (its browser_* tools write it, Desk 2 never does).
+// The reader of AgentHydra's saved-browser store. This file only reads: profiles-write.ts writes the registry (a
+// note, a title, a claim, an adopted profile) for the browser_* tools in agent/. The layout and the ~/.connections
+// root are those of the Connections MCP's browser engine those were ported from, so a store it made reads as it stands.
 //
 //   <root>/registry.json     { profiles: { '<slug>/<name>' | '<bare name>': { sessionHosts, note, noteAt, ... } } }
 //   <root>/workspaces.json   { '<slug>': { workspace: 'c:/Users/me/Folder' } }

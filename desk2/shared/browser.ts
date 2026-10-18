@@ -1,9 +1,9 @@
 // The browser pane's contract: the saved browsers of a chat's workspace, and the live view of one.
 //
-// A saved browser is a managed Chrome profile of the Connections MCP (its local browser_* tools): a chat's AI opens,
-// drives and signs it in through those tools, and the MCP records what it holds. Desk 2 lists the profiles of the
+// A saved browser is a managed Chrome profile of AgentHydra's browser MCP (its browser_* tools): a chat's AI opens,
+// drives and signs it in through those tools, and they record what it holds. The pane lists the profiles of the
 // chat's workspace, shows one live in the servers pane and lets the person click and type into it (to log in, say).
-// Desk 2 never writes the profile store: notes, logins and new profiles are the MCP's to record.
+// The pane never writes the profile store: notes, logins and new profiles are the tools' to record.
 //
 // server/src/browser/ answers these routes; web/src/components/servers/ draws them; the transcript's Browser card
 // fires OPEN_BROWSER_EVENT.

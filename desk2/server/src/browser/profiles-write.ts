@@ -1,7 +1,8 @@
-// The write side of the saved-browser registry (registry.json), shared with the Connections MCP while both run.
-// Every write re-reads the file, changes only the entry it touched, keeps every other field, and replaces the
+// The write side of the saved-browser registry (registry.json). Desk may not be its only writer: the store keeps the
+// path and layout of the Connections MCP it was ported from, so that MCP writes the same file wherever someone runs it
+// too. Every write re-reads the file, changes only the entry it touched, keeps every other field, and replaces the
 // file atomically (temp file + rename in the same folder). A registry that exists but does not parse is never
-// overwritten: that would destroy whatever the other writer put there.
+// overwritten: that would destroy whatever another writer put there.
 
 import { Database } from 'bun:sqlite'
 import {

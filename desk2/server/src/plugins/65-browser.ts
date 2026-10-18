@@ -1,6 +1,6 @@
 // The browser pane's side of Desk 2 (contract: shared/browser.ts): the saved Chrome browsers of a chat's workspace
-// (the Connections MCP's browser profile store, read only), one profile's Chrome started when none runs, and a live
-// view of one of its pages over a websocket. The store reader is browser/store.ts, Chrome's protocol browser/cdp.ts.
+// (AgentHydra's saved-browser store, which this pane only reads), one profile's Chrome started when none runs, and a
+// live view of one of its pages over a websocket. The store reader is browser/store.ts, Chrome's protocol browser/cdp.ts.
 //
 // Every route and the websocket upgrade is for Desk 2's own page only (browser/guard.ts), after Desk's localOnly
 // guard. A request names a profile, never a port: the port comes from that profile folder's DevToolsActivePort.

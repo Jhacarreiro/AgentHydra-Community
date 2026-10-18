@@ -91,8 +91,8 @@ export function sessionOwnerLiveness(sessionId: string, roots: string[] = sessio
 
 /**
  * Whether an owner is alive: a session of a Desk chat or an active CliMayte worker (`deskSessions`), a `pid:` owner's
- * process, or a session a live Claude process names. `mcp:` owners are judged by the Connections MCP's own server, which
- * this process cannot see, so they are never dead here.
+ * process, or a session a live Claude process names. An `mcp:` owner is another writer's (the Connections engine writes
+ * that form), whose liveness this process cannot see, so it is never dead here.
  */
 export function ownerLive(owner: string, deskSessions: ReadonlySet<string>, roots: string[] = sessionFileRoots()): boolean | null {
   if (deskSessions.has(owner)) return true

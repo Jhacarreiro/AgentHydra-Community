@@ -195,10 +195,10 @@ the Desk window on top, is throttled by Windows' occlusion tracking and sends no
 `LIVE_CHROME_FLAGS` in `server/src/browser/cdp.ts` (`--disable-backgrounding-occluded-windows`,
 `--disable-renderer-backgrounding`, `--disable-background-timer-throttling`,
 `--disable-features=CalculateNativeWinOcclusion`) go on every Chrome the Desk launches. A saved Chrome that is
-already open keeps its old flags until it is closed and opened again. Connections' browser manager launches with the
-same four flags since Connections d69ddd6071. The pane also caps the screencast at the canvas's real pixels
-(CSS size times `devicePixelRatio`, clamped to 1-3), sends JPEG at quality 60 (about 26 KB a frame, was 28.5 KB),
-and adds up the wheel ticks of one animation frame into one message.
+already open keeps its old flags until it is closed and opened again. The browser_* tools' own launches
+(`server/src/browser/agent/session.ts`, `handoff.ts`) carry the same four. The pane also caps the screencast at the
+canvas's real pixels (CSS size times `devicePixelRatio`, clamped to 1-3), sends JPEG at quality 60 (about 26 KB a
+frame, was 28.5 KB), and adds up the wheel ticks of one animation frame into one message.
 
 Tried and dropped: holding frames on the server until the pane says it drew one (one in flight, then three). Back to
 back under the same load it drew 21 fps against 47 (click 180/375 ms, wheel 343/1037 ms), and with three in flight

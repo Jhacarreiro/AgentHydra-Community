@@ -228,7 +228,7 @@ export async function profilesPayload(cwd: string): Promise<Json> {
 const hostMatches = (host: string, want: string) =>
   host === want || want.endsWith(`.${host}`) || host.endsWith(`.${want}`)
 
-// Mirrors SERVICE_HOSTS in the Connections MCP's browser.mjs; keep the two in step.
+// SERVICE_HOSTS as in the Connections MCP's browser.mjs, which this was ported from.
 const SERVICE_HOSTS: Record<string, string[]> = {
   gmail: ['mail.google.com', 'accounts.google.com', 'google.com'],
   google: ['accounts.google.com', 'google.com'],

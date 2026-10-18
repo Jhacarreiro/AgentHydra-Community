@@ -1,5 +1,6 @@
-// Writes the tab ledger that ownership.ts reads, in the shape Connections' browser engine writes it. Both write the same
-// file while both run, so every write re-reads the file, changes only its own row, and replaces the file atomically.
+// Writes the tab ledger that ownership.ts reads, in the shape of the Connections browser engine this was ported from.
+// That engine writes the same file wherever someone runs it too, so every write re-reads the file, changes only its own
+// row, and replaces the file atomically.
 
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
