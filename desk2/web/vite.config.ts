@@ -2,11 +2,12 @@ import { fileURLToPath, URL } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
+import { thirdPartyModules } from '../scripts/third-party-modules'
 
 const server = 'http://127.0.0.1:7798'
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue(), tailwindcss(), thirdPartyModules()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

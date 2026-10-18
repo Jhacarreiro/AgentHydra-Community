@@ -1,0 +1,37 @@
+{
+  "about": "Packages whose own files do not settle their licence, for scripts/third-party-licenses.ts. Each entry is for one version: a new version is checked again. A text is fetched from the commit the package was published from and must match its SHA-256.",
+  "clarifications": {
+    "npm:standardwebhooks@1.1.1": {
+      "why": "the npm package has no licence file; its package.json says MIT, and the libraries/ folder it is published from carries the MIT licence below, at the commit npm records as its gitHead",
+      "text": {
+        "file": "libraries/LICENSE (standard-webhooks repository)",
+        "url": "https://raw.githubusercontent.com/standard-webhooks/standard-webhooks/b4d2c14fc5b4ccff3ff271e3b087dff812254c59/libraries/LICENSE",
+        "sha256": "5ec8c7b26b64d881a6706617bed25c049f97f2f35de034c756de8546fd6dbe27"
+      }
+    },
+    "cargo:webview2-com@0.38.2": {
+      "why": "the crate has no licence file; its Cargo.toml says MIT, and its repository carries the MIT licence below, at the commit its .cargo_vcs_info.json names",
+      "text": {
+        "file": "LICENSE (webview2-rs repository)",
+        "url": "https://raw.githubusercontent.com/wravery/webview2-rs/b74dc5e2b394044bea5191052868ce7a106c202c/LICENSE",
+        "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+      }
+    },
+    "cargo:webview2-com-sys@0.38.2": {
+      "why": "the crate has no licence file; its Cargo.toml says MIT, and its repository carries the MIT licence below, at the commit its .cargo_vcs_info.json names",
+      "text": {
+        "file": "LICENSE (webview2-rs repository)",
+        "url": "https://raw.githubusercontent.com/wravery/webview2-rs/b74dc5e2b394044bea5191052868ce7a106c202c/LICENSE",
+        "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+      }
+    },
+    "cargo:webview2-com-macros@0.8.1": {
+      "why": "the crate has no licence file; its Cargo.toml says MIT, and its repository carries the MIT licence below, at the commit its .cargo_vcs_info.json names",
+      "text": {
+        "file": "LICENSE (webview2-rs repository)",
+        "url": "https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE",
+        "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+      }
+    }
+  }
+}

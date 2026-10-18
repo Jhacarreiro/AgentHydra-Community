@@ -2,6 +2,7 @@ import { fileURLToPath, URL } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, type Plugin } from 'vite'
+import { thirdPartyModules } from '../scripts/third-party-modules'
 
 /**
  * Drop any Google Fonts `@import` from this app's CSS, because we serve Inter ourselves.
@@ -83,7 +84,7 @@ function stripRemoteFontImport(): Plugin {
 export default defineConfig({
   base: '/ah/',
   define: { 'import.meta.env.VITE_API_BASE': JSON.stringify('/ah') },
-  plugins: [stripRemoteFontImport(), vue(), tailwindcss()],
+  plugins: [stripRemoteFontImport(), vue(), tailwindcss(), thirdPartyModules()],
   resolve: {
     alias: {
       '@agenthydra/server': fileURLToPath(new URL('../../server/src', import.meta.url)),

@@ -15,6 +15,8 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
  *   --bun-version x.y.z       the bun this build pins (default: the running Bun.version)
  *   --target windows-x64 | ... only decides whether the Windows tray toolkit and the Windows-only
  *                             misc files (CliMayte's runner) are included
+ *   --metafile <file>         also write the build's metafile there (what scripts/package-release.ts reads the
+ *                             licences of the npm packages inlined into server.js from)
  */
 import { $ } from 'bun'
 import pkg from '../package.json'
@@ -254,8 +256,9 @@ mkdirSync(outApp, { recursive: true })
 console.log('→ bundle daemon')
 const stamp = buildStamp()
 const entry = writeReleaseEntrypoint(outApp, windowsTarget, { version: pkg.version, ...stamp })
+const metafile = option('--metafile')
 try {
-  await $`bun build --target=bun --sourcemap=none ${entry} --outfile=${join(outApp, 'server.js')}`
+  await $`bun build --target=bun --sourcemap=none ${entry} --outfile=${join(outApp, 'server.js')} ${metafile ? [`--metafile=${resolve(metafile)}`] : []}`
 } finally {
   rmSync(TMP, { recursive: true, force: true })
 }
