@@ -1,7 +1,8 @@
 // server/src/climayte-runner-posix.ts — the CliMayte runner on macOS and Linux: this app in
-// `--climayte-runner <spec>` mode (main.ts). Windows runs misc/climayte-runner.exe instead; the
-// contract both keep (the spec as a single-owner claim, the pid and exit files, the wind-down hook
-// answered by the runner) is in climayte-runner.ts.
+// `--climayte-runner <spec>` mode (main.ts). Windows runs misc/climayte-runner.exe instead (a Windows
+// checkout that has not built it runs this one: climayte-runner.ts runnerKind); the contract both
+// keep (the spec as a single-owner claim, the pid and exit files, the wind-down hook answered by the
+// runner) is in climayte-runner.ts.
 //
 // No job object here: the kill-on-close job, its process ceiling, `left` and `peakProcesses` are
 // the Windows runner's.

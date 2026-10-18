@@ -13,7 +13,8 @@
 // for the end. A restarted daemon therefore finds its running workers still running and simply goes
 // on reading them.
 //
-// On Windows the runner is misc/climayte-runner.exe (source beside it in misc/climayte-runner-native/),
+// On Windows the runner is misc/climayte-runner.exe (built from misc/climayte-runner-native/ by
+// scripts/build-natives.ts; a checkout that has not built it runs workers as below, see runnerKind),
 // a small native program rather than this app in runner mode: a Bun runtime per worker measured
 // 123-177 MB, about 3 GB with 20 workers, to wait on one process (owner, 2026-10-04: "instead of
 // spinning up 50 of one thing"). One runner per worker stays on purpose: a runner that dies takes
@@ -104,17 +105,22 @@ export interface RunnerExit {
 }
 
 /** The Windows runner as it ships: the checkout's misc/ or a bundle's misc/ beside the exe, else the
- *  copy a single-file build embeds (RUNTIME_MISC_FILES). Throws, naming the file, when neither is
- *  there. */
-function nativeRunnerSource(): string {
+ *  copy a single-file build embeds (RUNTIME_MISC_FILES); null when neither is there. */
+function foundNativeRunner(): string | null {
   const onDisk = join(APP_ROOT, 'misc', CLIMAYTE_RUNNER_FILE)
   if (existsSync(onDisk)) return onDisk
-  const embedded = embeddedMiscFiles()?.[CLIMAYTE_RUNNER_FILE]
-  if (embedded) return embedded
+  return embeddedMiscFiles()?.[CLIMAYTE_RUNNER_FILE] ?? null
+}
+
+/** foundNativeRunner, or an error naming the file. */
+function nativeRunnerSource(): string {
+  const found = foundNativeRunner()
+  if (found) return found
+  const onDisk = join(APP_ROOT, 'misc', CLIMAYTE_RUNNER_FILE)
   throw new Error(
     IS_RELEASE
       ? `${onDisk} is missing and this build embeds no copy of it: a build defect (scripts/build.ts embeds RUNTIME_MISC_FILES)`
-      : `${onDisk} is missing from this checkout: build it with misc/climayte-runner-native/build.ps1`,
+      : `${onDisk} is missing from this checkout: build it with \`bun scripts/build-natives.ts runner\``,
   )
 }
 
@@ -166,10 +172,39 @@ export function nativeRunner(): string {
   return staged.path
 }
 
+/**
+ * Which runner a worker starts under: the native one on Windows, this program in runner mode
+ * elsewhere. The native runner is built, not committed (scripts/build-natives.ts), so a Windows
+ * source checkout can be without it; until it is built, that checkout runs workers as macOS and
+ * Linux do. They work, but without the native runner's job: what a worker leaves running outlives
+ * it, and its tree has no process ceiling. A release always takes the native runner, and a release
+ * without one fails the attempt: that is a build defect, never a reason to fall back.
+ */
+export function runnerKind(
+  platform: string,
+  release: boolean,
+  nativeFound: boolean,
+): 'native' | 'bun' {
+  if (platform !== 'win32') return 'bun'
+  return release || nativeFound ? 'native' : 'bun'
+}
+
+/** Said once per daemon, in its log, when a Windows checkout falls back. */
+let unbuiltRunnerNoted = false
+
 /** How a runner is started for `specPath`: the native runner on Windows; elsewhere this program in
  *  runner mode (a release runs its bundle on the downloaded bun, a source run goes through main.ts). */
 export function runnerArgv(specPath: string): string[] {
-  if (process.platform === 'win32') return [nativeRunner(), specPath]
+  const kind = runnerKind(process.platform, IS_RELEASE, foundNativeRunner() !== null)
+  if (kind === 'native') return [nativeRunner(), specPath]
+  if (process.platform === 'win32' && !unbuiltRunnerNoted) {
+    unbuiltRunnerNoted = true
+    console.warn(
+      `[climayte] ${join(APP_ROOT, 'misc', CLIMAYTE_RUNNER_FILE)} is not built in this checkout, so workers run ` +
+        'under this program in runner mode: what a worker leaves running is not ended with it, and its ' +
+        'process tree has no ceiling. Build it with `bun scripts/build-natives.ts runner` (needs Rust).',
+    )
+  }
   return IS_RELEASE
     ? [process.execPath, join(import.meta.dir, 'server.js'), '--climayte-runner', specPath]
     : [process.execPath, join(import.meta.dir, 'main.ts'), '--climayte-runner', specPath]

@@ -297,9 +297,10 @@ as `interrupted` and redid its step); `detached` is no escape (DETACHED_PROCESS 
   The runner reads and deletes the spec (it holds the CLI's env), starts the CLI with the attempt's
   files, writes `<log>.pid.json` (`{ runner, child }`), waits, and writes `<log>.exit.json`.
 - On Windows the runner is `misc/climayte-runner.exe`, a native program with no dependencies (Rust,
-  source in `misc/climayte-runner-native/`, built and checked for machine paths by its `build.ps1`;
-  the exe is committed, and a release build embeds it as one of `RUNTIME_MISC_FILES` in
-  `misc-assets.ts`). It is a console program started hidden,
+  source in `misc/climayte-runner-native/`). It is not committed: `bun scripts/build-natives.ts runner`
+  builds it with the pinned Rust release and checks it for machine paths, every Windows release builds
+  its own, and a Windows release build embeds it as one of `RUNTIME_MISC_FILES` in `misc-assets.ts`
+  (a build for macOS or Linux leaves it out). It is a console program started hidden,
   so its console host is born before its job and the CLI shares that console, as under the Bun
   runner; a CLI given its own console left that console's host in the job for a moment after it
   exited, listed as a leftover of every attempt. Measured 2026-10-04 on the same stand-in CLI: the
@@ -311,7 +312,9 @@ as `interrupted` and redid its step); `detached` is no escape (DETACHED_PROCESS 
   `misc/climayte-runner.exe` when there is one and otherwise from the build's embedded copy:
   Windows cannot replace a running exe, so runners started from `misc/` itself would make a
   `git pull` fail whenever the runner changed while a worker ran, and an embedded file cannot be
-  started at all. With neither, the attempt fails and names the file. The runner finds the CLI as
+  started at all. With neither, a release's attempt fails and names the file; a source checkout that
+  has not built it runs its workers under the Bun runner instead (`runnerKind`), without the job
+  and its process ceiling, and the daemon's log says so once. The runner finds the CLI as
   Bun.spawn did: a path or a bare name on the CLI's PATH, tried with `.exe`, `.cmd` and `.bat`
   unless it ends in one, so npm's extensionless `claude` shim starts the `claude.cmd` beside it.
 - The attempt records `runner: { pid, pidFile, exitFile, launchedAt }`; `attempt.pid` is the CLI's.

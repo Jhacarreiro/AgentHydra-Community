@@ -14,7 +14,8 @@
 //   --instances | --instance-mode → the lightweight instance launcher (./instance-mode.ts)
 //   --mcp                         → the MCP stdio server (./mcp.ts)
 //   --climayte-runner <spec>         → one CliMayte worker's CLI, run outside the daemon, on macOS and Linux
-//                                    (./climayte-runner-posix.ts; Windows runs misc/climayte-runner.exe)
+//                                    (./climayte-runner-posix.ts; Windows runs misc/climayte-runner.exe
+//                                    once a checkout has built it)
 //
 // `__dispatch_runner` and `__fake_claude` were removed with the unreachable headless-dispatch spawn
 // path they existed to serve (dispatch.ts, headless dispatch is now permanently refused - see
