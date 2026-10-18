@@ -10,6 +10,9 @@ export const NOTICES_FILE: string
 export const MESSAGE_PATH: string
 /** Upstream's relicensing commit; built in, so the config can add a boundary but not remove this. */
 export const LICENSE_BOUNDARY: string
+/** Upstream's last MIT commit, whose history this repository does not carry; built in like
+ *  LICENSE_BOUNDARY, so the config's upstreamBase can add a commit but not remove this one. */
+export const UPSTREAM_BASE: string
 
 /** Every rule id, with the sentence the report shows for it. */
 export const RULES: { readonly [rule: string]: string }
@@ -138,6 +141,20 @@ export function licenseBoundaries(config?: Partial<AuditConfig>): string[]
 
 /** A license.boundary finding for each of `commits` with one of `boundaries` in its history. */
 export function licenseFindings(cwd: string, boundaries: string[], commits: string[]): Finding[]
+
+/** UPSTREAM_BASE, plus the config's upstreamBase when it names another commit. */
+export function upstreamBases(config?: Partial<AuditConfig>): string[]
+
+/** An upstream.history finding for each of `commits` that shares a commit with one of `bases`; none
+ *  for a base this clone does not have. */
+export function upstreamFindings(cwd: string, bases: string[], commits: string[]): Finding[]
+
+/** license.boundary's and upstream.history's findings for `commits`, from the config's commits. */
+export function lineageFindings(
+  cwd: string,
+  config: Partial<AuditConfig>,
+  commits: string[],
+): Finding[]
 
 /** The base's provenance: in this clone, a root commit, with the config's baseTree, and an ancestor
  *  of every one of `tips`. Returns its sha; throws AuditError (exit 2) saying what is wrong. */

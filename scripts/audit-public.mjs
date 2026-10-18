@@ -35,6 +35,9 @@
 // and message are this repository's and are read as any commit's are; its tree is upstream's, fixed
 // by its hash, and is not. Anything else stops the audit (exit 2) and says what is wrong, and so does
 // a clone that cannot show it, such as a shallow one. A clone needs the whole history to reach it.
+// Rule upstream.history: no commit read may share a commit with upstream's own history (the config's
+// upstreamBase, 3a65ba8e, built in like the relicensing commit). A clone without 3a65ba8e, which every
+// clone of this repository is, holds none of that history, and there it has nothing to find.
 //
 // NOTHING IT FINDS IS PRINTED. A finding names its rule, its file and line, and a fingerprint: the
 // first 16 hex digits of the sha256 of what matched. A secret printed by its own detector is a secret
@@ -44,9 +47,9 @@
 //
 // FINE ON PURPOSE. scripts/audit-public.allow.json holds the findings someone has looked at and found
 // harmless: {rule, path, fp, reason}, matched on all three, so an entry clears that one value in that
-// one file and nothing else. It never holds the value itself. commit.email and license.boundary cannot
-// be allowed at all: a published address cannot be unpublished, and the licence line is not a matter
-// of opinion. An entry that clears nothing is stale, and a stale entry would quietly clear its value
+// one file and nothing else. It never holds the value itself. commit.email, license.boundary and
+// upstream.history cannot be allowed at all: a published address cannot be unpublished, and neither the
+// licence line nor whose history this is is a matter of opinion. An entry that clears nothing is stale, and a stale entry would quietly clear its value
 // again if it ever came back. A run that reads the tree at a commit, the base and every commit from it
 // up to that same commit (the default run, and CI's) has seen everything an entry can match, so there
 // a stale entry fails the run with exit 1 and a message of its own. A --tree or a --history run alone
@@ -100,6 +103,13 @@ const COMMIT_PATH = '(commit)'
  * off: the config's licenseBoundary may name a further commit, never take this one away.
  */
 export const LICENSE_BOUNDARY = 'aee9dfc4f7dd0228d8e1740be90b646b30204f37'
+/**
+ * Upstream's last MIT commit, 3a65ba8e. Its history is upstream's, and this repository does not carry
+ * it: its own history starts at the import commit (the config's base), which has 3a65ba8e's tree and
+ * no parent. Built in like LICENSE_BOUNDARY, so no config edit can turn upstream.history off: the
+ * config's upstreamBase may name a further commit, never take this one away.
+ */
+export const UPSTREAM_BASE = '3a65ba8e6497c16732f627fc8934723839c82fdd'
 const COMMIT_ID = /^[0-9a-f]{40}$/
 const MAX_BUFFER = 1 << 30
 
@@ -124,8 +134,10 @@ export const RULES = {
     'an SVG or stylesheet whose comment states a licence or copyright, with no entry in THIRD-PARTY-NOTICES.md or binary-provenance.json',
   'commit.email': 'a commit author, committer or trailer email that is not a noreply address',
   'license.boundary': 'history that contains the commit that took upstream off MIT',
+  'upstream.history':
+    "history that shares a commit with upstream's own (its last MIT commit or one before it), which this repository does not carry",
 }
-const NOT_ALLOWABLE = new Set(['commit.email', 'license.boundary'])
+const NOT_ALLOWABLE = new Set(['commit.email', 'license.boundary', 'upstream.history'])
 
 // The formats a repository scan needs on top of server/src/secrets.ts's. The PEM pattern is wider
 // than the server's (ENCRYPTED, DSA, PGP blocks); where both match, the finding is reported once.
@@ -902,6 +914,53 @@ export function licenseFindings(cwd, boundaries, commits) {
   return out
 }
 
+/** upstream.history's commits: UPSTREAM_BASE, plus the config's upstreamBase when it names another. */
+export function upstreamBases(config) {
+  const out = [UPSTREAM_BASE]
+  const extra = String(config?.upstreamBase ?? '').toLowerCase()
+  if (COMMIT_ID.test(extra) && !out.includes(extra)) out.push(extra)
+  return out
+}
+
+/**
+ * An upstream.history finding for each of `commits` that shares a commit with one of `bases`: the
+ * base itself or any commit before it, which git merge-base finds. A base this clone does not have
+ * shares nothing with anything in it, so it is skipped.
+ */
+export function upstreamFindings(cwd, bases, commits) {
+  const out = []
+  for (const upstream of bases) {
+    const present = git(cwd, ['cat-file', '-e', `${upstream}^{commit}`], { allowFail: true })
+    if (present.status !== 0) continue // not in this clone, so nothing here shares its history
+    const of = upstream.slice(0, 8)
+    for (const sha of commits) {
+      const r = git(cwd, ['merge-base', upstream, sha], { allowFail: true })
+      const shared = String(r.stdout).trim().split('\n')[0]
+      if (r.status === 0 && shared) {
+        out.push({
+          rule: 'upstream.history',
+          path: COMMIT_PATH,
+          commit: sha,
+          line: 0,
+          fp: fingerprint(upstream),
+          note: shared === upstream ? `contains ${of}` : `contains ${shared.slice(0, 8)}, before ${of}`,
+        })
+      } else if (r.status !== 1) {
+        throw new AuditError(`could not tell whether ${sha.slice(0, 8)} shares history with ${of}`)
+      }
+    }
+  }
+  return out
+}
+
+/** license.boundary's and upstream.history's findings for `commits`: whose history they carry. */
+export function lineageFindings(cwd, config, commits) {
+  return [
+    ...licenseFindings(cwd, licenseBoundaries(config), commits),
+    ...upstreamFindings(cwd, upstreamBases(config), commits),
+  ]
+}
+
 /** --tree: every tracked path, every text file's content, every binary. */
 export function auditTree(cwd, rev, ctx) {
   const commit = resolveCommit(cwd, rev)
@@ -964,7 +1023,7 @@ export function auditTree(cwd, rev, ctx) {
       })
     }
   }
-  findings.push(...licenseFindings(cwd, licenseBoundaries(ctx.config), [commit]))
+  findings.push(...lineageFindings(cwd, ctx.config, [commit]))
   return { findings, stats: { files: entries.length, binaries: bins.length } }
 }
 
@@ -1321,14 +1380,14 @@ export function main(argv = process.argv.slice(2), { stdin } = {}) {
     for (const range of opts.history) {
       const tipCommit = tipOf(range)
       const r = auditHistory(opts.cwd, [range], ctx)
-      findings.push(...licenseFindings(opts.cwd, licenseBoundaries(files.config), [tipCommit]))
+      findings.push(...lineageFindings(opts.cwd, files.config, [tipCommit]))
       findings.push(...r.findings)
       scope.push(`history ${range} (${r.commits.length} commits)`)
     }
     if (opts.push) {
       if (push) {
         const r = auditHistory(opts.cwd, push.args, ctx)
-        findings.push(...licenseFindings(opts.cwd, licenseBoundaries(files.config), push.include))
+        findings.push(...lineageFindings(opts.cwd, files.config, push.include))
         findings.push(...r.findings)
         scope.push(`push to ${opts.push} (${r.commits.length} new commits)`)
       } else {

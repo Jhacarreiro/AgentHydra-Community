@@ -38,6 +38,9 @@ import {
   type Rule,
   scanPath,
   scanText,
+  UPSTREAM_BASE,
+  upstreamBases,
+  upstreamFindings,
 } from '../scripts/audit-public.mjs'
 import { PATTERNS } from '../server/src/secrets'
 import { REPO_ROOT } from './repo-root'
@@ -588,6 +591,8 @@ describe('the allowlist and the config files', () => {
     expect(write([{ ...ok, fp: MAILBOX }])).toThrow('16-hex fp')
     expect(write([{ ...ok, reason: '' }])).toThrow('no reason')
     expect(write([{ ...ok, rule: 'commit.email' }])).toThrow('cannot be allowed')
+    expect(write([{ ...ok, rule: 'license.boundary' }])).toThrow('cannot be allowed')
+    expect(write([{ ...ok, rule: 'upstream.history' }])).toThrow('cannot be allowed')
   })
 
   test('a config without baseTree, or with an object id that is not a full one, stops the audit', () => {
@@ -1075,6 +1080,96 @@ describe('the base', () => {
   )
 })
 
+describe('upstream.history', () => {
+  test("upstream's last MIT commit is built in: the config can add one, never take it away", () => {
+    expect(CONFIG.upstreamBase).toBe(UPSTREAM_BASE)
+    expect(upstreamBases({})).toEqual([UPSTREAM_BASE])
+    expect(upstreamBases({ upstreamBase: UPSTREAM_BASE.toUpperCase() })).toEqual([UPSTREAM_BASE])
+    const other = 'ab'.repeat(20)
+    expect(upstreamBases({ upstreamBase: other })).toEqual([UPSTREAM_BASE, other])
+  })
+
+  test(
+    "a commit that shares upstream's history is a finding, whatever it shares; a clone without upstream's commit has none",
+    () => {
+      // Upstream's history in miniature, then the import commit (its tree, no parent) and own work.
+      const dir = repo('upstream-history')
+      git(dir, NOREPLY, 'checkout', '-q', '--orphan', 'upstream')
+      const before = commit(dir, { 'a.md': 'a\n' }, 'upstream, before its last MIT commit')
+      const upstreamBase = commit(dir, { 'b.md': 'b\n' }, "upstream's last MIT commit")
+      const tree = git(dir, NOREPLY, 'rev-parse', `${upstreamBase}^{tree}`)
+      const base = git(dir, NOREPLY, 'commit-tree', tree, '-m', 'the import commit')
+      git(dir, NOREPLY, 'checkout', '-q', '-B', 'main', base)
+      const own = commit(dir, { 'c.md': 'c\n' }, 'own work')
+      const config = { ...CONFIG, base, baseTree: tree, upstreamBase }
+      const ctx = ctxWith({ config })
+
+      expect(auditTree(dir, own, ctx).findings).toEqual([])
+      expect(upstreamFindings(dir, [upstreamBase], [base, own])).toEqual([])
+
+      // A clone of this repository's own branch has none of upstream's commits: nothing to find.
+      const clone = scratch('upstream-history-clone')
+      const url = pathToFileURL(dir).href
+      git(clone, NOREPLY, 'clone', '-q', '--single-branch', '--no-tags', '-b', 'main', url, '.')
+      expect(
+        spawnSync('git', ['cat-file', '-e', `${upstreamBase}^{commit}`], { cwd: clone }).status,
+      ).not.toBe(0)
+      expect(upstreamFindings(clone, [upstreamBase], [own])).toEqual([])
+
+      // A merge of upstream's branch brings its history in; so does a branch from before the base.
+      git(dir, NOREPLY, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'upstream')
+      const merged = git(dir, NOREPLY, 'rev-parse', 'HEAD')
+      const found = auditTree(dir, 'HEAD', ctx).findings
+      expect(rulesOf(found)).toEqual(['upstream.history'])
+      expect(found[0]).toMatchObject({
+        commit: merged,
+        note: `contains ${upstreamBase.slice(0, 8)}`,
+      })
+      const older = upstreamFindings(dir, [upstreamBase], [before])
+      expect(older.map((f) => f.note)).toEqual([
+        `contains ${before.slice(0, 8)}, before ${upstreamBase.slice(0, 8)}`,
+      ])
+
+      // The default run finds it on the tree's commit and on the history's tip, and --push on the
+      // pushed commit.
+      const files = scratch('upstream-history-files')
+      writeFileSync(join(files, 'config.json'), JSON.stringify(config))
+      writeFileSync(join(files, 'allow.json'), JSON.stringify({ entries: [] }))
+      writeFileSync(join(files, 'provenance.json'), JSON.stringify({ binaries: [] }))
+      const run = (args: string[], input = '') =>
+        spawnSync(
+          process.execPath,
+          [
+            SCRIPT,
+            ...args,
+            '-C',
+            dir,
+            '--config',
+            join(files, 'config.json'),
+            '--allow',
+            join(files, 'allow.json'),
+            '--provenance',
+            join(files, 'provenance.json'),
+            '--no-local-names',
+            '--json',
+          ],
+          { encoding: 'utf8', input, timeout: GIT_TEST_TIMEOUT },
+        )
+      const lineage = (r: ReturnType<typeof run>) =>
+        (JSON.parse(r.stdout) as { findings: Array<{ rule: string; commit?: string }> }).findings
+          .filter((f) => f.rule === 'upstream.history')
+          .map((f) => f.commit)
+      const full = run([])
+      expect(full.status).toBe(1)
+      expect(lineage(full)).toEqual([merged, merged])
+      const pushed = run(['--push', 'origin'], `refs/heads/main ${merged} refs/heads/main ${own}\n`)
+      expect(pushed.status).toBe(1)
+      expect(lineage(pushed)).toEqual([merged])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+})
+
 describe('--push', () => {
   test(
     'only what the push carries is read: not the base, not what the remote already has',
@@ -1348,6 +1443,16 @@ describe('this repository', () => {
       expect(checkBase(REPO_ROOT, CONFIG, [git(REPO_ROOT, NOREPLY, 'rev-parse', 'HEAD')])).toBe(
         CONFIG.base,
       )
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test.skipIf(!hasCommit(UPSTREAM_BASE))(
+    "where upstream's commit is in this clone (a remote of upstream's), HEAD shares none of its history",
+    () => {
+      // Only ancestry is read here (git merge-base), never a file of upstream's.
+      const head = git(REPO_ROOT, NOREPLY, 'rev-parse', 'HEAD')
+      expect(upstreamFindings(REPO_ROOT, upstreamBases(CONFIG), [head])).toEqual([])
     },
     GIT_TEST_TIMEOUT,
   )
