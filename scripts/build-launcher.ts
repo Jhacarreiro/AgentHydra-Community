@@ -7,7 +7,9 @@
  *
  * The version defaults to package.json's. It is baked in through a generated source file in a temp
  * folder, so the checked-in source never changes between releases. The same file carries where the
- * launcher downloads a missing part from: the release channel's downloads (release-channel.json).
+ * launcher downloads a missing part from, the release channel's downloads, and the channel's updates
+ * policy (release-channel.json): under "off" the channel has no release, and the launcher names a
+ * missing part instead of downloading it.
  */
 import {
   copyFileSync,
@@ -21,7 +23,12 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import pkg from '../package.json'
-import { releaseDownloadBase } from '../server/src/release-channel'
+import {
+  RELEASE_CHANNEL,
+  releaseDownloadBase,
+  UPDATE_POLICIES,
+  type UpdatePolicy,
+} from '../server/src/release-channel'
 import { findRepoRoot } from '../tests/repo-root'
 
 const ROOT = findRepoRoot(import.meta.dir)
@@ -53,15 +60,26 @@ export interface BuildLauncherOptions {
   outfile: string
   /** Baked into the exe; package.json's version when omitted. */
   version?: string
+  /** The updates policy baked in; the release channel's when omitted. */
+  updates?: UpdatePolicy
 }
 
-/** The generated BuildInfo.cs: the version for the launcher's code and for Explorer's Details tab, and the
- *  download base its repair fetches `v<version>/AgentHydra-<version>-windows-x64.zip` from. */
-export function buildInfoSource(version: string, releaseHost = releaseDownloadBase()): string {
+/** The generated BuildInfo.cs: the version for the launcher's code and for Explorer's Details tab, the
+ *  download base its repair fetches `v<version>/AgentHydra-<version>-windows-x64.zip` from, and the
+ *  channel's updates policy, which says whether there is a release to fetch it from at all. */
+export function buildInfoSource(
+  version: string,
+  releaseHost = releaseDownloadBase(),
+  updates: UpdatePolicy = RELEASE_CHANNEL.updates,
+): string {
   // It lands inside a C# string literal. The channel's repository name is already held to GitHub's
   // characters; this keeps a hand-passed value to the same.
   if (!/^https:\/\/[A-Za-z0-9./_-]+$/.test(releaseHost))
     throw new Error(`"${releaseHost}" is not a download base the launcher can carry.`)
+  if (!(UPDATE_POLICIES as readonly string[]).includes(updates))
+    throw new Error(
+      `"${updates}" is not an updates policy the launcher knows (${UPDATE_POLICIES.join(', ')}).`,
+    )
   // Only the numeric core can be a file version (1.2.3-rc.1 is 1.2.3.0).
   const [major, minor, patch] = version.split(/[-+]/)[0]!.split('.')
   const fileVersion = `${major}.${minor}.${patch}.0`
@@ -75,6 +93,8 @@ export function buildInfoSource(version: string, releaseHost = releaseDownloadBa
       version +
       '"; public const string ReleaseHost = "' +
       releaseHost +
+      '"; public const string Updates = "' +
+      updates +
       '"; } }',
     '',
   ].join('\r\n')
@@ -84,6 +104,7 @@ export function buildInfoSource(version: string, releaseHost = releaseDownloadBa
 export async function buildLauncher({
   outfile,
   version = pkg.version,
+  updates,
 }: BuildLauncherOptions): Promise<string> {
   if (process.platform !== 'win32') {
     throw new Error(
@@ -110,7 +131,7 @@ export async function buildLauncher({
   const work = mkdtempSync(join(tmpdir(), 'agenthydra-launcher-'))
   try {
     const generated = join(work, 'BuildInfo.cs')
-    writeFileSync(generated, buildInfoSource(version))
+    writeFileSync(generated, buildInfoSource(version, undefined, updates))
     const built = join(work, 'AgentHydra.exe')
     const args = [
       '/nologo',

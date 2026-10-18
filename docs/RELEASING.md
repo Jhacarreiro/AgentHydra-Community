@@ -319,7 +319,11 @@ starts it again after. Desk 2 includes its own dev-servers service that manages 
 without requiring a separate daemon. `install.ps1` installs the new layout and leaves Bun to the launcher's first run. Whatever part is
 missing (`app/`, `desk2/`, `orchestrator/`, `misc/`: a 1.x updater's install, or the lone `.exe`),
 the launcher restores it from its own version's release archive before it starts the daemon,
-without a click.
+without a click. A build whose release channel says `"updates": "off"` has no release to restore
+from, so its launchers (both get the policy written in at build time, like the download base) name
+the missing part and say how to get it back, unpacking the bundle again or running from source,
+without making a request that could only fail. Setting `AGENTHYDRA_RELEASE_BASE` repairs from the
+base it names even then.
 
 ## The 2.0 update mechanism and the 1.x→2.0 migration
 

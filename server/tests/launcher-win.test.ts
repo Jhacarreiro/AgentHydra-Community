@@ -26,7 +26,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildInfoSource, buildLauncher, findCsc } from '../../scripts/build-launcher'
-import { releaseDownloadBase } from '../../server/src/release-channel'
+import {
+  RELEASE_CHANNEL,
+  releaseDownloadBase,
+  type UpdatePolicy,
+} from '../../server/src/release-channel'
 
 setDefaultTimeout(90_000)
 
@@ -51,6 +55,34 @@ describe('BuildInfo.cs', () => {
     expect(cs).toContain('Base("AGENTHYDRA_RELEASE_BASE", BuildInfo.ReleaseHost)')
     expect(cs).not.toContain('const string ReleaseHost')
     expect(cs.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
+  })
+
+  test("carries the release channel's updates policy, which decides whether a missing part is downloaded", () => {
+    expect(buildInfoSource(VERSION)).toContain(
+      `public const string Updates = "${RELEASE_CHANNEL.updates}";`,
+    )
+    for (const updates of ['off', 'notify', 'auto'] as const)
+      expect(buildInfoSource(VERSION, undefined, updates)).toContain(
+        `public const string Updates = "${updates}";`,
+      )
+    const cs = readFileSync(
+      join(import.meta.dir, '..', '..', 'launcher', 'windows', 'AgentHydra.cs'),
+      'utf8',
+    )
+    // Under "off" the repair stops before any request unless AGENTHYDRA_RELEASE_BASE names a base.
+    expect(cs).toContain('string.Equals(BuildInfo.Updates, "off", StringComparison.Ordinal)')
+    expect(cs).toMatch(
+      /if \(UpdatesOff\(\) && string\.IsNullOrWhiteSpace\(Environment\.GetEnvironmentVariable\("AGENTHYDRA_RELEASE_BASE"\)\)\)\s+throw new LauncherException\(NoReleaseToRepairFrom\(install, missing\)\);/,
+    )
+    const repair = cs.slice(cs.indexOf('static void Repair('))
+    expect(repair.indexOf('UpdatesOff()')).toBeLessThan(repair.indexOf('Fetch('))
+  })
+
+  test('refuses an updates policy it does not know', () => {
+    for (const updates of ['sometimes', 'OFF', 'off"; } }', ''])
+      expect(() => buildInfoSource(VERSION, undefined, updates as UpdatePolicy)).toThrow(
+        'updates policy',
+      )
   })
 
   test('refuses a download base that would not stay a C# string', () => {
@@ -129,9 +161,13 @@ beforeAll(async () => {
   // The long form of the temp path: a CI runner's TEMP is the 8.3 short form (C:\Users\RUNNER~1), and the
   // launcher prints the paths it resolves in the long form, so the expected paths have to be long too.
   root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ah-launcher-test-')))
+  // Built with updates off, the state a channel with no release is in. Every run below names
+  // AGENTHYDRA_RELEASE_BASE (the local server), the explicit way to repair from somewhere anyway; the one
+  // that empties it shows what "off" does alone.
   launcherExe = await buildLauncher({
     outfile: join(root, 'build', 'AgentHydra.exe'),
     version: VERSION,
+    updates: 'off',
   })
   hostBun = join(root, 'host-bun.exe')
   copyFileSync(process.execPath, hostBun)
@@ -380,6 +416,25 @@ suite('AgentHydra.exe, the Windows launcher', () => {
     expect(readdirSync(install.dir).filter((n) => n.startsWith('.repair-'))).toEqual([])
     expect(requests.every((p) => p.startsWith(`/release/v${VERSION}/`))).toBe(true)
     expect(requests).toContain(`/release/v${VERSION}/SHA256SUMS.txt`)
+  })
+
+  test('with updates off and no release base named, a missing part is named with how to get it back and nothing is downloaded', async () => {
+    serveRelease()
+    const install = makeInstall()
+    rmSync(join(install.dir, 'desk2'), { recursive: true })
+    rmSync(join(install.dir, 'orchestrator'), { recursive: true })
+    seedRuntime(install)
+    const out = await run(install, ['--ensure-bun'], { env: { AGENTHYDRA_RELEASE_BASE: '' } })
+    expect(out.code).not.toBe(0)
+    expect(out.stdout).toBe('')
+    expect(out.stderr).toContain('missing desk2, orchestrator.')
+    expect(out.stderr).toContain('Updates are off in this build')
+    expect(out.stderr).toContain(`Unzip ${BUNDLE}.zip into ${install.dir} again`)
+    expect(out.stderr).toContain('source checkout')
+    expect(out.stderr).toContain('AGENTHYDRA_RELEASE_BASE')
+    expect(requests).toEqual([])
+    expect(existsSync(join(install.dir, 'desk2'))).toBe(false)
+    expect(readdirSync(install.dir).filter((n) => n.startsWith('.repair-'))).toEqual([])
   })
 
   test('a release archive that does not match SHA256SUMS.txt restores nothing', async () => {

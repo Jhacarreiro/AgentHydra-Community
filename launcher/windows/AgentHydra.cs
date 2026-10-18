@@ -3,7 +3,9 @@
 // the Bun this release pins (downloading it on first run), then runs `bun.exe app\server.js` with every
 // argument and passes the exit code through. Written for the .NET Framework 4 C# compiler every Windows
 // 10 and 11 ships (C# 5: no interpolated strings, no `?.`), compiled by scripts/build-launcher.ts, which
-// writes the version and the release channel's download base (release-channel.json) into BuildInfo.cs.
+// writes the version, the release channel's download base and its updates policy (release-channel.json)
+// into BuildInfo.cs. Under "off" the channel has published no release, so a missing part is named, not
+// downloaded.
 
 using System;
 using System.Collections.Generic;
@@ -184,6 +186,10 @@ namespace AgentHydra
         {
             List<string> missing = MissingParts(install);
             if (missing.Count == 0) return;
+            // Updates off: the channel has no release, so a download could only fail. AGENTHYDRA_RELEASE_BASE is
+            // the explicit way to repair from somewhere anyway (a mirror, the tests' local server).
+            if (UpdatesOff() && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGENTHYDRA_RELEASE_BASE")))
+                throw new LauncherException(NoReleaseToRepairFrom(install, missing));
 
             string name = "AgentHydra-" + BuildInfo.Version + "-" + Target;
             string baseUrl = Base("AGENTHYDRA_RELEASE_BASE", BuildInfo.ReleaseHost) + "/v" + BuildInfo.Version + "/";
@@ -222,6 +228,20 @@ namespace AgentHydra
             {
                 TryDelete(work);
             }
+        }
+
+        static bool UpdatesOff()
+        {
+            return string.Equals(BuildInfo.Updates, "off", StringComparison.Ordinal);
+        }
+
+        /// <summary>What is missing and how to get it back, for a build whose channel has no release.</summary>
+        static string NoReleaseToRepairFrom(string install, List<string> missing)
+        {
+            return "This AgentHydra install is missing " + string.Join(", ", missing.ToArray()) + ". Updates are off in this build, " +
+                "so there is no release to download them from. Unzip AgentHydra-" + BuildInfo.Version + "-" + Target +
+                ".zip into " + install + " again, or run AgentHydra from a source checkout (its README says how). " +
+                "To download them from a release base you name, set AGENTHYDRA_RELEASE_BASE.";
         }
 
         static void MoveEntry(string source, string target)
