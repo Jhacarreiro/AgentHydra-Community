@@ -21,6 +21,7 @@ import type {
   Settings,
 } from '@anthropic-ai/claude-agent-sdk'
 import { sdkQuery } from '../host/sdk'
+import { ensureSdk, sdkReady } from '../host/sdk-package'
 import { claudeCodeBinaryFor, describeProgress, type ClaudeCodeBinary } from './claude-code-binary'
 import type {
   AccountRef,
@@ -66,6 +67,8 @@ export interface ChatRuntimeDeps {
   queryImpl?: QueryImpl
   /** Where Claude Code's binary comes from (default: the one for this Desk home); tests give one served from a local registry. */
   claudeCode?: ClaudeCodeBinary
+  /** The Agent SDK, which a release fetches the first time (default host/sdk-package.ts); tests give their own. */
+  sdk?: { ready(): boolean; ensure(): Promise<unknown> }
   /** The base environment (default process.env); CLAUDE_CONFIG_DIR is set from chat.account. */
   env?: Record<string, string | undefined>
   settings: DeskSettings | (() => DeskSettings)
@@ -350,6 +353,7 @@ export class ChatRuntime {
   /** Set while adopt() re-opens the host's open requests: their cards keep their time; `shown` ones were notified before. */
   private reopened: { stored: Map<string, TranscriptItem>; shown: Set<string> } | null = null
   private readonly claudeCode: ClaudeCodeBinary
+  private readonly sdk: { ready(): boolean; ensure(): Promise<unknown> }
   /** The Claude Code binary this runtime starts with; null until start() has resolved it. */
   private binaryPath: string | null = null
   /**
@@ -364,6 +368,17 @@ export class ChatRuntime {
     this.emitEvent = deps.emit
     this.queryImpl = deps.queryImpl ?? (sdkQuery as QueryImpl)
     this.claudeCode = deps.claudeCode ?? claudeCodeBinaryFor(deps.store.home)
+    this.sdk = deps.sdk ?? {
+      // A pin file that cannot be read is not ready: ensure() then says why, in the chat.
+      ready: () => {
+        try {
+          return sdkReady()
+        } catch {
+          return false
+        }
+      },
+      ensure: () => ensureSdk(),
+    }
     this.baseEnv = deps.env ?? process.env
     const s = deps.settings
     this.settingsOf = typeof s === 'function' ? s : () => s
@@ -556,10 +571,11 @@ ${slot}` : ''}${rules}` }
    * The process starts once Claude Code's binary is on disk. Normally it is (the installed package or the cache) and
    * this starts it at once; else the chat stays 'starting', its sends held in the input, and shows the download until
    * the process can start. query() is never called without the path: the SDK would throw "Native CLI binary not found".
+   * A release fetches the Agent SDK itself the same way, the first time (host/sdk-package.ts), before any host loads it.
    */
   private obtainBinary(): void {
     const have = this.claudeCode.path()
-    if (have) {
+    if (have && this.sdk.ready()) {
       this.binary = null
       this.binaryPath = have
       this.launchSoon()
@@ -569,8 +585,8 @@ ${slot}` : ''}${rules}` }
     this.binary = wait
     const stop = this.claudeCode.onProgress(() => this.showDownload())
     this.showDownload()
-    this.claudeCode.resolve().then(
-      (path) => {
+    Promise.all([this.claudeCode.resolve(), this.sdk.ensure()]).then(
+      ([path]) => {
         stop()
         if (this.binary !== wait) return
         this.binary = null

@@ -1,15 +1,22 @@
 // The Claude Agent SDK, loaded the first time a query runs here: its sdk.mjs is 1.2 MB, and a server start that
-// runs no chat in this process (chats run in their hosts) never parses it. host/chat-host.ts imports it directly.
+// runs no chat in this process (chats run in their hosts) never parses it. host/chat-host.ts loads it here too. A
+// release does not ship it: sdk-package.ts fetches the pinned version first, the one time it is not there.
 
 import type { Options, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { ensureSdk } from './sdk-package'
 
 type Sdk = typeof import('@anthropic-ai/claude-agent-sdk')
 
 let loading: Promise<Sdk> | null = null
 
-/** The SDK module, imported once. */
+/** The SDK module, imported once; a load that failed (offline, the first time in a release) is tried again next call. */
 export function loadSdk(): Promise<Sdk> {
-  loading ??= import('@anthropic-ai/claude-agent-sdk')
+  loading ??= ensureSdk()
+    .then((specifier) => import(specifier) as Promise<Sdk>)
+    .catch((err: unknown) => {
+      loading = null
+      throw err
+    })
   return loading
 }
 

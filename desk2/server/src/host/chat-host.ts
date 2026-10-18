@@ -6,10 +6,10 @@
 
 import { appendFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
 import { HostCore, type HostQueryImpl } from './core'
 import { hostFilePath, writeHostFile } from './launch'
 import { HOST_PROTOCOL, type HostFile, type HostSpec } from './protocol'
+import { loadSdk } from './sdk'
 import { serveHost } from './serve'
 
 const at = process.argv.indexOf('--spec')
@@ -39,9 +39,19 @@ function log(line: string): void {
   }
 }
 
+// The SDK before anything else: a release fetches it the first time (sdk-package.ts), and the server has done that
+// before it starts a host, so a failure here is one this host cannot get past; the log says why.
+let sdkQuery: HostQueryImpl
+try {
+  sdkQuery = (await loadSdk()).query as HostQueryImpl
+} catch (err) {
+  log(`the Claude Agent SDK did not load: ${err instanceof Error ? err.message : String(err)}`)
+  process.exit(1)
+}
+
 const core = new HostCore({
   spec,
-  queryImpl: sdkQuery as HostQueryImpl,
+  queryImpl: sdkQuery,
   log,
   exit: (code) => {
     log(`exit ${code}`)

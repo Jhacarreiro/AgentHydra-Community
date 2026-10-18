@@ -9,16 +9,16 @@ import { chmod, open, rename, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { createGunzip } from 'node:zlib'
+import { readSdkPin, SDK_PACKAGE } from '../host/sdk-package'
+import { untarFile } from '../host/tar'
 
-const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
+export { untarFile }
+
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org'
 /** A metadata request or a stalled tarball gives up after this long without an answer or a byte. */
 const IDLE_TIMEOUT_MS = 60_000
 /** Temp files a crashed download left are removed once they are this old (a live download keeps writing to its own). */
 const STALE_TEMP_MS = 60 * 60_000
-const TAR_BLOCK = 512
-/** The longest pax or GNU long-name record read into memory. */
-const MAX_TAR_META = 1 << 20
 
 /** What the SDK needs on this platform, as its own sdk.mjs works it out, and what the installed SDK pins. */
 export interface ClaudeCodeTarget {
@@ -87,23 +87,27 @@ function sdkRoot(): string {
 
 /**
  * The platform package and version of the SDK this server runs on. The installed copy is looked up the way sdk.mjs
- * does it: a require made from the SDK's own location, so it finds what the SDK's install put beside it.
+ * does it: a require made from the SDK's own location, so it finds what the SDK's install put beside it. A release
+ * ships neither the SDK nor its platform packages, only the pin of the SDK it fetches (host/sdk-package.ts), which
+ * says the same, so a chat can show and fetch Claude Code before the SDK is there.
  */
-export function sdkTarget(): ClaudeCodeTarget {
-  const root = sdkRoot()
-  const sdk = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { claudeCodeVersion?: string; optionalDependencies?: Record<string, string> }
+export function sdkTarget(deskRoot?: string): ClaudeCodeTarget {
+  const pin = readSdkPin(deskRoot)
+  const root = pin ? null : sdkRoot()
+  const sdk = pin ?? (JSON.parse(readFileSync(join(root!, 'package.json'), 'utf8')) as { claudeCodeVersion?: string; optionalDependencies?: Record<string, string> })
   const candidates = platformPackages(process.platform, process.arch, runsOnMusl())
   const pinned = sdk.optionalDependencies ?? {}
   const pkg = candidates.find((c) => pinned[c] !== undefined)
   if (!pkg) throw new Error(`Claude Code has no build for ${process.platform}-${process.arch}`)
   const binary = process.platform === 'win32' ? 'claude.exe' : 'claude'
-  const fromSdk = createRequire(join(root, 'package.json'))
+  const fromSdk = root ? createRequire(join(root, 'package.json')) : null
   return {
     pkg,
     version: pinned[pkg]!,
     claudeCodeVersion: sdk.claudeCodeVersion ?? null,
     binary,
     installed() {
+      if (!fromSdk) return null
       for (const name of candidates) {
         try {
           const path = fromSdk.resolve(`${name}/${binary}`)
@@ -122,143 +126,6 @@ export function describeProgress(version: string, p: DownloadProgress | null): s
   if (p?.phase === 'unpack') return `Unpacking Claude Code ${version}`
   const size = p?.totalBytes ? ` (${Math.round(p.totalBytes / 1e6)} MB)` : ''
   return `Getting Claude Code ${version}${size}${p?.percent != null ? `: ${p.percent}%` : ''}`
-}
-
-/** Reads a gunzipped tar stream: exact byte counts, and the rest of a body in chunks. */
-class ByteReader {
-  private readonly it: AsyncIterator<Uint8Array>
-  private buf: Uint8Array = new Uint8Array(0)
-
-  constructor(source: AsyncIterable<Uint8Array>) {
-    this.it = source[Symbol.asyncIterator]()
-  }
-
-  private async fill(): Promise<boolean> {
-    const r = await this.it.next()
-    if (r.done) return false
-    this.buf = this.buf.length ? Buffer.concat([this.buf, r.value]) : r.value
-    return true
-  }
-
-  /** Exactly n bytes, or null when the stream ended before the first of them. */
-  async take(n: number): Promise<Uint8Array | null> {
-    while (this.buf.length < n) {
-      if (!(await this.fill())) {
-        if (this.buf.length === 0) return null
-        throw new Error('the download ended inside a tar entry')
-      }
-    }
-    const out = this.buf.subarray(0, n)
-    this.buf = this.buf.subarray(n)
-    return out
-  }
-
-  /** The next n bytes, handed on in chunks as they arrive. */
-  async stream(n: number, onChunk: (chunk: Uint8Array) => Promise<void> | void): Promise<void> {
-    let left = n
-    while (left > 0) {
-      if (this.buf.length === 0 && !(await this.fill())) throw new Error('the download ended inside a tar entry')
-      const take = Math.min(left, this.buf.length)
-      const chunk = this.buf.subarray(0, take)
-      this.buf = this.buf.subarray(take)
-      left -= take
-      await onChunk(chunk)
-    }
-  }
-
-  skip(n: number): Promise<void> {
-    return this.stream(n, () => {})
-  }
-}
-
-function cString(block: Uint8Array, from: number, len: number): string {
-  const end = block.indexOf(0, from)
-  return Buffer.from(block.subarray(from, end === -1 || end > from + len ? from + len : end)).toString('utf8')
-}
-
-function octal(block: Uint8Array, from: number, len: number): number {
-  // Sizes of 8 GB and more are stored base-256 (high bit set); a package this tool reads never has one.
-  if (block[from]! & 0x80) throw new Error('tar entry too large')
-  const text = cString(block, from, len).trim()
-  return text ? Number.parseInt(text, 8) : 0
-}
-
-/** pax records: "<len> <key>=<value>\n", length counted in bytes, its own digits and newline included. */
-function paxRecords(data: Uint8Array): Map<string, string> {
-  const out = new Map<string, string>()
-  const buf = Buffer.from(data)
-  let at = 0
-  while (at < buf.length) {
-    const space = buf.indexOf(0x20, at)
-    if (space === -1) break
-    const len = Number.parseInt(buf.subarray(at, space).toString('ascii'), 10)
-    if (!Number.isFinite(len) || len <= 0) break
-    const record = buf.subarray(space + 1, at + len - 1).toString('utf8')
-    const eq = record.indexOf('=')
-    if (eq > 0) out.set(record.slice(0, eq), record.slice(eq + 1))
-    at += len
-  }
-  return out
-}
-
-/** A tar entry's name with Windows separators and a leading ./ normalized, so package\claude.exe matches too. */
-function normalizeTarPath(name: string): string {
-  return name.replace(/\\/g, '/').replace(/^(\.\/)+/, '')
-}
-
-/** What the meta entries before a file say about it (GNU long name, pax), and the pax records for every file. */
-interface TarMeta {
-  longName: string | null
-  pax: Map<string, string> | null
-  globalPax: Map<string, string>
-}
-
-function readTarMeta(type: string, body: Uint8Array, meta: TarMeta): void {
-  if (type === 'L') meta.longName = cString(body, 0, body.length)
-  else if (type === 'x') meta.pax = paxRecords(body)
-  else meta.globalPax = new Map([...meta.globalPax, ...paxRecords(body)])
-}
-
-/** The header's name field, under its ustar prefix when it has one. */
-function headerName(header: Uint8Array): string {
-  const name = cString(header, 0, 100)
-  if (cString(header, 257, 5) !== 'ustar') return name
-  const prefix = cString(header, 345, 155)
-  return prefix ? `${prefix}/${name}` : name
-}
-
-/**
- * Streams the one file `wanted` out of a tar, calling `onFile` with a chunk writer; stops reading once it has it.
- * Understands the ustar prefix field, pax extended headers (path, size) and GNU long names. Returns false when the
- * archive has no such file.
- */
-export async function untarFile(source: AsyncIterable<Uint8Array>, wanted: string, onFile: (chunk: Uint8Array) => Promise<void>): Promise<boolean> {
-  const reader = new ByteReader(source)
-  const meta: TarMeta = { longName: null, pax: null, globalPax: new Map() }
-  for (;;) {
-    const header = await reader.take(TAR_BLOCK)
-    if (!header || header.every((b) => b === 0)) return false
-    const type = String.fromCharCode(header[156]!)
-    let size = octal(header, 124, 12)
-    const padded = Math.ceil(size / TAR_BLOCK) * TAR_BLOCK
-    if (type === 'x' || type === 'g' || type === 'L') {
-      if (size > MAX_TAR_META) throw new Error('tar header too large')
-      const data = (await reader.take(padded)) ?? new Uint8Array(0)
-      readTarMeta(type, data.subarray(0, size), meta)
-      continue
-    }
-    const path = meta.pax?.get('path') ?? meta.globalPax.get('path') ?? meta.longName ?? headerName(header)
-    const paxSize = meta.pax?.get('size')
-    if (paxSize) size = Number.parseInt(paxSize, 10)
-    meta.longName = null
-    meta.pax = null
-    const dataLen = Math.ceil(size / TAR_BLOCK) * TAR_BLOCK
-    if ((type === '0' || type === '\0') && normalizeTarPath(path) === wanted) {
-      await reader.stream(size, onFile)
-      return true
-    }
-    await reader.skip(dataLen)
-  }
 }
 
 /** A name that cannot collide with another process's temp file for the same download. */

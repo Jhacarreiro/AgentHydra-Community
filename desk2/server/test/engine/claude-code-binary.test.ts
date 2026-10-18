@@ -303,7 +303,7 @@ describe('a chat without the binary', () => {
     }
   }
 
-  function setup(bin: ClaudeCodeBinary) {
+  function setup(bin: ClaudeCodeBinary, sdk?: { ready(): boolean; ensure(): Promise<unknown> }) {
     const events: ServerEvent[] = []
     const started: IdleQuery[] = []
     const queryImpl: QueryImpl = ({ options }) => {
@@ -312,7 +312,7 @@ describe('a chat without the binary', () => {
       return q as unknown as Query
     }
     const store = new ChatStore(home, { debounceMs: 1 })
-    const rt = new ChatRuntime({ chat: chat(), store, emit: (e) => events.push(e), queryImpl, env: { PATH: '/bin' }, settings: SETTINGS, agentHydraMcp: null, claudeCode: bin })
+    const rt = new ChatRuntime({ chat: chat(), store, emit: (e) => events.push(e), queryImpl, env: { PATH: '/bin' }, settings: SETTINGS, agentHydraMcp: null, claudeCode: bin, sdk })
     const items = () => events.flatMap((e) => (e.type === 'item.upsert' ? [e.item] : []))
     return { rt, started, items }
   }
@@ -370,5 +370,33 @@ describe('a chat without the binary', () => {
     expect(t.rt.retryBinary()).toBe(false)
     await t.rt.close()
     await again.rt.close()
+  }, 15_000)
+
+  test('in a release a chat also waits for the Agent SDK, and one that cannot be fetched shows why with a Retry', async () => {
+    const installed = join(home, BINARY)
+    writeFileSync(installed, STAND_IN)
+    const bin = resolver('http://127.0.0.1:1', installed)
+    let online = false
+    let fetched = false
+    const sdk = {
+      ready: () => fetched,
+      ensure: () => (online ? Promise.resolve((fetched = true)) : Promise.reject(new Error('could not download the Claude Agent SDK 9.9.9: offline'))),
+    }
+    const t = setup(bin, sdk)
+    t.rt.send('hello')
+    await until(() => t.rt.chat.status === 'error')
+    expect(t.rt.chat.lastError).toBe('Could not get Claude Code 9.9.8: could not download the Claude Agent SDK 9.9.9: offline')
+    expect(t.items().find((i) => i.kind === 'system')).toMatchObject({ level: 'error', retry: true })
+    expect(t.started).toHaveLength(0)
+    online = true
+    expect(t.rt.retryBinary()).toBe(true)
+    await until(() => t.started.length === 1)
+    expect(t.started[0]!.options.pathToClaudeCodeExecutable).toBe(installed)
+    // Fetched once, a second chat starts at once.
+    const next = setup(bin, sdk)
+    next.rt.send('again')
+    expect(next.started).toHaveLength(1)
+    await t.rt.close()
+    await next.rt.close()
   }, 15_000)
 })
