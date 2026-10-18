@@ -235,12 +235,15 @@ namespace AgentHydra
             return string.Equals(BuildInfo.Updates, "off", StringComparison.Ordinal);
         }
 
-        /// <summary>What is missing and how to get it back, for a build whose channel has no release.</summary>
+        /// <summary>What is missing and how to get it back, for a build whose channel has no release. The zip holds
+        /// one AgentHydra-x.y.z-windows-x64\ folder, so unzipping it into the install would nest that folder inside
+        /// it; the parts are copied out of it instead.</summary>
         static string NoReleaseToRepairFrom(string install, List<string> missing)
         {
+            string bundle = "AgentHydra-" + BuildInfo.Version + "-" + Target;
             return "This AgentHydra install is missing " + string.Join(", ", missing.ToArray()) + ". Updates are off in this build, " +
-                "so there is no release to download them from. Unzip AgentHydra-" + BuildInfo.Version + "-" + Target +
-                ".zip into " + install + " again, or run AgentHydra from a source checkout (its README says how). " +
+                "so there is no release to download them from. Unzip " + bundle + ".zip anywhere and copy them from its " +
+                bundle + " folder into " + install + ", or run AgentHydra from a source checkout (its README says how). " +
                 "To download them from a release base you name, set AGENTHYDRA_RELEASE_BASE.";
         }
 

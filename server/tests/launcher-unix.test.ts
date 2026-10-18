@@ -450,7 +450,10 @@ describe.skipIf(!SH)('POSIX launcher', () => {
     const said = out.stderr.trim().split('\n').pop() ?? ''
     expect(said).toContain('missing app/release.json, desk2/, orchestrator/.')
     expect(said).toContain('Updates are off in this build')
-    expect(said).toContain(`Unpack AgentHydra-${VERSION}-${TARGET}.tar.gz into`)
+    // The archive's one top folder would nest inside the install, so the parts are copied out of it.
+    expect(said).toContain(
+      `Unpack AgentHydra-${VERSION}-${TARGET}.tar.gz anywhere and copy them from its AgentHydra-${VERSION}-${TARGET} folder into ${w.install},`,
+    )
     expect(said).toContain('source checkout')
     expect(said).toContain('AGENTHYDRA_RELEASE_BASE')
     expect(w.requests).toEqual([])

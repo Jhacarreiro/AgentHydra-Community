@@ -429,7 +429,10 @@ suite('AgentHydra.exe, the Windows launcher', () => {
     expect(out.stdout).toBe('')
     expect(out.stderr).toContain('missing desk2, orchestrator.')
     expect(out.stderr).toContain('Updates are off in this build')
-    expect(out.stderr).toContain(`Unzip ${BUNDLE}.zip into ${install.dir} again`)
+    // The zip's one top folder would nest inside the install, so the parts are copied out of it.
+    expect(out.stderr).toContain(
+      `Unzip ${BUNDLE}.zip anywhere and copy them from its ${BUNDLE} folder into ${install.dir},`,
+    )
     expect(out.stderr).toContain('source checkout')
     expect(out.stderr).toContain('AGENTHYDRA_RELEASE_BASE')
     expect(requests).toEqual([])

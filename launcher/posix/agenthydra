@@ -212,10 +212,12 @@ parts_missing() {
 }
 
 # Updates off: the channel has no release, so a download could only fail. This says what is missing and how
-# to get it back instead.
+# to get it back instead. The archive holds one AgentHydra-<version>-<target> folder, so unpacking it into the
+# install would nest that folder inside it; the parts are copied out of it instead.
 no_release_to_repair_from() {
   target_name
-  die "this install is missing $MISSING. Updates are off in this build, so there is no release to download them from. Unpack AgentHydra-$AH_VERSION-$OS-$ARCH.tar.gz into $INSTALL again, or run AgentHydra from a source checkout (its README says how). To download them from a release base you name, set AGENTHYDRA_RELEASE_BASE."
+  bundle=AgentHydra-$AH_VERSION-$OS-$ARCH
+  die "this install is missing $MISSING. Updates are off in this build, so there is no release to download them from. Unpack $bundle.tar.gz anywhere and copy them from its $bundle folder into $INSTALL, or run AgentHydra from a source checkout (its README says how). To download them from a release base you name, set AGENTHYDRA_RELEASE_BASE."
 }
 
 target_name() {
