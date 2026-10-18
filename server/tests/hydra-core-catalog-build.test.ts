@@ -99,7 +99,7 @@ test('sources.json adds project rules and extra skill and agent folders, and not
   ])
 })
 
-test('a rebuild removes the catalog files of sources the builder no longer has', () => {
+test('a catalog file no source writes any more is deleted on the next build', () => {
   const core = '.agenthydra/core'
   const owner = {
     id: 'person:creator-owner',
@@ -115,8 +115,10 @@ test('a rebuild removes the catalog files of sources the builder no longer has',
     modes: ['consult'],
     load: { type: 'none' },
   }
-  for (const name of ['dredd', 'crainium', 'pinned', 'boardroom', 'owners'])
-    put(`${core}/catalog/generated-${name}.json`, name === 'owners' ? [owner] : [])
+  const leftFromOldBuilds = { dredd: [], crainium: [], pinned: [], boardroom: [], owners: [owner] }
+  for (const [source, rows] of Object.entries(leftFromOldBuilds)) {
+    put(`${core}/catalog/generated-${source}.json`, rows)
+  }
   put(`${core}/catalog/hand-extra.json`, [])
   put(
     `${core}/knowledge/pinned/old-ruling.md`,
