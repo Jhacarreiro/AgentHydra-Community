@@ -50,7 +50,8 @@ notices ([LICENSE](LICENSE)).
 
 ![The window: the sidebar lists every chat grouped by project, and the open chat shows its to-dos and a permission prompt](.github/screenshots/window.png)
 
-<sub>Screenshots use demo data. Some still show the original project's logo and Discord button.</sub>
+<sub>Screenshots use demo data and predate the fork: the analytics and instances shots still show a Discord button
+where the repository link now is, and the window shots name a demo project "connections".</sub>
 
 ## TL;DR
 
