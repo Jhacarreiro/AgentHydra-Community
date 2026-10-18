@@ -154,8 +154,8 @@ the PC: a PC build matches CI's hash when its Visual Studio build tools are the 
 - `.github/workflows/natives.yml` runs on every change to their source (and to `misc/AgentHydra.ico`,
   which the window host embeds, and the script): it builds all three twice, from two checkouts in
   different folders, and fails when the hashes differ. The hashes are in the run's summary and its
-  `natives-windows-x64` artifact. The same workflow builds the Codex hub tray (`codex-hub-tray/`, Go,
-  `-trimpath -buildvcs=false` with an empty build id) for Windows, Linux and macOS.
+  `natives-windows-x64` artifact. The Codex hub tray (`codex-hub-tray/`, Go) is not one of these
+  programs and ships in no bundle: its own workflow, `codex-hub-tray.yml`, tests and builds it.
 - `ci.yml`'s Windows leg builds the tray host and the runner before its tests, which start them.
 - `release.yml`'s `natives` job builds all three, with each crate's own tests first. The Windows
   package leg fetches them into the checkout, checks them against `natives.sha256` and, once packaged,

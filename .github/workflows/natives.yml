@@ -1,5 +1,5 @@
-# Native programs: build the Windows programs AgentHydra runs, and the Codex hub tray, from this
-# repository's source on every change to it.
+# Native programs: build the Windows programs AgentHydra runs from this repository's source on every
+# change to it.
 #
 # The tray host (misc/tray-host-native), CliMayte's runner (misc/climayte-runner-native) and the window
 # host (desk2/launcher/host) are Rust, built by scripts/build-natives.ts with the Rust release each crate's
@@ -12,10 +12,8 @@
 # same Rust release and the same MSVC build tools (the runner image's; the linker writes its version
 # into the program).
 #
-# The Codex hub tray (codex-hub-tray/, Go) is built for Windows, Linux and macOS with -trimpath,
-# -buildvcs=false and an empty build id. These builds carry no hub address or update key (main.go's -X
-# flags): they show that the source builds everywhere and give a hash to compare against; a hub
-# operator builds the ones their PCs run, with their own addresses (codex-hub-tray/main.go).
+# The Codex hub tray (codex-hub-tray/, Go) is not built here: its own workflow, codex-hub-tray.yml,
+# tests it and checks that its build is reproducible.
 name: Native programs
 
 on:
@@ -29,7 +27,6 @@ on:
       - 'misc/AgentHydra.ico'
       - 'scripts/build-natives.ts'
       - 'tests/repo-root.ts'
-      - 'codex-hub-tray/**'
       - '.github/workflows/natives.yml'
   pull_request:
     paths:
@@ -39,7 +36,6 @@ on:
       - 'misc/AgentHydra.ico'
       - 'scripts/build-natives.ts'
       - 'tests/repo-root.ts'
-      - 'codex-hub-tray/**'
       - '.github/workflows/natives.yml'
   workflow_dispatch:
 
@@ -103,67 +99,5 @@ jobs:
         with:
           name: natives-windows-x64
           path: natives-a/
-          if-no-files-found: error
-          retention-days: 14
-
-  codex-hub-tray:
-    timeout-minutes: 30
-    name: codex-hub-tray (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: codex-hub-tray
-        shell: bash
-    env:
-      GOFLAGS: -mod=readonly
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version: '1.24.7'
-          cache-dependency-path: codex-hub-tray/go.sum
-
-      # The unit tests need no desktop. test-linux.sh and test-macos.sh (end to end, against a fake
-      # hub) stay the hub's own.
-      - name: Vet and test (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          go vet ./...
-          go test ./...
-
-      # macOS needs cgo and the Xcode command line tools (the menu bar code is Objective-C), the
-      # others build without a C compiler. The names are the ones the hub serves builds under.
-      - name: Build
-        run: |
-          set -euo pipefail
-          flags='-s -w -buildid='
-          build() { echo "$1/$2 -> dist/$3"; GOOS=$1 GOARCH=$2 go build -trimpath -buildvcs=false -ldflags "$flags $4" -o "dist/$3" .; }
-          case "$RUNNER_OS" in
-            Linux)
-              CGO_ENABLED=0 build linux amd64 codex-hub-tray-linux-x64 ''
-              CGO_ENABLED=0 build linux arm64 codex-hub-tray-linux-arm64 ''
-              ;;
-            Windows)
-              CGO_ENABLED=0 build windows amd64 codex-hub-tray.exe '-H=windowsgui'
-              ;;
-            macOS)
-              export MACOSX_DEPLOYMENT_TARGET=11.0
-              CGO_ENABLED=1 build darwin arm64 codex-hub-tray-darwin-arm64 ''
-              CGO_ENABLED=1 build darwin amd64 codex-hub-tray-darwin-x64 ''
-              ;;
-          esac
-          cd dist
-          if command -v sha256sum >/dev/null; then sha256sum -- *; else shasum -a 256 -- *; fi | tee SHA256SUMS
-          { echo "### codex-hub-tray ($RUNNER_OS)"; echo; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: codex-hub-tray-${{ runner.os }}
-          path: codex-hub-tray/dist/
           if-no-files-found: error
           retention-days: 14
