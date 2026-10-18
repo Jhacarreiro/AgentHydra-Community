@@ -395,8 +395,14 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
 - A finding that is genuinely fine goes in `scripts/audit-public.allow.json` as `{rule, path, fp, reason}`. Commit
   emails and the licence boundary cannot be allowed. Every binary needs an entry in
   `scripts/binary-provenance.json`.
-- The pre-push hook refuses any ref whose history contains `aee9dfc4`, with no override. Both it and the audit look
-  at commit ancestry only: code copied or cherry-picked from upstream's later work makes new commits without
+- It reads the commits after the base, not upstream's history up to `3a65ba8e`, which this repository carries
+  unchanged and which still holds values the fork took out of the tree (upstream's infrastructure ids, its
+  maintainers' email addresses and home-folder paths), all public in upstream's repository already.
+- It also looks for your own git `user.name` and account name, so a `pii.local-name` finding can come from a
+  one-word name that is also a folder name here. Check those, or run `bun scripts/audit-public.mjs --no-local-names`
+  for the result anyone else gets.
+- The pre-push hook refuses any ref whose history contains `aee9dfc4`, and any tag on a commit up to the base
+  (upstream's own release tags), with no override. Both it and the audit look at commit ancestry only: code copied or cherry-picked from upstream's later work makes new commits without
   `aee9dfc4` in their history, and nothing flags them. That is kept out by the clean-room rule in
   [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
 

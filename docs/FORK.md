@@ -68,7 +68,15 @@ bun run audit:public                              # the tree, and every commit s
   `scripts/audit-public.mjs`, and its configuration can add another boundary commit but cannot remove that one.
   CI runs the audit on every push and pull request.
 - The pre-push hook (`.githooks/check-public-push.mjs`, enabled by `bun install`) refuses, on every remote and with
-  no override, any ref whose history contains `aee9dfc4`, and runs the audit on what the push would publish.
+  no override, any ref whose history contains `aee9dfc4` and any tag on a commit up to the base (those are
+  upstream's own release tags), and runs the audit on what the push would publish.
+- The audit reads the tree and the commits after the base. The commits up to `3a65ba8e` are upstream's published
+  history, carried unchanged, and it does not read them: they still hold values this fork took out of the tree,
+  such as upstream's infrastructure ids, its maintainers' email addresses and home-folder paths. All of it was
+  public in upstream's repository already.
+- A `pii.local-name` finding comes from your own name: the audit also looks for your git `user.name` and your
+  account name, and a one-word name that is also a folder name in this repository matches it. Check those findings,
+  or run `bun scripts/audit-public.mjs --no-local-names` to get the result anyone else gets.
 - Both look at commit ancestry only. Code copied or cherry-picked from upstream's later commits would make new
   commits without `aee9dfc4` in their history, and neither would flag them. That is kept out by the clean-room rule
   every contribution follows ([CONTRIBUTING.md](../CONTRIBUTING.md)), and anyone can compare the code itself with

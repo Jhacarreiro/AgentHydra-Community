@@ -81,8 +81,9 @@ relicensing commit in its history. A finding prints its rule, `file:line` and a 
 `bun install` enables the hooks in `.githooks/`:
 
 - **pre-commit** refuses a commit on the branch `live` and runs Biome on the staged files.
-- **pre-push** refuses any ref whose history contains upstream's relicensing commit `aee9dfc4`, runs the audit on
-  what the push would publish, and gates release tags. It also stops a push to a public remote, your own fork
+- **pre-push** refuses any ref whose history contains upstream's relicensing commit `aee9dfc4` and any tag on a
+  commit up to the base (upstream's own tags), runs the audit on what the push would publish, and gates release
+  tags. It also stops a push to a public remote, your own fork
   included, until you repeat the command with `AGENTHYDRA_PUSH_PUBLIC=1`, so a public push is always deliberate.
 
 </details>
