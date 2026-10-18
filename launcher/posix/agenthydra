@@ -1,15 +1,20 @@
 #!/bin/sh
 # AgentHydra launcher for Linux and macOS: the same job as AgentHydra.exe on Windows.
-# It repairs missing parts of the install from this version's release archive, downloads the pinned
-# bun on first run, then execs `runtime/bun app/server.js "$@"`. POSIX sh only: it must run under
-# dash and macOS /bin/sh. The daemon is an MCP stdio server, so a normal run prints nothing of its
-# own on stdout; messages go to stderr, and only --version and --ensure-bun answer on stdout.
+# It repairs missing parts of the install from this version's release archive (unless its release
+# channel has updates off, so there is none), downloads the pinned bun on first run, then execs
+# `runtime/bun app/server.js "$@"`. POSIX sh only: it must run under dash and macOS /bin/sh. The
+# daemon is an MCP stdio server, so a normal run prints nothing of its own on stdout; messages go to
+# stderr, and only --version and --ensure-bun answer on stdout.
 
 AH_VERSION='@VERSION@'
 
 # Where this version's release archive is: the release channel's downloads (release-channel.json), filled in by
 # the packager like the version. AGENTHYDRA_RELEASE_BASE overrides it (the tests' local server, a mirror).
 RELEASE_BASE=${AGENTHYDRA_RELEASE_BASE:-@RELEASE_BASE@}
+# The channel's "updates" policy (off, notify or auto), filled in the same way. "off" is a channel that has
+# published no release, so the repair below has nothing to download and says what to do instead of asking.
+# Setting AGENTHYDRA_RELEASE_BASE is the explicit way to repair from somewhere anyway.
+AH_UPDATES='@UPDATES@'
 BUN_BASE=${AGENTHYDRA_BUN_BASE:-https://github.com/oven-sh/bun/releases/download}
 RELEASE_BASE=${RELEASE_BASE%/}
 BUN_BASE=${BUN_BASE%/}
@@ -190,11 +195,27 @@ release_lock() {
 
 # --- repair -----------------------------------------------------------------------------------
 
+# MISSING becomes the parts this install lacks, as a comma-separated list (empty when it has them all).
+list_missing() {
+  MISSING=
+  for part in app/server.js app/release.json app/bun-version; do
+    [ -f "$INSTALL/$part" ] || MISSING="$MISSING${MISSING:+, }$part"
+  done
+  for part in desk2 orchestrator; do
+    [ -d "$INSTALL/$part" ] || MISSING="$MISSING${MISSING:+, }$part/"
+  done
+}
+
 parts_missing() {
-  [ -f "$INSTALL/app/server.js" ] && [ -f "$INSTALL/app/release.json" ] &&
-    [ -f "$INSTALL/app/bun-version" ] && [ -d "$INSTALL/desk2" ] && [ -d "$INSTALL/orchestrator" ] &&
-    return 1
-  return 0
+  list_missing
+  [ -n "$MISSING" ]
+}
+
+# Updates off: the channel has no release, so a download could only fail. This says what is missing and how
+# to get it back instead.
+no_release_to_repair_from() {
+  target_name
+  die "this install is missing $MISSING. Updates are off in this build, so there is no release to download them from. Unpack AgentHydra-$AH_VERSION-$OS-$ARCH.tar.gz into $INSTALL again, or run AgentHydra from a source checkout (its README says how). To download them from a release base you name, set AGENTHYDRA_RELEASE_BASE."
 }
 
 target_name() {
@@ -258,6 +279,9 @@ repair_parts() {
 
 ensure_parts() {
   parts_missing || return 0
+  if [ "$AH_UPDATES" = off ] && [ -z "${AGENTHYDRA_RELEASE_BASE-}" ]; then
+    no_release_to_repair_from
+  fi
   take_lock
   # Another launcher may have finished the same work while this one waited for the lock.
   if parts_missing; then

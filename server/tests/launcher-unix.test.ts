@@ -12,7 +12,11 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { writePosixLauncher } from '../../scripts/launcher-posix'
-import { releaseDownloadBase } from '../../server/src/release-channel'
+import {
+  RELEASE_CHANNEL,
+  releaseDownloadBase,
+  type UpdatePolicy,
+} from '../../server/src/release-channel'
 
 // The POSIX launcher (launcher/posix/agenthydra) is a shell script, so it is tested by running it
 // with a real sh against a local server standing in for GitHub's two download hosts. The bun it
@@ -188,8 +192,12 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true)
 })
 
-/** One install folder holding the launcher, plus a server that answers for both release hosts. */
-function world(opts: { bunSums?: string; archiveSums?: string } = {}): World {
+/** One install folder holding the launcher, plus a server that answers for both release hosts. The launcher is
+ *  written with updates off unless `updates` says otherwise, and every run names AGENTHYDRA_RELEASE_BASE (the local
+ *  server), which is the explicit way to repair under "off"; a run that unsets it shows what "off" does alone. */
+function world(
+  opts: { bunSums?: string; archiveSums?: string; updates?: UpdatePolicy } = {},
+): World {
   const requests: string[] = []
   const bunHash = opts.bunSums ?? sha256(bunZip)
   const archiveName = `AgentHydra-${VERSION}-${TARGET}.tar.gz`
@@ -219,7 +227,11 @@ function world(opts: { bunSums?: string; archiveSums?: string } = {}): World {
   servers.push(server)
 
   const install = temp('ah-launcher-install')
-  writePosixLauncher({ outfile: join(install, 'agenthydra'), version: VERSION })
+  writePosixLauncher({
+    outfile: join(install, 'agenthydra'),
+    version: VERSION,
+    updates: opts.updates ?? 'off',
+  })
   const base = `http://127.0.0.1:${server.port}`
 
   async function run(
@@ -269,6 +281,21 @@ function seedParts(install: string, skip: string[] = []): void {
   }
 }
 
+/** A run that names no release base, so the launcher's own (the channel's) is used. Every proxy variable points at
+ *  a port nothing listens on, so a request to the channel is refused here instead of reaching GitHub. */
+const REFUSING = 'http://127.0.0.1:1'
+const CHANNEL_REFUSED: Record<string, string> = {
+  AGENTHYDRA_RELEASE_BASE: '',
+  https_proxy: REFUSING,
+  HTTPS_PROXY: REFUSING,
+  http_proxy: REFUSING,
+  HTTP_PROXY: REFUSING,
+  all_proxy: REFUSING,
+  ALL_PROXY: REFUSING,
+  no_proxy: '',
+  NO_PROXY: '',
+}
+
 function seedBun(install: string, version: string, text: string): void {
   mkdirSync(join(install, 'runtime'), { recursive: true })
   writeFileSync(join(install, 'runtime', 'bun'), text)
@@ -287,6 +314,26 @@ describe('the packaged POSIX launcher', () => {
     expect(text).not.toContain('@VERSION@')
     expect(text).not.toContain('@RELEASE_BASE@')
     expect(text.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
+  })
+
+  test("carries the release channel's updates policy, or the one it is given", () => {
+    const outfile = join(temp('ah-launcher-text'), 'agenthydra')
+    writePosixLauncher({ outfile, version: VERSION })
+    expect(readFileSync(outfile, 'utf8')).toContain(`AH_UPDATES='${RELEASE_CHANNEL.updates}'`)
+    expect(readFileSync(outfile, 'utf8')).not.toContain('@UPDATES@')
+    for (const updates of ['off', 'notify', 'auto'] as const) {
+      writePosixLauncher({ outfile, version: VERSION, updates })
+      expect(readFileSync(outfile, 'utf8')).toContain(`AH_UPDATES='${updates}'`)
+    }
+  })
+
+  test('refuses an updates policy it does not know', () => {
+    const outfile = join(temp('ah-launcher-text'), 'agenthydra')
+    for (const updates of ['sometimes', 'OFF', "off'; rm -rf ~; '", ''])
+      expect(() =>
+        writePosixLauncher({ outfile, version: VERSION, updates: updates as UpdatePolicy }),
+      ).toThrow('updates policy')
+    expect(existsSync(outfile)).toBe(false)
   })
 
   test('refuses a download base the shell would read as more than a URL', () => {
@@ -391,6 +438,50 @@ describe.skipIf(!SH)('POSIX launcher', () => {
       `/release/v${VERSION}/AgentHydra-${VERSION}-${TARGET}.tar.gz`,
       `/release/v${VERSION}/SHA256SUMS.txt`,
     ])
+  })
+
+  test('with updates off, a missing part is named with how to get it back, and nothing is downloaded', async () => {
+    const w = world({ updates: 'off' })
+    seedParts(w.install, ['desk2', 'orchestrator', 'app/release.json'])
+    seedBun(w.install, PIN, '#!/bin/sh\n')
+    const out = await w.run(['--ensure-bun'], { env: CHANNEL_REFUSED })
+    expect(out.code).not.toBe(0)
+    expect(out.stdout).toBe('')
+    const said = out.stderr.trim().split('\n').pop() ?? ''
+    expect(said).toContain('missing app/release.json, desk2/, orchestrator/.')
+    expect(said).toContain('Updates are off in this build')
+    expect(said).toContain(`Unpack AgentHydra-${VERSION}-${TARGET}.tar.gz into`)
+    expect(said).toContain('source checkout')
+    expect(said).toContain('AGENTHYDRA_RELEASE_BASE')
+    expect(w.requests).toEqual([])
+    expect(existsSync(join(w.install, 'desk2'))).toBe(false)
+    // It stopped before taking the lock or making a work folder.
+    expect(readdirSync(w.install).filter((f) => f.startsWith('.'))).toEqual([])
+  })
+
+  test('with updates off, naming AGENTHYDRA_RELEASE_BASE still repairs from that base', async () => {
+    const w = world({ updates: 'off' })
+    seedParts(w.install, ['orchestrator'])
+    seedBun(w.install, PIN, '#!/bin/sh\n')
+    const out = await w.run(['--ensure-bun'])
+    expect(out.code).toBe(0)
+    expect(readFileSync(join(w.install, 'orchestrator', 'marker.txt'), 'utf8')).toBe(
+      'orchestrator from the archive\n',
+    )
+    expect(w.requests).toContain(`/release/v${VERSION}/SHA256SUMS.txt`)
+  })
+
+  test("with updates on, a missing part is downloaded from the channel's own releases", async () => {
+    const w = world({ updates: 'notify' })
+    seedParts(w.install, ['desk2'])
+    seedBun(w.install, PIN, '#!/bin/sh\n')
+    const out = await w.run(['--ensure-bun'], { env: CHANNEL_REFUSED })
+    expect(out.code).not.toBe(0)
+    expect(out.stderr).not.toContain('Updates are off')
+    expect(out.stderr.trim().split('\n').pop()).toBe(
+      `agenthydra: cannot download ${releaseDownloadBase()}/v${VERSION}/AgentHydra-${VERSION}-${TARGET}.tar.gz`,
+    )
+    expect(w.requests).toEqual([])
   })
 
   test('an archive that does not match SHA256SUMS.txt is refused and restores nothing', async () => {
