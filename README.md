@@ -258,9 +258,9 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
     source checkout checks with `git ls-remote` of the branch it tracks, and a `git fetch` of it when it has moved,
     on the update-check timer (every six hours by default) even while auto-update is off, and only when that
     remote is this repository on GitHub.
-  - **A launcher repair:** a launcher that finds part of its install missing downloads its own version's archive
-    from this repository's releases, whatever the update setting. While no releases exist, that download fails
-    and the launcher says so.
+  - **A launcher repair:** a release launcher that finds part of its install missing downloads its own version's
+    archive from this repository's releases, when the channel says `notify` or `auto`. While it says `off`, the
+    launcher names the missing parts and downloads nothing, unless `AGENTHYDRA_RELEASE_BASE` names a base.
   - **Bun** from Bun's GitHub releases on a release build's first run, and **Claude Code** from the npm registry
     when a chat first needs it.
   - **Claude upkeep:** on Windows with Claude Desktop's classic install, about once an hour AgentHydra asks Claude
@@ -313,9 +313,9 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
   installed and nothing reaches the network until you add an account under **Instances → Free** and sign in by
   hand in the browser window it opens. The first use needs Python 3.11+, Bun and Node.js, and sets up a Python
   environment under `~/.hydra-desk-2/free/runtime`. Each login is sealed with Windows DPAPI, so sign-in fails on
-  Linux and macOS. HSwarm sends tool-free tasks to signed-in Free accounts when there are any; set
-  `route_via_free = false` in its `settings.toml` to stop that. These logins go through the providers' own
-  websites: **check that their terms allow this use before you turn it on.**
+  Linux and macOS. HSwarm sends nothing to Free accounts until you set `route_via_free = true` in its
+  `settings.toml`. These logins go through the providers' own websites: **check that their terms allow this use
+  before you turn it on.**
 - **Login sync** keeps your CLI and Claude Desktop logins the same on your PCs through a store you deploy yourself
   ([cloud/login-sync-worker](cloud/login-sync-worker/README.md)). There is no built-in store.
 - **Orchestrator jobs** use only folders you name: the to-do sweep is registered when `PROJECTHYDRA_HOME` points
