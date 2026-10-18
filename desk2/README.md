@@ -104,7 +104,7 @@ sidebar on the left stays put, and only the pane on the right changes.
   The table's gear opens its page over the table (`ah:open-settings`; Settings, a pop-up, leaves the pane open); the pane's own popover, its "Instances settings"
   dialog and its toolbar column toggle are gone. "Show process columns" is one setting now
   (`hydra/src/composables/useUsageMode.ts`, `usageMode`; Desk writes the same key,
-  `web/src/components/panes/instances.ts`). The pane's header gear beside Discord is gone too: Desk's
+  `web/src/components/panes/instances.ts`). The pane's header gear beside the repository link is gone too: Desk's
   Settings gear, bottom left, carries the "a newer AgentHydra is waiting" dot (`ah:update-dot`) and opens
   on Updates while it shows.
 - **CLI rows: a dot for a window AgentHydra started, no icon for no reset** (owner, 2026-10-06). A 5-hour

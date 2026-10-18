@@ -199,10 +199,10 @@ release, making the release list shorter and keeping patches visible without the
 other release in the line into the one it keeps. The release marked latest is never folded.
 
 A kept release with folded patches gets one body in `formatLineBody`'s layout (icon, ## TL;DR,
-<details> Read more, ## Downloads, Discord) covering the whole line: the TL;DR is the kept
-version's bullets then each folded version's, duplicates removed; Read more holds each version's
-section, oldest first, each under its own `#### x.y.z` heading. Every other kept release gets
-`formatReleaseBody`'s page.
+<details> Read more, ## Downloads, a closing line that sends questions and bugs to the repository's
+issues) covering the whole line: the TL;DR is the kept version's bullets then each folded version's,
+duplicates removed; Read more holds each version's section, oldest first, each under its own
+`#### x.y.z` heading. Every other kept release gets `formatReleaseBody`'s page.
 
 Run the dry run first and read it:
 ```sh
