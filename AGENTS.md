@@ -108,7 +108,9 @@ tests are skipped, and CI builds both first.
 ## Public repository
 
 This repo is PUBLIC (Jhacarreiro/AgentHydra-Community), `desk2/` included. It is a fork of AgentHydra built on
-`3a65ba8e`, upstream's last MIT commit ([docs/FORK.md](docs/FORK.md)).
+`3a65ba8e`, upstream's last MIT commit. Its history starts at the import commit `c81335b7`, which has no parent and
+whose tree is `3a65ba8e`'s, unchanged; upstream's history stays in upstream's repository
+([docs/FORK.md](docs/FORK.md)).
 
 - No real identities in tests, fixtures, comments or docs: use `example.com` /
   `example.test` addresses, a neutral name such as "Example Owner", and
@@ -119,12 +121,17 @@ This repo is PUBLIC (Jhacarreiro/AgentHydra-Community), `desk2/` included. It is
 - Screenshots of real chats stay on the PC that took them and are never committed.
 - Nothing upstream wrote after `3a65ba8e` comes into this repository: no merge or rebase onto upstream's `main`, and
   no code, text or changelog entry copied or adapted from it, since it is no longer MIT. Nothing from a private
-  repository either. `bun run audit:public` checks the tree and every commit since the base, and the pre-push hook
-  runs it on every push and refuses any ref whose history contains the relicensing commit `aee9dfc4`. That check is
-  of ancestry only: a copy or a cherry-pick of upstream's later work passes it, so this rule is what keeps them out.
-  A finding that is fine goes in `scripts/audit-public.allow.json` with its reason, never its value.
-- Upstream rewrote its history on 2026-10-05 to purge 68 such screenshots (its `main` then ran from `f53bbcda`, and
-  tags v1.9.0-v1.9.2 were moved). This repository carries the rewritten history. Never rebase or merge a branch made
-  from upstream's history before that rewrite: it brings the screenshots back. Values scrubbed on 2026-10-05
-  (emails, names, user folders, chat text) are still in the commits before the scrub, which this repository also
-  carries; the audit's history mode reads only the commits after `3a65ba8e`.
+  repository either. `bun run audit:public` checks the tree and every commit from the import commit on, and the
+  pre-push hook runs it on every push and refuses any ref whose history contains the relicensing commit `aee9dfc4`.
+  That check is of ancestry only: a copy or a cherry-pick of upstream's later work passes it, so this rule is what
+  keeps them out. A finding that is fine goes in `scripts/audit-public.allow.json` with its reason, never its value.
+- No commit of upstream's either, not even before `3a65ba8e`: never merge, rebase or graft onto any of upstream's
+  history, and never push one of its tags. That history holds values upstream has since taken out of its files
+  (emails, names, user folders, chat text), and a copy from before upstream rewrote it on 2026-10-05 also holds 68
+  screenshots of real chats; this repository publishes none of it. The pre-push hook refuses any ref that shares a
+  commit with upstream's history up to `3a65ba8e`, and any tag on that history or on the import commit; the audit's
+  `upstream.history` rule fails such a commit too. A clone that also fetched upstream to compare holds that history
+  locally: push branches by name, never `--all`, `--tags` or `--mirror`.
+- The audit's history mode reads the import commit's author, committer and message and every line each later
+  commit adds, not the import's tree: that is upstream's at `3a65ba8e`, fixed by its hash, and still holds values
+  later commits took out. A file restored from it brings them back as added lines, which the audit flags.
