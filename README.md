@@ -34,9 +34,10 @@ stays on, and let your other PCs report to it:
 - **The inbox from a phone:** the window can sit behind a reverse proxy that signs you in first, so the same list
   opens on your phone.
 
-All of this is off until you set it up, and it is new: it is covered by the repository's tests (the hub, relay,
-pairing and signing suites, and the tray's own Go tests, run on Linux) but has not been in a published release yet.
-See [One server, several PCs](#one-server-several-pcs).
+All of this is off until you set it up, and it is new: none of it has been in a published release yet. This
+repository's tests run the hub and the tray on Linux, including two PCs that pair, push and relay through the real
+daemon. Before the fork, the same hub and tray ran in the maintainer's own setup with Windows PCs and were tried on a
+Mac. See [One server, several PCs](#one-server-several-pcs).
 
 **Why a fork.** On 15 October 2026 AgentHydra moved from the MIT licence to PolyForm Noncommercial. This fork's
 maintainer also disagrees with how outside contributions were credited there: on 17 October 2026 all of the
@@ -170,7 +171,8 @@ you already have.
 ## One server, several PCs
 
 Pick one AgentHydra as the hub, usually on a home server that stays on, and point each PC at it. Nothing below
-runs until you set its variables.
+runs until you set its variables. [docs/CODEX-HUB.md](docs/CODEX-HUB.md) walks through running a hub of your own: the
+server, your proxy and sign-in, building and installing the tray, and changing the key or the token.
 
 <details>
 <summary><b>Read more: the hub, each PC, the tray app, cloud sessions and the phone</b></summary>
@@ -179,7 +181,9 @@ runs until you set its variables.
   hub answers loopback only, so other PCs reach it through a reverse proxy you run: `/api/codex-hub/`, where the
   token is the authentication, and the pairing page `/codex-hub/pair`, which hands out that token and so is served
   only behind your own sign-in. On a machine with no screen, `AGENTHYDRA_DESK_AT_BOOT=1` starts the window's
-  server with the daemon, so the proxy has something to reach after a restart.
+  server with the daemon, so the proxy has something to reach after a restart. The token is the only lock: whoever
+  has it can push chats and open the relay under any PC's name, so keep it behind HTTPS and your sign-in, and change
+  it if it leaks (every PC then pairs again).
 - **Each PC:** set `AGENTHYDRA_CODEX_HUB_URL` and the same token. Its AgentHydra pushes its Codex chat list and the
   chats that changed every two minutes; a PC that does not run AgentHydra can run the standalone pusher. A chat
   archived or deleted on the PC leaves the hub at its next push. The hub's usage analytics leave these chats out,
@@ -188,11 +192,20 @@ runs until you set its variables.
   chats, its own Codex runs the turn. The PC lets the hub only read, resume, start and stop turns in chats it
   already has (never start a chat, change its configuration or sign in), and by default it refuses a turn without
   approvals or outside the sandbox. Close the chat in the Codex app on that PC first.
-- **The tray app** (`codex-hub-tray/`, Go) is built by whoever runs the hub, with the hub's addresses and, if you
-  sign builds, your public key. No release includes it. Opened once, it installs itself for the user, starts at
-  login, opens the pairing page to get the token, runs the pusher, shows in its icon whether the PC is sending, and
-  takes new pusher and tray builds from the hub. `bun scripts/codex-hub-sign.ts` makes the key and signs builds.
-  The macOS app is built on a Mac with that folder's `build-macos.sh`, and `test-macos.sh` smoke-tests it there.
+- **The tray app** (`codex-hub-tray/`, Go) is built by whoever runs the hub, with `codex-hub-tray/build.sh`, the
+  hub's addresses and your own signing key's public half; the script stops without a key unless you set
+  `ALLOW_NO_KEY=1`. No release includes it. Two builds of one commit with the same addresses and key are the same
+  bytes, so you can check what a PC runs (a Mac's zip has a checksum file of its own instead). Opened once, it
+  installs itself for the user, starts at login, opens the pairing page to get the token, runs the pusher, shows in
+  its icon whether the PC is sending, and takes new pusher and tray builds from the hub, only ones your key signed.
+  A build can trust two keys, so the PCs move to a new key without being set up again.
+  `bun scripts/codex-hub-sign.ts` makes the key and signs builds. On a Mac, `build.sh` also builds the macOS app
+  (through `build-macos.sh`), and `test-macos.sh` smoke-tests it there.
+- **How far the hub is tested:** this repository's tests run on Linux. They start the real daemon as a hub with two
+  PCs that pair, push, relay and are refused with a wrong or old token, and run the tray end to end against a
+  stand-in hub. In this repository the Windows tray has had only `go vet` and a build, the macOS one has not run,
+  and no real proxy or sign-in is under test. Before the fork, the same hub and tray ran in the maintainer's own
+  setup with Windows PCs and were tried on a Mac.
 - **Claude Code cloud sessions:** set `AGENTHYDRA_CLOUD_SESSIONS=1`. AgentHydra then asks Anthropic's API, with
   each Claude Code CLI login it finds (or a `claude setup-token` token in `CLAUDE_CODE_OAUTH_TOKEN`), for that
   account's cloud and Remote Control sessions, and lists them with your local chats. The token needs the
@@ -202,8 +215,9 @@ runs until you set its variables.
   (for example `https://desk.example.com`). That name is then trusted like the machine itself, so never list one
   anyone can reach without the sign-in.
 
-Details: [Codex chats from other PCs](docs/REFERENCE.md#codex-chats-from-other-pcs-codex-hub) and the window's
-[ports and remote access](desk2/README.md#ports).
+Details: [docs/CODEX-HUB.md](docs/CODEX-HUB.md) for running a hub,
+[Codex chats from other PCs](docs/REFERENCE.md#codex-chats-from-other-pcs-codex-hub) for its routes and variables, and
+the window's [ports and remote access](desk2/README.md#ports).
 
 </details>
 
