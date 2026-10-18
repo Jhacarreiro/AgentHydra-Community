@@ -280,8 +280,8 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
     you deploy), usage sync between PCs (a private git repository you name), email alerts (your SMTP server),
     HSwarm (the model providers whose keys you add, and their sites' icons), Free instances (claude.ai and
     chatgpt.com, plus the Python and Node packages they install once), orchestrator remote access (your sign-in
-    provider and tunnel), and Desk's RepoYeti and ReDesign connectors, which download that tool's release from
-    GitHub when you install one.
+    provider and tunnel), and Desk's RepoYeti and ReDesign connectors, third-party apps by LunarWerx, which download
+    that app's release from its GitHub repository when you install one.
 
 </details>
 
