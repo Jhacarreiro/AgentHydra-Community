@@ -317,6 +317,16 @@ try {
 
   const deskUp = await waitHealth(`${deskUrl}/api/health`, 40_000)
   if (check(deskUp, 'Desk 2 /api/health ok')) {
+    // Desk loads every plugin before it listens, and skips one whose import fails with a single log line: a bundle
+    // missing the daemon modules Desk imports answered its health check with no engine at all.
+    const skipped = tail(deskLog, 1000)
+      .split('\n')
+      .filter((line) => /^\[plugins\] .* failed to load/.test(line))
+      .map((line) => line.match(/plugins[\\/]([^\\/\s]+) failed/)?.[1] ?? line)
+    check(
+      skipped.length === 0,
+      `every Desk 2 plugin loaded${skipped.length ? `; skipped ${skipped.join(', ')}` : ''}`,
+    )
     const root = await get(`${deskUrl}/`)
     const html = await root.text()
     check(root.ok && /<!doctype html/i.test(html), 'Desk 2 / is html')

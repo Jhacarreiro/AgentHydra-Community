@@ -28,6 +28,15 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { findRepoRoot } from '../tests/repo-root'
 import { buildLauncher } from './build-launcher'
 import { writePosixLauncher } from './launcher-posix'
+import {
+  aliasedImports,
+  bundleServerModules,
+  pointAliasAtBundle,
+  SERVER_ALIAS,
+  SERVER_MODULES_DIR,
+  sourceFilesUnder,
+  unresolvedImports,
+} from './release-bundle'
 
 const ROOT = findRepoRoot(import.meta.dir)
 const VERSION: string = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
@@ -316,6 +325,21 @@ installServerOnly(desk2, target, hostTarget)
 
 pruneNodeModules(join(desk2, 'node_modules'))
 
+// Desk's server runs some of the daemon's own modules, imported as @agenthydra/server/<path> (desk2/tsconfig.base.json
+// maps that to the checkout's server/src). A bundle has no server/src, so those modules are bundled into
+// desk2/agenthydra-server/ and the staged alias points there. Then every import of desk2/server/src must resolve inside
+// the staged tree: a plugin whose import fails is skipped at boot with only a log line, which is how a bundle once lost
+// its whole engine.
+const serverImports = aliasedImports(sourceFilesUnder(join(desk2, 'server', 'src')))
+await bundleServerModules(ROOT, desk2, serverImports)
+pointAliasAtBundle(join(desk2, 'tsconfig.base.json'))
+console.log(
+  `bundled ${serverImports.length} ${SERVER_ALIAS}* module(s) into desk2/${SERVER_MODULES_DIR}/: ${serverImports.join(', ')}`,
+)
+const unresolved = unresolvedImports(join(desk2, 'server', 'src'))
+if (unresolved.length)
+  fail(`desk2/server/src has imports the bundle cannot resolve:\n  ${unresolved.join('\n  ')}`)
+
 if (isWindows) {
   const deskLauncher = join(desk2, 'launcher')
   mkdirSync(deskLauncher)
@@ -363,10 +387,12 @@ const sizes = {
   launcher: dirSize(launcher),
   'app (daemon)': dirSize(join(stage, 'app')),
   'desk2 node_modules': deskModules,
+  'desk2 server modules': dirSize(join(desk2, SERVER_MODULES_DIR)),
   'desk2 dists': dirSize(join(desk2, 'web/dist')) + dirSize(join(desk2, 'hydra/dist')),
   'desk2 other':
     dirSize(desk2) -
     deskModules -
+    dirSize(join(desk2, SERVER_MODULES_DIR)) -
     dirSize(join(desk2, 'web/dist')) -
     dirSize(join(desk2, 'hydra/dist')),
   orchestrator: dirSize(orch),
