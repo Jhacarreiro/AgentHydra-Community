@@ -1,6 +1,7 @@
-// tests/build-natives.test.ts - the three Windows programs are built from this repository's source:
-// scripts/build-natives.ts knows each one's crate and place, every build pins the same Rust release and
-// remaps every machine path, and each workflow that needs one builds it first.
+// tests/build-natives.test.ts - the three Windows programs are built from this repository's source and
+// never committed: scripts/build-natives.ts knows each one's crate and place, every build pins the same
+// Rust release and remaps every machine path, git ignores the built copies, and each workflow that needs
+// one builds it first.
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -17,6 +18,11 @@ import {
 import { REPO_ROOT } from './repo-root'
 
 const read = (rel: string) => readFileSync(join(REPO_ROOT, rel), 'utf8')
+
+function git(args: string[]) {
+  const r = Bun.spawnSync(['git', ...args], { cwd: REPO_ROOT, stdout: 'pipe', stderr: 'pipe' })
+  return { code: r.exitCode, out: r.stdout.toString() }
+}
 
 describe('the programs', () => {
   test('are the tray host, the CliMayte runner and the window host, at the paths the app runs them from', () => {
@@ -44,6 +50,14 @@ describe('the programs', () => {
     for (const p of NATIVE_PROGRAMS)
       expect(read(`${p.crate}/rust-toolchain.toml`)).toContain(`targets = ["${DEFAULT_TARGET}"]`)
   })
+
+  test('a built copy is ignored by git and none is tracked', () => {
+    for (const p of NATIVE_PROGRAMS) {
+      expect(git(['check-ignore', '-q', p.dest]).code).toBe(0)
+      expect(git(['check-ignore', '-q', `${p.dest}.old-1234`]).code).toBe(0)
+      expect(git(['ls-files', '--', p.dest]).out).toBe('')
+    }
+  }, 20_000)
 
   test('a name the table does not have is refused, and the rest keep table order', () => {
     expect(() => selectPrograms(['tray', 'launcher'])).toThrow(/No native program called launcher/)

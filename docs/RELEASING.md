@@ -95,7 +95,7 @@ Every bundle (`AgentHydra-<version>-<target>`, a `.zip` on Windows, a `.tar.gz` 
 - `desk2/`, AgentHydra 2.0's window: its server source, `shared/`, production `node_modules`
   (installed hoisted, for the target's OS and CPU, with Claude Code's platform binary removed: Desk 2
   resolves or downloads it itself), the built `web/dist` and `hydra/dist`, and on Windows `launcher/`
-  with `HydraDesk2.exe`. Windows opens it in its native window; Linux and macOS run its server on
+  with `HydraDesk2.exe` (built by the release, below). Windows opens it in its native window; Linux and macOS run its server on
   the launcher's Bun and open the default browser. Desk 2's dev-servers service (for managing dev
   servers) runs as a hidden service started by Desk 2 itself.
 
@@ -114,10 +114,12 @@ refusing address, so a bundle that tries to download anything fails it.
 
 No tests, e2e, `tmp/` or dev dependencies ship. `scripts/package-release.ts` stages and archives a
 bundle and `scripts/smoke-release.ts` boots one; `release.yml` runs the same two scripts. On a PC
-(Windows shown), build Desk 2 first, since the packager never builds it or writes into the checkout:
+(Windows shown), build Desk 2 first, since the packager never builds it or writes into the checkout,
+and, for a Windows bundle, the native programs (next section):
 
 ```sh
 cd desk2 && bun install --frozen-lockfile && bun run build && cd ..
+bun scripts/build-natives.ts
 bun scripts/package-release.ts --target windows-x64 --out <dir>
 bun scripts/smoke-release.ts --bundle-dir <dir> --port <free> --desk-port <free>
 ```
@@ -125,6 +127,47 @@ bun scripts/smoke-release.ts --bundle-dir <dir> --port <free> --desk-port <free>
 Pick two ports nothing on the PC uses (not 7787 or 7798, where the live daemon and Desk 2 run);
 the smoke refuses a busy one. It starts the bundle's daemon and Desk 2's server on temp homes,
 headless (never the launcher, window host or tray), checks them, and stops exactly what it started.
+
+### The native programs are built, never committed
+
+Three Windows programs come from Rust source in this repository. None of them is in git (`.gitignore`
+names them), so nothing that ships can be older than its source or come from a machine nobody can name:
+
+| Program | Built from | Lands at (checkout and Windows bundle) |
+|---|---|---|
+| the tray host | `misc/tray-host-native` | `misc/AgentHydra-Tray.exe` |
+| CliMayte's worker runner | `misc/climayte-runner-native` | `misc/climayte-runner.exe` (in a bundle, `app/misc/`) |
+| the window host | `desk2/launcher/host` | `desk2/launcher/HydraDesk2.exe` |
+
+`bun scripts/build-natives.ts [tray] [runner] [window] [--test] [--out <dir>]` builds them, the same way
+on a PC and in CI. Each crate's `rust-toolchain.toml` pins the Rust release (rustup installs it on first
+use; the three pin the same one, so change them together), cargo runs `--locked`, every machine path
+rustc would write into the program is remapped and the build refuses an exe that still names one, and
+the MSVC linker gets `/Brepro`, so the PE timestamp is a hash of the content. It needs Rust
+(https://rustup.rs) and Visual Studio's C++ build tools, which rustup offers on Windows. With `--out`,
+the exes go under that folder with a `natives.sha256` beside them instead of into the checkout.
+
+- `.github/workflows/natives.yml` runs on every change to their source (and to `misc/AgentHydra.ico`,
+  which the window host embeds, and the script): it builds all three twice, from two checkouts in
+  different folders, and fails when the hashes differ. The hashes are in the run's summary and its
+  `natives-windows-x64` artifact. The same workflow builds the Codex hub tray (`codex-hub-tray/`, Go,
+  `-trimpath -buildvcs=false` with an empty build id) for Windows, Linux and macOS.
+- `ci.yml`'s Windows leg builds the tray host and the runner before its tests, which start them.
+- `release.yml`'s `natives` job builds all three, with each crate's own tests first. The Windows
+  package leg fetches them into the checkout, checks them against `natives.sha256` and, once packaged,
+  checks the bundle's copies again. Linux and macOS bundles carry none of them (scripts/build.ts embeds
+  the runner only for a Windows target).
+
+A source checkout runs without them, with less: the shortcut that `misc/Create-Shortcut.ps1` makes runs
+the PowerShell tray (`misc/AgentHydra-Tray.ps1`), Desk 2's launcher opens the window's page in the default
+browser, and CliMayte's workers run under AgentHydra in runner mode, as on macOS and Linux, without the
+native runner's job and process ceiling. Each says how to build the missing program.
+`scripts/live-checkout.ps1 -Apply` builds them in the live checkout when cargo is installed. A release
+missing one is broken and says so.
+
+A cross-built check is possible off Windows: `bun scripts/build-natives.ts --target x86_64-pc-windows-gnu
+--out <dir>` (with mingw-w64 installed) shows that the source compiles and that two builds from different
+folders match, but such an exe is not what ships.
 
 ## Consolidating old releases
 
@@ -420,7 +463,8 @@ buys nothing a dispatch doesn't already give you.
 
 ## What the tag push triggers
 
-Pushing a tag matching `v*.*.*` triggers `.github/workflows/release.yml`. It packages one bundle
+Pushing a tag matching `v*.*.*` triggers `.github/workflows/release.yml`. It builds the Windows native
+programs from the tagged source ("The native programs are built, never committed"), packages one bundle
 for every supported OS (Windows x64, Linux x64/arm64, macOS x64/arm64; see "What a 2.0 bundle
 holds"), boots every bundle **except darwin-x64** with `scripts/smoke-release.ts`, then publishes
 the GitHub Release automatically from the matching changelog section. Windows exposes the lone

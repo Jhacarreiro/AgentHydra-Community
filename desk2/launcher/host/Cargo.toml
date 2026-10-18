@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 # AgentHydra's native window (desk2/, called Hydra Desk 2 until 2026-10-06): tao + wry (WebView2). Built to
-# ../HydraDesk2.exe, with AgentHydra's icon compiled in (build.rs).
+# ../HydraDesk2.exe by scripts/build-natives.ts (not committed), with AgentHydra's icon compiled in (build.rs).
 [[bin]]
 name = "HydraDesk2"
 path = "src/main.rs"

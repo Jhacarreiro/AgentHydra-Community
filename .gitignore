@@ -57,9 +57,19 @@ docs/HANDOFF_MICHAEL.md
 # A built or downloaded binary dropped at the repo root. `bun run dist` writes the real one to
 # dist/ (ignored above); this is the copy people leave beside the checkout after downloading a
 # release asset or hand-copying one out of dist/. It is ~100 MB, so an accidental `git add` here
-# is expensive and irreversible on a public repo. Named exactly, NOT as a blanket *.exe, because
-# misc/AgentHydra-Tray.exe is a tracked, committed part of the tray toolkit.
+# is expensive and irreversible on a public repo. Named exactly, NOT as a blanket *.exe, so a new
+# kind of binary still shows up in `git status` and is a decision rather than an accident.
 /AgentHydra.exe
+
+# The Windows programs scripts/build-natives.ts builds from the Rust source beside them, into the
+# places the app runs them from. They are built (by a PC, CI and every release), never committed: a
+# committed copy cannot be traced to its source. `.old-<pid>` is a running copy a rebuild moved aside.
+/misc/AgentHydra-Tray.exe
+/misc/AgentHydra-Tray.exe.old-*
+/misc/climayte-runner.exe
+/misc/climayte-runner.exe.old-*
+/desk2/launcher/HydraDesk2.exe
+/desk2/launcher/HydraDesk2.exe.old-*
 
 # The Codex hub's builds. codex-hub-tray/build.sh and build-macos.sh, and the commands in
 # docs/REFERENCE.md write them to dist/ (ignored above); these catch one built beside its source,

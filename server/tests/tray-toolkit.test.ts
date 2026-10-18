@@ -9,8 +9,9 @@
 // gets there, and that the build is still wired to embed it at all.
 
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { NATIVE_PROGRAMS } from '../../scripts/build-natives'
 import { TRAY_HOST_CONFIG, TRAY_HOST_EXE } from '../src/tray-host'
 import {
   materializeTrayToolkit,
@@ -223,10 +224,14 @@ describe('the build is still wired to embed it', () => {
     expect(build).toContain('__AGENTHYDRA_EMBEDDED_TRAY__')
   })
 
-  test('every file it embeds is actually in misc\\', () => {
+  // The host itself is built from misc/tray-host-native (scripts/build-natives.ts), not committed.
+  test('every file it embeds is in misc\\, or is the host built from its source here', () => {
+    const root = join(import.meta.dir, '..', '..')
     for (const name of TRAY_TOOLKIT_FILES) {
-      const path = join(import.meta.dir, '..', '..', 'misc', name)
-      expect(readFileSync(path).byteLength).toBeGreaterThan(0)
+      const native = NATIVE_PROGRAMS.find((p) => p.dest === `misc/${name}`)
+      if (native) expect(existsSync(join(root, native.crate, 'Cargo.toml'))).toBe(true)
+      else expect(readFileSync(join(root, 'misc', name)).byteLength).toBeGreaterThan(0)
     }
+    expect(NATIVE_PROGRAMS.find((p) => p.name === 'tray')?.dest).toBe(`misc/${TRAY_HOST_EXE}`)
   })
 })

@@ -151,6 +151,16 @@ happened":
 
 ## Build and try
 
+AgentHydra's copy, `misc/AgentHydra-Tray.exe`, is not committed. From the repository root,
+`bun scripts/build-natives.ts tray` builds it (`--test` runs this crate's tests first) with the Rust
+release `rust-toolchain.toml` pins, `--locked`, machine paths remapped and the linker's `/Brepro`, and
+puts it in `misc/`; `.github/workflows/natives.yml` does the same on every change here and checks that
+two builds match, and every release builds its own (docs/RELEASING.md, "The native programs are built,
+never committed"). Without a build, `misc/Create-Shortcut.ps1` makes the shortcut run the PowerShell
+tray instead.
+
+By hand, in this folder:
+
 ```
 cargo build --release
 # write <App>-Tray.json beside the exe, then:
