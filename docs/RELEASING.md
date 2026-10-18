@@ -256,9 +256,10 @@ user-facing, not as a staging step.
 A checkout made while this repository still carried upstream's history shares no commit with `main` and cannot
 follow it ([FORK.md](FORK.md)). Delete it and clone again rather than push from it: its hook and audit are older
 ones, which pass upstream's history. Nor does a force-push take that history off GitHub: GitHub keeps the commits a
-force-push leaves behind, viewable by their hash, and the repository's Activity view links the old head. To take it
-off, delete the repository and create it again before this history is pushed to it, or force-push and ask GitHub
-Support to remove the commits nothing points to any more.
+force-push leaves behind, viewable by their hash, and the repository's Activity view links the old head. And a
+force-push of `main` is refused now ("What GitHub itself refuses", below). What is left, to take such commits off,
+is asking GitHub Support to remove the commits nothing points to any more. Deleting the repository to start again
+would take its rulesets with it, so it is no remedy here.
 
 ## The pre-push gate
 
@@ -361,8 +362,9 @@ Everything else gets through on GitHub's side, and is left to the pre-push hook 
 - **A new branch,** whatever its name and its history. One that carries upstream's history, or has a root other
   than the import commit, is refused by the hook's rule 7; pushed with `--no-verify`, or from a clone without the
   hooks, it lands.
-- **A new `v*` tag,** pushed or made on GitHub. A pushed one meets every rule of the hook and its CI check, unless
-  it is pushed with `--no-verify` or from a clone without the hooks. One made in GitHub's web page (a release
+- **A new `v*` tag,** pushed or made on GitHub. A pushed one meets the hook's rules 1 and 4 to 7, and one named
+  `vN.N.N` (digits only) also meets rules 2 and 3 and the CI check, unless it is pushed with `--no-verify` or from a
+  clone without the hooks. One made in GitHub's web page (a release
   published with a new tag included) or through its API meets none of them, and starts the `release.yml` of the
   commit it names: on the import commit, or on one of this repository's first commits that still have upstream's
   `release.yml`, that is upstream's workflow, which has no channel check and publishes a tag push as a full
@@ -430,7 +432,7 @@ Everything else gets through on GitHub's side, and is left to the pre-push hook 
    it publishes is what keeps it from shipping.
 
    **If a tag does end up on a red commit,** do not move a published tag (the tag ruleset refuses
-   deleting it or force-pushing it onto another commit). Fix the failure, bump to the next patch
+   deleting it and force-pushing it, but it does not restrict updates, so do not count on it to refuse a move). Fix the failure, bump to the next patch
    version, and release that immutable version instead.
 
    The same goes for a tag whose Release run fails before it publishes: a dispatch on the tag runs
