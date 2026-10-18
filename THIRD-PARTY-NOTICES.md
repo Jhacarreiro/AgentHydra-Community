@@ -8,6 +8,14 @@ they are reproduced here or in the file each section names. Each adapted source 
 source in a header comment, except the shadcn-vue components, which carry none and are listed by
 folder in their section.
 
+This file is about code adapted into AgentHydra's own source. The third-party packages a release
+bundle carries as they are (the npm packages bundled into its JavaScript or installed beside it, the
+Rust crates of its Windows programs) are listed with their licences and licence texts in the
+`THIRD-PARTY-LICENSES` file at the root of every bundle, which `scripts/third-party-licenses.ts`
+writes when the bundle is built. A bundle does not carry the Claude Agent SDK, whose licence reserves
+all rights: Desk downloads the version the bundle pins from the npm registry the first time a chat
+needs it.
+
 ## NousResearch/hermes-agent
 
 Source: <https://github.com/NousResearch/hermes-agent> (MIT). Read while building the 2026-09-04
@@ -50,8 +58,7 @@ The table and column names are facts about a file format; no upstream code or lo
 does: on comparison it shares nothing with `tools/checkpoint_manager.py`, which snapshots repo files
 through a shadow git repository. It is our own before/after ledger.
 
-Nine skills under `home/skills/hermes-*` in the team's private skills repository ARE Hermes'
-content, vendored and marked as such in each file. They are not part of this repository.
+No other Hermes content, its skills included, is part of this repository.
 
 ```
 MIT License
@@ -183,13 +190,82 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
+## DietrichGebert/ponytail
+
+`CODE_BRIEF` in `hswarm/code_brief.py`, the brief an `edit` task gets when it brings no `system`
+prompt of its own, is adapted from `skills/ponytail/SKILL.md` in
+<https://github.com/DietrichGebert/ponytail> (MIT) at commit `e3ba2aa`, as the module's docstring
+says, with what was dropped and changed for hswarm. The copyright line below is the one in
+ponytail's own `LICENSE`, read at that commit and on its default branch on 2026-10-18 (the two are
+byte for byte the same), and the licence text is that file's.
+
+```
+MIT License
+
+Copyright (c) 2026 DietrichGebert
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## mui/material-ui
+
+Two parts of HSwarm's review tasks take their design from the review skill in
+<https://github.com/mui/material-ui> (MIT), as their comments say: the scope block a review batch
+prepends to every prompt, with an echo mark the worker must repeat so a worker that reviewed the
+wrong tree is flagged instead of trusted (`scope` in `hswarm/spec.py`), and the depth dial with hard
+fan-out caps in `hswarm/roster.py`. `hswarm/roster.py` says its designs were written fresh, and
+`hswarm/spec.py` calls its scope block adapted, so the notice travels with both. The copyright line
+below is the one in the `LICENSE` file at the root of mui/material-ui, read on its default branch on
+2026-10-18, and the licence text is that file's.
+
+```
+MIT License
+
+Copyright (c) 2014 Call-Em-All
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## unovue/shadcn-vue
 
 The UI components in `desk2/hydra/src/components/ui/` and `orchestrator/web/src/components/ui/`
 come from shadcn-vue's component registry (<https://github.com/unovue/shadcn-vue>, MIT); the
 `components.json` beside each app is that tool's configuration (style `reka-mira`). They have been
 edited here since. `desk2/web/src/components/ui/` holds a further copy of some of the same
-components. The copyright holder below is the one in the `LICENSE` file of shadcn-vue's published
+components, and the `cn()` class helper in each app's `src/lib/utils.ts` starts from the one
+shadcn-vue's setup writes. The copyright holder below is the one in the `LICENSE` file of shadcn-vue's published
 npm package (version 2.8.2, read from `npm pack shadcn-vue` on 2026-10-17); its `package.json`
 also gives the licence as MIT.
 
