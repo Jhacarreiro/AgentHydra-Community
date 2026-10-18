@@ -10,11 +10,12 @@ For configuration and the MCP tools, read [REFERENCE.md](REFERENCE.md); for wher
 
 ## What it is
 
-AgentHydra Community is a community fork of AgentHydra, continued from `3a65ba8e`, its last MIT-licensed commit. It is
-a local dashboard for AI coding agents that unifies Claude Code, Codex, OpenCode, Hermes Agent and DeepSeek Harness
-session history into one window. It lets you read and live-tail any session, reply straight into running Claude
-sessions (singly or in bulk) and continue Codex chats, move a chat onto another signed-in account in one call, see
-cost and usage analytics, and manage isolated Claude Desktop and Codex Desktop/CLI accounts side by side.
+AgentHydra Community is a community fork of AgentHydra, continued from `3a65ba8e`, its last MIT-licensed commit,
+whose tree its first commit imports unchanged; upstream's own history is not carried. It is a local dashboard for AI
+coding agents that unifies Claude Code, Codex, OpenCode, Hermes Agent and DeepSeek Harness session history into one
+window. It lets you read and live-tail any session, reply straight into running Claude sessions (singly or in bulk)
+and continue Codex chats, move a chat onto another signed-in account in one call, see cost and usage analytics, and
+manage isolated Claude Desktop and Codex Desktop/CLI accounts side by side.
 
 ⛔ It does NOT start runs you cannot see: `headlessRunsAllowed()` returns false unconditionally, with no setting to
 flip, so every attempt to add or dispatch a queued run answers HTTP 409 under the no-headless law. The run queue and
@@ -86,6 +87,11 @@ The intricacies worth remembering: the gotchas, the half-built parts, the decisi
   pre-push hook refuse any history that contains the relicensing commit `aee9dfc4` (`scripts/audit-public.mjs`,
   `.githooks/check-public-push.mjs`), but they check ancestry only: a copy or a cherry-pick of upstream's later work
   makes commits without it, so the clean-room rule in `CONTRIBUTING.md` is what keeps that out.
+- The history starts at one import commit with no parent whose tree is `3a65ba8e`'s, unchanged; none of upstream's
+  own commits is in it. The audit checks that commit before it reads any history (no parent, that tree, every commit
+  read built on it), and its `upstream.history` rule, like the hook, refuses any history that shares a commit with
+  upstream's up to `3a65ba8e`. The hook also refuses a tag on upstream's history or on the import commit, whose tree
+  carries upstream's own `release.yml` (`scripts/audit-public.config.json`, `docs/FORK.md`).
 
 ## At a glance
 
@@ -285,11 +291,12 @@ Each path is where the feature is defined.
   unless the download matches the release's published `SHA256SUMS.txt`, and creates a Start Menu shortcut. While
   the channel says updates are off it refuses before downloading anything; `-FromZip` installs a local zip. -
   `install.ps1`
-- **The public audit** - One command reads the tree and every commit since the MIT base for secrets, personal data,
-  private addresses, upstream hosts, release links and private repository names, build outputs and generated files,
-  SVG and stylesheet files whose licence has no notice, unrecorded binaries, non-noreply commit emails and any commit
-  with the relicensing commit in its history; CI and the pre-push hook run it. - `scripts/audit-public.mjs`,
-  `.githooks/check-public-push.mjs`, `.github/workflows/audit-public.yml`
+- **The public audit** - One command checks the import commit at the root of the history, then reads the tree and
+  every commit for secrets, personal data, private addresses, upstream hosts, release links and private repository
+  names, build outputs and generated files, SVG and stylesheet files whose licence has no notice, unrecorded
+  binaries, non-noreply commit emails and any commit with the relicensing commit or upstream's own history in its
+  history; CI and the pre-push hook run it. - `scripts/audit-public.mjs`, `.githooks/check-public-push.mjs`,
+  `.github/workflows/audit-public.yml`
 
 **Partial - exists but incomplete, gated off, or known broken**
 

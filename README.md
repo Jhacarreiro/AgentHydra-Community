@@ -16,9 +16,10 @@
 ---
 
 AgentHydra Community is a community fork of [AgentHydra](https://github.com/LunarWerxs/AgentHydra), continued from
-`3a65ba8e`, its last MIT-licensed commit, and it stays MIT. Like AgentHydra, it is one window over every AI coding
-chat and every Claude and Codex account you use, built on the files your tools already write: no sign-up and no
-hosted service.
+`3a65ba8e`, its last MIT-licensed commit, and it stays MIT. Its history starts with one commit that imports that
+version unchanged, and upstream's own history stays in upstream's repository. Like AgentHydra, it is one window over
+every AI coding chat and every Claude and Codex account you use, built on the files your tools already write: no
+sign-up and no hosted service.
 
 **What this fork adds first: one home server for several PCs.** Run AgentHydra on a home server, or any PC that
 stays on, and let your other PCs report to it:
@@ -69,8 +70,8 @@ where the repository link now is, and the window shots name a demo project "conn
 - **For agents too:** the whole thing over MCP, including "which account am I, and how much is left"
 - **Nothing goes to the original project:** no LunarWerx service, and no install id except to a Codex hub you run
   yourself; what does reach the network is listed under [Install](#install)
-- **A public audit** checks every file, and every commit since the MIT base, for secrets and personal data, and
-  refuses any commit that has upstream's relicensing commit in its history
+- **A public audit** checks every file and every commit for secrets and personal data, and refuses any commit built
+  on upstream's own history or on its relicensing commit
 
 <details>
 <summary><b>Read more: what each part does</b></summary>
@@ -386,8 +387,9 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
 
 ## The public audit
 
-`bun run audit:public` checks what this repository would publish: the tree at `HEAD` and every commit since
-`3a65ba8e`, the MIT base. CI runs it on every push and pull request, and the pre-push hook runs it on every push.
+`bun run audit:public` checks what this repository would publish: the tree at `HEAD` and every commit in its
+history, which starts at the commit that imports `3a65ba8e`, the MIT base. CI runs it on every push and pull request,
+and the pre-push hook runs it on every push.
 
 <details>
 <summary><b>Read more: what it looks for and how to use it</b></summary>
@@ -397,24 +399,29 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
   upstream service hosts and private repository names, links to upstream's releases, raw files and API, internal
   host names, account ids, build outputs and generated files (lockfiles aside), SVG and stylesheet files whose
   licence or copyright comment has no entry in `THIRD-PARTY-NOTICES.md`, binaries with no recorded provenance,
-  commit emails that are not noreply, and any commit that has upstream's relicensing commit `aee9dfc4` in its
-  history.
+  commit emails that are not noreply, and any commit that has upstream's relicensing commit `aee9dfc4`, or any
+  commit of upstream's up to `3a65ba8e`, in its history.
 - Modes: `--tree REV`, `--history A..B` and `--push REMOTE`, plus `--json` and `--suggest-allow`. It exits 0 when
   clean, 1 on a finding and 2 when it could not run. A finding is printed as its rule, `file:line` and a short
   fingerprint of the value, never the value itself.
 - A finding that is genuinely fine goes in `scripts/audit-public.allow.json` as `{rule, path, fp, reason}`. Commit
-  emails and the licence boundary cannot be allowed. Every binary needs an entry in
+  emails, the licence boundary and upstream's history cannot be allowed. Every binary needs an entry in
   `scripts/binary-provenance.json`.
-- It reads the commits after the base, not upstream's history up to `3a65ba8e`, which this repository carries
-  unchanged and which still holds values the fork took out of the tree (upstream's infrastructure ids, its
-  maintainers' email addresses and home-folder paths), all public in upstream's repository already.
+- It first checks the import commit at the root of the history: it must have no parent and `3a65ba8e`'s tree, and
+  every commit read must descend from it; otherwise the audit cannot run (exit 2). It reads that commit's author,
+  committer and message, and every line each later commit adds, but not the import's tree line by line: that is
+  upstream's tree at `3a65ba8e`, fixed by its hash, and it still holds values the fork took out later (upstream's
+  infrastructure ids, its maintainers' email addresses and home-folder paths), all public in upstream's repository
+  already.
 - It also looks for your own git `user.name` and account name, so a `pii.local-name` finding can come from a
   one-word name that is also a folder name here. Check those, or run `bun scripts/audit-public.mjs --no-local-names`
   for the result anyone else gets.
-- The pre-push hook refuses any ref whose history contains `aee9dfc4`, and any tag on a commit up to the base
-  (upstream's own release tags), with no override. Both it and the audit look at commit ancestry only: code copied or cherry-picked from upstream's later work makes new commits without
-  `aee9dfc4` in their history, and nothing flags them. That is kept out by the clean-room rule in
-  [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
+- The pre-push hook refuses any ref whose history contains `aee9dfc4` or any of upstream's commits up to the base,
+  and any tag on upstream's work (its own release tags, or the import commit, whose tree is upstream's), with no
+  override. Both it and the audit look at commit ancestry and tree hashes only: code copied or cherry-picked from
+  upstream's later work makes new commits with no upstream commit in their history, and nothing flags them. That is
+  kept out by the clean-room rule in [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
+- [docs/FORK.md](docs/FORK.md) shows how to check the import against upstream yourself.
 
 </details>
 
