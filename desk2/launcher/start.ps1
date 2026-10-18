@@ -9,7 +9,9 @@
 #   4. Run launcher/HydraDesk2.exe (the native WebView2 host). It opens hidden at the place saved in
 #      ~/.hydra-desk-2/window.json, then shows; a second run only focuses the open window. On the host's
 #      first run (no %LOCALAPPDATA%\HydraDesk2\webview yet) the old Edge app window is asked to close
-#      first, so the host can copy its localStorage over.
+#      first, so the host can copy its localStorage over. The host is built, not committed
+#      (scripts/build-natives.ts): a source checkout that has not built it opens the URL in the
+#      default browser and says how to build it; a release without it is broken and says so.
 #   5. Start AgentHydra's tray icon (misc/AgentHydra-Tray.exe AgentHydra-Tray.json --background) when it is
 #      not running: the icon goes with this window, and its Open runs this launcher (openCommand). Then
 #      add the server's bun pid to the pid file, when this run started the server.
@@ -244,7 +246,7 @@ function Get-TrayHost {
 function Start-Tray {
   $running = Get-TrayHost
   if ($running) { Say "AgentHydra tray already running (pid $($running.ProcessId))"; return }
-  if (-not (Test-Path -LiteralPath $TrayExe)) { Say "no AgentHydra tray at ${TrayExe}: not starting one"; return }
+  if (-not (Test-Path -LiteralPath $TrayExe)) { Say "no AgentHydra tray at ${TrayExe} (a checkout builds it: bun scripts/build-natives.ts tray): not starting one"; return }
   $trayDir = Split-Path -Parent $TrayExe
   try {
     $made = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
@@ -270,6 +272,7 @@ function Wait-Health($wrapper) {
 
 $HostExe = Join-Path $PSScriptRoot 'HydraDesk2.exe'
 $FirstRun = -not (Test-Path $WebViewData)
+$Notice = $null
 
 if ($DryRun) {
   $up = Test-Health
@@ -289,7 +292,8 @@ if ($DryRun) {
   elseif (Test-Path -LiteralPath $TrayExe) { Say "would start the AgentHydra tray hidden: $TrayExe $TrayConfig --background" }
   else { Say "no AgentHydra tray at ${TrayExe}: would not start one" }
   if ($NoWindow) { Say 'would not open or focus a window (-NoWindow)' }
-  elseif (-not (Test-Path -LiteralPath $HostExe)) { Say "$HostExe is missing: would fail with an error box" }
+  elseif (-not (Test-Path -LiteralPath $HostExe) -and $IsRelease) { Say "$HostExe is missing: would fail with an error box" }
+  elseif (-not (Test-Path -LiteralPath $HostExe)) { Say "$HostExe is not built: would open $Url in the default browser and say how to build it" }
   else {
     Say "would run $HostExe (opens hidden at the placement saved in $(Join-Path $DeskHome 'window.json'), then shows; a second run focuses the open window)"
     if ($FirstRun) { Say "first host run ($WebViewData does not exist): would ask the old Edge app window to close, and the host would copy its localStorage" }
@@ -331,8 +335,14 @@ try {
   }
   # The window first, the tray after it: the tray check is a WMI query (~0.5 s measured 2026-10-08)
   # that every open paid before the window started, though the window never needs the tray.
-  if (-not $NoWindow) {
-    if (-not (Test-Path -LiteralPath $HostExe)) { Fail "AgentHydra's window host is missing: $HostExe`n`nBuild it in launcher\host (cargo build --release) and copy it here." }
+  if (-not $NoWindow -and -not (Test-Path -LiteralPath $HostExe)) {
+    if ($IsRelease) { Fail "AgentHydra's window host is missing: $HostExe`n`nThis install is incomplete: install this version of AgentHydra again." }
+    # A source checkout builds the host (it is not in git). Until then the page opens in the browser, as on macOS and Linux.
+    Start-Process -FilePath $Url | Out-Null
+    $Notice = "AgentHydra opened in your browser: this checkout has no window host yet ($HostExe).`n`n" +
+      "For AgentHydra's own window, build it with: bun scripts/build-natives.ts window`n(it needs Rust: https://rustup.rs)"
+    Say "window host not built: opened $Url in the default browser"
+  } elseif (-not $NoWindow) {
     if ($FirstRun) { Close-OldWindow }
     Start-Process -FilePath $HostExe -ArgumentList @("--url", $Url) -WorkingDirectory $PSScriptRoot | Out-Null
     Say "ran $HostExe on $Url$(if ($FirstRun) { ' (first run)' })"
@@ -342,5 +352,10 @@ try {
 } finally {
   try { $mutex.ReleaseMutex() } catch { }
   $mutex.Dispose()
+}
+# After the mutex, so a second launch is not kept waiting on it. 64 = information icon; it closes by itself after 15 s.
+if ($Notice) {
+  if ($NoDialog) { [Console]::Error.WriteLine($Notice) }
+  else { (New-Object -ComObject WScript.Shell).Popup($Notice, 15, 'AgentHydra', 64) | Out-Null }
 }
 exit 0

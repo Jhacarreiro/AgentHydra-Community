@@ -311,6 +311,8 @@ if ($Direction -eq 'forward') {
   Step "bun install          in $Live   via $via   (when HEAD moved or node_modules is missing)"
   Step "bun install          in $LiveDesk   via $via   (Desk 2; when HEAD moved or node_modules is missing)"
   Step "bun run build        in $LiveDesk   via $via   (Desk 2's web\dist and hydra; when HEAD moved or web\dist is missing)"
+  # The tray host, CliMayte's runner and the window host are built from their Rust source, not committed.
+  Step "bun scripts/build-natives.ts   in $Live   via $via   (the tray, CliMayte's runner and the window; when HEAD moved or one is missing; needs cargo)"
   if (-not $DryRun -and $script:Problems.Count -eq 0) {
     if (Test-Path -LiteralPath $bunDir) { $env:Path = "$bunDir;$env:Path" }
     $headAfter = (Invoke-Git @('rev-parse', 'HEAD') $Live).Out
@@ -320,6 +322,17 @@ if ($Direction -eq 'forward') {
       if ($moved -or -not (Test-Path -LiteralPath (Join-Path $LiveDesk 'node_modules'))) { Invoke-Heavy 'bun install' $LiveDesk } else { Info '[skip] Desk 2 bun install: up to date' }
       if ($moved -or -not (Test-Path -LiteralPath (Join-Path $LiveDesk 'web\dist\index.html'))) { Invoke-Heavy 'bun run build' $LiveDesk } else { Info '[skip] Desk 2 build: up to date' }
     }
+    $natives = @('misc\AgentHydra-Tray.exe', 'misc\climayte-runner.exe', 'desk2\launcher\HydraDesk2.exe')
+    $unbuilt = @($natives | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Live $_)) })
+    if ($moved -or $unbuilt.Count) {
+      $cargoDir = Join-Path $env:USERPROFILE '.cargo\bin'
+      if (Test-Path -LiteralPath $cargoDir) { $env:Path = "$cargoDir;$env:Path" }
+      if (Get-Command cargo -ErrorAction SilentlyContinue) { Invoke-Heavy 'bun scripts/build-natives.ts' $Live }
+      elseif ($unbuilt.Count) {
+        Warn ("cargo was not found, so $($unbuilt -join ', ') in $Live stay unbuilt: the shortcut runs the PowerShell tray, " +
+          'the window opens in the browser and CliMayte workers run under Bun. Install Rust (https://rustup.rs) and rerun -Apply.')
+      } else { Warn "cargo was not found: the native programs in $Live keep the build they had (rerun -Apply once Rust is installed)." }
+    } else { Info '[skip] native programs: built' }
   }
 } else { Info 'nothing to undo.' }
 

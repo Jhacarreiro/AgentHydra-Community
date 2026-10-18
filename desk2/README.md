@@ -749,7 +749,10 @@ at port 7798 has a window to reach right after a restart.
 **The shortcut.** Run `launcher\install-shortcuts.ps1` once. It puts an "AgentHydra" shortcut on the
 Desktop and in the Start Menu. Clicking it starts the server in the background if it is not running,
 waits for it to answer, then opens Hydra Desk in its own window (`launcher\HydraDesk2.exe`, which needs
-the WebView2 runtime that ships with Windows 11), with its own taskbar entry. Clicking it again just brings the window forward; it
+the WebView2 runtime that ships with Windows 11), with its own taskbar entry. The window host is built from
+`launcher\host`, never committed: a release carries it, and a source checkout builds it with
+`bun scripts/build-natives.ts window` (it needs Rust); until then the shortcut opens the page in the default
+browser and says how to build it. Clicking it again just brings the window forward; it
 never starts a second server. No console window appears: the shortcut runs `launcher\start.vbs`, which
 runs `launcher\start.ps1` hidden. When the server already answers and the window has opened before,
 `start.vbs` runs `HydraDesk2.exe` itself and only then `start.ps1 -NoWindow` for the tray, so the window no
@@ -802,8 +805,8 @@ next with no code change has usually picked a different control: compare the ari
 The icon is AgentHydra's own (owner, 2026-10-06), never one of Desk's: `misc/AgentHydra.ico`, compiled into
 `launcher/HydraDesk2.exe` by `launcher/host/build.rs`, where the window, the taskbar and both shortcuts take it
 from; the page's `web/public/favicon.svg` and `favicon.ico` are copies. To change it, follow `misc/Make-Icon.ps1`,
-rebuild the host (`cargo build --release` in `launcher/host`, then copy the exe into `launcher/`) and re-run
-`install-shortcuts.ps1`.
+rebuild the host (`bun scripts/build-natives.ts window` from the repository root, which puts it in `launcher/`)
+and re-run `install-shortcuts.ps1`.
 
 </details>
 

@@ -46,7 +46,11 @@ already took commits that remote's `main` lacks, its fast-forward is refused and
 remote.
 
 `-Apply` creates the worktree, runs `bun install` and the web build there, then the same two in its
-`desk2\` (Desk 2, the window, has its own packages), all through `fairjob` when it is installed. It moves the state, sets the variable, rewrites the job wrappers, the tasks and the shortcuts.
+`desk2\` (Desk 2, the window, has its own packages), all through `fairjob` when it is installed. When cargo is
+installed it also builds the tray host, CliMayte's runner and the window host there
+(`bun scripts/build-natives.ts`), which are not committed; without cargo it warns, and `live\` runs the
+PowerShell tray, opens the window's page in the browser and runs CliMayte workers under Bun until they are built.
+It moves the state, sets the variable, rewrites the job wrappers, the tasks and the shortcuts.
 It never stops or restarts anything. It ends by printing the one restart step:
 
 ```powershell
@@ -62,7 +66,9 @@ dashboard keeps its log open), `-Apply` stops before the move, names the process
 1. Land the change on `main` and push it (`cycle.py --land`).
 2. Then either let the updater take it (Settings, or auto-update: `git pull --ff-only` from that remote in
    `live/`, `bun install`, then `bun install` and `bun run build` in `live/desk2`, restart), or rerun
-   `-Apply`, which pulls and builds the same way, then the restart step above. The updater pulls only from the
+   `-Apply`, which pulls and builds the same way, then the restart step above. The updater does not rebuild the
+   native programs: after a change to their source, rerun `-Apply` (it rebuilds them when HEAD moved) or run
+   `bun scripts/build-natives.ts` in `live/`; a running tray or window is moved aside and keeps running. The updater pulls only from the
    channel's repository too: with any other remote its check says so and nothing is pulled.
 3. If `live/` already has the commit but the daemon started before it (`GET /api/health` shows
    `restartNeeded: true`, `bootCommit` older than `diskCommit`), restart it in place with
