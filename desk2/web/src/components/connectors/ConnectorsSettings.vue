@@ -7,10 +7,11 @@ import { serviceLine } from '@/components/servers/logic'
 import { useDevServers } from '@/components/servers/store'
 import { BUTTON } from '@/components/panes/settings-styles'
 import { listConnectors, runConnectorAction } from './api'
-import { note, pollDelay, rowButtons, stateLabel, stateTone, versionLabel } from './settings-logic'
+import { note, pollDelay, rowButtons, stateLabel, stateTone, switchLabel, versionLabel } from './settings-logic'
 
 // Settings → Connectors: one row per outside app Desk hooks in (shared/connectors.ts). Polled every 3 s while
-// one installs or starts, else every 15 s, and only while this section is on screen.
+// one installs or starts, else every 15 s, and only while this section is on screen. A third-party one (someone
+// else's app) is tagged so and stays off until its switch is on, or until Install or Start here turns it on.
 const views = ref<ConnectorView[]>([])
 const loaded = ref(false)
 const error = ref<string | null>(null)
@@ -87,6 +88,7 @@ onBeforeUnmount(() => {
     <h3 class="text-ui font-semibold leading-5 text-text">Connectors</h3>
     <p class="mt-0.5 text-ui leading-4.75 text-text-muted">
       Outside apps Desk hooks in without copying them. While one runs, every chat you start gets its tools and one paragraph of prompt.
+      A third-party one, someone else's app, stays off until you turn it on.
     </p>
     <p v-if="error" class="mt-2 text-ui leading-4.75 text-danger-text">{{ error }}</p>
     <p v-if="!loaded" class="mt-4 text-ui leading-4.75 text-text-muted">Loading…</p>
@@ -95,6 +97,7 @@ onBeforeUnmount(() => {
         <div class="flex items-center gap-2 text-ui leading-5 text-text">
           {{ v.name }}
           <span v-if="versionLabel(v)" class="font-mono text-ui-sm text-text-muted">{{ versionLabel(v) }}</span>
+          <span v-if="v.thirdParty" class="shrink-0 rounded-sm bg-fill-5 px-1 text-2xs leading-4 text-text-muted">Third-party</span>
         </div>
         <div class="mt-0.5 text-ui leading-4.75 text-text-muted">{{ v.blurb }}</div>
         <div class="mt-0.5 flex items-center gap-2 wrap-break-word text-ui leading-4.75 text-text-2">
@@ -121,8 +124,8 @@ onBeforeUnmount(() => {
           </Tip>
         </template>
         <a :href="v.homepage" target="_blank" rel="noopener noreferrer" class="text-ui leading-4.75 text-text-2 underline hover:text-text">Homepage</a>
-        <span class="text-ui leading-4.75 text-text-muted">Give chats its tools</span>
-        <PaneSwitch :label="`Give chats ${v.name}'s tools`" :model-value="v.enabled" @update:model-value="(on: boolean) => act(v, on ? 'enable' : 'disable')" />
+        <span class="text-ui leading-4.75 text-text-muted">{{ switchLabel(v).text }}</span>
+        <PaneSwitch :label="switchLabel(v).aria" :model-value="v.enabled" @update:model-value="(on: boolean) => act(v, on ? 'enable' : 'disable')" />
       </div>
     </div>
   </div>

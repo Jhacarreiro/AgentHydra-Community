@@ -1,7 +1,9 @@
 // The RepoYeti connector: LunarWerxs/RepoYeti, a git app (repos, changes, commits, pull requests), hooked in as it
-// is. Nothing of it is copied or changed; Desk finds it, installs it from its GitHub release on request, starts it
-// hidden, shows its own page in the right pane (web/src/components/connectors/RepoYetiPane.vue) and gives every
-// chat its MCP tools while it runs.
+// is. It is a third-party app, not part of this project, so it is off until the person turns it on in Settings ->
+// Connectors (or installs or starts it from Desk): until then Desk only looks for a copy already running on loopback,
+// never downloads or starts one and gives chats none of its tools. Nothing of it is copied or changed; once on, Desk
+// finds it, installs it from its GitHub release on request, starts it hidden, shows its own page in the right pane
+// (web/src/components/connectors/RepoYetiPane.vue) and gives every chat its MCP tools while it runs.
 //
 // What RepoYeti's source says (v1.3.0), and what this file does with it:
 // - Its daemon listens on 127.0.0.1:7171 (or another free port) and records the port it really bound in
@@ -95,10 +97,13 @@ const repoyeti: ConnectorFactory = ({ home }): ConnectorDef => {
     info: {
       id: 'repoyeti',
       name: 'RepoYeti',
-      blurb: 'Your repos, changes, commits and pull requests, in its own pane; chats use its git tools.',
+      blurb:
+        'Third-party git app by LunarWerx, not part of AgentHydra Community: your repos, changes, commits and pull requests ' +
+        'in its own pane; chats use its git tools.',
       homepage: 'https://github.com/LunarWerxs/RepoYeti',
       installable: true,
-      pane: true
+      pane: true,
+      thirdParty: true
     },
 
     async detect(): Promise<Detected> {

@@ -1,7 +1,8 @@
 // POST /api/repoyeti/register { cwd }: the RepoYeti pane asks Desk to add the chat's folder to RepoYeti's list. Desk
 // makes the call itself (no Origin, loopback Host) because RepoYeti's loopback guard refuses a browser's cross-site
 // request. RepoYeti answers 201 for a folder it already has too, so "added" comes from its list read first.
-// Only for Desk 2's own page, and only while the repoyeti connector is running.
+// Only for Desk 2's own page, and only while the repoyeti connector is on (a third-party app: Settings -> Connectors)
+// and running.
 
 import { isAbsolute, resolve } from 'node:path'
 import type { Hono } from 'hono'
@@ -39,6 +40,7 @@ export default async function plugin(app: Hono, _ctx: ServerContext): Promise<vo
     // Before the first probe pass lands (about 1.5 s after start) every status reads null.
     await connectorsReady()
     const status = connectorStatus('repoyeti')
+    if (status && !status.enabled) return c.json({ error: 'RepoYeti is off in Settings → Connectors' }, 409)
     if (!status || status.state !== 'running' || !status.url) return c.json({ error: 'RepoYeti is not running' }, 409)
     const root = await workTreeRoot(cwd)
     if (!root) return c.json({ error: 'that folder is not a git work tree' }, 400)

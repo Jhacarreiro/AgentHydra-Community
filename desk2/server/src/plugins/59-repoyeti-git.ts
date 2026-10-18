@@ -2,7 +2,8 @@
 // POST .../draft and POST .../<action> (commit, push, pull, checkout, branch, undo, redo, create-pr). Desk's server calls
 // RepoYeti's REST API itself (its loopback guard refuses a browser's cross-site request); there is no pull-request route
 // in RepoYeti, so Create PR is branch + commit + push there and GitHub's compare page opened by the window.
-// Own page only, and only while the repoyeti connector runs. Contract: shared/connectors.ts.
+// Own page only, and only while the repoyeti connector is on (a third-party app: Settings -> Connectors) and runs.
+// Contract: shared/connectors.ts.
 
 import { isAbsolute } from 'node:path'
 import type { Context, Hono } from 'hono'
@@ -35,7 +36,7 @@ interface Step {
   step?: { to?: string; subject?: string }
 }
 
-/** Refuses what is not Desk 2's own page or RepoYeti not running, and resolves the folder to RepoYeti's repo. */
+/** Refuses what is not Desk 2's own page or RepoYeti off or not running, and resolves the folder to RepoYeti's repo. */
 async function target(c: Context, cwd: unknown): Promise<Target> {
   const why = notOwnPage(c.req.raw.headers, WHAT)
   if (why) throw new RepoYetiError(why, 403)
@@ -44,6 +45,7 @@ async function target(c: Context, cwd: unknown): Promise<Target> {
   // Before the first probe pass lands (about 1.5 s after start) every status reads null.
   await connectorsReady()
   const status = connectorStatus('repoyeti')
+  if (status && !status.enabled) throw new RepoYetiError('RepoYeti is off in Settings → Connectors', 409)
   if (!status || status.state !== 'running' || !status.url) throw new RepoYetiError('RepoYeti is not running', 409)
   const root = await workTreeRoot(dir)
   if (!root) throw new RepoYetiError('that folder is not a git work tree', 400)

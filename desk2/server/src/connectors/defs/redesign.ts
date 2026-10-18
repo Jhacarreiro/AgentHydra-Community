@@ -1,10 +1,12 @@
 // The ReDesign connector (LunarWerxs/ReDesign: generates several redesign options of a UI with image models, keys
-// are the person's own). ReDesign is never copied or changed; Desk finds it, installs its release, starts it and
-// gives chats two tools so that before a chat builds or restyles a UI it first sees 4-5 options inline.
+// are the person's own). It is a third-party app, not part of this project, so it is off until the person turns it
+// on in Settings -> Connectors (or installs or starts it from Desk): until then Desk never downloads or starts it and
+// gives chats none of its tools. ReDesign is never copied or changed; once on, Desk finds it, installs its release,
+// starts it and gives chats two tools so that before a chat builds or restyles a UI it first sees 4-5 options inline.
 //
 //   find:    GET /api/health answering {service:'redesign'} at REDESIGN_URL, else the url in its runtime.json
-//            (<REDESIGN_HOME or ~/.redesign>/runtime.json: it writes where it really bound, port hops included),
-//            else http://127.0.0.1:<PORT or 5178>. Not answering: installed when Desk's own copy
+//            (<REDESIGN_HOME or ~/.redesign>/runtime.json: it writes where it really bound, port hops included; only
+//            a loopback one is taken), else http://127.0.0.1:<PORT or 5178>. Not answering: installed when Desk's own copy
 //            (<home>/apps/redesign, from installFromRelease) or REDESIGN_EXE / `redesign` on PATH is there.
 //   install: release asset redesign-windows-x64.exe of LunarWerxs/ReDesign (checked against SHA256SUMS.txt), then start.
 //   start:   `<exe> serve` hidden, REDESIGN_NO_OPEN=1 so it opens no browser, log <home>/logs/redesign.log.
@@ -40,7 +42,8 @@ function candidates(): string[] {
   try {
     const dir = process.env.REDESIGN_HOME?.trim() || join(homedir(), '.redesign')
     const url = (JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8')) as { url?: unknown }).url
-    if (typeof url === 'string' && url) urls.push(url)
+    // Only a loopback address: Desk probes it on every poll, whether or not the person has turned ReDesign on.
+    if (typeof url === 'string' && /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+\/?$/.test(url)) urls.push(url)
   } catch {
     // not running, or never ran
   }
@@ -104,10 +107,13 @@ const factory: ConnectorFactory = ({ home }): ConnectorDef => {
     info: {
       id: 'redesign',
       name: 'ReDesign',
-      blurb: 'Before a chat builds a UI it sees 4-5 design options first, and builds to the one chosen.',
+      blurb:
+        'Third-party design app by LunarWerx, not part of AgentHydra Community: before a chat builds a UI it sees 4-5 ' +
+        'design options first, and builds to the one chosen.',
       homepage: 'https://github.com/LunarWerxs/ReDesign',
       installable: true,
-      pane: true
+      pane: true,
+      thirdParty: true
     },
     detect,
     async install(progress) {

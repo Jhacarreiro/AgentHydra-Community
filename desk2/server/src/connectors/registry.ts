@@ -1,6 +1,9 @@
 // The connectors Desk knows (server/src/connectors/defs/, one file each): polled in the background, their last
 // status cached so a chat's buildOptions, which is synchronous, can read it. Actions (install, start, enable,
-// disable) run here; the enabled flags live in <home>/connectors.json as { disabled: [...] }.
+// disable) run here; the enabled flags live in <home>/connectors.json as { disabled: [...], enabled: [...] }.
+// Desk's own connectors are on unless `disabled` names them. A third-party one (info.thirdParty: someone else's
+// app) is off unless `enabled` names it: until the person turns it on, Desk never starts it, never downloads it
+// and never gives a chat its tools. Installing or starting one from Desk is the person turning it on.
 
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -73,20 +76,24 @@ export async function loadDefs(dir: string, home: string): Promise<ConnectorDef[
   return found
 }
 
-function readDisabled(home: string): Set<ConnectorId> {
+/** The switches in <home>/connectors.json: Desk's own connectors turned off, and third-party ones turned on. */
+function readSwitches(home: string): { disabled: Set<ConnectorId>; enabled: Set<ConnectorId> } {
+  const ids = (list: unknown): Set<ConnectorId> =>
+    new Set(Array.isArray(list) ? list.filter((x): x is ConnectorId => (CONNECTOR_IDS as readonly unknown[]).includes(x)) : [])
   try {
-    const parsed = JSON.parse(readFileSync(join(home, 'connectors.json'), 'utf8')) as { disabled?: unknown }
-    if (Array.isArray(parsed.disabled)) return new Set(parsed.disabled.filter((x): x is ConnectorId => (CONNECTOR_IDS as readonly unknown[]).includes(x)))
+    const parsed = JSON.parse(readFileSync(join(home, 'connectors.json'), 'utf8')) as { disabled?: unknown; enabled?: unknown }
+    return { disabled: ids(parsed.disabled), enabled: ids(parsed.enabled) }
   } catch {
-    // floor-ok: no file or a broken one means every connector is enabled
+    // floor-ok: no file or a broken one means Desk's own connectors are on and no third-party one is
+    return { disabled: new Set(), enabled: new Set() }
   }
-  return new Set()
 }
 
 export function createRegistry(opts: RegistryOptions): ConnectorRegistry {
   const defs = [...opts.defs].sort((a, b) => CONNECTOR_IDS.indexOf(a.info.id) - CONNECTOR_IDS.indexOf(b.info.id))
   const byId = new Map(defs.map((d) => [d.info.id, d]))
-  const disabled = readDisabled(opts.home)
+  const { disabled, enabled: optedIn } = readSwitches(opts.home)
+  const isOn = (def: ConnectorDef): boolean => (def.info.thirdParty ? optedIn.has(def.info.id) : !disabled.has(def.info.id))
   const detected = new Map<ConnectorId, Detected & { checkedAt: number }>()
   /** installing / starting: what Desk is doing now (reason carries the progress line). */
   const busy = new Map<ConnectorId, { state: 'installing' | 'starting'; reason?: string }>()
@@ -108,7 +115,7 @@ export function createRegistry(opts: RegistryOptions): ConnectorRegistry {
       state = 'failed'
       reason = f
     }
-    const enabled = !disabled.has(id)
+    const enabled = isOn(def)
     const status: ConnectorStatus = { id, state, url: d.url, version: d.version, enabled, givesChats: enabled && !!def.chat && state === 'running', checkedAt: d.checkedAt }
     if (reason) status.reason = reason
     return status
@@ -167,11 +174,25 @@ export function createRegistry(opts: RegistryOptions): ConnectorRegistry {
     })()
   }
 
-  const setEnabled = async (def: ConnectorDef, on: boolean): Promise<ActionResult> => {
-    if (on) disabled.delete(def.info.id)
-    else disabled.add(def.info.id)
+  /** Flips the switch in memory and in connectors.json (`enabled` is written only once a third-party one is on). */
+  const saveSwitch = (def: ConnectorDef, on: boolean): void => {
+    const id = def.info.id
+    if (def.info.thirdParty) {
+      if (on) optedIn.add(id)
+      else optedIn.delete(id)
+    } else if (on) disabled.delete(id)
+    else disabled.add(id)
     mkdirSync(opts.home, { recursive: true })
-    writeFileSync(join(opts.home, 'connectors.json'), JSON.stringify({ disabled: [...disabled] }, null, 2))
+    const file = { disabled: [...disabled], ...(optedIn.size ? { enabled: [...optedIn] } : {}) }
+    writeFileSync(join(opts.home, 'connectors.json'), JSON.stringify(file, null, 2))
+  }
+  /** Installing or starting a third-party connector is the person asking for it: it is on from then. */
+  const turnOnForAction = (def: ConnectorDef): void => {
+    if (def.info.thirdParty && !isOn(def)) saveSwitch(def, true)
+  }
+
+  const setEnabled = async (def: ConnectorDef, on: boolean): Promise<ActionResult> => {
+    saveSwitch(def, on)
     // Switching it back on is the person asking for its tools: an installed app that is not running starts now.
     if (on && def.start && detected.get(def.info.id)?.state === 'installed') return startOne(def)
     return view(def)
@@ -180,6 +201,7 @@ export function createRegistry(opts: RegistryOptions): ConnectorRegistry {
     const install = def.install
     if (!install) return 'unsupported'
     if (busy.has(def.info.id)) return view(def)
+    turnOnForAction(def)
     background(def, 'installing', () =>
       install.call(def, (line) => {
         const b = busy.get(def.info.id)
@@ -201,6 +223,7 @@ export function createRegistry(opts: RegistryOptions): ConnectorRegistry {
     const start = def.start
     if (!start) return 'unsupported'
     if (busy.has(def.info.id)) return view(def)
+    turnOnForAction(def)
     background(def, 'starting', async () => {
       await start.call(def)
       await waitRunning(def)
@@ -220,7 +243,7 @@ export function createRegistry(opts: RegistryOptions): ConnectorRegistry {
   /** Starts, hidden and in the background, every enabled connector that is installed but not running (same path as a Start click). */
   const autoStart = (): void => {
     for (const def of defs) {
-      if (disabled.has(def.info.id) || !def.start || detected.get(def.info.id)?.state !== 'installed') continue
+      if (!isOn(def) || !def.start || detected.get(def.info.id)?.state !== 'installed') continue
       void action(def.info.id, 'start').catch((err) => console.error(`[connectors] auto-start of ${def.info.id} failed:`, firstLine(err)))
     }
   }

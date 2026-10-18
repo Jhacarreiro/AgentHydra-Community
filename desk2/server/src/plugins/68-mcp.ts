@@ -2,6 +2,8 @@
 // redesign and browser MCP servers, served
 // from Desk's process over Streamable HTTP (connectors/mcp-http.ts) instead of a bun child per chat. connectors/defs/
 // devwebui.ts and redesign.ts hand a chat these URLs. localOnly (index.ts) runs first; mcp-http refuses browser pages.
+// /mcp/redesign answers nothing while ReDesign (a third-party app) is off in Settings -> Connectors, even to a chat
+// that was given it before the person turned it off.
 
 import { join } from 'node:path'
 import type { Hono } from 'hono'
@@ -9,6 +11,7 @@ import type { ServerContext } from '../context'
 import { type McpHandler, serveMcpHttp } from '../connectors/mcp-http'
 import { runningRedesignUrl } from '../connectors/defs/redesign'
 import { createRedesignMcp } from '../connectors/redesign-mcp'
+import { connectorStatus, connectorsReady } from '../connectors/registry'
 import { createDevServersMcp } from '../devservers/mcp'
 import { createBrowserAgentClient } from '../browser/agent/client'
 import { createBrowserMcp } from '../browser/agent/mcp'
@@ -129,6 +132,8 @@ export default function plugin(app: Hono, ctx: ServerContext): void {
   })
 
   app.all('/mcp/redesign', async (c) => {
+    await connectorsReady()
+    if (connectorStatus('redesign')?.enabled === false) return c.json({ error: 'ReDesign is off in Settings → Connectors' }, 409)
     // The chat's config carries the address ReDesign answered at when the chat started (only a loopback one is
     // taken); without it, one probe finds it.
     const given = c.req.query('url')?.trim() ?? ''

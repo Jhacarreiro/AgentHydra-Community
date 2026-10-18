@@ -107,6 +107,34 @@ describe('redesign connector', () => {
     expect((await def.detect()).state).toBe('running')
   })
 
+  test('a runtime.json naming an address off this machine is never probed', async () => {
+    process.env.REDESIGN_HOME = join(tmp, 'offhost')
+    process.env.PORT = '1'
+    delete process.env.REDESIGN_URL
+    delete process.env.REDESIGN_EXE
+    mkdirSync(process.env.REDESIGN_HOME, { recursive: true })
+    writeFileSync(join(process.env.REDESIGN_HOME, 'runtime.json'), JSON.stringify({ url: 'http://192.0.2.10:5178' }))
+    const asked: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = Object.assign((input: string | URL | Request, init?: RequestInit) => {
+      asked.push(String(input instanceof Request ? input.url : input))
+      return realFetch(input, init)
+    }, realFetch)
+    try {
+      expect((await factory({ home: join(tmp, 'desk-offhost') }).detect()).state).toBe('absent')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+    expect(asked).toEqual(['http://127.0.0.1:1/api/health'])
+  })
+
+  test("it is someone else's app, and its own line says so", () => {
+    const { info } = factory({ home: join(tmp, 'desk') })
+    expect(info.thirdParty).toBe(true)
+    expect(info.blurb).toStartWith('Third-party')
+    expect(info.blurb).toContain('not part of AgentHydra Community')
+  })
+
   test("chat: Desk's HTTP MCP route carrying ReDesign's address, and the design-first paragraph, only while running", () => {
     const def = factory({ home: join(tmp, 'desk') })
     const status = { id: 'redesign', state: 'running', url: 'http://127.0.0.1:5178' } as ConnectorStatus

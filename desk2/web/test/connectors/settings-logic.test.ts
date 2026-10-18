@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ConnectorView } from '@shared/connectors'
-import { note, pollDelay, rowButtons, stateLabel, stateTone, versionLabel } from '@/components/connectors/settings-logic'
+import { note, pollDelay, rowButtons, stateLabel, stateTone, switchLabel, THIRD_PARTY_OFF, versionLabel } from '@/components/connectors/settings-logic'
 
 const view = (o: Partial<ConnectorView>): ConnectorView => ({
   id: 'repoyeti', name: 'RepoYeti', blurb: 'b', homepage: 'https://example.com', installable: true, pane: false,
@@ -36,5 +36,12 @@ describe('connector row', () => {
     expect(note(view({ state: 'failed', reason: 'x' }))).toBeNull()
     expect(pollDelay([view({}), view({ state: 'starting' })])).toBe(3000)
     expect(pollDelay([view({}), view({ state: 'running' })])).toBe(15000)
+  })
+
+  test("a third-party one says it is off until turned on, and its switch is for using it in Desk at all", () => {
+    expect(note(view({ thirdParty: true, enabled: false, reason: 'not on this machine' }))).toBe(THIRD_PARTY_OFF)
+    expect(note(view({ thirdParty: true, enabled: true, reason: 'not on this machine' }))).toBe('not on this machine')
+    expect(switchLabel(view({ thirdParty: true }))).toEqual({ text: 'Use it in Desk', aria: 'Use RepoYeti in Desk' })
+    expect(switchLabel(view({ id: 'devwebui', name: 'Dev servers' }))).toEqual({ text: 'Give chats its tools', aria: "Give chats Dev servers's tools" })
   })
 })

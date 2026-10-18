@@ -1,8 +1,9 @@
 // Connectors: outside apps Hydra Desk hooks in without copying their code. Desk finds each one (a runtime file
 // it writes plus a health probe), installs it when asked (its GitHub release, checked against SHA256SUMS.txt),
 // starts it hidden, shows its own page in a pane when it has one, and gives every chat its tools and one
-// paragraph of prompt while it runs. This file is what the server answers and the page reads; the server side of
-// each connector is server/src/connectors/<id>.ts (ConnectorDef in server/src/connectors/types.ts).
+// paragraph of prompt while it runs. A third-party one (someone else's app) does none of that until the person
+// turns it on. This file is what the server answers and the page reads; the server side of each connector is
+// server/src/connectors/<id>.ts (ConnectorDef in server/src/connectors/types.ts).
 
 export const CONNECTORS = '/api/connectors'
 
@@ -32,6 +33,12 @@ export interface ConnectorInfo {
   installable: boolean
   /** It has its own page, which Desk shows in a pane while it runs. */
   pane: boolean
+  /**
+   * Someone else's app, not part of this project. It is off until the person turns it on (or installs or starts it
+   * from Desk): until then Desk never downloads it, never starts it, shows no pane or bar for it and gives chats none
+   * of its tools. Absent: one of Desk's own, on unless turned off.
+   */
+  thirdParty?: boolean
 }
 
 /** Where a connector stands on this machine now. */
@@ -41,7 +48,7 @@ export interface ConnectorStatus {
   /** Its loopback address while it answers; never carries a credential. */
   url: string | null
   version: string | null
-  /** Chats get its tools and prompt paragraph (Settings → Connectors). Default true. */
+  /** Chats get its tools and prompt paragraph (Settings → Connectors). Default true, false for a third-party one. */
   enabled: boolean
   /** Chats started now get something from it: enabled and in a state its chat() gives for. */
   givesChats: boolean

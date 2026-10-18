@@ -109,3 +109,12 @@ describe('chat', () => {
     expect(JSON.stringify({ detected, c })).not.toContain('SECRET-TOKEN-VALUE')
   })
 })
+
+describe('info', () => {
+  test("it is someone else's app, and its own line says so", () => {
+    const { info } = def()
+    expect(info.thirdParty).toBe(true)
+    expect(info.blurb).toStartWith('Third-party')
+    expect(info.blurb).toContain('not part of AgentHydra Community')
+  })
+})

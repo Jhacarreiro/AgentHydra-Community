@@ -41,8 +41,12 @@ export interface InstallItem {
   enabled: boolean
 }
 
+/**
+ * The item that gets RepoYeti going, or null. RepoYeti is a third-party app: while the person has not turned it on in
+ * Settings → Connectors the bar never offers to install or start it, so the menu is plain git as it was without it.
+ */
 export function installItem(c: ConnectorView | null): InstallItem | null {
-  if (!c || c.state === 'running') return null
+  if (!c || c.state === 'running' || (c.thirdParty && !c.enabled)) return null
   switch (c.state) {
     case 'absent':
       return { action: c.installable ? 'install' : null, label: 'Install RepoYeti', enabled: c.installable }
@@ -57,8 +61,8 @@ export function installItem(c: ConnectorView | null): InstallItem | null {
   }
 }
 
-/** RepoYeti runs, so the bar's git actions go through it. */
-export const yetiRuns = (c: ConnectorView | null): boolean => c?.state === 'running'
+/** RepoYeti runs and is on in Settings → Connectors, so the bar's git actions go through it. */
+export const yetiRuns = (c: ConnectorView | null): boolean => c?.state === 'running' && c.enabled
 
 const count = (arrow: string, n: number): string | undefined => (n > 0 ? `${arrow}${n}` : undefined)
 

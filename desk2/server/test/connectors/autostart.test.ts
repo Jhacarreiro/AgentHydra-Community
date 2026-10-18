@@ -1,4 +1,5 @@
-// A connector that is installed and enabled starts by itself when Desk starts, and when its switch is turned back on.
+// A connector that is installed and enabled starts by itself when Desk starts, and when its switch is turned back on;
+// a third-party one only once the person has turned it on.
 // Fake defs only: no real exe is spawned and the data home is a temp folder.
 
 import { afterEach, expect, test } from 'bun:test'
@@ -45,6 +46,16 @@ test('an enabled installed connector is started once; disabled, absent and runni
   const running = fake('browser', 'running')
   await boot([installed, off, absent, running], ['redesign'])
   expect([installed.starts, off.starts, absent.starts, running.starts]).toEqual([1, 0, 0, 0])
+})
+
+test('a third-party connector installed on the machine is not started until the person turns it on', async () => {
+  const d = fake('repoyeti', 'installed')
+  d.info = { ...d.info, thirdParty: true }
+  const r = await boot([d])
+  expect(d.starts).toBe(0)
+  expect(r.list()[0]).toMatchObject({ state: 'installed', enabled: false })
+  await r.action('repoyeti', 'enable')
+  expect(d.starts).toBe(1)
 })
 
 test('turning the switch back on starts an installed connector', async () => {

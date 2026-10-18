@@ -1,5 +1,5 @@
-// The connectors registry with fake ConnectorDefs: what reaches a chat, the poll, the enabled flags, and the
-// install and start transitions. Nothing here touches the real data home.
+// The connectors registry with fake ConnectorDefs: what reaches a chat, the poll, the enabled flags (a third-party
+// connector's opt-in among them), and the install and start transitions. Nothing here touches the real data home.
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -43,6 +43,14 @@ function fake(id: ConnectorId, o: Partial<ConnectorDef> & { state?: Detected['st
   }
   return def
 }
+
+/** The same fake, marked as someone else's app: off until the person turns it on. */
+function thirdParty<T extends ConnectorDef>(def: T): T {
+  def.info = { ...def.info, thirdParty: true }
+  return def
+}
+
+const switches = (home: string): unknown => JSON.parse(readFileSync(join(home, 'connectors.json'), 'utf8'))
 
 async function start(defs: ConnectorDef[], home = temp(), pollMs = 60_000) {
   const ctx = { home, deps: { connectors: defs, connectorsPollMs: pollMs }, onStop: (fn: () => void) => stops.push(fn) } as unknown as ServerContext
@@ -178,6 +186,66 @@ describe('the poll and the enabled flags', () => {
     expect(await r.action('nope', 'enable')).toBe('unknown')
     expect(await r.action('devwebui', 'install')).toBe('unsupported')
     expect(await r.action('devwebui', 'start')).toBe('unsupported')
+  })
+})
+
+describe('a third-party connector', () => {
+  test('is off on a fresh home: listed and seen running, yet a chat gets nothing from it and no file is written', async () => {
+    const { registry, home } = await start([fake('devwebui'), thirdParty(fake('repoyeti'))])
+    expect(registry.list().map((v) => [v.id, v.state, v.enabled, v.givesChats, v.thirdParty ?? false])).toEqual([
+      ['repoyeti', 'running', false, false, true],
+      ['devwebui', 'running', true, true, false]
+    ])
+    const o = runtime(null).buildOptions()
+    expect(Object.keys(o.mcpServers ?? {})).toEqual(['devwebui'])
+    expect((o.systemPrompt as { append: string }).append).not.toContain('Use repoyeti.')
+    expect(() => readFileSync(join(home, 'connectors.json'))).toThrow()
+  })
+
+  test('turning it on is written as `enabled` and read back; turning it off again leaves the old shape', async () => {
+    const home = temp()
+    const r1 = createRegistry({ home, defs: [fake('devwebui'), thirdParty(fake('redesign'))] })
+    r1.stop()
+    expect(await r1.action('redesign', 'enable')).toMatchObject({ enabled: true, givesChats: false })
+    expect(switches(home)).toEqual({ disabled: [], enabled: ['redesign'] })
+    const r2 = createRegistry({ home, defs: [fake('devwebui'), thirdParty(fake('redesign'))] })
+    r2.stop()
+    expect(r2.list().map((v) => [v.id, v.enabled])).toEqual([
+      ['redesign', true],
+      ['devwebui', true]
+    ])
+    await r2.action('redesign', 'disable')
+    expect(switches(home)).toEqual({ disabled: [] })
+    expect(r2.list()[0]?.enabled).toBe(false)
+  })
+
+  test("a connectors.json from before, which names it nowhere, keeps it off; Desk's own stay as they were", () => {
+    const home = temp()
+    writeFileSync(join(home, 'connectors.json'), JSON.stringify({ disabled: ['devwebui'] }))
+    const r = createRegistry({ home, defs: [fake('devwebui'), thirdParty(fake('repoyeti'))] })
+    r.stop()
+    expect(r.list().map((v) => v.enabled)).toEqual([false, false])
+  })
+
+  test('Install from Desk is the person asking for it: it is on from then', async () => {
+    const d = fake('repoyeti', { state: 'absent', install: async () => d.set('running') })
+    thirdParty(d)
+    const home = temp()
+    const r = createRegistry({ home, defs: [d] })
+    stops.push(() => r.stop())
+    expect(await r.action('repoyeti', 'install')).toMatchObject({ state: 'installing', enabled: true })
+    expect(switches(home)).toEqual({ disabled: [], enabled: ['repoyeti'] })
+    await until(() => r.list()[0]?.givesChats === true)
+  })
+
+  test('so is Start', async () => {
+    const d = fake('redesign', { state: 'installed', start: async () => d.set('running') })
+    thirdParty(d)
+    const home = temp()
+    const r = createRegistry({ home, defs: [d] })
+    stops.push(() => r.stop())
+    expect(await r.action('redesign', 'start')).toMatchObject({ state: 'starting', enabled: true })
+    expect(switches(home)).toEqual({ disabled: [], enabled: ['redesign'] })
   })
 })
 

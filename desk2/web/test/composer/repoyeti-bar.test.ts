@@ -57,6 +57,15 @@ describe('without RepoYeti running', () => {
     expect(installItem(view({ state: 'starting' }))).toMatchObject({ action: null, enabled: false })
     expect(installItem(view({ state: 'failed' }))?.action).toBe('install')
   })
+
+  test('a third-party RepoYeti the person has not turned on is never offered, and a running one is not used', () => {
+    for (const state of ['absent', 'installed', 'failed'] as const) {
+      expect(installItem(view({ state, thirdParty: true, enabled: false }))).toBeNull()
+    }
+    expect(installItem(view({ state: 'absent', thirdParty: true, enabled: true }))).toMatchObject({ action: 'install' })
+    expect(yetiRuns(view({ thirdParty: true, enabled: false }))).toBe(false)
+    expect(yetiRuns(view({ thirdParty: true, enabled: true }))).toBe(true)
+  })
 })
 
 describe('texts', () => {

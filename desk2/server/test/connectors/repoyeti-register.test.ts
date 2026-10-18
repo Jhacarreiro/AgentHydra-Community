@@ -74,12 +74,12 @@ function fakeRepoYeti(listed: Fake['listed'], reject?: string): Fake {
   return fake
 }
 
-const def = (detected: Detected): ConnectorDef => ({
-  info: { id: 'repoyeti', name: 'RepoYeti', blurb: 'x', homepage: 'https://example.com', installable: false, pane: true },
+const def = (detected: Detected, thirdParty?: boolean): ConnectorDef => ({
+  info: { id: 'repoyeti', name: 'RepoYeti', blurb: 'x', homepage: 'https://example.com', installable: false, pane: true, thirdParty },
   detect: async () => detected
 })
 
-async function desk(detected: Detected): Promise<DeskServer> {
+async function desk(detected: Detected, thirdParty?: boolean): Promise<DeskServer> {
   const home = temp('ry-reg-home-')
   process.env.HYDRA_DESK_HOME = home
   const plugins = temp('ry-reg-plugins-')
@@ -87,7 +87,7 @@ async function desk(detected: Detected): Promise<DeskServer> {
     const file = join(import.meta.dir, '..', '..', 'src', 'plugins', name)
     writeFileSync(join(plugins, name), `export { default } from ${JSON.stringify(pathToFileURL(file).href)}\n`)
   }
-  const server = await createServer({ port: 0, home, pluginsDir: plugins, deps: { connectors: [def(detected)] } })
+  const server = await createServer({ port: 0, home, pluginsDir: plugins, deps: { connectors: [def(detected, thirdParty)] } })
   stops.push(() => server.stop())
   return server
 }
@@ -131,6 +131,14 @@ test('nothing is done while the connector is not running', async () => {
   const fake = fakeRepoYeti([])
   const res = await post(await desk({ state: 'installed', url: null, version: null }), repo)
   expect(res.status).toBe(409)
+  expect(fake.headers).toEqual([])
+})
+
+test('a running third-party RepoYeti the person has not turned on is never called', async () => {
+  const fake = fakeRepoYeti([])
+  const res = await post(await desk({ state: 'running', url: fake.url, version: '1.0.0' }, true), repo)
+  expect(res.status).toBe(409)
+  expect(((await res.json()) as { error: string }).error).toContain('off in Settings')
   expect(fake.headers).toEqual([])
 })
 

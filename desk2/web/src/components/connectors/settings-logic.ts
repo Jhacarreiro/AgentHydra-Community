@@ -41,8 +41,22 @@ export function rowButtons(v: ConnectorView): { install: boolean; start: boolean
   }
 }
 
-/** A second line under the blurb: why it is absent or not answering, when the label alone does not say. */
-export const note = (v: ConnectorView): string | null => ((v.state === 'absent' || v.state === 'installed') && v.reason ? v.reason : null)
+/** What a third-party connector's row says while the person has not turned it on. */
+export const THIRD_PARTY_OFF = 'Off until you turn it on: Desk does not download or start it, and chats get none of its tools.'
+
+/**
+ * A second line under the blurb: a third-party one that is off says what off means; otherwise why it is absent or
+ * not answering, when the label alone does not say.
+ */
+export const note = (v: ConnectorView): string | null =>
+  v.thirdParty && !v.enabled ? THIRD_PARTY_OFF : (v.state === 'absent' || v.state === 'installed') && v.reason ? v.reason : null
+
+/**
+ * The words beside the row's switch. Desk's own connector only hands chats its tools; a third-party one is off in
+ * Desk altogether (no pane, no bar, no start) until its switch is on.
+ */
+export const switchLabel = (v: ConnectorView): { text: string; aria: string } =>
+  v.thirdParty ? { text: 'Use it in Desk', aria: `Use ${v.name} in Desk` } : { text: 'Give chats its tools', aria: `Give chats ${v.name}'s tools` }
 
 export const versionLabel = (v: ConnectorView): string | null => (v.version ? (v.version.startsWith('v') ? v.version : `v${v.version}`) : null)
 
