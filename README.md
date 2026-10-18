@@ -252,8 +252,9 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
 - **Downloads,** once published: the Windows `.zip` holds the whole app: the window, the tray icon and the
   orchestrator tools. The single `.exe` is a small launcher that fetches the rest of the app from the same release
   the first time you run it. Linux and macOS get a `.tar.gz`. No download packs Bun, Claude Code or the Claude Agent
-  SDK: the launcher fetches the Bun the release was built with on first run (checked against Bun's published
-  checksums), and the window fetches Claude Code, and the Agent SDK the release pins, when a chat first needs them.
+  SDK: the launcher fetches the Bun the release was built with on first run, and again after an update that changes
+  that version (checked against Bun's published checksums), and the window fetches Claude Code, and the Agent SDK
+  the release pins, when a chat first needs them.
 - **Windows programs:** the tray icon (`misc\AgentHydra-Tray.exe`), the window (`desk2\launcher\HydraDesk2.exe`) and
   CliMayte's worker runner (`misc\climayte-runner.exe`) are built from the Rust source in this repository and are
   never committed. Every Windows release builds its own copies and publishes their checksums beside the download
@@ -306,9 +307,9 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
   - **A launcher repair:** a release launcher that finds part of its install missing downloads its own version's
     archive from this repository's releases, when the channel says `notify` or `auto`. While it says `off`, the
     launcher names the missing parts and downloads nothing, unless `AGENTHYDRA_RELEASE_BASE` names a base.
-  - **Bun** from Bun's GitHub releases on a release build's first run. **Claude Code**, and in a release the
-    **Claude Agent SDK** at the version the release pins, from the npm registry (or the mirror
-    `npm_config_registry` names) when a chat first needs them.
+  - **Bun** from Bun's GitHub releases on a release build's first run, and again after an update that changes the
+    Bun version the release pins. **Claude Code**, and in a release the **Claude Agent SDK** at the version the
+    release pins, from the npm registry (or the mirror `npm_config_registry` names) when a chat first needs them.
   - **Claude upkeep:** on Windows with Claude Desktop's classic install, about once an hour AgentHydra asks Claude
     Desktop's own update feed at `api.anthropic.com` for its newest build, with the device id, version and OS
     version the app itself sends there. When the install is behind, it runs the install's own updater, which
@@ -320,14 +321,20 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
     are priced; `AGENTHYDRA_PRICES_URL` points it at your own copy. Without it, the bundled table is used.
   - **Your own accounts:** usage and plan lookups for the Claude and Codex accounts you sign in, with their own
     logins, to Anthropic (`api.anthropic.com`, and `platform.claude.com` to renew a closed Desktop profile's
-    login) and OpenAI (`chatgpt.com`).
+    login) and OpenAI (`chatgpt.com`). When AgentHydra finds a DeepSeek key (in `DEEPSEEK_API_KEYS` or
+    `DEEPSEEK_API_KEY`, HSwarm's key file, or the DeepSeek Harness's `~/.dsh/.credentials.yaml`), a usage survey
+    also asks `api.deepseek.com` for that account's balance, at most once every five minutes.
+  - **HSwarm,** in a source checkout (a release does not include it): AgentHydra starts it unless
+    `AGENTHYDRA_HSWARM_ENABLED=0`. It calls the model providers whose keys you add. While its MCP tools are in use
+    it also reads Artificial Analysis's public model pages (`artificialanalysis.ai`) at most once a day, to score
+    new models, with or without a key, and opening its console fetches the icon of every listed provider whose
+    icon it has not fetched yet, from that provider's website.
   - **Only what you turn on:** cloud sessions (Anthropic's API), the Codex hub (your hub, which gets each PC's
     name, taken from its computer name unless you set one, and a random install id), Login sync (the store
     you deploy), usage sync between PCs (a private git repository you name), email alerts (your SMTP server),
-    HSwarm (the model providers whose keys you add, and their sites' icons), Free instances (claude.ai and
-    chatgpt.com, plus the Python and Node packages they install once), orchestrator remote access (your sign-in
-    provider and tunnel), and Desk's RepoYeti and ReDesign connectors, third-party apps by LunarWerx, which download
-    that app's release from its GitHub repository when you install one.
+    Free instances (claude.ai and chatgpt.com, plus the Python and Node packages they install once), orchestrator
+    remote access (your sign-in provider and tunnel), and Desk's RepoYeti and ReDesign connectors, third-party apps
+    by LunarWerx, which download that app's release from its GitHub repository when you install one.
 
 </details>
 

@@ -28,7 +28,10 @@ until this repository publishes releases; a source checkout's `git ls-remote` ru
 Claude Code downloads (and, in a release, the Claude Agent SDK at the version it pins), the Claude upkeep pass on
 Windows (Claude Desktop's own update feed, about hourly, with the device id, version and OS version the app sends;
 the install's own updater and an npm update of the CLI when they are behind), a daily price list, usage lookups for
-your own accounts, and whatever you turn on. Nothing goes to a service the original publisher runs.
+your own accounts (DeepSeek's balance too, when a DeepSeek key is found), HSwarm's calls in a source checkout, where
+it starts unless `AGENTHYDRA_HSWARM_ENABLED=0` (the providers you add keys for, Artificial Analysis's public model
+pages at most once a day while its MCP tools are in use, and the providers' icons when its console opens), and
+whatever you turn on. Nothing goes to a service the original publisher runs.
 
 What this fork adds first is one home server for several PCs: a Codex hub that collects every PC's Codex chats and
 continues them on the PC they belong to, a tray app that pairs each PC with the hub, Claude Code cloud sessions
