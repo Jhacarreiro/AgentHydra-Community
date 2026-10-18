@@ -86,7 +86,8 @@ both first.
 
 - **This repository's releases come from its own channel and its own version line.** Versions are calendar
   versions, `YYYY.M.PATCH`, starting at `2026.10.0`; never tag one of upstream's numbers (`0.x`, `1.x`, `2.0.x`).
-  The pre-push hook and `release.yml` refuse a tag below 2.0.0 and nothing more, so the rest is on you.
+  The pre-push hook and `release.yml` refuse a tag below 2.0.0, and the hook refuses any tag on a commit up to the
+  base (upstream's own tags); nothing refuses a new `2.0.x` tag, so the rest is on you.
   `release-channel.json` names the repository releases come from (Jhacarreiro/AgentHydra-Community) and what a build
   may do about a newer one; it says `"updates": "off"` until the first release, and a release whose own commit says
   `off` is published as a pre-release. Every release ships Desk 2 (`desk2/`) as the window, and a tag build whose

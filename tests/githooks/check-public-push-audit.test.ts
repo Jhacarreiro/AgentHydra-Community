@@ -1,8 +1,8 @@
-// tests/githooks/check-public-push-audit.test.ts - rules 4 and 5 of the pre-push gate. A pushed ref
-// whose history holds upstream's relicensing commit is refused on every remote, override or not; and
-// scripts/audit-public.mjs runs over what each push carries, so a push that would publish a mailbox
-// never lands, lands once that one finding is in the allowlist, and is refused when the audit cannot
-// run at all.
+// tests/githooks/check-public-push-audit.test.ts - rules 4 to 6 of the pre-push gate. A pushed ref
+// whose history holds upstream's relicensing commit is refused on every remote, override or not, and
+// so is a tag on the MIT base's own history; scripts/audit-public.mjs runs over what each push
+// carries, so a push that would publish a mailbox never lands, lands once that one finding is in the
+// allowlist, and is refused when the audit cannot run at all.
 //
 // The end-to-end tests drive the real, on-disk .githooks/pre-push, check-public-push.mjs,
 // scripts/audit-public.mjs, its config and server/src/secrets.ts (copied fresh at test time) against a
@@ -29,11 +29,14 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  baseCommit,
   LICENSE_BOUNDARY,
   licenseBoundaries,
   licenseRefusals,
+  MIT_BASE,
   parseRefLines,
   runPushAudit,
+  upstreamTagRefusals,
 } from '../../.githooks/check-public-push.mjs'
 import {
   LICENSE_BOUNDARY as AUDIT_LICENSE_BOUNDARY,
@@ -177,6 +180,50 @@ describe('rule 4: the relicensing commit', () => {
       expect(runPushAudit(`refs/heads/main ${sha} refs/heads/main ${ZERO}\n`, 'origin', dir)).toBe(
         0,
       )
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+})
+
+// --- rule 6's pieces, without a push -------------------------------------------------------------
+
+describe("rule 6: upstream's tags", () => {
+  test('the hook and the audit config name the same base commit', () => {
+    expect(MIT_BASE).toMatch(/^[0-9a-f]{40}$/)
+    expect(loadAuditFiles().config.base).toBe(MIT_BASE)
+    expect(baseCommit(REPO_ROOT)).toBe(MIT_BASE)
+    // A checkout without the config still knows the base.
+    expect(baseCommit(scratch('no-config'))).toBe(MIT_BASE)
+  })
+
+  test(
+    'a tag on the base or before it is refused; a later tag, a branch and a deletion are not',
+    () => {
+      const dir = scratch('upstream-tags')
+      git(dir, 'init', '-q', '-b', 'main')
+      const before = commit(dir, { 'a.txt': 'a\n' }, 'upstream, before the base')
+      const base = commit(dir, { 'b.txt': 'b\n' }, 'the base')
+      const own = commit(dir, { 'c.txt': 'c\n' }, 'own work')
+      git(dir, 'tag', '-a', '-m', 'annotated', 'old-release', before)
+      const tagObject = git(dir, 'rev-parse', 'old-release')
+
+      const refs = parseRefLines(
+        [
+          `refs/tags/old-release ${tagObject} refs/tags/old-release ${ZERO}`,
+          `refs/tags/at-base ${base} refs/tags/at-base ${ZERO}`,
+          `refs/tags/own ${own} refs/tags/own ${ZERO}`,
+          `refs/heads/main ${own} refs/heads/main ${ZERO}`,
+          `refs/heads/old ${before} refs/heads/old ${ZERO}`,
+          `(delete) ${ZERO} refs/tags/gone ${before}`,
+        ].join('\n'),
+      )
+      const refused = upstreamTagRefusals(refs, base, dir)
+      expect(refused.map((r) => r.ref)).toEqual(['refs/tags/old-release', 'refs/tags/at-base'])
+      expect(refused[0]?.why).toContain(before.slice(0, 8))
+      expect(refused[0]?.why).toContain(base.slice(0, 8))
+
+      // A base this clone does not have cannot be in any tag's history.
+      expect(upstreamTagRefusals(refs, 'cd'.repeat(20), dir)).toEqual([])
     },
     HOOK_TEST_TIMEOUT,
   )
@@ -337,6 +384,26 @@ describe('.githooks/pre-push: rules 4 and 5, end to end', () => {
       expect(git(origin, 'rev-list', '--count', 'main')).toBe('1')
     },
     HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    "a tag on the base's own history is refused, even to a private remote; a tag on a later commit lands",
+    () => {
+      const base = git(repo, 'rev-parse', 'main')
+      git(repo, 'tag', 'v2.0.4', base)
+      const refused = push(repo, PRIVATE, 'refs/tags/v2.0.4')
+      expect(refused.status).not.toBe(0)
+      expect(refused.output).toContain("a pushed tag is one of upstream's")
+      expect(refused.output).toContain(`refs/tags/v2.0.4: it points at ${base.slice(0, 8)}`)
+      expect(originHas(origin, 'refs/tags/v2.0.4')).toBe(false)
+
+      const own = commit(repo, { 'notes.md': 'own work\n' }, 'own work')
+      git(repo, 'tag', 'checkpoint', own)
+      const landed = push(repo, PRIVATE, 'main', 'refs/tags/checkpoint')
+      expect(landed.status).toBe(0)
+      expect(originHas(origin, 'refs/tags/checkpoint')).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT * 2,
   )
 
   test(

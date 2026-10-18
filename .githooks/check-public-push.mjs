@@ -44,6 +44,13 @@
  *     cannot load, start or finish) refuses the push as well, and says so rather than calling it a
  *     finding. A checkout without the script has nothing to audit with and passes, as for rule 3.
  *
+ *  6. No tag may point into the MIT base's own history. Every commit up to 3a65ba8e is upstream's,
+ *     and the tags on them (v0.1.0 to v2.0.4, orchestrator-v1-final) are upstream's releases, which
+ *     a `git push --tags` would publish as this repository's. A v2.0.x one would even pass rule 3 and
+ *     start release.yml. The base is the audit config's `base`, else 3a65ba8e; a clone without that
+ *     commit has no such tags. Branches are not affected: every branch here has the base in its
+ *     history. No override.
+ *
  * VISIBILITY IS FAIL-CLOSED. A remote that is not GitHub, a lookup that times out, a rate limit -
  * every "could not tell" is treated as public. A guard that passes when it cannot see is a guard
  * that passes exactly when something is wrong. `--no-verify` still skips this hook, which a hook
@@ -70,6 +77,8 @@ const RELEASE_TAG = /^refs\/tags\/v\d+\.\d+\.\d+/;
 const TODO_FILE = "docs/todo/TODO.md";
 // Rule 4: upstream's relicensing commit, the one that moved AgentHydra from MIT to PolyForm Noncommercial 1.0.0.
 export const LICENSE_BOUNDARY = "aee9dfc4f7dd0228d8e1740be90b646b30204f37";
+// Rule 6: upstream's last MIT commit, which this repository is built from.
+export const MIT_BASE = "3a65ba8e6497c16732f627fc8934723839c82fdd";
 const AUDIT_SCRIPT = "scripts/audit-public.mjs";
 const AUDIT_CONFIG = "scripts/audit-public.config.json";
 
@@ -180,6 +189,18 @@ export function licenseBoundaries(cwd = process.cwd()) {
   return out;
 }
 
+/** Rule 6's commit: the audit config's base when it names one, else MIT_BASE. */
+export function baseCommit(cwd = process.cwd()) {
+  try {
+    const cfg = JSON.parse(readFileSync(join(cwd, ...AUDIT_CONFIG.split("/")), "utf8"));
+    const base = String(cfg?.base || "").toLowerCase();
+    if (/^[0-9a-f]{40}$/.test(base)) return base;
+  } catch {
+    /* no config, or an unreadable one: the constant holds */
+  }
+  return MIT_BASE;
+}
+
 function git(args, cwd) {
   return spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
@@ -207,6 +228,32 @@ export function licenseRefusals(refs, boundaries, cwd = process.cwd()) {
           why: `git could not tell whether its history contains ${boundary.slice(0, 8)} (exit ${s.status})`,
         });
       }
+    }
+  }
+  return out;
+}
+
+/**
+ * Rule 6: each pushed tag whose commit is `base` or in its history, with the reason. A base this clone
+ * does not have cannot be in any tag's history, so nothing is refused; a git answer that is neither
+ * yes nor no refuses (fail closed).
+ */
+export function upstreamTagRefusals(refs, base, cwd = process.cwd()) {
+  if (git(["cat-file", "-e", `${base}^{commit}`], cwd).status !== 0) return [];
+  const out = [];
+  for (const r of refs) {
+    if (r.isDelete || !(r.remoteRef || "").startsWith("refs/tags/")) continue;
+    const peeled = git(["rev-parse", "--verify", "--quiet", `${r.localSha}^{commit}`], cwd);
+    const commit = (peeled.stdout || "").trim();
+    if (!commit) continue; // a tag on a tree or a blob points at no commit
+    const s = git(["merge-base", "--is-ancestor", commit, base], cwd);
+    if (s.status === 0) {
+      out.push({ ref: r.remoteRef, why: `it points at ${commit.slice(0, 8)}, in the history of ${base.slice(0, 8)}` });
+    } else if (s.status !== 1) {
+      out.push({
+        ref: r.remoteRef,
+        why: `git could not tell whether ${commit.slice(0, 8)} is in the history of ${base.slice(0, 8)} (exit ${s.status})`,
+      });
     }
   }
   return out;
@@ -267,6 +314,23 @@ async function main() {
         `  ${LICENSE_BOUNDARY.slice(0, 8)} moved upstream AgentHydra to the PolyForm Noncommercial license.`,
         "  AgentHydra Community is built from 3a65ba8e, the last MIT commit, and nothing from that",
         "  commit on may be pushed from this checkout. There is no override for this rule.",
+        "",
+      ].join("\n"),
+    );
+    return 1;
+  }
+
+  const upstreamTags = upstreamTagRefusals(refs, baseCommit());
+  if (upstreamTags.length > 0) {
+    console.error(
+      [
+        "",
+        "✗ push refused: a pushed tag is one of upstream's, on a commit up to the MIT base.",
+        ...upstreamTags.map((r) => `    ${r.ref}: ${r.why}`),
+        "",
+        "  Those commits and their tags are upstream's own releases, not this repository's. Push the",
+        "  branches without them (git push <remote> <branch>, not --tags or --mirror), and tag this",
+        "  repository's own releases on its own commits. There is no override for this rule.",
         "",
       ].join("\n"),
     );

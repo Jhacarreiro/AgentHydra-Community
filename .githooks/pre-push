@@ -6,18 +6,24 @@
 #    The heading is printed either way; the rule is announce-then-do.
 # 2. Refuse a release tag (v*.*.*) while docs/todo/TODO.md has an open section. No override.
 # 3. Refuse a release tag scripts/release-notes.mjs would refuse to publish. No override.
-# 4. A release tag in the push also needs CI to have passed on the exact commit the tag points to:
-#    `gh` is asked for a ci.yml run on that sha whose conclusion is success. When there is one,
-#    nothing more runs here, because every lane of `check:deep` (Biome, i18n, every typecheck,
-#    `bun test`, orchestrator/server's tests, the orchestrator Python suite) is a ci.yml step and
-#    already passed on that very commit. Re-running them here was a duplicate 25-minute gate on
-#    every release (measured on 1.7.0, 2026-10-02), after docs/RELEASING.md had already made "push
-#    main, wait for green CI" the step before tagging. When it cannot be confirmed (no gh, not
-#    signed in, offline, a remote that is not GitHub, no run on that sha, a run still going or not
-#    green), one line says why and the whole `check:deep` runs. A push with no release tag in it
-#    is done once rules 1 to 3 pass.
+# 4. Refuse, on every remote, any ref whose history contains upstream's relicensing commit
+#    aee9dfc4. No override.
+# 5. Run scripts/audit-public.mjs --push over what the push carries, on every remote, private ones
+#    too, and refuse on a finding or when the audit cannot give a verdict. No override.
+# 6. Refuse a tag on the MIT base's own history: those are upstream's tags. No override.
 #
-# Rules 1 to 3 and their history live in .githooks/check-public-push.mjs. Git hands this hook the
+# Then a release tag in the push also needs CI to have passed on the exact commit the tag points
+# to: `gh` is asked for a ci.yml run on that sha whose conclusion is success. When there is one,
+# nothing more runs here, because every lane of `check:deep` (Biome, every typecheck, `bun test`,
+# orchestrator/server's tests, the orchestrator Python suite) is a ci.yml step and already passed
+# on that very commit. Re-running them here was a duplicate 25-minute gate on every release
+# (measured on 1.7.0, 2026-10-02), after docs/RELEASING.md had already made "push main, wait for
+# green CI" the step before tagging. When it cannot be confirmed (no gh, not signed in, offline, a
+# remote that is not GitHub, no run on that sha, a run still going or not green), one line says
+# why and the whole `check:deep` runs. A push with no release tag in it is done once rules 1 to 6
+# pass.
+#
+# Rules 1 to 6 and their history live in .githooks/check-public-push.mjs. Git hands this hook the
 # remote's name and URL as arguments and the refs on stdin; both are passed straight through.
 #
 # FAIL CLOSED. The Biome pre-commit guard steps aside when its runtime is missing, because a commit
@@ -26,7 +32,7 @@
 # bun on PATH to run it is refused, not waved through.
 remote="$1"
 url="$2"
-# stdin can only be read once, and rule 4 needs the refs as well as the guard.
+# stdin can only be read once, and the CI check needs the refs as well as the guard.
 refs=$(cat)
 
 if command -v node >/dev/null 2>&1; then
