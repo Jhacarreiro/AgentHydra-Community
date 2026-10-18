@@ -367,6 +367,42 @@ check "  ...and takes no build" test $(($(downloads) - D0)) -eq 0 -a ! -e "$PUSH
 kill -TERM "$PID8"
 check "SIGTERM stops it" wait_for 10 dead "$PID8"
 
+echo "== moving to a new key"
+# The operator's next key. The first build that trusts it trusts the old key too and is signed with the old one, so
+# a tray with the old key alone takes it; the builds after it are signed with the new key and trust it alone.
+NEWKEY=$("$T/bin/signbuild" keygen "$T/new.key") || exit 1
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $NOKEY -X main.updateKey=$KEY,$NEWKEY" -o "$T/both" . || exit 1
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $NOKEY -X main.updateKey=$NEWKEY" -o "$T/newonly" . || exit 1
+V3=$(sha "$T/both")
+V4=$(sha "$T/newonly")
+{ cat "$T/push-good"; echo "# signed with the new key"; } >"$T/push-new"
+NEWSUM=$(sha "$T/push-new")
+unsigned() { log_count "pusher build is not signed with this build's update key"; }
+publish "$T/both" "codex-hub-tray-$P"
+publish "$T/push-new" "codex-hub-push-$P" "$T/new.key"
+rm -f "$PUSH"
+R0=$(unsigned)
+"$T/dl/codex-hub-tray-$P" >"$T/rotate.out" 2>&1 # the first build: the old key alone
+check "a tray with the old key alone is installed" wait_for 10 has_tray
+check "  ...and refuses the pusher the new key signed" wait_for 10 bash -c "[ \$(grep -c \"pusher build is not signed with this build's update key\" '$LOG') -gt $R0 ]"
+check "  ...but takes the tray that trusts both keys, which the old key signed" wait_for 30 has_sha "$TRAY" "$V3"
+check "that tray takes the pusher the new key signed" wait_for 30 has_sha "$PUSH" "$NEWSUM"
+check "  ...and runs it" wait_for 20 has_pusher
+publish "$T/newonly" "codex-hub-tray-$P" "$T/new.key"
+kill -USR1 "$(tray_pid)"
+check "the tray with the new key alone, which the new key signed, is taken" wait_for 30 has_sha "$TRAY" "$V4"
+wait_for 10 has_tray
+R1=$(unsigned)
+publish "$T/push-good" "codex-hub-push-$P"
+kill -USR1 "$(tray_pid)"
+check "  ...and refuses a pusher the old key signed" wait_for 10 bash -c "[ \$(grep -c \"pusher build is not signed with this build's update key\" '$LOG') -gt $R1 ]"
+check "  ...keeping the one it has" has_sha "$PUSH" "$NEWSUM"
+PID9=$(tray_pid)
+PUSH9=$(pusher_pid)
+kill -TERM "$PID9"
+check "SIGTERM stops it" wait_for 10 dead "$PID9"
+check "  ...and its pusher" wait_for 10 dead "$PUSH9"
+
 echo "== the fake hub"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=$P")
 check "it refuses a request without the access header (403)" test "$code" = 403
