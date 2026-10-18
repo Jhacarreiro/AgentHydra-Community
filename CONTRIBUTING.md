@@ -59,13 +59,14 @@ first. A behaviour change comes with a test that fails without it.
 <details>
 <summary><b>Read more: the public audit and the git hooks</b></summary>
 
-This repository is public, so everything committed is published. Its history starts with an import commit that
-holds `3a65ba8e`, the MIT base, unchanged. `bun run audit:public` reads the tree at `HEAD` and every commit in that
-history, and reports tokens and keys, credential files, private addresses, email addresses other than noreply and
-documentation ones, home-folder paths, upstream hosts, release links and private repository names, build outputs
-and generated files, SVG and stylesheet files whose licence comment has no notice, binaries with no provenance,
-commit emails that are not noreply, and any commit that has upstream's relicensing commit, or any of upstream's own
-commits, in its history. A finding prints its rule, `file:line` and a fingerprint, never the value.
+This repository is public, so everything committed is published. Its history starts with an import commit that holds
+`3a65ba8e`, the MIT base, unchanged. `bun run audit:public` reads the tree at `HEAD` and every commit in that
+history after the import commit (of which it reads the author and message, not the tree), and reports tokens and
+keys, credential files, private addresses, email addresses other than noreply and documentation ones, home-folder
+paths, upstream hosts, release links and private repository names, build outputs and generated files, SVG and
+stylesheet files whose licence comment has no notice, binaries with no provenance, commit emails that are not
+noreply, and any commit that has upstream's relicensing commit, or any of upstream's own commits, in its history. A
+finding prints its rule, `file:line` and a fingerprint, never the value.
 
 - Use invented data in tests and docs: `example.com`, `example.test` or `example.invalid` addresses, the
   documentation IP ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), names such as "Example Owner", and
@@ -78,15 +79,16 @@ commits, in its history. A finding prints its rule, `file:line` and a fingerprin
 - **Never bring in code or text that upstream wrote after `3a65ba8e`.** That work is under PolyForm Noncommercial,
   not MIT. Write what you need from the MIT code and your own reasoning, and do not merge or rebase onto upstream's
   `main`, or onto any of upstream's history: this repository does not carry it. Nothing from private repositories
-  either. The audit and the hook check commit ancestry only, so they cannot see code copied or cherry-picked from
-  upstream's later work: keeping that out is up to you.
+  either. The audit and the hook check commit ancestry and object hashes only, so they cannot see code copied or
+  cherry-picked from upstream's later work: keeping that out is up to you.
 
 `bun install` enables the hooks in `.githooks/`:
 
 - **pre-commit** refuses a commit on the branch `live` and runs Biome on the staged files.
 - **pre-push** refuses any ref whose history contains upstream's relicensing commit `aee9dfc4` or any of upstream's
-  commits up to the base, and any tag on upstream's work (its own tags, or the import commit, whose tree is
-  upstream's), runs the audit on what the push would publish, and gates release tags. It also stops a push to a
+  commits up to the base, or has a root other than the import commit, and any tag on upstream's work (its own tags,
+  the import commit, whose tree is upstream's, or a commit that still has upstream's release workflow), runs the
+  audit on what the push would publish, and gates release tags. It also stops a push to a
   public remote, your own fork included, until you repeat the command with `AGENTHYDRA_PUSH_PUBLIC=1`, so a public
   push is always deliberate.
 

@@ -88,10 +88,12 @@ The intricacies worth remembering: the gotchas, the half-built parts, the decisi
   `.githooks/check-public-push.mjs`), but they check ancestry only: a copy or a cherry-pick of upstream's later work
   makes commits without it, so the clean-room rule in `CONTRIBUTING.md` is what keeps that out.
 - The history starts at one import commit with no parent whose tree is `3a65ba8e`'s, unchanged; none of upstream's
-  own commits is in it. The audit checks that commit before it reads any history (no parent, that tree, every commit
-  read built on it), and its `upstream.history` rule, like the hook, refuses any history that shares a commit with
-  upstream's up to `3a65ba8e`. The hook also refuses a tag on upstream's history or on the import commit, whose tree
-  carries upstream's own `release.yml` (`scripts/audit-public.config.json`, `docs/FORK.md`).
+  own commits is in it. Before the audit reads the history from that commit, or what a push carries, it checks it
+  (no parent, that tree, the only root of what it reads), and its `upstream.history` rule, like the hook, refuses any
+  history that shares a commit with upstream's up to `3a65ba8e`, where that commit is in the clone; the root check
+  needs none of upstream's objects, and the hook makes it too. The hook also refuses a tag on upstream's history, on
+  the import commit, or on a commit that still has upstream's own `release.yml`, as the import commit and this
+  fork's first commits do (`scripts/audit-public.config.json`, `docs/FORK.md`).
 
 ## At a glance
 
@@ -292,10 +294,10 @@ Each path is where the feature is defined.
   the channel says updates are off it refuses before downloading anything; `-FromZip` installs a local zip. -
   `install.ps1`
 - **The public audit** - One command checks the import commit at the root of the history, then reads the tree and
-  every commit for secrets, personal data, private addresses, upstream hosts, release links and private repository
-  names, build outputs and generated files, SVG and stylesheet files whose licence has no notice, unrecorded
-  binaries, non-noreply commit emails and any commit with the relicensing commit or upstream's own history in its
-  history; CI and the pre-push hook run it. - `scripts/audit-public.mjs`, `.githooks/check-public-push.mjs`,
+  every commit after it for secrets, personal data, private addresses, upstream hosts, release links and private
+  repository names, build outputs and generated files, SVG and stylesheet files whose licence has no notice,
+  unrecorded binaries, non-noreply commit emails and any commit with the relicensing commit or upstream's own history
+  in its history; CI and the pre-push hook run it. - `scripts/audit-public.mjs`, `.githooks/check-public-push.mjs`,
   `.github/workflows/audit-public.yml`
 
 **Partial - exists but incomplete, gated off, or known broken**

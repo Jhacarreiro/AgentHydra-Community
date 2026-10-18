@@ -25,7 +25,7 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Nothing depends on a service the original project's owner runs**
 - **Remote access to the orchestrator is off until you set it up**
 - **HSwarm's Free web accounts and the RepoYeti and ReDesign connectors stay off until you turn them on**
-- **A public audit checks everything this repository publishes**
+- **A public audit checks this repository's files and every change made since the import**
 - **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged**
 - **And every change below that AgentHydra had made, not yet released, by its last MIT-licensed commit**
 
@@ -167,11 +167,11 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Hydra Core's Stop hook asks whichever owner your people catalog names.** It had the original project's owner
   built in. The owner tier is now any person your catalog marks as owner (the creator family by default), and with
   no such person, a question stops as asked.
-- **A public audit checks everything this repository publishes.** One command reads every file, and every commit
-  since the fork began, for secrets, personal data, private addresses, the original project's hosts and release
-  links, committed build output, and icons or stylesheets whose licence has no notice, and fails any commit built
-  on the original project's relicensing. CI runs it on every push and pull request, and a push it
-  objects to is refused.
+- **A public audit checks this repository's files and every change made since the import.** One command reads every
+  file as it stands, and every line each later commit added, for secrets, personal data, private addresses, the
+  original project's hosts and release links, committed build output, and icons or stylesheets whose licence has no
+  notice, and fails any commit that carries the original project's history or its relicensing. CI runs it on every
+  push and pull request, and a push it objects to is refused.
 - **The public audit fails when an allowlist entry no longer clears anything.** A full run lists each stale entry
   and exits with an error, so an exemption cannot linger after its value is gone.
 - **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged.** It no

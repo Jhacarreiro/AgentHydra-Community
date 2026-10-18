@@ -70,8 +70,8 @@ where the repository link now is, and the window shots name a demo project "conn
 - **For agents too:** the whole thing over MCP, including "which account am I, and how much is left"
 - **Nothing goes to the original project:** no LunarWerx service, and no install id except to a Codex hub you run
   yourself; what does reach the network is listed under [Install](#install)
-- **A public audit** checks every file and every commit for secrets and personal data, and refuses any commit built
-  on upstream's own history or on its relicensing commit
+- **A public audit** checks every file, and every commit after the import, for secrets and personal data, and
+  refuses any commit built on upstream's own history or on its relicensing commit
 
 <details>
 <summary><b>Read more: what each part does</b></summary>
@@ -387,9 +387,9 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
 
 ## The public audit
 
-`bun run audit:public` checks what this repository would publish: the tree at `HEAD` and every commit in its
-history, which starts at the commit that imports `3a65ba8e`, the MIT base. CI runs it on every push and pull request,
-and the pre-push hook runs it on every push.
+`bun run audit:public` checks what this repository would publish: the tree at `HEAD`, and every commit in its history
+after the one at its root, which imports `3a65ba8e`, the MIT base. CI runs it on every push and pull request, and the
+pre-push hook runs it on every push.
 
 <details>
 <summary><b>Read more: what it looks for and how to use it</b></summary>
@@ -407,20 +407,21 @@ and the pre-push hook runs it on every push.
 - A finding that is genuinely fine goes in `scripts/audit-public.allow.json` as `{rule, path, fp, reason}`. Commit
   emails, the licence boundary and upstream's history cannot be allowed. Every binary needs an entry in
   `scripts/binary-provenance.json`.
-- It first checks the import commit at the root of the history: it must have no parent and `3a65ba8e`'s tree, and
-  every commit read must descend from it; otherwise the audit cannot run (exit 2). It reads that commit's author,
-  committer and message, and every line each later commit adds, but not the import's tree line by line: that is
-  upstream's tree at `3a65ba8e`, fixed by its hash, and it still holds values the fork took out later (upstream's
-  infrastructure ids, its maintainers' email addresses and home-folder paths), all public in upstream's repository
-  already.
+- In the default run, a `--history` range from the import commit and `--push`, it first checks that commit: it must
+  have no parent, have `3a65ba8e`'s tree and be the only root of the history read, so that every commit read descends
+  from it; otherwise the audit cannot run (exit 2). It reads that commit's author, committer and message, and every
+  line each later commit adds, but not the import's tree line by line: that is upstream's tree at `3a65ba8e`, fixed
+  by its hash, and it still holds values the fork took out later (upstream's infrastructure ids, its maintainers'
+  email addresses and home-folder paths), all public in upstream's repository already.
 - It also looks for your own git `user.name` and account name, so a `pii.local-name` finding can come from a
   one-word name that is also a folder name here. Check those, or run `bun scripts/audit-public.mjs --no-local-names`
   for the result anyone else gets.
-- The pre-push hook refuses any ref whose history contains `aee9dfc4` or any of upstream's commits up to the base,
-  and any tag on upstream's work (its own release tags, or the import commit, whose tree is upstream's), with no
-  override. Both it and the audit look at commit ancestry and tree hashes only: code copied or cherry-picked from
-  upstream's later work makes new commits with no upstream commit in their history, and nothing flags them. That is
-  kept out by the clean-room rule in [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
+- The pre-push hook refuses any ref whose history contains `aee9dfc4` or any of upstream's commits up to the base, or
+  has a root other than the import commit, and any tag on upstream's work (its own release tags, the import commit,
+  whose tree is upstream's, or a commit that still has upstream's release workflow), with no override. Both it and
+  the audit look at commit ancestry and object hashes only: code copied or cherry-picked from upstream's later work
+  makes new commits with no upstream commit in their history, and nothing flags them. That is kept out by the
+  clean-room rule in [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
 - [docs/FORK.md](docs/FORK.md) shows how to check the import against upstream yourself.
 
 </details>

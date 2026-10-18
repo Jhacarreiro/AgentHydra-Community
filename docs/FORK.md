@@ -90,19 +90,23 @@ git log -1 --format=%P aee9dfc4           # the relicensing commit's only parent
 - One root means every commit in this history descends from the import commit, so none of upstream's commits,
   `aee9dfc4` included, can be in it. A merge that brought upstream's history in would add upstream's first commit as
   a second root.
-- Before it reads any history, the audit checks the import commit: it must be in the clone, have no parent and have
-  `3a65ba8e`'s tree, and every commit it reads must descend from it. Anything else stops it with an error, so a
-  shallow clone that does not reach the root cannot be audited.
+- Before the default run, a `--history` range from the import commit or a `--push` run reads anything, the audit
+  checks the import commit: it must be in the clone, have no parent, have `3a65ba8e`'s tree, and be the only root of
+  the history it reads, so that every commit it reads descends from it. Anything else stops it with an error, so a
+  shallow clone that does not reach the root cannot run those. A `--tree` run, or a range that starts later, does
+  not make that check.
 - The audit's `license.boundary` rule fails on any commit that has `aee9dfc4` in its history, and its
   `upstream.history` rule on any commit that shares a commit with upstream's history up to `3a65ba8e`. Both are
-  built into `scripts/audit-public.mjs`; its configuration can add a commit to either but cannot remove these. A
-  clone of this repository holds no upstream commit, so they find nothing there: they stop a branch that would bring
-  one in. CI runs the audit on every push and pull request.
+  built into `scripts/audit-public.mjs`; its configuration can add a commit to either but cannot remove these. Both
+  need that commit in the clone to find it, and a clone of this repository holds no upstream commit. Upstream's older
+  history can still come into such a clone without them, with one of upstream's earlier tags; it has a root of its
+  own, so the root check above stops it there. CI runs the audit on every push and pull request.
 - The pre-push hook (`.githooks/check-public-push.mjs`, enabled by `bun install`) refuses, on every remote and with
-  no override, any ref whose history contains `aee9dfc4` or any commit up to `3a65ba8e`, and any tag on upstream's
-  work: on `3a65ba8e` or a commit before it (upstream's own release tags), or on a commit with `3a65ba8e`'s tree (the
-  import commit, which holds upstream's own release workflow). It also runs the audit on what the push would
-  publish.
+  no override, any ref whose history contains `aee9dfc4` or any commit up to `3a65ba8e`, or has a root other than
+  the import commit, and any tag on upstream's work: on `3a65ba8e` or a commit before it (upstream's own release
+  tags), on a commit with `3a65ba8e`'s tree (the import commit), or on a commit whose release workflow is still the
+  one in that tree (this fork's first commits, which a tag would publish with upstream's workflow). It also runs the
+  audit on what the push would publish.
 - The audit reads the tree at `HEAD`, the import commit's author, committer and message, and every line each later
   commit adds. It does not read the import commit's tree line by line: that is upstream's tree at `3a65ba8e`, fixed
   by its hash, and it still holds values this fork's later commits took out, such as upstream's service hosts and
@@ -111,7 +115,7 @@ git log -1 --format=%P aee9dfc4           # the relicensing commit's only parent
 - A `pii.local-name` finding comes from your own name: the audit also looks for your git `user.name` and your
   account name, and a one-word name that is also a folder name in this repository matches it. Check those findings,
   or run `bun scripts/audit-public.mjs --no-local-names` to get the result anyone else gets.
-- The audit and the hook look at commit ancestry and tree hashes only. Code copied or cherry-picked from upstream's
+- The audit and the hook look at commit ancestry and object hashes only. Code copied or cherry-picked from upstream's
   later commits would make new commits with no upstream commit in their history, and neither would flag them. That
   is kept out by the clean-room rule every contribution follows ([CONTRIBUTING.md](../CONTRIBUTING.md)), and anyone
   can compare the code itself with upstream's.
