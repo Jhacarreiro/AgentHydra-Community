@@ -1,0 +1,116 @@
+name: Codex hub tray
+
+# The Codex hub's tray app (codex-hub-tray/, Go): go vet and go test, its end-to-end test against a fake hub on
+# Linux (test-linux.sh), and its reproducible build (build.sh), which must give the same SHA-256 twice from one commit.
+# ci.yml has no Go in it, so a change to the tray is checked here, and only a change that touches it.
+#
+# The builds here carry example addresses and an example public key (the key whose seed is the bytes 0 to 31, which
+# the tray's and the signing script's tests use), never an operator's: they are compared and thrown away.
+on:
+  push:
+    branches: [main]
+    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml']
+  pull_request:
+    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: codex-hub-tray-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  HUB_URL: https://hub.example.test
+  PAIR_URL: https://inbox.example.test/codex-hub/pair
+  INBOX_URL: https://inbox.example.test
+  UPDATE_KEY: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
+
+jobs:
+  linux:
+    name: vet, test, end to end and reproducible build (Linux; Windows and Linux builds)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: codex-hub-tray
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # The Go go.mod's toolchain line names: build.sh builds with exactly that one.
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: codex-hub-tray/go.mod
+          cache-dependency-path: codex-hub-tray/go.sum
+
+      - name: go vet (Linux, Windows and the test helpers)
+        run: |
+          go vet ./...
+          GOOS=windows go vet ./...
+          go vet ./testdata/fakehub ./testdata/signbuild ./testdata/sniwatcher
+
+      - name: go test
+        run: go test ./...
+
+      # A private session bus (dbus-run-session), a stand-in tray host and a fake hub; nothing outside its scratch folder.
+      - name: End to end (test-linux.sh)
+        run: |
+          command -v dbus-run-session >/dev/null || { sudo apt-get update && sudo apt-get install -y dbus; }
+          ./test-linux.sh
+
+      # Twice, the second time with an empty build cache and from another folder: the same bytes both times.
+      - name: Reproducible build
+        run: |
+          OUT="$RUNNER_TEMP/first" ./build.sh
+          cp -r . "$RUNNER_TEMP/another folder"
+          rm -rf "$RUNNER_TEMP/another folder/dist"
+          GOCACHE="$RUNNER_TEMP/empty-cache" OUT="$RUNNER_TEMP/second" "$RUNNER_TEMP/another folder/build.sh"
+          diff "$RUNNER_TEMP/first/SHA256SUMS" "$RUNNER_TEMP/second/SHA256SUMS"
+          {
+            echo '### Tray builds (example addresses and key)'
+            echo '```'
+            go version
+            cat "$RUNNER_TEMP/first/SHA256SUMS"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  macos:
+    name: vet, test and reproducible build (macOS builds)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: codex-hub-tray
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: codex-hub-tray/go.mod
+          cache-dependency-path: codex-hub-tray/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      # build-macos.sh through build.sh: the app, its zip and the hub's two darwin builds. Only the hub's builds are
+      # compared; the zip holds file times.
+      - name: Reproducible build
+        run: |
+          TARGETS=macos OUT="$RUNNER_TEMP/first" ./build.sh
+          cp -R . "$RUNNER_TEMP/another folder"
+          rm -rf "$RUNNER_TEMP/another folder/dist"
+          GOCACHE="$RUNNER_TEMP/empty-cache" TARGETS=macos OUT="$RUNNER_TEMP/second" "$RUNNER_TEMP/another folder/build.sh"
+          diff "$RUNNER_TEMP/first/SHA256SUMS" "$RUNNER_TEMP/second/SHA256SUMS"
+          {
+            echo '### Tray builds (example addresses and key)'
+            echo '```'
+            go version
+            cat "$RUNNER_TEMP/first/SHA256SUMS"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
