@@ -120,6 +120,24 @@
       "path": "tests/codex-hub-sign.test.ts",
       "fp": "3021d90eb9437b2d",
       "reason": "The bare PEM header string, no key body: the test checks that a key file keygen wrote starts with it."
+    },
+    {
+      "rule": "infra.upstream-release",
+      "path": "server/tests/github-updater.test.ts",
+      "fp": "90a0f955f91da678",
+      "reason": "A test that offers the updater an archive on upstream's releases and checks it is reported and never applied: the release channel takes downloads from this repository only."
+    },
+    {
+      "rule": "infra.upstream-release",
+      "path": "server/tests/release-channel.test.ts",
+      "fp": "90a0f955f91da678",
+      "reason": "Tests that a download on upstream's releases, written out or reached from this repository's by ../ or %2e%2e, is refused as outside the release channel."
+    },
+    {
+      "rule": "asset.license",
+      "path": "desk2/hydra/src/style.css",
+      "fp": "cfd4a17fe7fd244e",
+      "reason": "The stylesheet is AgentHydra's own. Its comment says where the self-hosted Inter font's licence ships (public/fonts/OFL.txt); THIRD-PARTY-NOTICES.md covers the font under rsms/inter."
     }
   ]
 }

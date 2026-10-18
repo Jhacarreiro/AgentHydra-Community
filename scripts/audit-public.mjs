@@ -5,20 +5,22 @@
 // under MIT. Whatever is pushed to it is published, history included, so this checks for what nobody
 // should publish by accident: a token or a private key, a credential file, an address on a private
 // network, an email address, a path that names someone's account, upstream's own service hosts and
-// private repositories, a machine name from a home or office network, and a binary nobody can say
-// where it came from. It reads git objects, never the working tree, so it judges exactly what a push
+// private repositories, a link to upstream's releases or raw files, a machine name from a home or
+// office network, a build output or generated file, an SVG or stylesheet that states a licence no
+// notice covers, and a binary nobody can say where it came from. It reads git objects, never the working tree, so it judges exactly what a push
 // or a clone carries.
 //
 // MODES (any combination; with none, `--tree HEAD --history <base>..HEAD`)
 //   --tree REV        Every file tracked at REV: the text of every file git grep -I calls text, every
-//                     path, and every binary blob against scripts/binary-provenance.json.
+//                     path, the first lines of every text file (for a generated-file header), and
+//                     every binary blob against scripts/binary-provenance.json.
 //   --history A..B    Every commit in the range: author, committer and trailer emails must be noreply
 //                     addresses; the message and the lines each commit ADDS (git log -p -U0) go
 //                     through the content rules, so a secret added in one commit and removed in the
 //                     next is still caught; each binary a commit adds or changes needs provenance.
-//                     A message may name upstream's hosts, private repositories and denylisted
-//                     folders (it says what a commit takes out, and each name is in the base
-//                     already); the other rules read it as they read a file.
+//                     A message may name upstream's hosts, release links, private repositories and
+//                     denylisted folders (it says what a commit takes out, and each name is in the
+//                     base already); the other rules read it as they read a file.
 //   --push REMOTE     What .githooks/check-public-push.mjs calls. stdin carries git's pre-push lines
 //                     ("<local ref> <local sha> <remote ref> <remote sha>"), and the commits read are
 //                     the ones the push carries: reachable from a pushed sha, not from the base, not
@@ -48,7 +50,12 @@
 // KNOWN LIMITS. Matching is by shape. A password typed as prose, a key format nobody has published,
 // or a secret split across string pieces is not found. infra.internal-host only looks inside strings
 // and comments of source files (elsewhere `.local` is a property), so a host name in the middle of a
-// multi-line string is missed. Exit codes: 0 clean, 1 a finding, 2 the audit itself could not run.
+// multi-line string is missed. file.generated knows build outputs by their folder or extension and
+// generated files by a marker in their first five lines, so a generated file that says neither is
+// missed; lockfiles are generated on purpose and are not findings. asset.license reads the comments
+// of SVG and stylesheet files only, and counts a file as covered when THIRD-PARTY-NOTICES.md or
+// binary-provenance.json names its path. Exit codes: 0 clean, 1 a finding, 2 the audit itself could
+// not run.
 //
 // Self-contained: node or bun, no dependencies. The token formats are server/src/secrets.ts's PATTERNS
 // (bun runs .ts natively; node strips its types from 22.18 on) plus the formats below. A runtime that
@@ -72,6 +79,8 @@ const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url))
 export const CONFIG_FILE = 'scripts/audit-public.config.json'
 export const ALLOW_FILE = 'scripts/audit-public.allow.json'
 export const PROVENANCE_FILE = 'scripts/binary-provenance.json'
+/** The notices for code and assets taken from other projects; asset.license reads which paths it names. */
+export const NOTICES_FILE = 'THIRD-PARTY-NOTICES.md'
 /** The path a finding in a commit message is filed under (allow entries use it too). */
 export const MESSAGE_PATH = '(commit message)'
 const COMMIT_PATH = '(commit)'
@@ -93,10 +102,16 @@ export const RULES = {
   'pii.path': 'a home folder with a real account name in it, or a folder on the path denylist',
   'pii.local-name': 'the name of whoever runs this audit (git user.name or the OS account)',
   'infra.host': "one of upstream's own service hosts, outside the historical files",
+  'infra.upstream-release':
+    "a link to upstream's releases, raw files or GitHub API, outside the historical files (an update or a download that would reach upstream)",
   'infra.internal-host': 'a machine name from a private network (.local, .lan, .internal, ...)',
   'infra.account-id': 'a 32-hex account or zone id',
   'infra.private-repo': "the name of one of upstream's private repositories",
   'binary.provenance': 'a binary with no entry in scripts/binary-provenance.json, or a changed one',
+  'file.generated':
+    'a build output or a generated file (under dist/, build/, out/ or target/, minified, a source map, compiled Python, or a generated header)',
+  'asset.license':
+    'an SVG or stylesheet whose comment states a licence or copyright, with no entry in THIRD-PARTY-NOTICES.md or binary-provenance.json',
   'commit.email': 'a commit author, committer or trailer email that is not a noreply address',
   'license.boundary': 'history that contains the commit that took upstream off MIT',
 }
@@ -135,6 +150,30 @@ const SECRET_FILES = [
   [/(?:^|\/)storage-?state[^/]*\.json$/i, 'a saved browser session'],
 ]
 const DATABASE_FILE = /\.(?:db|sqlite|sqlite3|db-wal|db-shm)$/i
+// Paths that are what a build makes, not what anyone writes. A build's output is made again from the
+// source, so committing it publishes a copy nobody reviews line by line.
+const GENERATED_PATHS = [
+  [/(?:^|\/)(?:dist|build|out|target)\//i, 'a build output folder'],
+  [/\.min\.(?:[cm]?js|css)$/i, 'a minified file'],
+  [/\.map$/i, 'a source map'],
+  [/(?:^|\/)__pycache__\/|\.py[co]$/i, 'compiled Python'],
+]
+// A generated file's own first lines say so. DO NOT EDIT is matched as written (Go's "Code generated
+// ... DO NOT EDIT." and most generators'); the rest in any case.
+const GENERATED_MARKERS = [
+  /@generated\b|\bDO NOT EDIT\b/,
+  /\bauto-?generated\b|\bthis file (?:is|was|has been) (?:automatically |auto-?)?generated\b/i,
+]
+const GENERATED_HEAD_LINES = 5
+// Lockfiles are generated, and committed on purpose: they pin what a build installs.
+const LOCKFILE =
+  /(?:^|\/)(?:Cargo\.lock|bun\.lockb?|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|uv\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|Gemfile\.lock)$/
+// Text assets that carry a licence in a comment when they come from someone else (an icon set, a
+// stylesheet, an SVG font). Binary fonts and images are binary.provenance's.
+const LICENSED_ASSET = /\.(?:svg|css|scss|sass|less|styl)$/i
+const ASSET_COMMENT =
+  /<!--[\s\S]*?-->|\/\*[\s\S]*?\*\/|<(cc:license|dc:rights)\b[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/gi
+const LICENCE_WORDS = /\b(?:licen[cs]e[ds]?|copyright)\b|©|\(c\)\s*(?:19|20)\d\d/i
 const FIXTURE_DIR = /(?:^|\/)(?:fixtures?|testdata|__fixtures__)\//i
 const NPMRC = /(?:^|\/)\.npmrc$/i
 const NPMRC_TOKEN = /_(?:authToken|auth|password)\s*=\s*(?!\$\{)\S+/g
@@ -258,14 +297,22 @@ function readJson(file, what) {
 }
 
 /**
- * The three files that steer the audit, checked for shape. They are read from beside this script
- * (the checkout's own copy) unless a path is given: the audit as it stands here judges what it reads.
+ * The three files that steer the audit, checked for shape, and THIRD-PARTY-NOTICES.md, whose text
+ * asset.license reads for the paths it covers (none, when there is no such file). They are read from
+ * beside this script (the checkout's own copy) unless a path is given: the audit as it stands here
+ * judges what it reads.
  */
-export function loadAuditFiles({ config, allow, provenance } = {}) {
+export function loadAuditFiles({ config, allow, provenance, notices } = {}) {
   const root = resolve(SCRIPTS_DIR, '..')
   const cfg = readJson(config ?? join(root, CONFIG_FILE), 'the audit config')
   const allowDoc = readJson(allow ?? join(root, ALLOW_FILE), 'the allowlist')
   const provDoc = readJson(provenance ?? join(root, PROVENANCE_FILE), 'the binary provenance list')
+  let noticesText = ''
+  try {
+    noticesText = readFileSync(notices ?? join(root, NOTICES_FILE), 'utf8')
+  } catch {
+    // No notices file: no asset is covered by one.
+  }
   for (const key of ['base', 'placeholderUsers', 'allowedEmails', 'allowedEmailDomains']) {
     if (cfg[key] === undefined) throw new AuditError(`the audit config has no "${key}"`)
   }
@@ -291,7 +338,7 @@ export function loadAuditFiles({ config, allow, provenance } = {}) {
       }
     }
   }
-  return { config: cfg, allow: entries, provenance: binaries }
+  return { config: cfg, allow: entries, provenance: binaries, notices: noticesText }
 }
 
 /** git user.name and the OS account: the names pii.local-name looks for, minus account names. */
@@ -314,7 +361,7 @@ export function runnerNames(cwd) {
  * into { value } (what is fingerprinted), or null when the match is fine. `rule` and `note` in the
  * result override the rule id and add the one piece of text that may be shown.
  */
-export function compileRules(config, { localNames = [] } = {}) {
+export function compileRules(config, { localNames = [], notices = '', provenance = [] } = {}) {
   const lower = (s) => s.toLowerCase()
   const placeholders = new Set((config.placeholderUsers ?? []).map(lower))
   const emailGlobs = (config.allowedEmails ?? []).map(globRe)
@@ -432,6 +479,24 @@ export function compileRules(config, { localNames = [] } = {}) {
       check: (m) => ({ value: lower(m[0]), note: host }),
     })
   }
+  // A release download, a raw file or the GitHub API of upstream's repository is where an update or a
+  // download would reach upstream. A link to the repository itself, to a commit or to an issue is not.
+  for (const slug of config.upstreamRepos ?? []) {
+    rules.push({
+      id: 'infra.upstream-release',
+      re: new RegExp(
+        `(?<![\\w-])(?:(?:api\\.github\\.com\\/repos|raw\\.githubusercontent\\.com)\\/(?:${slug})(?![\\w.-])|(?:${slug})\\/(?:releases|archive|raw)(?![\\w-]))`,
+        'gi',
+      ),
+      when: (path) => !historical.has(path) && !selfExempt.has(path) && !describes(path),
+      check: (m) => {
+        const hit = lower(m[0])
+        const kind = hit.startsWith('api.') ? 'api' : hit.startsWith('raw.') ? 'raw' : hit.split('/').pop()
+        const repo = hit.replace(/^(?:api\.github\.com\/repos|raw\.githubusercontent\.com)\//, '')
+        return { value: `${kind}:${repo.replace(/\/(?:releases|archive|raw)$/, '')}`, note: kind }
+      },
+    })
+  }
   for (const name of config.privateRepos ?? []) {
     rules.push({
       id: 'infra.private-repo',
@@ -456,6 +521,18 @@ export function compileRules(config, { localNames = [] } = {}) {
     id: 'infra.internal-host',
     re: /\b(?:DESKTOP|LAPTOP)-[A-Z0-9]{7}\b/g,
     check: (m) => (/EXAMPLE|TEST/.test(m[0]) ? null : { value: lower(m[0]) }),
+  })
+  // A licence or copyright in an SVG's or a stylesheet's comment says the file is someone else's: its
+  // notice belongs in THIRD-PARTY-NOTICES.md (or, for a binary, binary-provenance.json), by path.
+  const noticed = (path) => notices.includes(path) || provenance.some((b) => b.path === path)
+  rules.push({
+    id: 'asset.license',
+    re: ASSET_COMMENT,
+    when: (path) => LICENSED_ASSET.test(path) && !noticed(path),
+    check: (m) => {
+      if (!m[1] && !LICENCE_WORDS.test(m[0])) return null
+      return { value: m[0].replace(/\s+/g, ' ').trim() }
+    },
   })
   rules.push({
     id: 'infra.account-id',
@@ -626,7 +703,24 @@ export function scanPath(path) {
   if (DATABASE_FILE.test(path) && !FIXTURE_DIR.test(path)) {
     return [{ rule: 'secret.file', path, line: 0, fp: fingerprint(path), note: 'a database' }]
   }
+  for (const [re, what] of GENERATED_PATHS) {
+    if (re.test(path)) return [{ rule: 'file.generated', path, line: 0, fp: fingerprint(path), note: what }]
+  }
   return []
+}
+
+/**
+ * file.generated for a file whose first lines say it is generated: `head` is the file's opening
+ * lines (the first GENERATED_HEAD_LINES are read). Lockfiles are generated on purpose. The
+ * fingerprint is the path's, as for a generated path, so one allow entry covers the file.
+ */
+export function generatedHeader(path, head) {
+  if (LOCKFILE.test(path)) return []
+  const lines = head.split('\n').slice(0, GENERATED_HEAD_LINES)
+  const at = lines.findIndex((l) => GENERATED_MARKERS.some((re) => re.test(l)))
+  if (at < 0) return []
+  const note = 'its first lines say it is generated'
+  return [{ rule: 'file.generated', path, line: at + 1, fp: fingerprint(path), note }]
 }
 
 /**
@@ -750,7 +844,13 @@ export function auditTree(cwd, rev, ctx) {
 
   for (const e of texts) {
     const buf = content.get(e.id)
-    if (buf?.length) findings.push(...scanText(buf.toString('utf8'), e.path, ctx.rules))
+    if (!buf?.length) continue
+    const text = buf.toString('utf8')
+    findings.push(...scanText(text, e.path, ctx.rules))
+    // A finding the path rule already made (a generated file in a build folder) is not made twice.
+    if (!findings.some((f) => f.rule === 'file.generated' && f.path === e.path)) {
+      findings.push(...generatedHeader(e.path, text.slice(0, 4096)))
+    }
   }
   for (const e of bins) {
     const f = binaryFinding(e.path, e.id, sha256Hex(content.get(e.id) ?? ''), ctx.provenance)
@@ -912,6 +1012,17 @@ export function auditHistory(cwd, revArgs, ctx) {
         continue
       }
       if (file.lines.length === 0) continue
+      // The commit wrote the file's first lines: they are the header a generated file has.
+      if (file.numbers[0] === 1) {
+        const head = []
+        for (let i = 0; i < file.lines.length && file.numbers[i] === i + 1; i++) head.push(file.lines[i])
+        const already = findings.some(
+          (f) => f.rule === 'file.generated' && f.path === file.path && f.commit === c.sha,
+        )
+        if (!already) {
+          for (const f of generatedHeader(file.path, head.join('\n'))) findings.push({ ...f, commit: c.sha })
+        }
+      }
       const text = file.lines.join('\n')
       for (const f of scanText(text, file.path, ctx.rules, { lineNumbers: file.numbers })) {
         // A PEM header among the added lines is judged on the whole file as the commit left it:
@@ -1060,6 +1171,8 @@ export function main(argv = process.argv.slice(2), { stdin } = {}) {
       provenance: files.provenance,
       rules: compileRules(files.config, {
         localNames: opts.noLocalNames ? [] : runnerNames(opts.cwd),
+        notices: files.notices,
+        provenance: files.provenance,
       }),
     }
     if (!opts.tree.length && !opts.history.length && !opts.push) {

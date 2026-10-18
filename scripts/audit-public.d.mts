@@ -4,6 +4,8 @@
 export const CONFIG_FILE: string
 export const ALLOW_FILE: string
 export const PROVENANCE_FILE: string
+/** THIRD-PARTY-NOTICES.md: asset.license counts a file it names by path as covered. */
+export const NOTICES_FILE: string
 /** The path a finding in a commit message is filed under. */
 export const MESSAGE_PATH: string
 /** Upstream's relicensing commit; built in, so the config can add a boundary but not remove this. */
@@ -21,6 +23,8 @@ export interface AuditConfig {
   allowedEmailDomains: string[]
   historicalPaths?: string[]
   upstreamHosts?: string[]
+  /** Upstream's repository slugs (regular expressions) whose release, raw and API links are findings. */
+  upstreamRepos?: string[]
   privateRepos?: string[]
   pathDenylist?: string[]
   publicInternalHosts?: string[]
@@ -79,16 +83,26 @@ export class AuditError extends Error {}
 /** The first 16 hex digits of the sha256 of `value`. */
 export function fingerprint(value: string): string
 
-export function loadAuditFiles(paths?: { config?: string; allow?: string; provenance?: string }): {
+export function loadAuditFiles(paths?: {
+  config?: string
+  allow?: string
+  provenance?: string
+  notices?: string
+}): {
   config: AuditConfig
   allow: AllowEntry[]
   provenance: ProvenanceEntry[]
+  /** THIRD-PARTY-NOTICES.md's text, or '' when there is none. */
+  notices: string
 }
 
 /** git user.name and the OS account name, as pii.local-name looks for them. */
 export function runnerNames(cwd: string): string[]
 
-export function compileRules(config: AuditConfig, options?: { localNames?: string[] }): Rule[]
+export function compileRules(
+  config: AuditConfig,
+  options?: { localNames?: string[]; notices?: string; provenance?: ProvenanceEntry[] },
+): Rule[]
 
 export function scanText(
   text: string,
@@ -98,6 +112,9 @@ export function scanText(
 ): Finding[]
 
 export function scanPath(path: string): Finding[]
+
+/** file.generated for a file whose first lines (`head`) say it is generated; lockfiles never are. */
+export function generatedHeader(path: string, head: string): Finding[]
 
 export function auditTree(
   cwd: string,

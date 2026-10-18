@@ -49,6 +49,8 @@
   "//historicalPaths": "Files that record what upstream shipped; infra.host does not read them. Commit messages are treated alike for upstreamHosts, privateRepos and pathDenylist: a message that names one says what its commit takes out.",
   "upstreamHosts": ["lunarwerx.com", "connectionsapi.com", "repoyeti.com", "connections.icu"],
   "//upstreamHosts": "Upstream's own services and sites. Each also matches every name under it.",
+  "upstreamRepos": ["LunarWerxs?/AgentHydra"],
+  "//upstreamRepos": "Upstream's public repository, a case-insensitive regular expression. infra.upstream-release finds its releases (github.com/<repo>/releases, /archive, /raw), its raw files (raw.githubusercontent.com/<repo>) and its GitHub API (api.github.com/repos/<repo>), the addresses an update or a download would reach upstream at, outside historicalPaths and commit messages. A link to the repository, a commit or an issue is not one. A test that names one as a case to refuse is allowed by path in audit-public.allow.json.",
   "privateRepos": [
     "lunarwerx-ui",
     "sue-dredd",
