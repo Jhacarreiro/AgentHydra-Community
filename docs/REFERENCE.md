@@ -989,9 +989,10 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   first pusher it fetches included. Tray and pusher alike take a comma-separated list, and a build that any
   key in it signed: to move to a new key, build with `pubkey <old> <new>` and sign with the old key, then,
   once every PC runs that build, sign with the new one and build with it alone
-  ([CODEX-HUB.md](CODEX-HUB.md#moving-to-a-new-signing-key)). A tray built without a key takes builds only
-  from an `https://` hub: over `http://` it keeps what it has, logs once that its build has no update key,
-  and says so in amber in its menu.
+  ([CODEX-HUB.md](CODEX-HUB.md#moving-to-a-new-signing-key)). A tray built without a key checks no
+  signature: it takes any build an `https://` hub hands it, and over `http://` it keeps what it has, logs
+  once that its build has no update key, and says so in amber in its menu. `build.sh` and `build-macos.sh`
+  make one only with `ALLOW_NO_KEY=1` and stop on an empty `UPDATE_KEY` otherwise.
 
 ## Known noise in an instance's own log
 

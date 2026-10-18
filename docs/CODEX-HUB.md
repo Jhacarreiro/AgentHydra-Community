@@ -242,8 +242,9 @@ pusher refuses these before it downloads anything, logs the refusal once, and ke
 A downloaded build must also match the hash, and it must start and print its own name with `--version` before it
 replaces the running one.
 
-A tray built without a key takes builds only from an `https://` hub. Over `http://` it takes none, and its menu says
-so in amber.
+A tray built without a key checks no signatures: it takes any build an `https://` hub hands it, relying on HTTPS
+alone, and none over `http://`, where its menu says so in amber. So `build.sh` stops when `UPDATE_KEY` is empty, and
+makes such a tray only when you set `ALLOW_NO_KEY=1`.
 
 ## 4. Building the tray, and the builds the hub hands out
 
@@ -259,19 +260,23 @@ UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key) \
 ./build.sh
 ```
 
+Give the variables on the `./build.sh` line, as here, or `export` them first. A variable set on a line of its own
+and not exported never reaches `build.sh`.
+
 | Variable | What it is |
 | --- | --- |
 | `HUB_URL` | the hub's `/api/codex-hub/` address, without the path |
 | `PAIR_URL` | the pairing page behind your sign-in; without it, a PC takes its token only from its `tray.json` |
 | `INBOX_URL` | what the menu's Open the inbox opens; without it, the item is hidden |
-| `UPDATE_KEY` | your public key, or two, comma-separated, while you move to a new key (step 6) |
+| `UPDATE_KEY` | your public key, or two, comma-separated, while you move to a new key (step 6); required |
+| `ALLOW_NO_KEY` | `1` to build without `UPDATE_KEY`, a tray that takes unsigned builds from an `https://` hub (step 3) |
 | `OLD_HUB_URLS` | the hub's earlier addresses, comma-separated, once it has moved ([REFERENCE.md](REFERENCE.md#codex-chats-from-other-pcs-codex-hub)) |
 | `BUNDLE_ID` | macOS only: the app's identifier, which also names its LaunchAgent |
 | `TARGETS` | `windows-x64 linux-x64 linux-arm64` by default, plus `macos` on a Mac |
 | `OUT` | the output folder, `dist` by default, which git ignores (a build holds your addresses) |
 
-`build.sh` refuses a key that is not one. It warns about a missing `HUB_URL` or `PAIR_URL`, a pairing page over
-`http://`, and a missing key with an `http://` hub. Its output in `dist/`:
+`build.sh` stops when `UPDATE_KEY` is empty, unless `ALLOW_NO_KEY=1`, or when it is not a key. It warns about a
+missing `HUB_URL` or `PAIR_URL`, a pairing page over `http://`, and a tray built without a key. Its output in `dist/`:
 
 - `codex-hub-tray.exe` (Windows), `codex-hub-tray-linux-x64` and `codex-hub-tray-linux-arm64`, under the names the hub
   serves them as.
@@ -304,7 +309,7 @@ your trays run on. From the repository's root:
 KEYS=$(bun scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key)
 for p in windows-x64 linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
   name=codex-hub-push-$p; [ "$p" = windows-x64 ] && name=codex-hub-push.exe
-  bun build --compile --target=bun-$p --define "AGENTHYDRA_CODEX_HUB_UPDATE_KEY=\"$KEYS\"" \
+  bun build --compile --target=bun-$p --define "AGENTHYDRA_CODEX_HUB_UPDATE_KEY=\"${KEYS:?}\"" \
     --outfile "dist/$name" server/src/codex-hub-push-main.ts
 done
 ```
@@ -430,16 +435,29 @@ A build can trust two keys at once. That is how the PCs move to a new key withou
    ```
 
 2. **Build with both keys, and sign with the old one.** Build the tray, and the pushers, with both public keys, then
-   sign them with the **old** key and put them on the hub:
+   sign them with the **old** key and put them on the hub. From the repository's root, with your addresses as in
+   step 4:
 
    ```sh
-   UPDATE_KEY=$(bun scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key ~/codex-hub/update-2.key)
+   export UPDATE_KEY=$(bun scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key ~/codex-hub/update-2.key)
+   echo "$UPDATE_KEY"    # two keys, comma-separated
+   HUB_URL=https://hub.example.test PAIR_URL=https://inbox.example.test/codex-hub/pair \
+     INBOX_URL=https://inbox.example.test codex-hub-tray/build.sh
+   for p in windows-x64 linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+     name=codex-hub-push-$p; [ "$p" = windows-x64 ] && name=codex-hub-push.exe
+     bun build --compile --target=bun-$p --define "AGENTHYDRA_CODEX_HUB_UPDATE_KEY=\"${UPDATE_KEY:?}\"" \
+       --outfile "dist/$name" server/src/codex-hub-push-main.ts
+   done
    ```
 
-   Every PC takes this build, because the old key signed it, and from then on it trusts both keys.
+   Then sign the tray and pusher builds with `~/codex-hub/update.key`, as in step 4. Every PC takes this build,
+   because the old key signed it, and from then on it trusts both keys. The menu's Version line shows a build's
+   SHA-256, not its keys, so check that the `echo` above prints both before you sign.
 3. **Wait until every PC runs it.** Check the menu's Version line, or `update: tray now <sha>` in `tray.log`. A PC
    that is off takes the build when it is back.
-4. **Build with the new key alone, and sign with the new key.** Put those builds on the hub. The PCs take them.
+4. **Build with the new key alone, and sign with the new key.** Run step 2's commands with
+   `export UPDATE_KEY=$(bun scripts/codex-hub-sign.ts pubkey ~/codex-hub/update-2.key)`, then sign with
+   `~/codex-hub/update-2.key`. Put those builds on the hub. The PCs take them.
 5. **Retire the old key file,** offline or deleted.
 
 A PC that missed step 2 has only the old key. It refuses the new builds and keeps the one it has, which is logged.
@@ -521,7 +539,8 @@ checks the signature before it downloads a build, and checks the bytes against t
 - the first tray you hand out, which is why you compare its SHA-256;
 - the pushes, the relay's messages and the pairing page, which rely on HTTPS, the token and your sign-in.
 
-A tray built without a key relies on HTTPS alone for its updates.
+A tray built without a key (`ALLOW_NO_KEY=1`) checks no signatures: it takes any build an `https://` hub hands it,
+relying on HTTPS alone.
 
 **Where the secrets live:**
 
