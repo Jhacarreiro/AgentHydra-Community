@@ -976,6 +976,46 @@ describe('the base', () => {
   )
 
   test(
+    'another root under a commit built on the base stops the audit: a merge of unrelated history',
+    () => {
+      const { dir, base, own, config } = imported('base-roots')
+      // A root of its own, merged in: the tip still descends from the base, but what the merge
+      // brings does not.
+      git(dir, NOREPLY, 'checkout', '-q', '--orphan', 'unrelated')
+      git(dir, NOREPLY, 'rm', '-rq', '--cached', '.')
+      const stray = commit(dir, { 'other.md': 'other\n' }, 'a root of its own')
+      git(dir, NOREPLY, 'checkout', '-q', '-f', 'main')
+      git(dir, NOREPLY, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'unrelated')
+      const merged = git(dir, NOREPLY, 'rev-parse', 'HEAD')
+      expect(git(dir, NOREPLY, 'merge-base', '--is-ancestor', base, merged)).toBe('')
+      expect(checkBase(dir, config, [own])).toBe(base)
+      expect(() => checkBase(dir, config, [own, merged])).toThrow(
+        `the history of ${merged.slice(0, 8)} has the root commit ${stray.slice(0, 8)} besides the base ${base.slice(0, 8)}`,
+      )
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    'a commit whose history a shallow fetch cut off stops the audit, though the base is whole',
+    () => {
+      const { dir, base, own, config } = imported('base-cut')
+      git(dir, NOREPLY, 'checkout', '-q', '-b', 'side')
+      commit(dir, { 'side.md': 'one\n' }, 'side, one')
+      const tip = commit(dir, { 'side.md': 'two\n' }, 'side, two')
+      const url = pathToFileURL(dir).href
+      const clone = scratch('base-cut-clone')
+      git(clone, NOREPLY, 'clone', '-q', '--no-local', '--single-branch', '-b', 'main', url, '.')
+      git(clone, NOREPLY, 'fetch', '-q', '--depth', '1', 'origin', 'side')
+      expect(checkBase(clone, config, [own])).toBe(base)
+      expect(() => checkBase(clone, config, [tip])).toThrow(
+        `this shallow clone cuts the history of ${tip.slice(0, 8)} off at ${tip.slice(0, 8)}`,
+      )
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'a clone without the base, or with it at the edge of a shallow history, stops the audit',
     () => {
       const { dir, base, own, config } = imported('base-shallow')
@@ -1058,6 +1098,22 @@ describe('the base', () => {
       expect(pushed.stderr).toContain('push to origin (1 new commits)')
       expect(pushed.stderr).toMatch(baseFinding)
       expect(pushed.status).toBe(1)
+
+      // A merge of unrelated history: the tip is built on the base, but the default run and --push
+      // stop there, before reading anything.
+      git(dir, NOREPLY, 'checkout', '-q', '--orphan', 'unrelated')
+      git(dir, NOREPLY, 'rm', '-rq', '--cached', '.')
+      const stray = commit(dir, { 'other.md': 'other\n' }, 'a root of its own')
+      git(dir, NOREPLY, 'checkout', '-q', '-f', '-b', 'merged', own)
+      git(dir, NOREPLY, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'unrelated')
+      const merged = git(dir, NOREPLY, 'rev-parse', 'HEAD')
+      const mergedLine = `refs/heads/main ${merged} refs/heads/main ${own}\n`
+      for (const r of [run([]), run(['--push', 'origin'], mergedLine)]) {
+        expect(r.stderr).toContain(`has the root commit ${stray.slice(0, 8)} besides the base`)
+        expect(r.stderr).not.toContain('tree HEAD')
+        expect(r.status).toBe(2)
+      }
+      git(dir, NOREPLY, 'checkout', '-q', 'main')
 
       // A base with a parent: neither the default run nor --push reads anything.
       const ownTree = git(dir, NOREPLY, 'rev-parse', `${own}^{tree}`)
@@ -1160,12 +1216,70 @@ describe('upstream.history', () => {
         (JSON.parse(r.stdout) as { findings: Array<{ rule: string; commit?: string }> }).findings
           .filter((f) => f.rule === 'upstream.history')
           .map((f) => f.commit)
+      // The default run and --push check the base first and stop there (exit 2): upstream's history
+      // has a root of its own. --tree, and a range that starts after the base, read on and find it
+      // on the tree's commit and on the range's end.
       const full = run([])
-      expect(full.status).toBe(1)
-      expect(lineage(full)).toEqual([merged, merged])
+      expect(full.status).toBe(2)
+      expect(full.stderr).toContain(`has the root commit ${before.slice(0, 8)} besides the base`)
       const pushed = run(['--push', 'origin'], `refs/heads/main ${merged} refs/heads/main ${own}\n`)
-      expect(pushed.status).toBe(1)
-      expect(lineage(pushed)).toEqual([merged])
+      expect(pushed.status).toBe(2)
+      expect(pushed.stderr).toContain(`has the root commit ${before.slice(0, 8)} besides the base`)
+      const later = run(['--tree', 'HEAD', '--history', `${own}..HEAD`])
+      expect(later.status).toBe(1)
+      expect(lineage(later)).toEqual([merged, merged])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    "a clone without upstream's last MIT commit can hold its older history; the base check stops it",
+    () => {
+      // Upstream in miniature as above, and a clone of this repository's branch alone, into which
+      // one of upstream's older commits is fetched on its own, as `git fetch upstream tag <older>`
+      // would: it brings that commit's history, not upstreamBase.
+      const dir = repo('upstream-older')
+      git(dir, NOREPLY, 'checkout', '-q', '--orphan', 'upstream')
+      const before = commit(dir, { 'a.md': 'a\n' }, 'upstream, before its last MIT commit')
+      const upstreamBase = commit(dir, { 'b.md': 'b\n' }, "upstream's last MIT commit")
+      const tree = git(dir, NOREPLY, 'rev-parse', `${upstreamBase}^{tree}`)
+      const base = git(dir, NOREPLY, 'commit-tree', tree, '-m', 'the import commit')
+      git(dir, NOREPLY, 'checkout', '-q', '-B', 'main', base)
+      const own = commit(dir, { 'c.md': 'c\n' }, 'own work')
+      git(dir, NOREPLY, 'tag', 'older', before)
+      const config = { ...CONFIG, base, baseTree: tree, upstreamBase }
+
+      const clone = scratch('upstream-older-clone')
+      const url = pathToFileURL(dir).href
+      git(
+        clone,
+        NOREPLY,
+        'clone',
+        '-q',
+        '--no-local',
+        '--single-branch',
+        '--no-tags',
+        '-b',
+        'main',
+        url,
+        '.',
+      )
+      git(clone, NOREPLY, 'fetch', '-q', '--no-tags', 'origin', 'refs/tags/older:refs/tags/older')
+      git(clone, NOREPLY, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'older')
+      const merged = git(clone, NOREPLY, 'rev-parse', 'HEAD')
+      expect(
+        spawnSync('git', ['cat-file', '-e', `${upstreamBase}^{commit}`], { cwd: clone }).status,
+      ).not.toBe(0)
+
+      // upstream.history has nothing to look for here; the base check does not need it.
+      expect(upstreamFindings(clone, [upstreamBase], [merged])).toEqual([])
+      expect(() => checkBase(clone, config, [merged])).toThrow(
+        `the history of ${merged.slice(0, 8)} has the root commit ${before.slice(0, 8)} besides the base ${base.slice(0, 8)}`,
+      )
+      expect(() => checkBase(clone, config, [before])).toThrow(
+        `${before.slice(0, 8)} is not built on the base ${base.slice(0, 8)}`,
+      )
+      expect(checkBase(clone, config, [own])).toBe(base)
     },
     GIT_TEST_TIMEOUT,
   )

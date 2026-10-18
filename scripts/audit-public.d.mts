@@ -156,8 +156,8 @@ export function lineageFindings(
   commits: string[],
 ): Finding[]
 
-/** The base's provenance: in this clone, a root commit, with the config's baseTree, and an ancestor
- *  of every one of `tips`. Returns its sha; throws AuditError (exit 2) saying what is wrong. */
+/** The base's provenance: in this clone, a root commit, with the config's baseTree, and the only root
+ *  of every one of `tips`' history. Returns its sha; throws AuditError (exit 2) saying what is wrong. */
 export function checkBase(cwd: string, config: AuditConfig, tips?: string[]): string
 
 /** The base's own author, committer and message, read as any commit's are (its tree is not). */

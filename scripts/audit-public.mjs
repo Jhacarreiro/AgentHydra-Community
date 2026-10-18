@@ -31,13 +31,18 @@
 // is the config's `baseTree`, 3a65ba8e's (in a clone of upstream, git rev-parse 3a65ba8e^{tree} prints
 // it). Before a range from the base is read (the default run's history, or a --history range that
 // starts there) and before --push reads anything, the base is checked: it must be in this clone, have
-// no parent, have that tree, and be an ancestor of every commit read from it. Its author, committer
-// and message are this repository's and are read as any commit's are; its tree is upstream's, fixed
-// by its hash, and is not. Anything else stops the audit (exit 2) and says what is wrong, and so does
-// a clone that cannot show it, such as a shallow one. A clone needs the whole history to reach it.
+// no parent, have that tree, and be the only root of the history of each range's end and of each
+// pushed commit, so that every commit read descends from it (git rev-list --max-parents=0 lists those
+// roots; a merge of unrelated history brings one of its own). Its author, committer and message are
+// this repository's and are read as any commit's are; its tree is upstream's, fixed by its hash, and
+// is not. Anything else stops the audit (exit 2) and says what is wrong, and so does a clone that
+// cannot show it, such as a shallow one. A clone needs the whole history to reach it. A --tree run,
+// or a --history range that starts after the base, does not check it.
 // Rule upstream.history: no commit read may share a commit with upstream's own history (the config's
-// upstreamBase, 3a65ba8e, built in like the relicensing commit). A clone without 3a65ba8e, which every
-// clone of this repository is, holds none of that history, and there it has nothing to find.
+// upstreamBase, 3a65ba8e, built in like the relicensing commit). It needs 3a65ba8e in the clone, and a
+// clone of this repository does not have it; a clone can still hold upstream's older history without
+// it (one of upstream's earlier tags, fetched on its own). The base check stops that history wherever
+// it runs, since every part of it has a root other than the import commit.
 //
 // NOTHING IT FINDS IS PRINTED. A finding names its rule, its file and line, and a fingerprint: the
 // first 16 hex digits of the sha256 of what matched. A secret printed by its own detector is a secret
@@ -817,10 +822,12 @@ function shallowCommits(cwd) {
 
 /**
  * The base's provenance: the config's base is in this clone, is a root commit (no parent), has the
- * config's baseTree as its tree, and is an ancestor of every commit in `tips`. Returns its sha, or
- * stops the audit (AuditError, exit 2) with what is wrong. A parent would mean history before the
- * import commit, which is upstream's and is not published here; another tree would mean the base is
- * not upstream's 3a65ba8e unchanged; a tip not built on it is history the audit has no start for.
+ * config's baseTree as its tree, and is the only root of every commit in `tips`' history, so every
+ * commit read from it descends from it. Returns its sha, or stops the audit (AuditError, exit 2) with
+ * what is wrong. A parent would mean history before the import commit, which is upstream's and is not
+ * published here; another tree would mean the base is not upstream's 3a65ba8e unchanged; a tip not
+ * built on it is history the audit has no start for, and another root under a tip is history that is
+ * not this repository's (a merge of upstream's, or of anything unrelated), read from no base at all.
  */
 export function checkBase(cwd, config, tips = []) {
   const want = String(config.base ?? '').toLowerCase()
@@ -856,17 +863,34 @@ export function checkBase(cwd, config, tips = []) {
         'import commit',
     )
   }
-  for (const tip of tips) {
-    const r = git(cwd, ['merge-base', '--is-ancestor', base, tip], { allowFail: true })
-    if (r.status === 1) {
+  const cut = shallowCommits(cwd)
+  for (const tip of new Set(tips)) {
+    const roots = gitText(cwd, ['rev-list', '--max-parents=0', tip])
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+    const others = roots.filter((r) => r !== base)
+    const shallow = others.find((r) => cut.has(r))
+    if (shallow) {
+      throw new AuditError(
+        `this shallow clone cuts the history of ${tip.slice(0, 8)} off at ${shallow.slice(0, 8)}, ` +
+          `so whether all of it is built on the base ${short} cannot be told; fetch the whole ` +
+          'history (git fetch --unshallow)',
+      )
+    }
+    if (!roots.includes(base)) {
       throw new AuditError(
         `${tip.slice(0, 8)} is not built on the base ${short}: every commit published here ` +
           'descends from the import commit',
       )
     }
-    if (r.status !== 0) {
-      const what = `${tip.slice(0, 8)} is built on the base ${short}`
-      throw new AuditError(`could not tell whether ${what} (exit ${r.status})`)
+    if (others.length) {
+      const more = others.length > 1 ? ` (and ${others.length - 1} more)` : ''
+      throw new AuditError(
+        `the history of ${tip.slice(0, 8)} has the root commit ${others[0].slice(0, 8)}${more} ` +
+          `besides the base ${short}: every commit published here descends from the import ` +
+          "commit, and history with a root of its own is not this repository's",
+      )
     }
   }
   return base
