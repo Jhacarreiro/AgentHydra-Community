@@ -34,6 +34,7 @@ import { pcTokenId } from '../core/codex-hub-ids'
 import {
   bindPcInstall,
   exchangeLegacy,
+  forgetPc,
   type HubPcCode,
   type HubPcRecord,
   type HubRefusal,
@@ -54,7 +55,9 @@ import {
   pendingKeyFor,
   pendingKeys,
   redeemPairCode,
+  registerPcToken,
   retirePc,
+  revokePc,
   takeConfirm,
   tokenName,
 } from '../core/codex-hub-pcs'
@@ -787,3 +790,40 @@ app.get(
     }
   }),
 )
+
+// The admin API, for scripts/codex-hub-pcs.ts: list the PCs, give one a token made on the command line, revoke one,
+// forget one. Under /api/codex-relay/ with Desk's end, outside the forwarded /api/codex-hub/, and not under a name
+// such as /api/codex-hub-admin/ that a proxy's `location /api/codex-hub` without the slash would forward.
+app.get('/api/codex-relay/admin/pcs', requireHubOwner, (c) => {
+  const list = hubPcRows()
+  return list
+    ? c.json(list)
+    : fail(c, 503, 'store-unreadable', 'the hub cannot read its list of PCs')
+})
+
+app.post('/api/codex-relay/admin/pcs', requireHubOwner, async (c) => {
+  const body = (await jsonBody(c)) as Record<string, unknown> | null | undefined
+  const r = registerPcToken(
+    {
+      pc: body?.pc as string,
+      id: body?.id as string,
+      hash: body?.hash as string,
+      replace: body?.replace === true,
+    },
+    CODEX_HUB_DIR,
+  )
+  if (!r.ok) return refusal(c, r)
+  return c.json({ pc: r.pc, key: r.key, id: r.id })
+})
+
+app.post('/api/codex-relay/admin/pcs/:key/revoke', requireHubOwner, (c) => {
+  const r = revokePc(c.req.param('key') ?? '', CODEX_HUB_DIR)
+  if (!r.ok) return refusal(c, r)
+  return c.json({ pc: r.pc, key: r.key, state: r.state, relayClosed: r.relayClosed })
+})
+
+app.delete('/api/codex-relay/admin/pcs/:key', requireHubOwner, (c) => {
+  const r = forgetPc(c.req.param('key') ?? '', CODEX_HUB_DIR)
+  if (!r.ok) return refusal(c, r)
+  return c.json({ pc: r.pc, key: r.key, removed: true })
+})
