@@ -334,7 +334,7 @@ has several worktrees, makes every one of them run the hooks of the checkout it 
 older copy than the worktree's own. Before a push to the public repository, check that
 `git config --show-origin core.hooksPath` shows `.githooks`.
 
-## What GitHub itself must refuse
+## What GitHub itself refuses
 
 The pre-push hook is the only check that reads a push before it lands, and `--no-verify`, or a push from a clone
 without the hooks, skips it. CI does not stand in for it. GitHub runs a push's workflows from the pushed commit,
@@ -343,18 +343,34 @@ not carry the current audit gets an older one or none: a branch from a clone mad
 the import commit carries an audit that passes upstream's history, and upstream's own commits and tags carry no
 audit at all. A tag made in GitHub's web page or through its API never meets the hook either.
 
-Set two repository rulesets for that (**Settings → Rules → Rulesets**). With nobody on their bypass list, they
-refuse those on GitHub's side:
+The repository has two rulesets (**Settings → Rules → Rulesets**), both active and with nobody on their bypass
+list, the owner included. They refuse this, and nothing more:
 
-- **Branches**, targeting all branches: restrict creations, restrict deletions, block force pushes. Only a
-  fast-forward push to a branch that already exists (`main`) gets through, so no branch of upstream's history or
-  of a clone made before the import commit can land, and `main` cannot be replaced.
-- **Tags**, targeting all tags: restrict creations, updates and deletions. No tag can be pushed or made on GitHub,
-  so none of upstream's tags, and no tag on a commit that still has upstream's `release.yml`, can start a release.
+- **Protect default branch history**, on the default branch (`main`): restrict deletions, block force pushes.
+  `main` cannot be deleted, and cannot be replaced by a force-push: a push to it that is not a fast-forward is
+  refused.
+- **Protect published version tags**, on tags matching `v*`: restrict deletions, block force pushes. A published
+  `v*` tag cannot be deleted, or force-pushed onto another commit. The ruleset does not restrict updates, so an
+  update of such a tag that GitHub does not count as a force push is not refused by it: never move a published
+  tag (step 6 of the recipe below).
 
-To push a release tag (step 6 of the recipe below) or a new branch, add yourself to that ruleset's bypass list for
-that push, and take yourself off again afterwards. No ruleset reads what a fast-forward push to `main` carries: a
-merge that brings upstream's history in is refused by the hook, and fails `audit-public.yml` once it has landed.
+Everything else gets through on GitHub's side, and is left to the pre-push hook and to the rules in this file:
+
+- **A fast-forward push to `main`.** No ruleset reads what it carries: a merge that brings upstream's history in is
+  refused by the hook (rule 7), and fails `audit-public.yml` once it has landed.
+- **A new branch,** whatever its name and its history. One that carries upstream's history, or has a root other
+  than the import commit, is refused by the hook's rule 7; pushed with `--no-verify`, or from a clone without the
+  hooks, it lands.
+- **A new `v*` tag,** pushed or made on GitHub. A pushed one meets every rule of the hook and its CI check, unless
+  it is pushed with `--no-verify` or from a clone without the hooks. One made in GitHub's web page (a release
+  published with a new tag included) or through its API meets none of them, and starts the `release.yml` of the
+  commit it names: on the import commit, or on one of this repository's first commits that still have upstream's
+  `release.yml`, that is upstream's workflow, which has no channel check and publishes a tag push as a full
+  release. Make a release tag only as step 6 says, from a clone with the hooks, never on GitHub.
+- **A tag that does not match `v*`.** No ruleset covers it, so it can be made, moved and deleted on GitHub. It
+  starts no release (`release.yml` runs on `v*.*.*` tags), and the hook's rule 6 refuses one on upstream's work.
+- **Releases.** A release page can be made, edited and deleted. Deleting one keeps its `v*` tag, since the tag
+  ruleset refuses that tag's deletion.
 
 ## Recipe
 
@@ -391,8 +407,9 @@ merge that brings upstream's history in is refused by the hook, and fails `audit
    Push nothing else to `main` until that run has STARTED: a newer push cancels a run still
    queued behind another one, and the tag in step 6 needs a green run on the bump commit itself
    (2.0.4, 2026-10-09: the bump's run queued behind a test fix's, and the next landing waited for it).
-6. **Tag only once `main` is green,** with yourself on the tag ruleset's bypass list for this push
-   ("What GitHub itself must refuse", above), and off it again afterwards:
+6. **Tag only once `main` is green,** and push the tag from a clone with the hooks, never make it in
+   GitHub's web page or through its API: the tag ruleset lets a new `v*` tag through, and only the hook
+   reads it ("What GitHub itself refuses", above):
    ```sh
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
@@ -408,9 +425,13 @@ merge that brings upstream's history in is refused by the hook, and fails `audit
    so nothing published. A minute later it would have been a public 0.8.0 sitting above 0.19.2 in
    the list that auto-update clients read. These trees accumulate stale local tags precisely because
    releases are normally pushed one at a time, so `--tags` looks harmless right up until it isn't.
+   That `git push --delete` is refused now: the tag ruleset refuses the deletion of a `v*` tag for
+   everyone, so a `v*` tag pushed by mistake stays on GitHub, and cancelling its Release run before
+   it publishes is what keeps it from shipping.
 
-   **If a tag does end up on a red commit,** do not move a published tag. Fix the failure, bump to
-   the next patch version, and release that immutable version instead.
+   **If a tag does end up on a red commit,** do not move a published tag (the tag ruleset refuses
+   deleting it or force-pushing it onto another commit). Fix the failure, bump to the next patch
+   version, and release that immutable version instead.
 
    The same goes for a tag whose Release run fails before it publishes: a dispatch on the tag runs
    the workflow file as it was at that tag, so the fix needs a new version. v2.0.0 is one: its smoke

@@ -8,8 +8,10 @@ name: Public audit
 # (--no-verify, a push from a machine without the hooks, a pull request from a fork) only for commits
 # that carry this workflow and this audit. A branch from a clone made before this history began carries
 # an older audit that passes upstream's history, and upstream's own commits and tags carry none. The
-# hook and the repository's rulesets are what stop those (docs/RELEASING.md, "What GitHub itself must
-# refuse").
+# repository's rulesets refuse only deleting main or replacing it by a force-push, and deleting a
+# published v* tag or force-pushing it onto another commit, so such history can come in on a new
+# branch or a new tag; the hook is what refuses those (docs/RELEASING.md, "What GitHub itself
+# refuses").
 #
 # No paths-ignore, unlike ci.yml: a docs-only or Markdown-only change can publish an email address or
 # a token as easily as code can, and history is checked commit by commit, so a value added and

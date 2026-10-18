@@ -428,8 +428,10 @@ refuses what it objects to; CI runs it again on every push and pull request, aft
   clean-room rule in [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
 - `--no-verify` skips the hook, and CI cannot stand in for it: GitHub runs the audit the pushed commit carries, after
   the push, so a branch or tag that carries an older audit or none (upstream's history, or a clone made before this
-  history began) passes there. [docs/RELEASING.md](docs/RELEASING.md#what-github-itself-must-refuse) lists the
-  GitHub rulesets that refuse those.
+  history began) passes there. GitHub's rulesets only stop `main` being deleted or replaced by a force-push, and a
+  published `v*` tag being deleted or force-pushed onto another commit. A new branch, or a new `v*` tag made in
+  GitHub's web page or through its API (which never meets the hook), gets past them and is left to the hook and to
+  the rules in [docs/RELEASING.md](docs/RELEASING.md#what-github-itself-refuses).
 - [docs/FORK.md](docs/FORK.md) shows how to check the import against upstream yourself.
 
 </details>

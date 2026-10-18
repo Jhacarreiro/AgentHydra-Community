@@ -110,9 +110,12 @@ git log -1 --format=%P aee9dfc4           # the relicensing commit's only parent
   audit on what the push would publish. `--no-verify`, or a clone without the hooks, skips it.
 - CI runs the audit on every push and pull request, but GitHub runs the copy the pushed commit carries, after the
   push has landed: it reports, and refuses nothing. A branch from a clone made before this history began carries an
-  older audit, which passes upstream's history, and upstream's own commits and tags carry none. What can stop those
-  on GitHub's side is a pair of repository rulesets, described in
-  [RELEASING.md](RELEASING.md#what-github-itself-must-refuse).
+  older audit, which passes upstream's history, and upstream's own commits and tags carry none. On GitHub's side,
+  the repository's two rulesets ([RELEASING.md](RELEASING.md#what-github-itself-refuses)) refuse only deleting
+  `main` or replacing it by a force-push, and deleting a published `v*` tag or force-pushing it onto another commit.
+  A new branch gets past them, and so does a new `v*` tag, which never meets the hook when it is made in GitHub's
+  web page or through its API; on a commit that still has upstream's release workflow it would run that workflow.
+  Those are left to the hook and to the release rules in RELEASING.md.
 - The audit reads the tree at `HEAD`, the import commit's author, committer and message, and every line each later
   commit adds. It does not read the import commit's tree line by line: that is upstream's tree at `3a65ba8e`, fixed
   by its hash, and it still holds values this fork's later commits took out, such as upstream's service hosts and
