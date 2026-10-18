@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import type { Options, Query } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatSummary, DeskSettings, ServerEvent } from '@shared/protocol'
-import { ChatRuntime, type QueryImpl } from '../../src/engine/chat-runtime'
+import { type AgentSdk, ChatRuntime, type QueryImpl } from '../../src/engine/chat-runtime'
 import { ClaudeCodeBinary, describeProgress, platformPackages, untarFile, type ClaudeCodeTarget } from '../../src/engine/claude-code-binary'
 import { ChatStore } from '../../src/engine/store'
 import { hostOptions } from '../../src/host/client'
@@ -303,7 +303,7 @@ describe('a chat without the binary', () => {
     }
   }
 
-  function setup(bin: ClaudeCodeBinary, sdk?: { ready(): boolean; ensure(): Promise<unknown> }) {
+  function setup(bin: ClaudeCodeBinary, sdk?: AgentSdk) {
     const events: ServerEvent[] = []
     const started: IdleQuery[] = []
     const queryImpl: QueryImpl = ({ options }) => {
@@ -372,24 +372,40 @@ describe('a chat without the binary', () => {
     await again.rt.close()
   }, 15_000)
 
-  test('in a release a chat also waits for the Agent SDK, and one that cannot be fetched shows why with a Retry', async () => {
+  test('in a release a chat also waits for the Agent SDK and says so, and one that cannot be fetched shows why with a Retry', async () => {
     const installed = join(home, BINARY)
     writeFileSync(installed, STAND_IN)
     const bin = resolver('http://127.0.0.1:1', installed)
     let online = false
     let fetched = false
-    const sdk = {
+    let arrive!: () => void
+    const sdk: AgentSdk = {
       ready: () => fetched,
-      ensure: () => (online ? Promise.resolve((fetched = true)) : Promise.reject(new Error('could not download the Claude Agent SDK 9.9.9: offline'))),
+      ensure: () =>
+        online
+          ? new Promise<void>((r) => {
+              arrive = () => {
+                fetched = true
+                r()
+              }
+            })
+          : Promise.reject(new Error('could not download the Claude Agent SDK 9.9.9: offline')),
+      version: () => '9.9.9',
     }
     const t = setup(bin, sdk)
     t.rt.send('hello')
     await until(() => t.rt.chat.status === 'error')
-    expect(t.rt.chat.lastError).toBe('Could not get Claude Code 9.9.8: could not download the Claude Agent SDK 9.9.9: offline')
-    expect(t.items().find((i) => i.kind === 'system')).toMatchObject({ level: 'error', retry: true })
+    // Claude Code is on disk: the failure is the SDK's, in its own words, with nothing about Claude Code.
+    expect(t.rt.chat.lastError).toBe('Could not download the Claude Agent SDK 9.9.9: offline')
+    expect(t.items().find((i) => i.kind === 'system')).toMatchObject({ level: 'error', retry: true, text: 'Could not download the Claude Agent SDK 9.9.9: offline' })
     expect(t.started).toHaveLength(0)
     online = true
     expect(t.rt.retryBinary()).toBe(true)
+    // While it is fetched, the chat says that, not that it gets Claude Code.
+    await until(() => t.rt.chat.activity === 'Getting the Claude Agent SDK 9.9.9')
+    expect(t.rt.chat.status).toBe('starting')
+    expect(t.started).toHaveLength(0)
+    arrive()
     await until(() => t.started.length === 1)
     expect(t.started[0]!.options.pathToClaudeCodeExecutable).toBe(installed)
     // Fetched once, a second chat starts at once.
@@ -398,5 +414,34 @@ describe('a chat without the binary', () => {
     expect(next.started).toHaveLength(1)
     await t.rt.close()
     await next.rt.close()
+  }, 15_000)
+
+  test('with both to fetch, the chat shows Claude Code\'s download, then the SDK\'s, and a failure names the one that failed', async () => {
+    let release!: () => void
+    const reg = registry({ gate: new Promise<void>((r) => (release = r)) })
+    let fail!: (err: Error) => void
+    const sdk: AgentSdk = { ready: () => false, ensure: () => new Promise<void>((_, reject) => (fail = reject)), version: () => '9.9.9' }
+    const t = setup(resolver(reg.url), sdk)
+    t.rt.send('hello')
+    await until(() => t.rt.chat.activity?.startsWith('Getting Claude Code 9.9.8') === true)
+    release()
+    await until(() => t.rt.chat.activity === 'Getting the Claude Agent SDK 9.9.9')
+    const disk = 'could not save the Claude Agent SDK 9.9.9 in C:/Users/me/AgentHydra/desk2/node_modules/@anthropic-ai: ENOSPC: no space left on device'
+    fail(new Error(disk))
+    await until(() => t.rt.chat.status === 'error')
+    expect(t.rt.chat.lastError).toBe(`C${disk.slice(1)}`)
+    expect(t.started).toHaveLength(0)
+    await t.rt.close()
+  }, 15_000)
+
+  test("Claude Code's download failing while the SDK is still fetched is Claude Code's failure", async () => {
+    const bad = registry({ integrity: integrityOf(Buffer.from('other')) })
+    const pending: AgentSdk = { ready: () => false, ensure: () => new Promise<void>(() => {}), version: () => '9.9.9' }
+    const t = setup(resolver(bad.url), pending)
+    t.rt.send('hello')
+    await until(() => t.rt.chat.status === 'error')
+    expect(t.rt.chat.lastError).toMatch(/^Could not get Claude Code 9\.9\.8: .*checksum/)
+    expect(t.started).toHaveLength(0)
+    await t.rt.close()
   }, 15_000)
 })

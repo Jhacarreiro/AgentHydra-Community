@@ -35,7 +35,7 @@ const props = defineProps<{ item: TranscriptItem; nested?: boolean; endOfTurn?: 
 const ctx = useTranscript()
 const desk = useDesk()
 
-// "Could not get Claude Code ...": Retry starts the download again; the chat's own status line then shows it.
+// "Could not get Claude Code ..." (or the Agent SDK's failed fetch): Retry starts the download again; the chat's own status line then shows it.
 const retrying = ref(false)
 async function retryDownload() {
   if (retrying.value) return

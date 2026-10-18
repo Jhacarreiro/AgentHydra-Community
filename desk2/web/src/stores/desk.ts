@@ -1379,7 +1379,7 @@ export function useDesk() {
       return chat
     },
 
-    /** Retry under "Could not get Claude Code": the download starts again and the chat goes on with what was sent. */
+    /** Retry under "Could not get Claude Code" or a failed Agent SDK fetch: the download starts again and the chat goes on with what was sent. */
     async retryClaudeCode(chatId: string): Promise<void> {
       await fetchJson<{ retried: boolean }>(`/chats/${chatId}/claude-code/retry`, { method: 'POST' })
     },

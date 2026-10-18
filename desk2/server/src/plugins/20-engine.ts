@@ -294,7 +294,7 @@ function chatRoutes(app: Hono, manager: ChatManager, queue: QueueManager): void 
   )
   // The warm start (SPEC "Speed (timings)"): the window asks when the owner begins typing in a closed chat.
   app.post('/api/chats/:id/warm', (c) => answer(c, () => manager.warm(c.req.param('id'))))
-  // Retry under "Could not get Claude Code": the download starts again.
+  // Retry under "Could not get Claude Code" (or, in a release, the Agent SDK's failed fetch): the download starts again.
   app.post('/api/chats/:id/claude-code/retry', (c) => answer(c, () => manager.retryClaudeCode(c.req.param('id'))))
   // The chat's whole record, oldest first, for other programs: JSON items, or one per line with ?format=jsonl.
   app.get('/api/chats/:id/transcript', (c) => transcript(c, manager))

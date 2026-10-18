@@ -21,7 +21,7 @@ import type {
   Settings,
 } from '@anthropic-ai/claude-agent-sdk'
 import { sdkQuery } from '../host/sdk'
-import { ensureSdk, sdkReady } from '../host/sdk-package'
+import { ensureSdk, readSdkPin, sdkReady } from '../host/sdk-package'
 import { claudeCodeBinaryFor, describeProgress, type ClaudeCodeBinary } from './claude-code-binary'
 import type {
   AccountRef,
@@ -59,6 +59,15 @@ import { mediaCache, toStoredImage } from '../media/cache'
 /** query()'s own parameters, plus what a chat host needs (SPEC "Chat hosts"); the SDK's query() reads prompt and options. */
 export type QueryImpl = (params: HostedParams) => Query
 
+/** The Agent SDK a chat needs before its process starts: a release fetches it the first time (host/sdk-package.ts). */
+export interface AgentSdk {
+  ready(): boolean
+  /** Rejects with a reason that names the SDK, which the chat shows as it is. */
+  ensure(): Promise<unknown>
+  /** The version a release pins, for the chat's activity while it is fetched; null when it is not known. */
+  version(): string | null
+}
+
 export interface ChatRuntimeDeps {
   chat: ChatSummary
   store: ChatStore
@@ -68,7 +77,7 @@ export interface ChatRuntimeDeps {
   /** Where Claude Code's binary comes from (default: the one for this Desk home); tests give one served from a local registry. */
   claudeCode?: ClaudeCodeBinary
   /** The Agent SDK, which a release fetches the first time (default host/sdk-package.ts); tests give their own. */
-  sdk?: { ready(): boolean; ensure(): Promise<unknown> }
+  sdk?: AgentSdk
   /** The base environment (default process.env); CLAUDE_CONFIG_DIR is set from chat.account. */
   env?: Record<string, string | undefined>
   settings: DeskSettings | (() => DeskSettings)
@@ -353,7 +362,7 @@ export class ChatRuntime {
   /** Set while adopt() re-opens the host's open requests: their cards keep their time; `shown` ones were notified before. */
   private reopened: { stored: Map<string, TranscriptItem>; shown: Set<string> } | null = null
   private readonly claudeCode: ClaudeCodeBinary
-  private readonly sdk: { ready(): boolean; ensure(): Promise<unknown> }
+  private readonly sdk: AgentSdk
   /** The Claude Code binary this runtime starts with; null until start() has resolved it. */
   private binaryPath: string | null = null
   /**
@@ -378,6 +387,13 @@ export class ChatRuntime {
         }
       },
       ensure: () => ensureSdk(),
+      version: () => {
+        try {
+          return readSdkPin()?.version ?? null
+        } catch {
+          return null
+        }
+      },
     }
     this.baseEnv = deps.env ?? process.env
     const s = deps.settings
@@ -572,6 +588,8 @@ ${slot}` : ''}${rules}` }
    * this starts it at once; else the chat stays 'starting', its sends held in the input, and shows the download until
    * the process can start. query() is never called without the path: the SDK would throw "Native CLI binary not found".
    * A release fetches the Agent SDK itself the same way, the first time (host/sdk-package.ts), before any host loads it.
+   * The chat shows Claude Code's download while it runs, the larger one, then the SDK's if that is still out, and a
+   * failure names the one that failed.
    */
   private obtainBinary(): void {
     const have = this.claudeCode.path()
@@ -583,9 +601,24 @@ ${slot}` : ''}${rules}` }
     }
     const wait: { phase: 'waiting' | 'failed' } = { phase: 'waiting' }
     this.binary = wait
+    let sdkHere = false
+    let sdkFailed = false
     const stop = this.claudeCode.onProgress(() => this.showDownload())
-    this.showDownload()
-    Promise.all([this.claudeCode.resolve(), this.sdk.ensure()]).then(
+    this.showDownload(have !== null)
+    const sdk = this.sdk.ensure().then(
+      () => {
+        sdkHere = true
+      },
+      (err: unknown) => {
+        sdkFailed = true
+        throw err
+      },
+    )
+    const binary = this.claudeCode.resolve().then((path) => {
+      if (this.binary === wait && !sdkHere && !sdkFailed) this.showDownload(true)
+      return path
+    })
+    Promise.all([binary, sdk]).then(
       ([path]) => {
         stop()
         if (this.binary !== wait) return
@@ -595,25 +628,33 @@ ${slot}` : ''}${rules}` }
       },
       (err: unknown) => {
         stop()
-        if (this.binary === wait) this.downloadFailed(err)
+        if (this.binary === wait) this.downloadFailed(err, sdkFailed ? 'sdk' : 'claudeCode')
       },
     )
   }
 
-  /** The download's progress is the chat's activity, which the starting row reads ("Getting Claude Code 2.1.288 (104 MB): 37%"). */
-  private showDownload(): void {
-    const status = this.claudeCode.status()
-    const text = describeProgress(this.claudeCode.version, status.progress ?? null)
+  /**
+   * The download's progress is the chat's activity, which the starting row reads ("Getting Claude Code 2.1.288 (104 MB): 37%");
+   * with Claude Code on disk and only the Agent SDK still out, it says that ("Getting the Claude Agent SDK 0.3.288").
+   */
+  private showDownload(sdkOnly = false): void {
+    const sdkVersion = sdkOnly ? this.sdk.version() : null
+    const text = sdkOnly
+      ? `Getting the Claude Agent SDK${sdkVersion ? ` ${sdkVersion}` : ''}`
+      : describeProgress(this.claudeCode.version, this.claudeCode.status().progress ?? null)
     if (this.chat.activity === text) return
     this.dispatch({ type: 'activity', activity: text })
     this.publishChat()
   }
 
-  /** The download failed: the chat says why, with a Retry that goes on with what was sent (the input still holds it). */
-  private downloadFailed(err: unknown): void {
+  /**
+   * A download failed: the chat says why, with a Retry that goes on with what was sent (the input still holds it).
+   * The SDK's reasons name it already ("could not download the Claude Agent SDK 0.3.288 from ..."), so they stand alone.
+   */
+  private downloadFailed(err: unknown, what: 'claudeCode' | 'sdk'): void {
     const now = this.now()
     const reason = err instanceof Error ? err.message : String(err)
-    const message = `Could not get Claude Code ${this.claudeCode.version}: ${reason}`
+    const message = what === 'sdk' ? reason.charAt(0).toUpperCase() + reason.slice(1) : `Could not get Claude Code ${this.claudeCode.version}: ${reason}`
     this.binary = { phase: 'failed' }
     this.dispatch({ type: 'turnError', message })
     this.unqueueAll()

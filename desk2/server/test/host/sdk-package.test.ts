@@ -292,10 +292,12 @@ describe('the Agent SDK in a release', () => {
     expect(leftovers()).toEqual(['.claude-agent-sdk.2.live.tgz'])
   })
 
-  test('a pin that pins nothing is an error, not a checkout', async () => {
+  test('a pin that pins nothing is an error, not a checkout, and the reason names the SDK', async () => {
     writeFileSync(join(desk, SDK_PIN_FILE), JSON.stringify({ name: SDK_PACKAGE, version: VERSION }))
     expect(() => readSdkPin(desk)).toThrow('does not pin')
-    await expect(ensureSdk({ deskRoot: desk, fetch: noFetch })).rejects.toThrow('does not pin')
+    await expect(ensureSdk({ deskRoot: desk, fetch: noFetch })).rejects.toThrow(`could not get the Claude Agent SDK: ${join(desk, SDK_PIN_FILE)} does not pin`)
+    writeFileSync(join(desk, SDK_PIN_FILE), '{ cut off')
+    await expect(ensureSdk({ deskRoot: desk, fetch: noFetch })).rejects.toThrow('could not get the Claude Agent SDK: ')
   })
 
   test("Claude Code's binary is known from the pin before the SDK is here", () => {

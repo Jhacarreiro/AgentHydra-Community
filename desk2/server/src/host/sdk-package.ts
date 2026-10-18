@@ -110,20 +110,32 @@ export function ensureSdk(o: SdkOptions = {}): Promise<string> {
   try {
     pin = readSdkPin(root)
   } catch (err) {
-    return Promise.reject(err)
+    return Promise.reject(named('the Claude Agent SDK', err))
   }
   if (!pin) return Promise.resolve(SDK_PACKAGE)
   const dir = sdkDir(root)
   if (holdsPinned(dir, pin)) return Promise.resolve(entryOf(dir))
   let one = ensuring.get(root)
   if (!one) {
-    one = fetchSdk(pin, dir, o).finally(() => ensuring.delete(root))
+    const what = `the Claude Agent SDK ${pin.version}`
+    one = fetchSdk(pin, dir, o)
+      .catch((err: unknown) => {
+        throw named(what, err)
+      })
+      .finally(() => ensuring.delete(root))
     ensuring.set(root, one)
   }
   return one
 }
 
 const reason = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
+/** Why ensureSdk() failed, in words that name the SDK: a chat shows it as it is (engine/chat-runtime.ts). */
+class SdkError extends Error {}
+/** `err` as an SdkError: one of ours as it is, anything else (a file system error) after what it was getting. */
+function named(what: string, err: unknown): SdkError {
+  return err instanceof SdkError ? err : new SdkError(`could not get ${what}: ${reason(err)}`)
+}
 
 /** The download could not be written into desk2/node_modules (the disk, its permissions, a lock): not the network. */
 class SaveFailed extends Error {}
@@ -136,7 +148,7 @@ async function fetchSdk(pin: SdkPin, dir: string, o: SdkOptions): Promise<string
   const url = `${registry}/${pin.name}/-/${pin.name.split('/').pop()}-${pin.version}.tgz`
   const what = `the Claude Agent SDK ${pin.version}`
   const parent = dirname(dir)
-  const unsaved = (why: string) => new Error(`could not save ${what} in ${parent}: ${why}`)
+  const unsaved = (why: string) => new SdkError(`could not save ${what} in ${parent}: ${why}`)
   try {
     mkdirSync(parent, { recursive: true })
   } catch (err) {
@@ -153,10 +165,10 @@ async function fetchSdk(pin: SdkPin, dir: string, o: SdkOptions): Promise<string
       digest = await download(url, tgz, o.fetch ?? fetch)
     } catch (err) {
       if (err instanceof SaveFailed) throw unsaved(err.message)
-      if (err instanceof TooLarge) throw new Error(`the download of ${what} from ${registry} is not the package this release pins (${err.message}), so it was not installed`)
-      throw new Error(`could not download ${what} from ${registry}: ${reason(err)}. AgentHydra fetches it once, the first time a chat needs it; try again once this computer is online.`)
+      if (err instanceof TooLarge) throw new SdkError(`the download of ${what} from ${registry} is not the package this release pins (${err.message}), so it was not installed`)
+      throw new SdkError(`could not download ${what} from ${registry}: ${reason(err)}. AgentHydra fetches it once, the first time a chat needs it; try again once this computer is online.`)
     }
-    if (`sha512-${digest}` !== pin.integrity) throw new Error(`the download of ${what} from ${registry} is not the package this release pins (its sha512 differs), so it was not installed`)
+    if (`sha512-${digest}` !== pin.integrity) throw new SdkError(`the download of ${what} from ${registry} is not the package this release pins (its sha512 differs), so it was not installed`)
     mkdirSync(unpacked)
     try {
       const source = createReadStream(tgz)
@@ -169,10 +181,10 @@ async function fetchSdk(pin: SdkPin, dir: string, o: SdkOptions): Promise<string
         gunzip.destroy()
       }
     } catch (err) {
-      throw new Error(`could not unpack ${what}: ${reason(err)}`)
+      throw new SdkError(`could not unpack ${what}: ${reason(err)}`)
     }
     const pkg = readJson(join(unpacked, 'package.json'))
-    if (pkg?.name !== pin.name || pkg.version !== pin.version) throw new Error(`the download of ${what} holds ${String(pkg?.name)}@${String(pkg?.version)}`)
+    if (pkg?.name !== pin.name || pkg.version !== pin.version) throw new SdkError(`the download of ${what} holds ${String(pkg?.name)}@${String(pkg?.version)}`)
     writeFileSync(join(unpacked, SDK_MARKER), `${JSON.stringify({ name: pin.name, version: pin.version, integrity: pin.integrity })}\n`)
     // Another process may have finished first; its copy is as good.
     if (holdsPinned(dir, pin)) return entryOf(dir)
