@@ -39,7 +39,7 @@ const REFUSE: Record<string, string>[] = [
   { host: 'rebound.evil.example:7795' },
   { host: '127.0.0.1.evil.example:7795' },
   { host: 'evil.example@127.0.0.1:7795' },
-  { host: '192.168.1.20:7795' },
+  { host: '192.0.2.20:7795' },
   { origin: 'https://evil.example' },
   { origin: 'http://127.0.0.1.evil.example' },
   { origin: 'null' },

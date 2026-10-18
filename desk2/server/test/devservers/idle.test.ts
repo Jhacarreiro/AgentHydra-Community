@@ -231,7 +231,7 @@ describe('countClients', () => {
     ].join('\n')
     expect(count(ipv6)).toBe(1)
 
-    const lan = '  TCP    192.168.1.20:5173      192.168.1.30:55555     ESTABLISHED     100'
+    const lan = '  TCP    192.0.2.20:5173        192.0.2.30:55555       ESTABLISHED     100'
     expect(count(lan)).toBe(1)
   })
 

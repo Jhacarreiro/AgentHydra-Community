@@ -12,7 +12,7 @@ Active Connections
   TCP    127.0.0.1:4175         0.0.0.0:0              LISTENING       64260
   TCP    127.0.0.1:7795         0.0.0.0:0              LISTENING       10512
   TCP    127.0.0.1:7795         127.0.0.1:51234        ESTABLISHED     10512
-  TCP    192.168.1.20:139       0.0.0.0:0              LISTENING       4
+  TCP    192.0.2.20:139         0.0.0.0:0              LISTENING       4
   TCP    127.0.0.1:51234        127.0.0.1:7795         ESTABLISHED     8044
 
 Active Connections
@@ -46,7 +46,7 @@ describe('parseNetTcpJson', () => {
     const json = JSON.stringify([
       { LocalAddress: '127.0.0.1', LocalPort: 8188, OwningProcess: 24612 },
       { LocalAddress: '::', LocalPort: 445, OwningProcess: 4 },
-      { LocalAddress: '10.0.0.5', LocalPort: 139, OwningProcess: 4 },
+      { LocalAddress: '192.0.2.5', LocalPort: 139, OwningProcess: 4 },
     ])
     expect(parseNetTcpJson(json)).toEqual([
       { address: '127.0.0.1', port: 8188, pid: 24612 },
@@ -86,7 +86,7 @@ describe('parseLsof', () => {
 node     4120   me   23u  IPv4 0x1      0t0  TCP 127.0.0.1:5173 (LISTEN)
 node     4120   me   24u  IPv6 0x2      0t0  TCP [::1]:5173 (LISTEN)
 bun      5200   me   12u  IPv4 0x3      0t0  TCP *:3000 (LISTEN)
-sshd      900 root    3u  IPv4 0x4      0t0  TCP 10.0.0.5:22 (LISTEN)`
+sshd      900 root    3u  IPv4 0x4      0t0  TCP 192.0.2.5:22 (LISTEN)`
     expect(parseLsof(lsof)).toEqual([
       { address: '127.0.0.1', port: 5173, pid: 4120 },
       { address: '::1', port: 5173, pid: 4120 },

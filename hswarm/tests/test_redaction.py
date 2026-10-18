@@ -166,7 +166,7 @@ def test_task_level_switches(monkeypatch, tmp_path):
     assert for_task(None, free_tier=True).strategy == "hash"
     assert for_task(None, free_tier=False) is None
     assert for_task("off", free_tier=True) is None  # an explicit task setting wins over the machine switch
-    assert from_spec({"detectors": "ip", "patterns": {"ticket": r"TKT-\d{6}"}}).apply("TKT-123456 at 10.0.0.1").count("<") == 2
+    assert from_spec({"detectors": "ip", "patterns": {"ticket": r"TKT-\d{6}"}}).apply("TKT-123456 at 192.0.2.1").count("<") == 2
     with pytest.raises(ValueError, match="redact strategy"):
         Task.from_dict({"prompt": "p", "cwd": str(tmp_path), "tools": "none", "redact": "scramble"})
     monkeypatch.setenv("HSWARM_REDACT_FREE_TIER", "hashh")  # a typo on the machine switch names the variable

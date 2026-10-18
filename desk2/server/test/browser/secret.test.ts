@@ -129,7 +129,7 @@ describe('the request guard', () => {
   })
 
   test('refuses a caller off this machine, and one it cannot name', () => {
-    expect(secretRefusal(new Headers(), '10.0.0.5')).not.toBeNull()
+    expect(secretRefusal(new Headers(), '192.0.2.5')).not.toBeNull()
     expect(secretRefusal(new Headers(), null)).not.toBeNull()
   })
 

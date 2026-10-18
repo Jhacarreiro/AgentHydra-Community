@@ -14,7 +14,7 @@ test('daemon binding is restricted to loopback hosts', () => {
   expect(validateBindHost('localhost')).toBe('localhost')
   expect(validateBindHost('::1')).toBe('::1')
   expect(() => validateBindHost('0.0.0.0')).toThrow('loopback-only')
-  expect(() => validateBindHost('192.168.1.20')).toThrow('loopback-only')
+  expect(() => validateBindHost('192.0.2.20')).toThrow('loopback-only')
 })
 
 test('terminal launch options reject shell syntax and unknown efforts', () => {

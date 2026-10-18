@@ -1132,8 +1132,8 @@ describe("the owner's MCP servers a worker is given (ownerMcpServers)", () => {
           agenthydra: http('http://127.0.0.1:7787/api/mcp'),
           magnific: http('https://mcp.magnific.com'),
           // AgentHydra's own endpoint under another name: a second PC's daemon, or a renamed entry.
-          'second-pc': http('http://192.168.1.20:7787/api/mcp/'),
-          'hydra-renamed': http('http://laptop.local:7787/API/MCP'),
+          'second-pc': http('http://192.0.2.20:7787/api/mcp/'),
+          'hydra-renamed': http('http://example-laptop.local:7787/API/MCP'),
           ...refused,
         },
       }),
