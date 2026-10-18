@@ -171,7 +171,7 @@ func TestABrokenBuildIsFetchedOnce(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { os.Remove(configPath); os.Remove(pusherExe) })
 	useTestKey(t)
-	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+	if err := saveConfig(pcConfig(srv.URL)); err != nil {
 		t.Fatal(err)
 	}
 	a := newApp()
@@ -233,7 +233,7 @@ func TestOnlyTheSignedBytesCountAgainstABuild(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { os.Remove(configPath); os.Remove(pusherExe) })
 	os.Remove(pusherExe)
-	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+	if err := saveConfig(pcConfig(srv.URL)); err != nil {
 		t.Fatal(err)
 	}
 	a := newApp()
@@ -295,7 +295,7 @@ func TestOnlyASignedBuildIsFetched(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { os.Remove(configPath); os.Remove(pusherExe) })
 	os.Remove(pusherExe)
-	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+	if err := saveConfig(pcConfig(srv.URL)); err != nil {
 		t.Fatal(err)
 	}
 	a := newApp()

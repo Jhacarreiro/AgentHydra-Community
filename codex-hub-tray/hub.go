@@ -19,10 +19,24 @@ import (
 	"time"
 )
 
+// tray.json, at mode 0600 and replaced all at once (writePrivate): the hub the user set, if any, and this PC's token.
+// pc and id are what the hub has the token under (from redeem, exchange or whoami), install is the install id bound to
+// it (install.go), and next is a token the tray asked the hub to take and is not sure it has yet (settleNext). A token
+// that is not a PC token is the legacy token, from a tray paired before PCs had tokens of their own.
 type config struct {
-	Hub   string `json:"hub,omitempty"`
-	Token string `json:"token,omitempty"`
+	Hub     string `json:"hub,omitempty"`
+	Token   string `json:"token,omitempty"`
+	PC      string `json:"pc,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Install string `json:"install,omitempty"`
+	Next    string `json:"next,omitempty"`
 }
+
+// pusherConfig is what the pusher is started with (startPusher): a change of any of these restarts it, and a change
+// of nothing else does (a new next or id is no change to it).
+type pusherConfig struct{ Hub, Token, PC, Install string }
+
+func (c config) pusher() pusherConfig { return pusherConfig{c.Hub, c.Token, c.PC, c.Install} }
 
 // savedConfig is what the user set in tray.json, without what loadConfig fills in. A hub that is this build's own
 // or an earlier build's (isBuildHub) is no choice of theirs: a build before this one saved it with the token when it
@@ -53,6 +67,8 @@ func isBuildHub(hub string) bool {
 	return false
 }
 
+// loadConfig is the config the tray works with: tray.json's, with the build's hub when the user set none, and the
+// install id the tray sends (ensureInstall).
 func loadConfig() config {
 	c := savedConfig()
 	if c.Hub == "" {
@@ -63,6 +79,7 @@ func loadConfig() config {
 		c.Token = strings.TrimSpace(os.Getenv("AGENTHYDRA_CODEX_HUB_TOKEN"))
 	}
 	c.Hub = strings.TrimRight(c.Hub, "/")
+	c.Install = ensureInstall()
 	return c
 }
 
@@ -73,7 +90,23 @@ func saveConfig(c config) error {
 		c.Hub = ""
 	}
 	b, _ := json.MarshalIndent(c, "", "  ")
-	return os.WriteFile(configPath, b, 0o600)
+	return writePrivate(configPath, b)
+}
+
+var configMu sync.Mutex
+
+// updateConfig changes tray.json as change says, under the one lock every change takes (pairing, the checks and the
+// install id run on goroutines of their own), and writes it only when something changed.
+func updateConfig(change func(*config)) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	before := savedConfig()
+	after := before
+	change(&after)
+	if after == before {
+		return nil
+	}
+	return saveConfig(after)
 }
 
 // unpinBuildHub takes a build's hub (isBuildHub) out of a tray.json that an earlier build saved it in, so that the hub
@@ -87,8 +120,27 @@ func unpinBuildHub() error {
 	return saveConfig(c)
 }
 
-// errToken: the hub refused the token (a new one on the hub, or none here).
-var errToken = errors.New("the hub refused the token")
+// keepInstall, at start: writes the install id back into the pusher's file if that went (ensureInstall), and keeps it
+// in tray.json with a PC token that has none there, such as one written in by hand.
+func keepInstall() {
+	install := ensureInstall()
+	if err := updateConfig(func(c *config) {
+		if isPcToken(c.Token) && !validInstall(c.Install) {
+			c.Install = install
+		}
+	}); err != nil {
+		log.Println("config:", err)
+	}
+}
+
+var (
+	// errToken: the hub refused the token (a 401: one it does not know, or none here).
+	errToken = errors.New("the hub refused the token")
+	// errRevoked: the hub revoked this PC's token (401 revoked), which is one way of refusing it.
+	errRevoked = fmt.Errorf("%w: it revoked this PC", errToken)
+	// errInstall: the token is bound to another install of the pusher (409 install-mismatch).
+	errInstall = errors.New("the hub has this token for another install")
+)
 
 type release struct {
 	SHA256 string `json:"sha256"`
@@ -213,45 +265,171 @@ func hubHeaders() map[string]string {
 
 var badHeaders sync.Once
 
-// hubGet is a request for path on the hub with the extra headers and the token, which wins over a header of the same
-// name, as in the pusher.
-func hubGet(c config, path string) (*http.Request, error) {
-	req, err := http.NewRequest("GET", c.Hub+path, nil)
+// hubRequest is a request to the hub with the extra headers, then the token as the bearer, which wins over a header
+// of the same name as in the pusher, and the install id; with no token (redeem) it carries no bearer. A body is sent
+// as JSON.
+func hubRequest(c config, method, path string, body any) (*http.Request, error) {
+	var payload io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		payload = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, c.Hub+path, payload)
 	if err != nil {
 		return nil, err
 	}
 	for k, v := range hubHeaders() {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	if c.Install != "" {
+		req.Header.Set(installHeader, c.Install)
+	}
 	return req, nil
+}
+
+// hubAnswer is what the hub answered: its status and body, and for a refusal the code and the text of its error body
+// ({ error, code }, server/src/routes/codex-hub.ts).
+type hubAnswer struct {
+	status     int
+	code, text string
+	body       []byte
+}
+
+// ask sends req and reads the answer; the error is for a hub that did not answer.
+func ask(cl *http.Client, req *http.Request) (hubAnswer, error) {
+	res, err := cl.Do(req)
+	if err != nil {
+		return hubAnswer{}, err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return hubAnswer{}, err
+	}
+	a := hubAnswer{status: res.StatusCode, body: body}
+	if a.status >= 300 {
+		var e struct{ Error, Code string }
+		if json.Unmarshal(body, &e) == nil {
+			a.code, a.text = e.Code, e.Error
+		}
+	}
+	return a, nil
+}
+
+// refusal is what an answer other than 200 means here: errRevoked or errToken for a 401, errInstall for a token of
+// another install, else the status and the hub's own words.
+func (a hubAnswer) refusal(what string) error {
+	switch {
+	case a.status == http.StatusUnauthorized && a.code == "revoked":
+		return errRevoked
+	case a.status == http.StatusUnauthorized:
+		return errToken
+	case a.status == http.StatusConflict && a.code == "install-mismatch":
+		return errInstall
+	case a.text != "":
+		return fmt.Errorf("the hub answered %d for %s: %s", a.status, what, a.text)
+	}
+	return fmt.Errorf("the hub answered %d for %s", a.status, what)
 }
 
 // latest is the build the hub hands out for name ("pusher" or "tray"); nil when it hands out none.
 func latest(c config, name string) (*release, error) {
-	req, err := hubGet(c, "/api/codex-hub/"+name+"?platform="+platform)
+	req, err := hubRequest(c, "GET", "/api/codex-hub/"+name+"?platform="+platform, nil)
 	if err != nil {
 		return nil, err
 	}
-	res, err := client.Do(req)
+	a, err := ask(client, req)
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
-	switch res.StatusCode {
+	switch a.status {
 	case http.StatusOK:
 		var r release
-		if err := json.NewDecoder(res.Body).Decode(&r); err != nil || r.SHA256 == "" {
+		if err := json.Unmarshal(a.body, &r); err != nil || r.SHA256 == "" {
 			return nil, fmt.Errorf("the hub sent no build hash for %s", name)
 		}
 		return &r, nil
 	case http.StatusNotFound:
 		return nil, nil
-	case http.StatusUnauthorized:
-		return nil, errToken
-	default:
-		return nil, fmt.Errorf("the hub answered %d for %s", res.StatusCode, name)
 	}
+	return nil, a.refusal(name)
+}
+
+// pcAnswer is how the hub names the PC a token is for: redeem, exchange and whoami answer it, retire with its state.
+type pcAnswer struct {
+	PC      string `json:"pc"`
+	Key     string `json:"key"`
+	ID      string `json:"id"`
+	Install string `json:"install,omitempty"`
+	State   string `json:"state,omitempty"`
+}
+
+// errUnreadable: the hub answered 200 with a body that does not name the token sent, which says nothing sure.
+var errUnreadable = errors.New("the hub's answer does not name this token")
+
+// askPC sends a request about a token and reads the PC it names; the error is for no answer, or one it cannot read.
+// For a 200 that names a token, id is the one it must name.
+func askPC(c config, method, path string, body any, id string) (pcAnswer, hubAnswer, error) {
+	var out pcAnswer
+	req, err := hubRequest(c, method, path, body)
+	if err != nil {
+		return out, hubAnswer{}, err
+	}
+	a, err := ask(client, req)
+	if err == nil && a.status == http.StatusOK {
+		if json.Unmarshal(a.body, &out) != nil || out.PC == "" || (id != "" && out.ID != id) {
+			err = errUnreadable
+		}
+	}
+	return out, a, err
+}
+
+// whoami is what the hub has c's token under (GET /api/codex-hub/whoami).
+func whoami(c config) (pcAnswer, hubAnswer, error) {
+	return askPC(c, "GET", "/api/codex-hub/whoami", nil, pcTokenID(c.Token))
+}
+
+// redeemTries and redeemGap: a redeem the hub did not answer is sent again, the same, twice, 2 seconds apart.
+var (
+	redeemTries = 3
+	redeemGap   = 2 * time.Second
+)
+
+// redeem takes a pairing code to the hub with the id and hash of the token the tray made for it (POST
+// /api/codex-hub/redeem; no bearer, as the code is the credential). The hub answers a repeat the same way, so a
+// request it may have taken is sent again.
+func redeem(c config, code, id, hash string) (pcAnswer, hubAnswer, error) {
+	c.Token = ""
+	body := map[string]string{"code": code, "id": id, "hash": hash}
+	for try := 1; ; try++ {
+		who, a, err := askPC(c, "POST", "/api/codex-hub/redeem", body, id)
+		if err == nil || errors.Is(err, errUnreadable) || try == redeemTries {
+			return who, a, err
+		}
+		log.Printf("pair: the hub did not answer the redeem (%v); trying again", err)
+		time.Sleep(redeemGap)
+	}
+}
+
+// exchangeToken trades the legacy token in c for the token whose id and hash these are (POST
+// /api/codex-hub/exchange), once; the hub answers a repeat the same way.
+func exchangeToken(c config, id, hash string) (pcAnswer, hubAnswer, error) {
+	return askPC(c, "POST", "/api/codex-hub/exchange", map[string]string{"id": id, "hash": hash}, id)
+}
+
+// retire has the hub revoke c's own token, after this PC was paired under the name renamedTo (POST
+// /api/codex-hub/retire).
+func retire(c config, renamedTo string) (pcAnswer, hubAnswer, error) {
+	return askPC(c, "POST", "/api/codex-hub/retire", map[string]string{"renamedTo": renamedTo}, "")
 }
 
 // badBuild: the hub's build fails its checks here (it lacks the signature it needs, it is a program for another
@@ -287,7 +465,7 @@ func download(c config, name string, want *release, dest string) (string, error)
 	}
 	next := dest + ".new"
 	os.Remove(next)
-	req, err := hubGet(c, "/api/codex-hub/"+name+"/download?platform="+platform)
+	req, err := hubRequest(c, "GET", "/api/codex-hub/"+name+"/download?platform="+platform, nil)
 	if err != nil {
 		return "", err
 	}
@@ -353,7 +531,7 @@ func buildBanner(name string) string {
 	return "codex-hub-push" // PUSHER_BANNER in server/src/core/codex-hub-update.ts
 }
 
-// tokenWorks asks the hub whether it takes this token.
+// tokenWorks asks the hub whether it takes this token, as a hub from before PC tokens hands one out (pair.go).
 func tokenWorks(c config) error {
 	_, err := latest(c, "pusher")
 	return err

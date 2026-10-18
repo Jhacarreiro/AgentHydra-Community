@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -20,10 +21,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Every test runs with a scratch home, so nothing reads or writes the real config.
 var testHome string
+
+// goEnv is the environment's home folders as the test started, which tell the go command where its caches are.
+var goEnv []string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "codex-hub-tray-test-")
@@ -31,16 +36,72 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	testHome = dir
+	// Go keeps its caches where it had them, for the test that builds the fake hub (TestContract).
+	for _, name := range []string{"HOME", "USERPROFILE", "LOCALAPPDATA"} {
+		if v, ok := os.LookupEnv(name); ok {
+			goEnv = append(goEnv, name+"="+v)
+		}
+	}
 	os.Setenv("HOME", dir)
+	os.Setenv("USERPROFILE", dir) // the home os.UserHomeDir gives on Windows
 	os.Setenv("LOCALAPPDATA", filepath.Join(dir, "AppData", "Local"))
-	os.Unsetenv("XDG_DATA_HOME")
-	os.Unsetenv("XDG_CONFIG_HOME")
-	os.Unsetenv("AGENTHYDRA_CODEX_HUB_TOKEN")
+	// The pusher's config folder (pusherConfigDir) is then the scratch home's, and the name the tray pairs as its own.
+	for _, name := range []string{"XDG_DATA_HOME", "XDG_CONFIG_HOME", "AGENTHYDRA_CODEX_HUB_TOKEN", "AGENTHYDRA_HOME",
+		"CCMANAGERUI_HOME", "AGENTHYDRA_CODEX_HUB_PC", "CCMANAGERUI_CODEX_HUB_PC", "AGENTHYDRA_CODEX_HUB_INSTALL"} {
+		os.Unsetenv(name)
+	}
 	setPaths()
 	os.MkdirAll(appDir, 0o755)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// waitFor waits until ok, failing the test once d has gone by.
+func waitFor(t *testing.T, d time.Duration, what string, ok func() bool) {
+	t.Helper()
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if ok() {
+			return
+		}
+	}
+	if !ok() {
+		t.Fatalf("%s: not within %s", what, d)
+	}
+}
+
+// syncLog is the log while a test reads it, with the tray's goroutines writing.
+type syncLog struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *syncLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *syncLog) count(s string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Count(l.b.String(), s)
+}
+
+func (l *syncLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// captureLog sends the log to a syncLog for the rest of the test.
+func captureLog(t *testing.T) *syncLog {
+	l := &syncLog{}
+	log.SetOutput(l)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	// What logOnce said in an earlier test (or run, with -count) is said again here.
+	logged.Range(func(k, _ any) bool { logged.Delete(k); return true })
+	return l
 }
 
 func TestPlatformName(t *testing.T) {
@@ -65,20 +126,37 @@ func TestPathsAreUnderHome(t *testing.T) {
 	}
 }
 
+// tray.json keeps every field, and is written at 0600 all at once, even over a file an earlier build left at 0644.
 func TestConfigRoundTrip(t *testing.T) {
 	t.Cleanup(func() { os.Remove(configPath) })
 	os.Remove(configPath)
+	t.Setenv("AGENTHYDRA_HOME", t.TempDir())
 	hubURL = "http://hub.example.test:18788"
 	t.Cleanup(func() { hubURL = "" })
 	t.Setenv("AGENTHYDRA_CODEX_HUB_TOKEN", " from-the-environment-0123 ")
-	if c := loadConfig(); c.Hub != hubURL || c.Token != "from-the-environment-0123" {
+	if c := loadConfig(); c.Hub != hubURL || c.Token != "from-the-environment-0123" || !validInstall(c.Install) {
 		t.Fatalf("defaults: %+v", c)
 	}
-	if err := saveConfig(config{Hub: "http://other.example.test/", Token: "saved-token-0123456789"}); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"token": "old-token-0123456789"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if c := loadConfig(); c.Hub != "http://other.example.test" || c.Token != "saved-token-0123456789" {
-		t.Fatalf("saved: %+v", c)
+	os.Chmod(configPath, 0o644)
+	token, id, _ := newPcToken()
+	next, _, _ := newPcToken()
+	want := config{Hub: "http://other.example.test", Token: token, PC: "Example-PC", ID: id, Install: "install-0123456789", Next: next}
+	saved := want
+	saved.Hub += "/"
+	if err := saveConfig(saved); err != nil {
+		t.Fatal(err)
+	}
+	if c := savedConfig(); c != saved {
+		t.Fatalf("saved %+v, read back %+v", saved, c)
+	}
+	if c := loadConfig(); c != want {
+		t.Fatalf("loaded %+v, want %+v", c, want)
+	}
+	if f := savedFile(t); len(f) != 6 {
+		t.Errorf("tray.json %v: want its six fields", f)
 	}
 	st, err := os.Stat(configPath)
 	if err != nil {
@@ -87,6 +165,22 @@ func TestConfigRoundTrip(t *testing.T) {
 	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Errorf("config file mode %v, want 0600: it holds the token", st.Mode().Perm())
 	}
+	if exists(configPath + ".tmp") {
+		t.Error("tray.json.tmp was left behind")
+	}
+	// What is not set is left out.
+	if err := saveConfig(config{Token: token}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(configPath); strings.Contains(string(b), `"pc"`) || strings.Contains(string(b), `"next"`) {
+		t.Errorf("tray.json with the token alone: %s", b)
+	}
+}
+
+// pcConfig is the tray.json of a PC paired with a token of its own, as Example-PC.
+func pcConfig(hub string) config {
+	token, id, _ := newPcToken()
+	return config{Hub: hub, Token: token, PC: "Example-PC", ID: id}
 }
 
 // testKey stands in for the operator's key; useTestKey builds the tray with its public half for one test.
@@ -263,7 +357,7 @@ func TestNoKeyOverHTTPTakesNothing(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { os.Remove(configPath) })
-	if err := saveConfig(config{Hub: srv.URL, Token: "token-0123456789abcdef"}); err != nil {
+	if err := saveConfig(pcConfig(srv.URL)); err != nil {
 		t.Fatal(err)
 	}
 	var logged bytes.Buffer
@@ -289,23 +383,13 @@ func TestNoKeyOverHTTPTakesNothing(t *testing.T) {
 	}
 }
 
-// fakeHub answers GET /api/codex-hub/pusher for one token, recording the platform each request named.
-func fakeHub(t *testing.T, token string, platforms *[]string) *httptest.Server {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*platforms = append(*platforms, r.URL.Query().Get("platform"))
-		if r.Header.Get("Authorization") != "Bearer "+token {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-		json.NewEncoder(w).Encode(release{SHA256: strings.Repeat("ab", 32), Size: 1})
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // The tray's own requests carry the extra headers the pusher sends (AGENTHYDRA_CODEX_HUB_HEADERS), as a hub behind an
-// access proxy needs: the build checks, the download and the token check made while pairing.
+// access proxy needs: the build checks, the download, the token check made while pairing with a hub from before PC
+// tokens, and the token's own routes. Each carries the install id, and the token as the bearer but on the redeem,
+// where the code is the credential.
 func TestHubRequestsCarryTheExtraHeaders(t *testing.T) {
+	cfg := pcConfig("")
+	cfg.Install = "install-0123456789"
 	var mu sync.Mutex
 	seen := map[string]http.Header{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -316,16 +400,19 @@ func TestHubRequestsCarryTheExtraHeaders(t *testing.T) {
 			http.Error(w, "the access proxy wants its header", http.StatusForbidden)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/download") {
+		switch r.URL.Path {
+		case "/api/codex-hub/tray/download":
 			w.Write([]byte("not the announced build"))
-			return
+		case "/api/codex-hub/tray", "/api/codex-hub/pusher":
+			sum := strings.Repeat("ab", 32)
+			json.NewEncoder(w).Encode(release{SHA256: sum, Size: 1, Signature: signedBy(testKey, "tray", sum)})
+		default:
+			fmt.Fprintf(w, `{"pc":"Example-PC","key":"example-pc","id":%q,"state":"revoked"}`, cfg.ID)
 		}
-		sum := strings.Repeat("ab", 32)
-		json.NewEncoder(w).Encode(release{SHA256: sum, Size: 1, Signature: signedBy(testKey, "tray", sum)})
 	}))
 	t.Cleanup(srv.Close)
+	cfg.Hub = srv.URL
 	useTestKey(t)
-	cfg := config{Hub: srv.URL, Token: "token-0123456789abcdef"}
 	t.Setenv("AGENTHYDRA_CODEX_HUB_HEADERS", `{"X-Hub-Access":"e2e-access","Authorization":"not this"}`)
 	rel, err := latest(cfg, "tray")
 	if err != nil || rel == nil {
@@ -335,14 +422,28 @@ func TestHubRequestsCarryTheExtraHeaders(t *testing.T) {
 		t.Fatalf("tokenWorks: %v", err)
 	}
 	download(cfg, "tray", rel, filepath.Join(t.TempDir(), "codex-hub-tray"))
-	for _, path := range []string{"/api/codex-hub/tray", "/api/codex-hub/pusher", "/api/codex-hub/tray/download"} {
+	hash := pcTokenHash(cfg.Token)
+	for what, ask := range map[string]func() (pcAnswer, hubAnswer, error){
+		"whoami":   func() (pcAnswer, hubAnswer, error) { return whoami(cfg) },
+		"redeem":   func() (pcAnswer, hubAnswer, error) { return redeem(cfg, strings.Repeat("c", 64), cfg.ID, hash) },
+		"exchange": func() (pcAnswer, hubAnswer, error) { return exchangeToken(cfg, cfg.ID, hash) },
+		"retire":   func() (pcAnswer, hubAnswer, error) { return retire(cfg, "New-PC") },
+	} {
+		if who, a, err := ask(); err != nil || a.status != http.StatusOK || who.PC != "Example-PC" {
+			t.Errorf("%s: %+v %d %v", what, who, a.status, err)
+		}
+	}
+	for _, path := range []string{"/api/codex-hub/tray", "/api/codex-hub/pusher", "/api/codex-hub/tray/download",
+		"/api/codex-hub/whoami", "/api/codex-hub/redeem", "/api/codex-hub/exchange", "/api/codex-hub/retire"} {
 		h := seen[path]
 		if h == nil {
 			t.Errorf("%s was not asked", path)
 			continue
 		}
-		if h.Get("X-Hub-Access") != "e2e-access" || h.Get("Authorization") != "Bearer "+cfg.Token {
-			t.Errorf("%s: X-Hub-Access %q, Authorization %q", path, h.Get("X-Hub-Access"), h.Get("Authorization"))
+		bearer := h.Get("Authorization") == "Bearer "+cfg.Token
+		if h.Get("X-Hub-Access") != "e2e-access" || h.Get(installHeader) != cfg.Install || bearer != (path != "/api/codex-hub/redeem") {
+			t.Errorf("%s: X-Hub-Access %q, %s %q, Authorization %q", path, h.Get("X-Hub-Access"), installHeader,
+				h.Get(installHeader), h.Get("Authorization"))
 		}
 	}
 
@@ -350,6 +451,48 @@ func TestHubRequestsCarryTheExtraHeaders(t *testing.T) {
 	t.Setenv("AGENTHYDRA_CODEX_HUB_HEADERS", `X-Hub-Access: e2e-access`)
 	if _, err := latest(cfg, "tray"); err == nil || !strings.Contains(err.Error(), "403") {
 		t.Errorf("latest with a broken header list: %v", err)
+	}
+}
+
+// The hub's refusals of a build check, by their code: a revoked token is refused (errToken) and says so (errRevoked),
+// and a token of another install is errInstall. No build is none, and the hub's own trouble is neither.
+func TestLatestCodes(t *testing.T) {
+	var mu sync.Mutex
+	var status int
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.WriteHeader(status)
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := pcConfig(srv.URL)
+	for _, c := range []struct {
+		status                  int
+		body                    string
+		token, revoked, install bool
+		none                    bool
+	}{
+		{401, `{"error":"revoked","code":"revoked"}`, true, true, false, false},
+		{401, `{"error":"unknown-token","code":"unknown-token"}`, true, false, false, false},
+		{401, `{"error":"unauthorized","code":"unauthorized"}`, true, false, false, false},
+		{401, `not json`, true, false, false, false},
+		{409, `{"error":"this token belongs to another install","code":"install-mismatch"}`, false, false, true, false},
+		{404, `{"error":"no tray build for linux-x64","code":"not-found"}`, false, false, false, true},
+		{503, `{"error":"the hub cannot read its list of PCs","code":"store-unreadable"}`, false, false, false, false},
+	} {
+		mu.Lock()
+		status, body = c.status, c.body
+		mu.Unlock()
+		rel, err := latest(cfg, "tray")
+		if errors.Is(err, errToken) != c.token || errors.Is(err, errRevoked) != c.revoked || errors.Is(err, errInstall) != c.install ||
+			(err == nil) != c.none || rel != nil {
+			t.Errorf("%d %s: %v %v", c.status, c.body, rel, err)
+		}
+		if c.status == 503 && (err == nil || !strings.Contains(err.Error(), "cannot read its list of PCs")) {
+			t.Errorf("503: %v, want the hub's own words", err)
+		}
 	}
 }
 
@@ -400,68 +543,492 @@ func TestPcNameFrom(t *testing.T) {
 	}
 }
 
+// hubCall is one request a stubHub had: what it carried, and tray.json's next as it came.
+type hubCall struct {
+	path, bearer, install, next string
+	body                        map[string]any
+}
+
+func (c hubCall) text(k string) string {
+	s, _ := c.body[k].(string)
+	return s
+}
+
+// stubHub answers each request as answer says: a status and a JSON body, or status 0 for a hub that closes the
+// connection without answering. calls(route) is the requests it had so far for /api/codex-hub/route.
+func stubHub(t *testing.T, answer func(c hubCall) (int, string)) (*httptest.Server, func(route string) []hubCall) {
+	var mu sync.Mutex
+	var all []hubCall
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := hubCall{path: r.URL.Path, install: r.Header.Get(installHeader), next: savedConfig().Next}
+		c.bearer, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		json.NewDecoder(r.Body).Decode(&c.body)
+		mu.Lock()
+		all = append(all, c)
+		mu.Unlock()
+		status, body := answer(c)
+		if status == 0 {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(status)
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func(route string) []hubCall {
+		mu.Lock()
+		defer mu.Unlock()
+		var out []hubCall
+		for _, c := range all {
+			if c.path == "/api/codex-hub/"+route {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+}
+
+// pcJSON is the hub's answer naming the PC a token id is for; errJSON, its refusal with code.
+func pcJSON(pc, id string) string {
+	return fmt.Sprintf(`{"pc":%q,"key":%q,"id":%q}`, pc, pcKey(pc), id)
+}
+
+func errJSON(code string) string {
+	return fmt.Sprintf(`{"error":"the hub's words for %s","code":%q}`, code, code)
+}
+
+// testOpen is the pairing the tests post to: its state, its listener's address and the name its link pairs as.
+var testOpen = pairOpen{state: "the-state", host: "127.0.0.1:43210", name: "Example-PC"}
+
+// postForm posts form to h, at host, as the hub's pairing page does.
+func postForm(h http.HandlerFunc, host string, form url.Values) (int, string) {
+	req := httptest.NewRequest(http.MethodPost, "/paired", strings.NewReader(form.Encode()))
+	req.Host = host
+	req.Header.Set("content-type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	b, _ := io.ReadAll(rec.Body)
+	return rec.Code, string(b)
+}
+
+// postCode posts a code to testOpen's listener as the page does; postToken, a token as a hub from before PC tokens
+// does.
+func postCode(h http.HandlerFunc, code string) (int, string) {
+	return postForm(h, testOpen.host, url.Values{"state": {testOpen.state}, "code": {code}})
+}
+
+func postToken(h http.HandlerFunc, token string) (int, string) {
+	return postForm(h, testOpen.host, url.Values{"state": {testOpen.state}, "token": {token}})
+}
+
+// Pairing through the page. A post is taken only at this pairing's listener, by its address, with its state. Its code
+// is redeemed with a token made for it, saved as next before it is sent and as the token once the hub took it; each of
+// the hub's refusals gets its page. A rename retires the old name's token, with that token. The old page's token is
+// taken as before, unless it is a PC token.
 func TestPairHandler(t *testing.T) {
-	// Short, with a space and punctuation: the hub takes such a token, so the tray does too.
-	const good = "Hub Token ~!"
-	var platforms []string
-	srv := fakeHub(t, good, &platforms)
-	t.Cleanup(func() { os.Remove(configPath) })
+	savedGap := redeemGap
+	redeemGap = 10 * time.Millisecond
+	t.Cleanup(func() { redeemGap = savedGap; os.Remove(configPath) })
+	// A code as the page hands one out (64 hex), and a token as a hub from before PC tokens hands one out.
+	code, oldPageToken := strings.Repeat("c0de", 16), "Hub Token ~!"
+	var mu sync.Mutex
+	var redeemAs, retireAs func(hubCall) (int, string)
+	srv, calls := stubHub(t, func(c hubCall) (int, string) {
+		mu.Lock()
+		redeem, retire := redeemAs, retireAs
+		mu.Unlock()
+		switch c.path {
+		case "/api/codex-hub/redeem":
+			return redeem(c)
+		case "/api/codex-hub/retire":
+			return retire(c)
+		case "/api/codex-hub/pusher": // the old page's token, checked as a hub from before PC tokens checks it
+			if c.bearer != oldPageToken {
+				return 401, errJSON("unauthorized")
+			}
+			return 200, `{"sha256":"` + strings.Repeat("ab", 32) + `","size":1}`
+		}
+		return 404, errJSON("not-found")
+	})
+	answers := func(redeem, retire func(hubCall) (int, string)) {
+		mu.Lock()
+		redeemAs, retireAs = redeem, retire
+		mu.Unlock()
+	}
+	takes := func(pc string) func(hubCall) (int, string) {
+		return func(c hubCall) (int, string) { return 200, pcJSON(pc, c.text("id")) }
+	}
+	answer := func(status int, body string) func(hubCall) (int, string) {
+		return func(hubCall) (int, string) { return status, body }
+	}
 	if err := saveConfig(config{Hub: srv.URL}); err != nil {
 		t.Fatal(err)
 	}
+	install := loadConfig().Install
 	a := newApp()
 	finished := false
-	h := a.pairHandler("the-state", func() { finished = true })
-	post := func(state, token string) (int, string) {
-		form := url.Values{"state": {state}, "token": {token}}
-		req := httptest.NewRequest(http.MethodPost, "/paired", strings.NewReader(form.Encode()))
-		req.Header.Set("content-type", "application/x-www-form-urlencoded")
-		rec := httptest.NewRecorder()
-		h(rec, req)
-		b, _ := io.ReadAll(rec.Body)
-		return rec.Code, string(b)
-	}
+	h := a.pairHandler(testOpen, func() { finished = true })
 
-	if code, body := post("another-state", good); code != http.StatusBadRequest || !strings.Contains(body, "not the one this PC opened") {
-		t.Errorf("wrong state: %d %s", code, body)
-	}
-	// A token the tray cannot use gets its own message, not the one for a forged post.
-	for _, bad := range []string{"", "two\nlines", strings.Repeat("x", 513)} {
-		if code, body := post("the-state", bad); code != http.StatusBadRequest || !strings.Contains(body, "shape this app cannot use") {
-			t.Errorf("token %q: %d %s", bad, code, body)
-		}
-	}
-	// One that is not ASCII is refused here, saying why, rather than sent for the hub to refuse.
-	if code, body := post("the-state", "Hub tökén ~!"); code != http.StatusBadRequest || !strings.Contains(body, "ASCII") {
-		t.Errorf("a token that is not ASCII: %d %s", code, body)
-	}
-	if c := loadConfig(); c.Token != "" || finished {
-		t.Fatalf("a refused post saved %q (finished %v)", c.Token, finished)
-	}
-	for _, refused := range []string{"short", "refused by the hub", strings.Repeat("x", 512)} {
-		if code, body := post("the-state", refused); code != http.StatusUnauthorized || !strings.Contains(body, "did not take that token") {
-			t.Errorf("token the hub refuses (%q): %d %s", refused, code, body)
-		}
-	}
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest(http.MethodGet, "/paired", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET: %d", rec.Code)
 	}
-
-	if code, body := post("the-state", good); code != http.StatusOK {
-		t.Fatalf("valid post: %d %s", code, body)
-	}
-	if c := loadConfig(); c.Token != good || c.Hub != srv.URL {
-		t.Fatalf("saved config: %+v", c)
-	}
-	if !finished {
-		t.Error("a valid post did not finish the pairing")
-	}
-	for _, p := range platforms {
-		if p != platform {
-			t.Errorf("the hub was asked for platform %q, want %q", p, platform)
+	for what, post := range map[string]func() (int, string){
+		"another state": func() (int, string) {
+			return postForm(h, testOpen.host, url.Values{"state": {"another-state"}, "code": {code}})
+		},
+		"no state": func() (int, string) { return postForm(h, testOpen.host, url.Values{"code": {code}}) },
+		"localhost": func() (int, string) {
+			return postForm(h, "localhost:43210", url.Values{"state": {"the-state"}, "code": {code}})
+		},
+		"another port": func() (int, string) {
+			return postForm(h, "127.0.0.1:1", url.Values{"state": {"the-state"}, "code": {code}})
+		},
+		"another host": func() (int, string) {
+			return postForm(h, "pair.example.test", url.Values{"state": {"the-state"}, "code": {code}})
+		},
+		"the old page's": func() (int, string) {
+			return postForm(h, "example.com", url.Values{"state": {"the-state"}, "token": {oldPageToken}})
+		},
+	} {
+		if status, body := post(); status != http.StatusBadRequest || !strings.Contains(body, "not the one this PC opened") {
+			t.Errorf("%s: %d %s", what, status, body)
 		}
+	}
+	if n := len(calls("redeem")) + len(calls("pusher")); n != 0 || finished || savedConfig() != (config{Hub: srv.URL}) {
+		t.Fatalf("a post to the wrong listener: %d requests, finished %v, tray.json %+v", n, finished, savedConfig())
+	}
+
+	// The code: the token is next while the hub is asked, and the token once it took it.
+	answers(takes("Example-PC"), nil)
+	if status, body := postCode(h, code); status != http.StatusOK || !strings.Contains(body, "This PC is connected as Example-PC and is pushing its Codex chats.") {
+		t.Fatalf("the code: %d %s", status, body)
+	}
+	r := calls("redeem")
+	if len(r) != 1 || r[0].text("code") != code || r[0].bearer != "" || r[0].install != install || !validInstall(install) {
+		t.Fatalf("redeem: %+v (install %q)", r, install)
+	}
+	first := r[0]
+	if !isPcToken(first.next) || pcTokenID(first.next) != first.text("id") || pcTokenHash(first.next) != first.text("hash") {
+		t.Errorf("tray.json's next %q while the hub was asked, for id %s hash %s", first.next, first.text("id"), first.text("hash"))
+	}
+	if c := savedConfig(); c != (config{Hub: srv.URL, Token: first.next, PC: "Example-PC", ID: first.text("id"), Install: install}) {
+		t.Errorf("tray.json after the code: %+v", c)
+	}
+	if !finished || len(calls("retire")) != 0 {
+		t.Errorf("finished %v, retired %d", finished, len(calls("retire")))
+	}
+
+	// A rename: the hub took the new name's code, and the name's key is the one asked for, so the old name's token is
+	// retired, with that token from this install.
+	rename := func(name, from string) http.HandlerFunc {
+		return a.pairHandler(pairOpen{state: testOpen.state, host: testOpen.host, name: name, from: from}, func() {})
+	}
+	answers(takes("New-PC"), answer(200, `{"pc":"Example-PC","key":"example-pc","state":"revoked"}`))
+	if status, body := postCode(rename("New-PC", "Example-PC"), code); status != http.StatusOK ||
+		!strings.Contains(body, "This PC is connected as New-PC") || !strings.Contains(body, "Example-PC was retired on the hub; its copies there stay until you forget them.") {
+		t.Errorf("a rename: %d %s", status, body)
+	}
+	if ret := calls("retire"); len(ret) != 1 || ret[0].bearer != first.next || ret[0].install != install || ret[0].text("renamedTo") != "New-PC" {
+		t.Errorf("retire: %+v", ret)
+	}
+	if c := savedConfig(); c.PC != "New-PC" || c.Token == first.next || !isPcToken(c.Token) {
+		t.Errorf("tray.json after the rename: %+v", c)
+	}
+	answers(takes("Third-PC"), answer(409, errJSON("install-mismatch")))
+	if status, body := postCode(rename("Third-PC", "New-PC"), code); status != http.StatusOK || !strings.Contains(body, "connected as Third-PC") ||
+		!strings.Contains(body, "New-PC could not be retired (the hub has this token for another install): on the hub, run `scripts/codex-hub-pcs.ts revoke New-PC`.") {
+		t.Errorf("a rename the hub would not retire: %d %s", status, body)
+	}
+	// No retire: the hub gave the name another key (Fourth-PC-2), the link named no old name, or the old token is
+	// the legacy token.
+	retired := len(calls("retire"))
+	answers(takes("Fourth-PC-2"), answer(200, `{}`))
+	if status, body := postCode(rename("Fourth-PC", "Third-PC"), code); status != http.StatusOK || strings.Contains(body, "retire") {
+		t.Errorf("another key: %d %s", status, body)
+	}
+	answers(takes("Fifth-PC"), answer(200, `{}`))
+	if status, body := postCode(rename("Fifth-PC", ""), code); status != http.StatusOK || strings.Contains(body, "retire") {
+		t.Errorf("no old name: %d %s", status, body)
+	}
+	if err := saveConfig(config{Hub: srv.URL, Token: "legacy-token-0123", PC: "Old-PC"}); err != nil {
+		t.Fatal(err)
+	}
+	answers(takes("Sixth-PC"), answer(200, `{}`))
+	if status, body := postCode(rename("Sixth-PC", "Old-PC"), code); status != http.StatusOK || strings.Contains(body, "retire") {
+		t.Errorf("from the legacy token: %d %s", status, body)
+	}
+	if n := len(calls("retire")); n != retired {
+		t.Errorf("retired %d more", n-retired)
+	}
+
+	// The hub's refusals: their pages, next removed, and the token as it was.
+	paired := savedConfig()
+	for _, c := range []struct {
+		what   string
+		answer func(hubCall) (int, string)
+		status int
+		page   string
+	}{
+		{"a used code", answer(401, errJSON("pair-code")), 401, "This pairing link has expired or was used already. Choose Connect this PC again."},
+		{"another name's", answer(409, errJSON("name-changed")), 409,
+			"Example-PC changed on the hub since the page opened (another PC was paired as Example-PC, or it was revoked). Choose Connect this PC again."},
+		{"the hub's own trouble", answer(500, errJSON("internal")), 500, "the hub answered 500 for the pairing: the hub&#39;s words for internal. Choose Connect this PC again."},
+		{"an install that is not taken", answer(400, errJSON("install-required")), 400, "the hub answered 400 for the pairing"},
+	} {
+		finished = false
+		before := len(calls("redeem"))
+		answers(c.answer, nil)
+		status, body := postCode(h, code)
+		r := calls("redeem")
+		if status != c.status || !strings.Contains(body, c.page) || len(r) != before+1 || r[before].next == "" {
+			t.Errorf("%s: %d %s (%d requests)", c.what, status, body, len(r)-before)
+		}
+		if now := savedConfig(); now != paired || finished {
+			t.Errorf("%s: tray.json %+v, want %+v; finished %v", c.what, now, paired, finished)
+		}
+	}
+
+	// No answer: the same request twice more, then next stays, for the next check to settle.
+	before := len(calls("redeem"))
+	answers(answer(0, ""), nil)
+	status, body := postCode(h, code)
+	r = calls("redeem")[before:]
+	if status != http.StatusBadGateway || !strings.Contains(body, "The hub did not answer (") ||
+		!strings.Contains(body, "If it took the pairing, this PC connects by itself within 10 minutes; if not, choose Connect this PC again.") {
+		t.Errorf("no answer: %d %s", status, body)
+	}
+	if len(r) != 3 || r[1].text("id") != r[0].text("id") || r[2].text("hash") != r[0].text("hash") {
+		t.Fatalf("no answer: %d requests, want 3 of the same: %+v", len(r), r)
+	}
+	if c := savedConfig(); c.Next != r[0].next || pcTokenID(c.Next) != r[0].text("id") || c.Token != paired.Token {
+		t.Errorf("no answer: tray.json %+v", c)
+	}
+
+	// The hub has the id already: another token, once.
+	var asked int
+	answers(func(c hubCall) (int, string) {
+		if asked++; asked == 1 {
+			return 409, errJSON("id-taken")
+		}
+		return 200, pcJSON("Example-PC", c.text("id"))
+	}, nil)
+	before = len(calls("redeem"))
+	if status, body := postCode(h, code); status != http.StatusOK {
+		t.Errorf("an id the hub has: %d %s", status, body)
+	}
+	r = calls("redeem")[before:]
+	if c := savedConfig(); len(r) != 2 || r[0].text("id") == r[1].text("id") || c.ID != r[1].text("id") || c.Token != r[1].next || c.Next != "" {
+		t.Errorf("an id the hub has: %d requests, tray.json %+v", len(r), c)
+	}
+
+	// The page of a hub from before PC tokens posts its own token: taken alone, checked as that hub checks it, and the
+	// install id kept for the next hub. A PC token, or one this app cannot send, is no such page's.
+	finished = false
+	for _, bad := range []string{first.next, "", "two\nlines", "Hub tökén ~!", strings.Repeat("x", 513)} {
+		if status, body := postToken(h, bad); status != http.StatusBadRequest || !strings.Contains(body, "This page did not come from your hub&#39;s current version.") {
+			t.Errorf("token %q: %d %s", bad, status, body)
+		}
+	}
+	for _, bad := range []string{"nope", strings.Repeat("C", 64), code[:62]} {
+		if status, body := postCode(h, bad); status != http.StatusBadRequest || !strings.Contains(body, "current version") {
+			t.Errorf("code %q: %d %s", bad, status, body)
+		}
+	}
+	if status, body := postToken(h, "refused by the hub"); status != http.StatusUnauthorized || !strings.Contains(body, "did not take that token") {
+		t.Errorf("a token the hub refuses: %d %s", status, body)
+	}
+	if c := savedConfig(); c.Token != r[1].next || finished {
+		t.Fatalf("a refused post saved %+v (finished %v)", c, finished)
+	}
+	if status, body := postToken(h, oldPageToken); status != http.StatusOK || !strings.Contains(body, "This PC is connected and is pushing its Codex chats.") {
+		t.Fatalf("the old page's token: %d %s", status, body)
+	}
+	if c := savedConfig(); c != (config{Hub: srv.URL, Token: oldPageToken, Install: install}) || !finished {
+		t.Errorf("tray.json after the old page's token: %+v (finished %v)", c, finished)
+	}
+}
+
+// The page's address always says when the listener closes, and names an old name (from) only for a PC with a token of
+// its own paired under a name of another key. The name it pairs as is AGENTHYDRA_CODEX_HUB_PC, else the hub's name
+// for this PC, else its own.
+func TestPairURL(t *testing.T) {
+	saved := pairURL
+	pairURL = "https://inbox.example.test/codex-hub/pair"
+	t.Cleanup(func() { pairURL = saved; os.Remove(configPath) })
+	until := time.Unix(1700000000, 0)
+	token, _, _ := newPcToken()
+	for _, c := range []struct {
+		what       string
+		saved      config
+		name, from string
+	}{
+		{"not paired", config{}, "Example-PC", ""},
+		{"the legacy token, another name", config{Token: "legacy-token-0123", PC: "Old-PC"}, "New-PC", ""},
+		{"a PC token, the same name", config{Token: token, PC: "Example-PC"}, "Example-PC", ""},
+		{"a PC token, a name of the same key", config{Token: token, PC: "Office PC"}, "office-pc", ""},
+		{"a PC token without a name", config{Token: token}, "New-PC", ""},
+		{"a PC token, renamed", config{Token: token, PC: "Old-PC"}, "New-PC", "Old-PC"},
+	} {
+		if err := saveConfig(c.saved); err != nil {
+			t.Fatal(err)
+		}
+		link, from := pairLink(43210, "the-state", c.name, until)
+		u, err := url.Parse(link)
+		if err != nil || !strings.HasPrefix(link, pairURL+"?") {
+			t.Errorf("%s: %s %v", c.what, link, err)
+			continue
+		}
+		q := u.Query()
+		if q.Get("port") != "43210" || q.Get("state") != "the-state" || q.Get("pc") != c.name || q.Get("until") != "1700000000" ||
+			from != c.from || q.Get("from") != c.from || q.Has("from") != (c.from != "") {
+			t.Errorf("%s: %s (from %q)", c.what, link, from)
+		}
+	}
+
+	if err := saveConfig(config{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pairName(); got != pcName() {
+		t.Errorf("pairName() unpaired = %q, want %q", got, pcName())
+	}
+	if err := saveConfig(config{Token: token, PC: "Hub-Name"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pairName(); got != "Hub-Name" {
+		t.Errorf("pairName() paired = %q", got)
+	}
+	t.Setenv("AGENTHYDRA_CODEX_HUB_PC", "Env-Name")
+	if got := pairName(); got != "Env-Name" {
+		t.Errorf("pairName() with AGENTHYDRA_CODEX_HUB_PC = %q", got)
+	}
+}
+
+// A token the tray asked the hub to take (next) is settled at the next check: the hub has it, so it is the token; the
+// hub does not have it and the PC has a token of its own, so it goes; the hub does not have it and the PC still has
+// the legacy token, so the exchange is sent again as it was; no answer, so it is asked about again.
+func TestSettleNext(t *testing.T) {
+	t.Cleanup(func() { os.Remove(configPath) })
+	var mu sync.Mutex
+	var whoamiAs, exchangeAs func(hubCall) (int, string)
+	srv, calls := stubHub(t, func(c hubCall) (int, string) {
+		mu.Lock()
+		whoami, exchange := whoamiAs, exchangeAs
+		mu.Unlock()
+		switch c.path {
+		case "/api/codex-hub/whoami":
+			return whoami(c)
+		case "/api/codex-hub/exchange":
+			return exchange(c)
+		}
+		return 404, errJSON("not-found")
+	})
+	answers := func(whoami, exchange func(hubCall) (int, string)) {
+		mu.Lock()
+		whoamiAs, exchangeAs = whoami, exchange
+		mu.Unlock()
+	}
+	answer := func(status int, body string) func(hubCall) (int, string) {
+		return func(hubCall) (int, string) { return status, body }
+	}
+	const legacy = "legacy-token-0123"
+	next, id, hash := newPcToken()
+	a := newApp()
+	settle := func(saved config) map[string]string {
+		t.Helper()
+		if err := saveConfig(saved); err != nil {
+			t.Fatal(err)
+		}
+		a.settleNext()
+		return savedFile(t)
+	}
+
+	answers(func(c hubCall) (int, string) {
+		if c.bearer != next {
+			return 401, errJSON("unknown-token")
+		}
+		return 200, pcJSON("Example-PC", pcTokenID(c.bearer))
+	}, nil)
+	f := settle(config{Hub: srv.URL, Token: legacy, Next: next})
+	if f["token"] != next || f["pc"] != "Example-PC" || f["id"] != id || f["next"] != "" || !validInstall(f["install"]) {
+		t.Errorf("a token the hub has: tray.json %v", f)
+	}
+	if w := calls("whoami"); len(w) != 1 || w[0].install != f["install"] {
+		t.Errorf("whoami: %+v", w)
+	}
+
+	answers(answer(401, errJSON("unknown-token")), answer(500, errJSON("internal")))
+	own := pcConfig(srv.URL)
+	own.Next = next
+	if f := settle(own); f["token"] != own.Token || f["pc"] != own.PC || f["next"] != "" {
+		t.Errorf("a token the hub does not have, with a PC token: tray.json %v", f)
+	}
+	if n := len(calls("exchange")); n != 0 {
+		t.Errorf("exchanged %d times with a PC token", n)
+	}
+
+	answers(answer(401, errJSON("unknown-token")), func(c hubCall) (int, string) { return 200, pcJSON("Example-PC", c.text("id")) })
+	f = settle(config{Hub: srv.URL, Token: legacy, Next: next})
+	if ex := calls("exchange"); len(ex) != 1 || ex[0].text("id") != id || ex[0].text("hash") != hash || ex[0].bearer != legacy || ex[0].install == "" {
+		t.Errorf("the exchange sent again: %+v", ex)
+	}
+	if f["token"] != next || f["id"] != id || f["next"] != "" {
+		t.Errorf("the exchange sent again: tray.json %v", f)
+	}
+
+	for what, no := range map[string]func(hubCall) (int, string){
+		"no answer":            answer(0, ""),
+		"the hub's trouble":    answer(503, errJSON("store-unreadable")),
+		"an unreadable answer": answer(200, `{"pc":"Example-PC","id":"0000000000000000"}`),
+	} {
+		answers(no, answer(500, errJSON("internal")))
+		exchanged := len(calls("exchange"))
+		if f := settle(config{Hub: srv.URL, Token: legacy, Next: next}); f["next"] != next || f["token"] != legacy {
+			t.Errorf("%s: tray.json %v", what, f)
+		}
+		if n := len(calls("exchange")); n != exchanged {
+			t.Errorf("%s: exchanged", what)
+		}
+	}
+}
+
+// A PC token with no name in tray.json, or with another token's id there (one written in by hand), gets both from
+// whoami at the next check; one that has them is not asked about.
+func TestWhoamiFillsPC(t *testing.T) {
+	t.Cleanup(func() { os.Remove(configPath) })
+	srv, calls := stubHub(t, func(c hubCall) (int, string) {
+		if c.path == "/api/codex-hub/whoami" && isPcToken(c.bearer) {
+			return 200, pcJSON("Hand-PC", pcTokenID(c.bearer))
+		}
+		return 404, errJSON("not-found")
+	})
+	token, id, _ := newPcToken()
+	a := newApp()
+	for _, saved := range []config{
+		{Hub: srv.URL, Token: token},
+		{Hub: srv.URL, Token: token, PC: "Hand-PC", ID: "0123456789abcdef"},
+		{Hub: srv.URL, Token: token, ID: id},
+	} {
+		if err := saveConfig(saved); err != nil {
+			t.Fatal(err)
+		}
+		asked := len(calls("whoami"))
+		a.updateOnce()
+		if f := savedFile(t); f["token"] != token || f["pc"] != "Hand-PC" || f["id"] != id || !validInstall(f["install"]) {
+			t.Errorf("tray.json %+v after the check: %v", saved, f)
+		}
+		if w := calls("whoami"); len(w) != asked+1 || w[asked].bearer != token {
+			t.Errorf("tray.json %+v: whoami asked %d times", saved, len(w)-asked)
+		}
+	}
+	asked := len(calls("whoami"))
+	a.updateOnce()
+	if n := len(calls("whoami")); n != asked {
+		t.Errorf("a named token was asked about %d times", n-asked)
 	}
 }
 
@@ -598,17 +1165,6 @@ func TestInfoPlist(t *testing.T) {
 	}
 }
 
-// postToken posts token to h as the hub's pairing page does, for this pairing's state.
-func postToken(h http.HandlerFunc, state, token string) (int, string) {
-	form := url.Values{"state": {state}, "token": {token}}
-	req := httptest.NewRequest(http.MethodPost, "/paired", strings.NewReader(form.Encode()))
-	req.Header.Set("content-type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	h(rec, req)
-	b, _ := io.ReadAll(rec.Body)
-	return rec.Code, string(b)
-}
-
 // savedFile is tray.json as it is on disk.
 func savedFile(t *testing.T) map[string]string {
 	t.Helper()
@@ -626,22 +1182,21 @@ func savedFile(t *testing.T) map[string]string {
 // Pairing saves the token alone: the hub stays the build's (-X main.hubURL), so the hub a later build names is the
 // one the PC uses.
 func TestPairingLeavesTheHubToTheBuild(t *testing.T) {
-	const token = "Hub Token ~!"
-	var platforms []string
-	srv := fakeHub(t, token, &platforms)
+	srv, _ := stubHub(t, func(c hubCall) (int, string) { return 200, pcJSON("Example-PC", c.text("id")) })
 	saved := hubURL
 	t.Cleanup(func() { hubURL = saved; os.Remove(configPath) })
 	os.Remove(configPath)
 	hubURL = srv.URL + "/"
 	a := newApp()
-	if code, body := postToken(a.pairHandler("the-state", func() {}), "the-state", token); code != http.StatusOK {
+	if code, body := postCode(a.pairHandler(testOpen, func() {}), strings.Repeat("0a", 32)); code != http.StatusOK {
 		t.Fatalf("pairing: %d %s", code, body)
 	}
-	if f := savedFile(t); f["token"] != token || f["hub"] != "" {
-		t.Errorf("tray.json %v: want the token and no hub", f)
+	f := savedFile(t)
+	if !isPcToken(f["token"]) || f["pc"] != "Example-PC" || f["hub"] != "" {
+		t.Errorf("tray.json %v: want the token, its name and no hub", f)
 	}
 	hubURL = "https://hub-next.example.test"
-	if c := loadConfig(); c.Hub != hubURL || c.Token != token {
+	if c := loadConfig(); c.Hub != hubURL || c.Token != f["token"] {
 		t.Errorf("with the next build's hub: %+v", c)
 	}
 }

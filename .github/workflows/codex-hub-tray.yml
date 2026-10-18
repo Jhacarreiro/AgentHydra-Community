@@ -1,18 +1,38 @@
 name: Codex hub tray
 
-# The Codex hub's tray app (codex-hub-tray/, Go): go vet and go test, its end-to-end test against a fake hub on
-# Linux (test-linux.sh), and its reproducible build (build.sh), which must give the same SHA-256 twice from one commit,
-# for the builds and for the licence files beside them.
-# ci.yml has no Go in it, so a change to the tray is checked here, and only a change that touches it.
+# The Codex hub's tray app (codex-hub-tray/, Go): go vet and go test, its end-to-end test on Linux (test-linux.sh)
+# against a fake hub and against the real one (scripts/codex-hub-test-daemon.ts), and its reproducible build
+# (build.sh), which must give the same SHA-256 twice from one commit, for the builds and for the licence files beside
+# them.
+# ci.yml has no Go in it, so a change to the tray is checked here, and only a change that touches it or the hub's side
+# of what it talks to.
 #
 # The builds here carry example addresses and an example public key (the key whose seed is the bytes 0 to 31, which
 # the tray's and the signing script's tests use), never an operator's: they are compared and thrown away.
 on:
   push:
     branches: [main]
-    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE', 'NOTICE']
+    paths:
+      - 'codex-hub-tray/**'
+      - '.github/workflows/codex-hub-tray.yml'
+      - 'scripts/third-party-licenses.*'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'server/src/core/codex-hub*.ts'
+      - 'server/src/routes/codex-hub.ts'
+      - 'scripts/codex-hub-*.ts'
+      - 'server/tests/codex-hub-daemon.ts'
   pull_request:
-    paths: ['codex-hub-tray/**', '.github/workflows/codex-hub-tray.yml', 'scripts/third-party-licenses.*', 'LICENSE', 'NOTICE']
+    paths:
+      - 'codex-hub-tray/**'
+      - '.github/workflows/codex-hub-tray.yml'
+      - 'scripts/third-party-licenses.*'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'server/src/core/codex-hub*.ts'
+      - 'server/src/routes/codex-hub.ts'
+      - 'scripts/codex-hub-*.ts'
+      - 'server/tests/codex-hub-daemon.ts'
   workflow_dispatch:
 
 concurrency:
@@ -37,7 +57,10 @@ jobs:
       run:
         working-directory: codex-hub-tray
     steps:
+      # The whole history: test-linux.sh builds the tray of the commit before PC tokens, to see it move.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
 
       # The Go go.mod's toolchain line names: build.sh builds with exactly that one.
       - name: Setup Go
@@ -61,7 +84,13 @@ jobs:
       - name: go test
         run: go test ./...
 
-      # A private session bus (dbus-run-session), a stand-in tray host and a fake hub; nothing outside its scratch folder.
+      # test-linux.sh runs the real hub too (scripts/codex-hub-test-daemon.ts), which needs the root's packages.
+      - name: Install dependencies (root)
+        working-directory: .
+        run: bun install --frozen-lockfile
+
+      # A private session bus (dbus-run-session), a stand-in tray host, a fake hub and the real one; nothing outside
+      # its scratch folder.
       - name: End to end (test-linux.sh)
         run: |
           command -v dbus-run-session >/dev/null || { sudo apt-get update && sudo apt-get install -y dbus; }

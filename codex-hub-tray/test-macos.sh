@@ -44,7 +44,8 @@ APP="$HOME/Library/Application Support/codex-hub"
 PUSH="$APP/codex-hub-push"
 LOG="$APP/tray.log"
 AGENT="$HOME/Library/LaunchAgents/$ID.plist"
-TOKEN="e2e-Token_0123456789abcdef"
+# The hub's admin token, which no PC route takes: a PC pairs with a token of its own.
+ADMIN="e2e-Admin_0123456789abcdef"
 # The hub sits behind an access proxy that wants a header of its own on every request, the tray's included.
 ACCESS="X-Hub-Access: e2e-access"
 export AGENTHYDRA_CODEX_HUB_HEADERS='{"X-Hub-Access":"e2e-access"}'
@@ -139,7 +140,7 @@ publish() {
 	cp "$1" "$T/stage/$2" && "$T/bin/signbuild" sign "${3:-$T/update.key}" "$T/stage/$2" || return 1
 	mv "$T/stage/$2.sig" "$T/hub/$2.sig" && mv "$T/stage/$2" "$T/hub/$2"
 }
-"$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
+"$T/bin/fakehub" -dir "$T/hub" -admin "$ADMIN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
 BG+=($!)
 wait_for 10 test -s "$T/hub.addr" || { echo "FAIL: the fake hub did not start"; exit 1; }
 HUB=$(cat "$T/hub.addr")
@@ -206,16 +207,17 @@ check "it opens the pairing page" wait_for 10 grep -q "open https://inbox.exampl
 LINK=$(grep -o 'https://inbox.example.test/codex-hub/pair?[^ ]*' "$T/open.log" | tail -1)
 PORT=$(echo "$LINK" | grep -o 'port=[0-9]*' | cut -d= -f2)
 STATE=$(echo "$LINK" | grep -o 'state=[0-9a-f]*' | cut -d= -f2)
-code=$(curl -s -o /dev/null -w '%{http_code}' -d state=wrong -d "token=$TOKEN" "http://127.0.0.1:$PORT/paired")
+NEVER=$(printf never-made | shasum -a 256 | cut -c1-64)
+code=$(curl -s -o /dev/null -w '%{http_code}' -d state=wrong -d "code=$NEVER" "http://127.0.0.1:$PORT/paired")
 check "a post with the wrong state is refused (400)" test "$code" = 400
-code=$(curl -s -o /dev/null -w '%{http_code}' -d "state=$STATE" -d token=short "http://127.0.0.1:$PORT/paired")
-check "a token the hub does not take is refused (401)" test "$code" = 401
-code=$(curl -s -o "$T/shape.html" -w '%{http_code}' -d "state=$STATE" -d "token=two%0Alines" "http://127.0.0.1:$PORT/paired")
-check "a token with a line break is refused (400)" test "$code" = 400
-check "  ...saying so, not that the link is wrong" grep -q "shape this app cannot use" "$T/shape.html"
-code=$(curl -s -o /dev/null -w '%{http_code}' -d "state=$STATE" -d "token=$TOKEN" "http://127.0.0.1:$PORT/paired")
-check "the hub page's post is taken (200)" test "$code" = 200
-check "the token is saved" grep -q "\"token\": \"$TOKEN\"" "$APP/tray.json"
+code=$(curl -s -o "$T/post.html" -w '%{http_code}' -d "state=$STATE" -d "code=$NEVER" "http://127.0.0.1:$PORT/paired")
+check "a code the hub never made is refused (401)" test "$code" = 401
+check "  ...saying it expired or was used" grep -q "expired or was used" "$T/post.html"
+CODE=$(curl -s -X POST "$HUB/fake/pair-code?pc=E2E-Mac")
+code=$(curl -s -o /dev/null -w '%{http_code}' -d "state=$STATE" -d "code=$CODE" "http://127.0.0.1:$PORT/paired")
+check "the code from the hub's page is taken (200)" test "$code" = 200
+PCTOKEN=$(sed -n 's/^ *"token": "\([^"]*\)".*/\1/p' "$APP/tray.json")
+check "a token of this PC's own is saved" bash -c "[[ '$PCTOKEN' =~ ^chp_[0-9a-f]{16}_[0-9a-f]{64}\$ ]]"
 check "the config is private (600)" test "$(mode "$APP/tray.json")" = 600
 
 echo "== pusher"
@@ -224,7 +226,7 @@ PUSH1=$(pusher_pid)
 check "the pusher is the hub's build" has_sha "$PUSH" "$PUSHSUM"
 check "the pusher is executable (755)" test "$(mode "$PUSH")" = 755
 check "the pusher gets the hub" grep -qx "AGENTHYDRA_CODEX_HUB_URL=$HUB" "$APP/pusher-env"
-check "  ...the token" grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN" "$APP/pusher-env"
+check "  ...the token" grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$PCTOKEN" "$APP/pusher-env"
 check "  ...UPDATE=off" grep -qx "AGENTHYDRA_CODEX_HUB_UPDATE=off" "$APP/pusher-env"
 check "  ...and the hub's extra headers" grep -qx "AGENTHYDRA_CODEX_HUB_HEADERS=$AGENTHYDRA_CODEX_HUB_HEADERS" "$APP/pusher-env"
 check "the pusher leads a process group of its own" test "$(ps -o pgid= -p "$PUSH1" | tr -d ' ')" = "$PUSH1"

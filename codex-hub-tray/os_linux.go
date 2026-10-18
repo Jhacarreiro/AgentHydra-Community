@@ -163,7 +163,7 @@ func install(from string) {
 		say("There is no desktop session here, so it runs without an icon.")
 	}
 	if !hasDisplay() {
-		say("To connect this PC, open the pairing address it writes to that log in a browser on this PC, or put the hub token in " + configPath + ".")
+		say("To connect this PC, open the pairing address it writes to that log in a browser on this PC, or put a token from the hub (scripts/codex-hub-pcs.ts add) in " + configPath + ".")
 	}
 	if first && desktop {
 		message("Codex Hub is installed and starts when you log in. It sits in the system tray (on GNOME, with the AppIndicator extension).\n\nIf the browser opens the hub's pairing page, choose Connect there to link this PC.")

@@ -1,9 +1,10 @@
 // Codex Hub tray app for Windows, Linux and macOS: one program that installs itself for this user, starts when the
 // user logs in, keeps the pusher (server/src/codex-hub-push-main.ts) running, and keeps both builds at the ones the
 // hub hands out for this platform (GET /api/codex-hub/pusher?platform=P and /api/codex-hub/tray?platform=P). A PC is
-// set up by opening the program once; the hub token comes from the hub's pairing page in the browser (pair.go), so
-// nothing is typed or copied. What differs per system is in os_windows.go, os_unix.go (Linux and macOS),
-// os_linux.go and os_darwin.go.
+// set up by opening the program once: it gets a token of its own through the hub's pairing page in the browser
+// (pair.go), so nothing is typed or copied, and a PC paired before PCs had tokens of their own trades the token they
+// all shared for one at its next check (tray.go exchange). What differs per system is in os_windows.go, os_unix.go
+// (Linux and macOS), os_linux.go and os_darwin.go.
 //
 // Build with build.sh, which makes the Windows and Linux builds, and the macOS ones on a Mac (build-macos.sh), the
 // same bytes every time from the same commit: the addresses are the operator's, given at build time, with the public
@@ -98,6 +99,7 @@ func main() {
 	if err := unpinBuildHub(); err != nil {
 		log.Println("config:", err)
 	}
+	keepInstall()
 	startup()
 	run()
 }
@@ -107,7 +109,7 @@ func openLog() {
 	if st, err := os.Stat(path); err == nil && st.Size() > 2<<20 {
 		os.Remove(path)
 	}
-	if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+	if f, err := openPrivate(path); err == nil {
 		log.SetOutput(f)
 	}
 }

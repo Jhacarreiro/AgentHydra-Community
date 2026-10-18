@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # End-to-end test of the tray app on Linux, without a desktop: a scratch HOME, a private session bus
-# (dbus-run-session) with a stand-in tray host (testdata/sniwatcher), and a fake hub (testdata/fakehub) that serves
-# the tray and a fake pusher script, signed with a key made for the run (testdata/signbuild, as
-# scripts/codex-hub-sign.ts signs them). Each check prints PASS or FAIL; the script exits non-zero if any failed.
-# It needs Go, curl and dbus-run-session (the dbus-daemon package), and touches nothing outside its scratch folder.
+# (dbus-run-session) with a stand-in tray host (testdata/sniwatcher), and a fake hub (testdata/fakehub) that pairs
+# PCs with tokens of their own and serves the tray and a fake pusher script, signed with a key made for the run
+# (testdata/signbuild, as scripts/codex-hub-sign.ts signs them). A PC on the token every PC shared before moves to
+# one of its own, with this tray and with the tray of the commit before PC tokens (git archive, so the checkout must
+# have that commit); and the tray pairs, moves and is revoked against the real hub too
+# (scripts/codex-hub-test-daemon.ts). Each check prints PASS or FAIL; the script exits non-zero if any failed.
+# It needs Go, curl and dbus-run-session (the dbus-daemon package), and Bun with the root's node_modules for the
+# real hub (bun install --frozen-lockfile at the root); without that commit or Bun those sections are skipped, and
+# fail under CI=true. It touches nothing outside its scratch folder.
 #
 #   ./test-linux.sh          (KEEP=1 keeps the scratch folder)
 set -u
@@ -23,7 +28,8 @@ export GOPATH GOMODCACHE GOCACHE
 T=$(mktemp -d "${TMPDIR:-/tmp}/codex-hub-tray-e2e.XXXXXX")
 export HOME="$T/home"
 export XDG_RUNTIME_DIR="$T/run"
-unset XDG_DATA_HOME XDG_CONFIG_HOME DISPLAY WAYLAND_DISPLAY AGENTHYDRA_CODEX_HUB_TOKEN
+unset XDG_DATA_HOME XDG_CONFIG_HOME DISPLAY WAYLAND_DISPLAY AGENTHYDRA_CODEX_HUB_TOKEN AGENTHYDRA_CODEX_HUB_PC \
+	CCMANAGERUI_CODEX_HUB_PC AGENTHYDRA_CODEX_HUB_INSTALL AGENTHYDRA_HOME CCMANAGERUI_HOME
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$T/bin" "$T/hub" "$T/dl"
 chmod 700 "$XDG_RUNTIME_DIR"
 APP="$HOME/.local/share/codex-hub"
@@ -31,7 +37,9 @@ TRAY="$APP/codex-hub-tray"
 PUSH="$APP/codex-hub-push"
 LOG="$APP/tray.log"
 DESKTOP="$HOME/.config/autostart/codex-hub-tray.desktop"
-TOKEN="e2e-Token_0123456789abcdef"
+# The hub's admin token, which no PC route takes, and the token every PC shared before PCs had tokens of their own.
+ADMIN="e2e-Admin_0123456789abcdef"
+LEGACY="e2e-Legacy_0123456789abcdef"
 # The hub sits behind an access proxy that wants a header of its own on every request, the tray's included.
 ACCESS="X-Hub-Access: e2e-access"
 export AGENTHYDRA_CODEX_HUB_HEADERS='{"X-Hub-Access":"e2e-access"}'
@@ -81,11 +89,45 @@ log_has() { grep -q -- "$1" "$LOG" 2>/dev/null; }
 log_count() { grep -c -- "$1" "$LOG" 2>/dev/null || true; }
 locked() { ! flock -n "$APP/tray.lock" true; } # someone holds the tray's lock
 last_item() { grep -o 'item [^ ]* icon 32x32 visible [1-9]' "$T/sni.log" | tail -1 | cut -d' ' -f2; }
+field() { sed -n "s/^ *\"$2\": \"\([^\"]*\)\".*/\\1/p" "$1" 2>/dev/null; } # field FILE NAME: a string the tray wrote there
+pc_token() { [[ $1 =~ ^chp_[0-9a-f]{16}_[0-9a-f]{64}$ ]]; }
+env_is() { grep -qx -- "$1" "$APP/pusher-env" 2>/dev/null; } # env_is NAME=VALUE: the running pusher was started so
+more() { [ "$(grep -c -- "$1" "$2" 2>/dev/null)" -gt "$3" ]; } # more TEXT FILE N: FILE has TEXT on more than N lines
+status_count() { log_count "status: $1"; }
+status_more() { more "status: $1" "$LOG" "$2"; } # status_more TEXT N: the headless tray said TEXT since there were N
+hex() { printf '%s' "$1" | sha256sum | cut -c1-"$2"; } # hex SEED N: N hex digits, the same for the same seed
+# headless [NAME=VALUE...]: starts the installed tray without a session bus, as on a PC without a desktop; it has its
+# signal handlers once up_headless is true.
+headless() {
+	H0=$(log_count "no desktop session to show an icon in")
+	(
+		unset DBUS_SESSION_BUS_ADDRESS
+		export XDG_RUNTIME_DIR="$T/run-empty"
+		[ $# -eq 0 ] || export "$@"
+		exec "$TRAY" >>"$T/headless.out" 2>&1
+	) &
+}
+up_headless() { [ "$(log_count "no desktop session to show an icon in")" -gt "$H0" ] && has_tray; }
+stop_tray() { # stops the installed tray, and its pusher
+	local pid push
+	pid=$(tray_pid)
+	push=$(pusher_pid)
+	[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
+	wait_for 10 dead "$pid"
+	wait_for 10 dead "$push"
+}
 
 BG=()
+REALHUB=
 cleanup() {
 	disown -a
-	for p in $(pgrep -f "^$TRAY" 2>/dev/null) $(pgrep -f "$PUSH" 2>/dev/null) "${BG[@]}"; do kill -9 "$p" 2>/dev/null; done
+	if [ -n "$REALHUB" ]; then # it stops the daemon it started
+		kill -TERM "$REALHUB" 2>/dev/null
+		wait_for 20 dead "$REALHUB"
+	fi
+	for p in $(pgrep -f "^$TRAY" 2>/dev/null) $(pgrep -f "^$T/home2/" 2>/dev/null) $(pgrep -f "$PUSH" 2>/dev/null) "${BG[@]}"; do
+		kill -9 "$p" 2>/dev/null
+	done
 	if [ -n "${KEEP:-}" ]; then echo "kept $T"; else rm -rf "$T"; fi
 }
 trap cleanup EXIT
@@ -106,7 +148,7 @@ publish() {
 }
 "$T/bin/sniwatcher" >"$T/sni.log" 2>&1 &
 BG+=($!)
-"$T/bin/fakehub" -dir "$T/hub" -token "$TOKEN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
+"$T/bin/fakehub" -dir "$T/hub" -admin "$ADMIN" -header "$ACCESS" -addr-file "$T/hub.addr" >"$T/hub.log" 2>&1 &
 BG+=($!)
 wait_for 10 test -s "$T/hub.addr" || { echo "FAIL: the fake hub did not start"; exit 1; }
 HUB=$(cat "$T/hub.addr")
@@ -148,26 +190,48 @@ check "with no display it writes the pairing address" wait_for 10 log_has "open 
 LINK=$(grep -o 'https://inbox.example.test/codex-hub/pair?[^ ]*' "$LOG" | tail -1)
 PORT=$(echo "$LINK" | grep -o 'port=[0-9]*' | cut -d= -f2)
 STATE=$(echo "$LINK" | grep -o 'state=[0-9a-f]*' | cut -d= -f2)
-code=$(curl -s -o /dev/null -w '%{http_code}' -d state=wrong -d "token=$TOKEN" "http://127.0.0.1:$PORT/paired")
+check "the address says when its listener closes" bash -c "echo '$LINK' | grep -Eq '[?&]until=[0-9]{10}(&|\$)'"
+check "  ...and names no old name" bash -c "! echo '$LINK' | grep -q '[?&]from='"
+post() { curl -s -o "$T/post.html" -w '%{http_code}' "$@" "http://127.0.0.1:$PORT/paired"; } # post CURL-ARGS...
+NEVER=$(hex never-made 64)
+code=$(post -d state=wrong -d "code=$NEVER")
 check "a post with the wrong state is refused (400)" test "$code" = 400
-code=$(curl -s -o /dev/null -w '%{http_code}' -d "state=$STATE" -d token=short "http://127.0.0.1:$PORT/paired")
-check "a token the hub does not take is refused (401)" test "$code" = 401
-code=$(curl -s -o "$T/shape.html" -w '%{http_code}' -d "state=$STATE" -d "token=two%0Alines" "http://127.0.0.1:$PORT/paired")
-check "a token with a line break is refused (400)" test "$code" = 400
-check "  ...saying so, not that the link is wrong" grep -q "shape this app cannot use" "$T/shape.html"
-code=$(curl -s -o "$T/paired.html" -w '%{http_code}' -d "state=$STATE" -d "token=$TOKEN" "http://127.0.0.1:$PORT/paired")
-check "the hub page's post is taken (200)" test "$code" = 200
-check "the token is saved" grep -q "\"token\": \"$TOKEN\"" "$APP/tray.json"
+code=$(post -H "Host: localhost:$PORT" -d "state=$STATE" -d "code=$NEVER")
+check "a post to another Host is refused (400)" test "$code" = 400
+code=$(post -d "state=$STATE" -d "code=$NEVER")
+check "a code the hub never made is refused (401)" test "$code" = 401
+check "  ...saying it expired or was used" grep -q "expired or was used" "$T/post.html"
+CODE=$(curl -s -X POST "$HUB/fake/pair-code?pc=E2E-PC")
+code=$(post -d "state=$STATE" -d "code=$CODE")
+check "the code from the hub's page is taken (200)" test "$code" = 200
+check "  ...connected as the name the hub gave it" grep -q "connected as E2E-PC" "$T/post.html"
+PCTOKEN=$(field "$APP/tray.json" token)
+INSTALL=$(tr -d '\n' <"$HOME/.agenthydra/codex-hub-push-install")
+check "tray.json holds a token of this PC's own" pc_token "$PCTOKEN"
+check "  ...the name the hub has it under" test "$(field "$APP/tray.json" pc)" = E2E-PC
+check "  ...its id" test "$(field "$APP/tray.json" id)" = "${PCTOKEN:4:16}"
+check "  ...the install id" test -n "$INSTALL" -a "$(field "$APP/tray.json" install)" = "$INSTALL"
+check "  ...and no next" bash -c "! grep -q '\"next\"' '$APP/tray.json'"
 check "the config is private (600)" test "$(mode "$APP/tray.json")" = 600
+cp "$APP/tray.json" "$T/paired.json"
+R0=$(grep -c "POST /api/codex-hub/redeem 401" "$T/hub.log")
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "$ACCESS" -H "x-codex-hub-install: $INSTALL" -H 'content-type: application/json' \
+	-d "{\"code\":\"$CODE\",\"id\":\"$(hex another-id 16)\",\"hash\":\"$(hex another-hash 64)\"}" "$HUB/api/codex-hub/redeem")
+check "the same code with another token is refused at the hub (401)" test "$code" = 401
+check "  ...as its log says" more "POST /api/codex-hub/redeem 401" "$T/hub.log" "$R0"
 
 echo "== pusher"
 check "the pusher is downloaded and started" wait_for 20 has_pusher
 PUSH1=$(pusher_pid)
 check "the pusher is the hub's build" has_sha "$PUSH" "$PUSHSUM"
 check "the pusher is executable (755)" test "$(mode "$PUSH")" = 755
-check "the pusher gets the hub, the token and no updates of its own" \
-	grep -qx "AGENTHYDRA_CODEX_HUB_URL=$HUB" "$APP/pusher-env"
-check "  ...the token" grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN" "$APP/pusher-env"
+check "the pusher gets the hub, this PC's token, its name and install id, and no updates of its own" \
+	wait_for 10 env_is "AGENTHYDRA_CODEX_HUB_URL=$HUB"
+check "  ...the token" env_is "AGENTHYDRA_CODEX_HUB_TOKEN=$PCTOKEN"
+check "  ...the name the hub has it under" env_is "AGENTHYDRA_CODEX_HUB_PC=E2E-PC"
+check "  ...the install id in ~/.agenthydra/codex-hub-push-install" env_is "AGENTHYDRA_CODEX_HUB_INSTALL=$INSTALL"
+check "  ...which is private (600)" test "$(mode "$HOME/.agenthydra/codex-hub-push-install")" = 600
+check "  ...and the one the hub had the redeem with" grep -q "install=$INSTALL POST /api/codex-hub/redeem 200" "$T/hub.log"
 check "  ...UPDATE=off" grep -qx "AGENTHYDRA_CODEX_HUB_UPDATE=off" "$APP/pusher-env"
 check "  ...and the hub's extra headers" grep -qx "AGENTHYDRA_CODEX_HUB_HEADERS=$AGENTHYDRA_CODEX_HUB_HEADERS" "$APP/pusher-env"
 check "the pusher leads a process group of its own" test "$(ps -o pgid= -p "$PUSH1" | tr -d ' ')" = "$PUSH1"
@@ -341,19 +405,25 @@ PUSH5=$(pusher_pid)
 sleep 2
 check "  ...and keeps running" alive "$PID5"
 check "nothing panicked" bash -c "! grep -q panic '$T/headless.out' '$LOG'"
-# Without a desktop there is no menu, so no Connect this PC: a new hub token goes into tray.json by hand, and SIGUSR1
-# (or the next check) has the pusher start again with it.
-printf '{\n  "token": "%s"\n}\n' "$TOKEN-next" >"$APP/tray.json"
+# Without a desktop there is no menu, so no Connect this PC: a token from the hub (scripts/codex-hub-pcs.ts add) goes
+# into tray.json by hand, and SIGUSR1 (or the next check) has the pusher start again with it.
+ADDED=$(curl -s -X POST "$HUB/fake/add?pc=Hand-PC")
+printf '{\n  "token": "%s"\n}\n' "$ADDED" >"$APP/tray.json"
 kill -USR1 "$PID5"
-check "a token written into tray.json by hand restarts the pusher with it" \
-	wait_for 20 grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN-next" "$APP/pusher-env"
-check "  ...and the hub's refusal of that one is in the log" \
-	wait_for 10 log_has "status: The hub refused the token: choose Connect this PC"
+check "a token from the hub written into tray.json by hand restarts the pusher with it" \
+	wait_for 20 env_is "AGENTHYDRA_CODEX_HUB_TOKEN=$ADDED"
+named() { [ "$(field "$APP/tray.json" pc)" = "$1" ] && [ "$(field "$APP/tray.json" id)" = "$2" ]; } # named PC ID
+check "  ...and whoami puts its name and id in tray.json" wait_for 10 named Hand-PC "${ADDED:4:16}"
+check "  ...and the pusher's environment" wait_for 20 env_is "AGENTHYDRA_CODEX_HUB_PC=Hand-PC"
+S0=$(status_count "The hub refused the token: choose Connect this PC")
+printf '{\n  "token": "chp_%s_%s"\n}\n' "$(hex unknown-id 16)" "$(hex unknown-secret 64)" >"$APP/tray.json"
+kill -USR1 "$PID5"
+check "a token the hub does not know is refused" wait_for 20 status_more "The hub refused the token: choose Connect this PC" "$S0"
 check "  ...with the config still private (600)" test "$(mode "$APP/tray.json")" = 600
-printf '{\n  "token": "%s"\n}\n' "$TOKEN" >"$APP/tray.json"
+cp "$T/paired.json" "$APP/tray.json"
 kill -USR1 "$PID5"
-check "the hub's token, put back the same way, is taken" \
-	wait_for 20 grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN" "$APP/pusher-env"
+check "the paired config, put back the same way, is taken" \
+	wait_for 20 env_is "AGENTHYDRA_CODEX_HUB_TOKEN=$PCTOKEN"
 check "  ...and the pusher runs with it" wait_for 20 has_pusher
 check "  ...and the tray is pushing again" wait_for 10 bash -c "tail -1 <(grep 'status:' '$LOG') | grep -q 'Pushing this PC'"
 PUSH5=$(pusher_pid)
@@ -419,13 +489,222 @@ kill -TERM "$PID9"
 check "SIGTERM stops it" wait_for 10 dead "$PID9"
 check "  ...and its pusher" wait_for 10 dead "$PUSH9"
 
+# From here on the hub hands out the first builds again: the tray with the operator's first key, and the pusher it
+# signed.
+publish "$T/dl/codex-hub-tray-$P" "codex-hub-tray-$P"
+publish "$T/push-good" "codex-hub-push-$P"
+install -m 755 "$T/dl/codex-hub-tray-$P" "$TRAY"
+
+echo "== moving from the legacy token"
+# A PC paired before PCs had tokens of their own has the legacy token in tray.json, and its pusher pushed with the id
+# in its install file, which the hub has for its key, pending. Its next check trades the token for one of its own.
+"$T/bin/fakehub" -dir "$T/hub" -admin "$ADMIN" -legacy "$LEGACY" -pending "e2e-old-pc=$INSTALL" -header "$ACCESS" \
+	-addr-file "$T/hub2.addr" >"$T/hub2.log" 2>&1 &
+BG+=($!)
+wait_for 10 test -s "$T/hub2.addr" || { echo "FAIL: the second fake hub did not start"; exit 1; }
+HUB2=$(cat "$T/hub2.addr")
+legacy_at() { printf '{\n  "hub": "%s",\n  "token": "%s"\n}\n' "$1" "$LEGACY" >"$APP/tray.json"; } # legacy_at HUB
+cp "$T/paired.json" "$APP/tray.json"
+headless
+check "a tray starts without a bus" wait_for 10 up_headless
+check "  ...and puts the hub's pusher in place" wait_for 30 has_sha "$PUSH" "$PUSHSUM"
+check "  ...and runs it" wait_for 20 has_pusher
+PUSHA=$(pusher_pid)
+legacy_at "$HUB2"
+kill -USR1 "$(tray_pid)"
+check "with the hub's window open, the exchange is taken (200)" \
+	wait_for 20 grep -q "bearer=legacy install=$INSTALL POST /api/codex-hub/exchange 200" "$T/hub2.log"
+MOVED=$(field "$APP/tray.json" token)
+check "tray.json holds a token of this PC's own" pc_token "$MOVED"
+check "  ...the name of the key it moved" test "$(field "$APP/tray.json" pc)" = e2e-old-pc
+check "  ...and the install id" test "$(field "$APP/tray.json" install)" = "$INSTALL"
+check "the pusher starts again with that token" wait_for 20 env_is "AGENTHYDRA_CODEX_HUB_TOKEN=$MOVED"
+check "  ...as another process" bash -c "[ \"\$(tr -dc 0-9 <'$APP/pusher.pid')\" != '$PUSHA' ]"
+check "  ...with the name and the install id" bash -c "grep -qx 'AGENTHYDRA_CODEX_HUB_PC=e2e-old-pc' '$APP/pusher-env' && grep -qx 'AGENTHYDRA_CODEX_HUB_INSTALL=$INSTALL' '$APP/pusher-env'"
+check "the hub has nothing pending" bash -c "curl -s '$HUB2/fake/state' | grep -q '\"pending\":\[\]'"
+check "the tray says it pushes as that name" wait_for 20 status_more "Pushing this PC's Codex chats as e2e-old-pc" 0
+stop_tray
+
+# The build's hub, which has no legacy token: the exchange is refused.
+printf '{\n  "token": "%s"\n}\n' "$LEGACY" >"$APP/tray.json"
+S0=$(status_count "This PC must be paired again: choose Connect this PC")
+# That hub does not know the token, so its log names it "other".
+X0=$(grep -c "bearer=other install=$INSTALL POST /api/codex-hub/exchange 401" "$T/hub.log")
+headless
+check "without the legacy token on the hub: This PC must be paired again" \
+	wait_for 30 status_more "This PC must be paired again: choose Connect this PC" "$S0"
+check "  ...after the hub refused the exchange (401)" more "bearer=other install=$INSTALL POST /api/codex-hub/exchange 401" "$T/hub.log" "$X0"
+check "  ...keeping the legacy token" test "$(field "$APP/tray.json" token)" = "$LEGACY"
+X1=$(grep -c "POST /api/codex-hub/exchange 401" "$T/hub.log")
+wait_for 10 up_headless
+kill -USR1 "$(tray_pid)"
+check "  ...and asking again at the next check" wait_for 20 more "POST /api/codex-hub/exchange 401" "$T/hub.log" "$X1"
+stop_tray
+
+# Another install id in the pusher's file than the one the hub has for the pending key: refused too.
+curl -s -X POST "$HUB2/fake/pending?pc=E2E-Elsewhere&install=e2e-elsewhere-install" >/dev/null
+cp "$HOME/.agenthydra/codex-hub-push-install" "$T/install.kept"
+echo e2e-another-install-1 >"$HOME/.agenthydra/codex-hub-push-install"
+legacy_at "$HUB2"
+S0=$(status_count "This PC must be paired again: choose Connect this PC")
+headless
+check "with another install id in the pusher's file, the exchange is refused (401)" \
+	wait_for 30 grep -q "bearer=legacy install=e2e-another-install-1 POST /api/codex-hub/exchange 401" "$T/hub2.log"
+check "  ...and the status says so" wait_for 10 status_more "This PC must be paired again: choose Connect this PC" "$S0"
+stop_tray
+cp "$T/install.kept" "$HOME/.agenthydra/codex-hub-push-install"
+
+echo "== an old tray moving"
+# The tray of the commit before PC tokens, installed and paired the way it was: the legacy token in tray.json. It
+# fetches the pusher and this tray with the legacy token (the hub hands builds to it while a PC is pending), and this
+# tray then moves it.
+OLD=5e39fcdc
+if git -C .. cat-file -e "$OLD^{commit}" 2>/dev/null && mkdir -p "$T/old" &&
+	git -C .. archive "$OLD" codex-hub-tray | tar -x -C "$T/old" &&
+	(cd "$T/old/codex-hub-tray" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $FLAGS" -o "$T/old-tray" .); then
+	curl -s -X POST "$HUB2/fake/pending?pc=E2E-Old-Tray&install=$INSTALL" >/dev/null
+	install -m 755 "$T/old-tray" "$TRAY"
+	rm -f "$PUSH"
+	legacy_at "$HUB2"
+	E0=$(grep -c "bearer=legacy install=$INSTALL POST /api/codex-hub/exchange 200" "$T/hub2.log")
+	headless
+	check "the old tray starts" wait_for 10 up_headless
+	kill -USR1 "$(tray_pid)"
+	check "it fetches the pusher with the legacy token" \
+		wait_for 30 grep -q "bearer=legacy install=- GET /api/codex-hub/pusher/download platform=$P 200" "$T/hub2.log"
+	check "it replaces itself with this tray" wait_for 30 has_sha "$TRAY" "$V1"
+	check "  ...fetched with the legacy token" grep -q "bearer=legacy install=- GET /api/codex-hub/tray/download platform=$P 200" "$T/hub2.log"
+	check "this tray's exchange is taken, with the id in codex-hub-push-install" \
+		wait_for 30 more "bearer=legacy install=$INSTALL POST /api/codex-hub/exchange 200" "$T/hub2.log" "$E0"
+	MOVED=$(field "$APP/tray.json" token)
+	check "tray.json holds a token of this PC's own" pc_token "$MOVED"
+	check "  ...and its name" test "$(field "$APP/tray.json" pc)" = e2e-old-tray
+	check "the pusher gets the token, the name and the install id" wait_for 20 env_is "AGENTHYDRA_CODEX_HUB_TOKEN=$MOVED"
+	check "  ...the name" env_is "AGENTHYDRA_CODEX_HUB_PC=e2e-old-tray"
+	check "  ...the install id" env_is "AGENTHYDRA_CODEX_HUB_INSTALL=$INSTALL"
+	stop_tray
+
+	# The same old tray with a token from the hub's command line, written in by hand: it updates itself as well.
+	install -m 755 "$T/old-tray" "$TRAY"
+	ADDED=$(curl -s -X POST "$HUB2/fake/add?pc=E2E-Old-Hand")
+	printf '{\n  "hub": "%s",\n  "token": "%s"\n}\n' "$HUB2" "$ADDED" >"$APP/tray.json"
+	headless
+	check "an old tray with a token of its own replaces itself with this tray" wait_for 30 has_sha "$TRAY" "$V1"
+	check "  ...fetched with that token" grep -q "bearer=chp_${ADDED:4:16} install=- GET /api/codex-hub/tray/download platform=$P 200" "$T/hub2.log"
+	check "  ...which this tray names (whoami)" wait_for 20 named E2E-Old-Hand "${ADDED:4:16}"
+	stop_tray
+elif [ "${CI:-}" = true ]; then
+	fail "the tray of $OLD could not be built (the workflow checks out with fetch-depth: 0)"
+else
+	echo "SKIP: the tray of $OLD could not be built (a shallow checkout?)"
+fi
+
+echo "== revoked"
+cp "$T/paired.json" "$APP/tray.json"
+S0=$(status_count "Pushing this PC's Codex chats as E2E-PC")
+headless
+check "the paired tray starts" wait_for 10 up_headless
+check "  ...and pushes" wait_for 30 status_more "Pushing this PC's Codex chats as E2E-PC" "$S0"
+curl -s -X POST "$HUB/fake/revoke?pc=E2E-PC" >/dev/null
+{ cat "$T/push-good"; echo "# a build after the revoke"; } >"$T/push-late"
+publish "$T/push-late" "codex-hub-push-$P"
+D0=$(downloads)
+S0=$(status_count "The hub revoked this PC: choose Connect this PC to pair it again")
+kill -USR1 "$(tray_pid)"
+check "the status says the hub revoked this PC" \
+	wait_for 20 status_more "The hub revoked this PC: choose Connect this PC to pair it again" "$S0"
+check "  ...and the hub's new pusher build is never downloaded" test $(($(downloads) - D0)) -eq 0 -a "$(sha "$PUSH")" = "$PUSHSUM"
+stop_tray
+publish "$T/push-good" "codex-hub-push-$P"
+
+echo "== against the real hub"
+if command -v bun >/dev/null && [ -e ../node_modules ]; then
+	RADMIN="e2e-Real-Admin_0123456789"
+	RLEGACY="e2e-Real-Legacy_0123456789"
+	mkdir -p "$T/realhub"
+	bun ../scripts/codex-hub-test-daemon.ts --admin "$RADMIN" --legacy "$RLEGACY" --home "$T/realhub" \
+		>"$T/realhub.url" 2>"$T/realhub.err" &
+	REALHUB=$!
+	if wait_for 60 test -s "$T/realhub.url"; then
+		RHUB=$(head -1 "$T/realhub.url")
+		RDIR=$(sed -n 's/^hub folder: //p' "$T/realhub.err")
+		pass "the hub starts ($RHUB)"
+		printf '{\n  "hub": "%s"\n}\n' "$RHUB" >"$APP/tray.json"
+		L0=$(log_count "open in a browser on this PC: https://inbox.example.test/codex-hub/pair?")
+		headless AGENTHYDRA_CODEX_HUB_PC=E2E-Real-PC
+		check "a tray with no token opens the pairing page" \
+			wait_for 20 more "open in a browser on this PC: https://inbox.example.test/codex-hub/pair?" "$LOG" "$L0"
+		LINK=$(grep -o 'https://inbox.example.test/codex-hub/pair?[^ ]*' "$LOG" | tail -1)
+		RPORT=$(echo "$LINK" | grep -o 'port=[0-9]*' | cut -d= -f2)
+		RSTATE=$(echo "$LINK" | grep -o 'state=[0-9a-f]*' | cut -d= -f2)
+		# The inbox's proxy forwards the page with Host 127.0.0.1.
+		code=$(curl -s -o "$T/realpage.html" -w '%{http_code}' -H "Host: 127.0.0.1" "$RHUB/codex-hub/pair?${LINK#*\?}")
+		RCODE=$(grep -o 'name="code" value="[0-9a-f]*"' "$T/realpage.html" | head -1 | sed 's/.*value="//; s/"$//')
+		check "the hub's page (200) holds a code" test "$code" = 200 -a -n "$RCODE"
+		code=$(curl -s -o "$T/post.html" -w '%{http_code}' -d "state=$RSTATE" -d "code=$RCODE" "http://127.0.0.1:$RPORT/paired")
+		check "the tray takes it (200)" test "$code" = 200
+		check "  ...connected as the name it asked for" grep -q "connected as E2E-Real-PC" "$T/post.html"
+		RTOKEN=$(field "$APP/tray.json" token)
+		check "  ...with a token of its own in tray.json" pc_token "$RTOKEN"
+		code=$(curl -s -o "$T/whoami.json" -w '%{http_code}' -H "Authorization: Bearer $RTOKEN" -H "x-codex-hub-install: $INSTALL" "$RHUB/api/codex-hub/whoami")
+		check "whoami with that token is 200" bash -c "[ '$code' = 200 ] && grep -q '\"pc\":\"E2E-Real-PC\"' '$T/whoami.json'"
+		check "the tray pushes as that name" wait_for 30 status_more "Pushing this PC's Codex chats as E2E-Real-PC" 0
+
+		# A second PC, still on the legacy token, which pushed from its own install: the hub has its folder, pending.
+		HOME2="$T/home2"
+		APP2="$HOME2/.local/share/codex-hub"
+		mkdir -p "$APP2" "$HOME2/.agenthydra" "$RDIR/e2e-moving-pc"
+		echo e2e-second-install-1 >"$HOME2/.agenthydra/codex-hub-push-install"
+		printf '{"pc":"E2E-Moving-PC","install":"e2e-second-install-1","pushedAt":"%s","threads":[],"files":{}}' \
+			"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >"$RDIR/e2e-moving-pc/manifest.json"
+		: >"$RDIR/e2e-moving-pc/session_index.jsonl"
+		cp "$T/dl/codex-hub-tray-$P" "$APP2/codex-hub-tray"
+		printf '{\n  "hub": "%s",\n  "token": "%s"\n}\n' "$RHUB" "$RLEGACY" >"$APP2/tray.json"
+		(
+			unset DBUS_SESSION_BUS_ADDRESS
+			export HOME="$HOME2" XDG_RUNTIME_DIR="$T/run-empty"
+			exec "$APP2/codex-hub-tray" >"$T/second-pc.out" 2>&1
+		) &
+		BG+=($!)
+		if wait_for 10 grep -q "no desktop session to show an icon in" "$APP2/tray.log"; then
+			kill -USR1 "$(tr -dc 0-9 <"$APP2/tray.lock")"
+		fi
+		moved2() { pc_token "$(field "$APP2/tray.json" token)" && [ "$(field "$APP2/tray.json" pc)" = E2E-Moving-PC ]; }
+		check "a second PC on the legacy token moves to a token of its own" wait_for 30 moved2
+		code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(field "$APP2/tray.json" token)" \
+			-H "x-codex-hub-install: e2e-second-install-1" "$RHUB/api/codex-hub/whoami")
+		check "  ...which the hub knows (whoami 200)" test "$code" = 200
+		kill -TERM "$(tr -dc 0-9 <"$APP2/tray.lock")" 2>/dev/null
+
+		S0=$(status_count "The hub revoked this PC: choose Connect this PC to pair it again")
+		AGENTHYDRA_CODEX_HUB_TOKEN=$RADMIN bun ../scripts/codex-hub-pcs.ts revoke E2E-Real-PC --hub "$RHUB" >"$T/revoke.out" 2>&1
+		check "scripts/codex-hub-pcs.ts revokes the first PC" test $? -eq 0
+		kill -USR1 "$(tray_pid)"
+		check "  ...and the tray says the hub revoked it" \
+			wait_for 20 status_more "The hub revoked this PC: choose Connect this PC to pair it again" "$S0"
+	else
+		fail "the real hub did not start: $(cat "$T/realhub.err")"
+	fi
+	stop_tray
+	kill -TERM "$REALHUB" 2>/dev/null
+	check "the real hub stops" wait_for 20 dead "$REALHUB"
+	REALHUB=
+elif [ "${CI:-}" = true ]; then
+	fail "the real hub needs bun and the root's node_modules (bun install --frozen-lockfile at the root)"
+else
+	echo "SKIP: the real hub needs bun and the root's node_modules (bun install --frozen-lockfile at the root)"
+fi
+
 echo "== the fake hub"
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=$P")
+CLOSING=$(curl -s -X POST "$HUB/fake/add?pc=E2E-Closing")
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $CLOSING" "$HUB/api/codex-hub/pusher?platform=$P")
 check "it refuses a request without the access header (403)" test "$code" = 403
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "$ACCESS" -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher?platform=")
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "$ACCESS" -H "Authorization: Bearer $CLOSING" "$HUB/api/codex-hub/pusher?platform=")
 check "it refuses an empty platform (400), as the hub does" test "$code" = 400
-code=$(curl -s -o "$T/none.json" -w '%{http_code}' -H "$ACCESS" -H "Authorization: Bearer $TOKEN" "$HUB/api/codex-hub/pusher")
+code=$(curl -s -o "$T/none.json" -w '%{http_code}' -H "$ACCESS" -H "Authorization: Bearer $CLOSING" "$HUB/api/codex-hub/pusher")
 check "no platform is windows-x64 (no build of it here: 404)" bash -c "[ '$code' = 404 ] && grep -q windows-x64 '$T/none.json'"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "$ACCESS" -H "Authorization: Bearer $ADMIN" "$HUB/api/codex-hub/pusher?platform=$P")
+check "it refuses the admin token (401), as the hub does" test "$code" = 401
 
 echo
 if [ "$failures" -eq 0 ]; then
