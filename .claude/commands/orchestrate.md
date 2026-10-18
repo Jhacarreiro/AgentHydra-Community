@@ -119,7 +119,7 @@ STANDING FACTS - do not re-derive or re-build these:
   off - report that in one line and stop; re-arming a fleet he just stopped is the one thing he
   has forbidden twice.
 - NINE Windows scheduled tasks already run EVERY 5 MINUTES (dashboard keepalive, reconcile
-  observe-only, the todo-sweep, the doctrine re-stamp, saturate's running floor, unblock,
+  observe-only, the to-do sweep (when set up), the doctrine re-stamp, saturate's running floor, unblock,
   THE GROUNDSKEEPER, the TWIN AUDIT, and THE OVERLORD WATCHDOG - overlord.py, which WAKES this
   chat through the engine whenever it goes quiet >=5 min while work waits;
   `orchestrator_run {script:"schedule_jobs", args:["--status"]}`). The re-arm is MECHANICAL:
