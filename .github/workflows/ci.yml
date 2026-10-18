@@ -230,6 +230,14 @@ jobs:
         # timeouts first and prove it over many runs - not to widen the workers and hope.
         run: bun test
 
+      # Hydra Core's hooks and the managers' router are plain Node modules whose suites use
+      # node:test, and `bun test` does not collect them. Linux only: they touch no Windows API, and
+      # the runner's own Node runs them. Each file is named, so the command does not depend on how a
+      # Node version resolves a folder argument.
+      - name: Test Hydra Core and the managers (node:test)
+        if: runner.os == 'Linux'
+        run: node --test hydra-core/test/*.test.mjs managers/test/*.test.mjs
+
     # The orchestrator suite is its own job (below): it was 776 s of the 17-minute Windows leg,
     # run after everything else in this job. See `orchestrator`.
     #

@@ -43,11 +43,12 @@ Tests never touch your real agent homes: the root suite's preload refuses a writ
 | HSwarm (Python) | `pip install -e "./hswarm[test]"`, then `python -m pytest hswarm/tests -q` |
 | Free instances harness (Python) | `cd desk2 && bun run test:py` |
 | Codex hub tray app (Go) | `cd codex-hub-tray && go test ./...` |
+| Hydra Core's hooks and the managers' router (Node) | `node --test hydra-core/test/*.test.mjs managers/test/*.test.mjs` |
 | Windows programs: tray host, window host, CliMayte's runner (Rust, on Windows) | `bun scripts/build-natives.ts --test` |
 | The root lanes in one go (Biome, typecheck, tests and the orchestrator toolbox) | `bun run check:deep` |
 
-`check:deep` does not cover the window, HSwarm, the Free instances harness, the tray app or the Windows programs;
-run their rows on their own. Run at least the lanes your change belongs to. Some tests need Windows or a real Chrome
+`check:deep` does not cover the window, HSwarm, the Free instances harness, the tray app, the Node suites or the
+Windows programs; run their rows on their own. Run at least the lanes your change belongs to. Some tests need Windows or a real Chrome
 or Edge; CI runs those on `windows-latest`, so a few failures on Linux or macOS for those reasons are expected. On
 Windows, the tests that start the tray host or CliMayte's runner skip until you build them
 (`bun scripts/build-natives.ts tray runner`, which needs Rust); CI builds both first. A behaviour change comes
