@@ -8,14 +8,23 @@
 // Fixtures are hand-written JSONL in a temp dir: no real session data, no secrets.
 
 import { Database } from 'bun:sqlite'
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { afterAll, afterEach, beforeEach, test as bunTest, describe, expect } from 'bun:test'
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import { join } from 'node:path'
 import {
   conversationText,
   dropSearchIndex,
   type IndexableFile,
+  openSearchIndex,
   queryUsableByIndex,
   refreshSearchIndex,
   SEGMENT_CHARS,
@@ -80,11 +89,37 @@ const toolResult = (text: string) =>
     message: { role: 'user', content: [{ type: 'tool_result', content: text }] },
   })
 
+// A test bun gives up on at its timeout keeps running, and bun starts the next test beside it. Here
+// the next test's beforeEach points the index at a new file and closes the connection the late test
+// is still writing through: on windows-latest (2026-10-18) "indexes sessions and finds them by word
+// and by phrase" timed out at 5470 ms, its refresh then failed every statement on the closed handle
+// and came back `indexed: 0`, and its expect failed "between tests", in the next test's time. Its
+// later calls would have opened and written the NEXT test's index too, since the path is shared. So
+// every test body here is tracked, and afterEach, which bun runs for a timed-out test before the
+// next one starts, waits for it: a late test finishes on its own index, and the timeout is the one
+// failure reported. 60 s: longer than any test's own timeout below (40 s).
+const running = new Set<Promise<unknown>>()
+const test = (name: string, fn: () => unknown, timeout?: number) =>
+  bunTest(
+    name,
+    () => {
+      const body = fn()
+      if (!(body instanceof Promise)) return
+      running.add(body)
+      return body
+    },
+    timeout,
+  )
+
 let dir: string
 beforeEach(() => {
   dir = scratch()
   setSearchIndexPathForTests(join(dir, 'index.db'))
 })
+afterEach(async () => {
+  await Promise.allSettled(running)
+  running.clear()
+}, 60_000)
 
 /** Write a transcript and describe it the way the daemon's own file index would. */
 function session(id: string, lines: string[]): IndexableFile {
@@ -194,6 +229,24 @@ describe('an index from before Codex text was read', () => {
     expect(candidateKeys('quokka')).toEqual(
       new Set([dedupeKey({ source: 'codex', session_id: 'codex-old', path: '' })]),
     )
+  })
+})
+
+/** The file change counter in a database's header (offset 24, big-endian): SQLite adds one for each
+ *  transaction that writes the file. */
+const writesTo = (path: string) => readFileSync(path).readUInt32BE(24)
+
+describe('opening the index', () => {
+  // Every commit creates the journal file, flushes it and deletes it, and GitHub's Windows runner
+  // pays dearly for each: a fresh file's open made six, and every test below starts from one.
+  test('a fresh file is set up in one write, and a current one is opened without any', () => {
+    expect(openSearchIndex()).toBe(true)
+    setSearchIndexPathForTests(searchIndexPath()) // let go of the file before reading its header
+    expect(writesTo(searchIndexPath())).toBe(1)
+
+    expect(openSearchIndex()).toBe(true)
+    setSearchIndexPathForTests(searchIndexPath())
+    expect(writesTo(searchIndexPath())).toBe(1)
   })
 })
 

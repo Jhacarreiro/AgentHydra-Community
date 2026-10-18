@@ -112,6 +112,97 @@ const OPEN_RETRY_MS = 30_000
 let openBlockedUntil = 0
 let now = (): number => Date.now()
 
+/** The tables an index file at this version holds; one missing means the file is set up again. */
+const INDEX_TABLES = ['meta', 'doc', 'conv', 'conv_vocab']
+
+/** One value from the meta table, or undefined. */
+const metaValue = (conn: Database, k: string): string | undefined =>
+  (conn.query('select v from meta where k = ?').get(k) as { v?: string } | null)?.v
+
+/** True when the file holds every table at this schema version, with the Codex upgrade done, so
+ *  open() has nothing to write. Reads only, so opening a current index never asks for the write lock. */
+function isSetUp(conn: Database): boolean {
+  const names = INDEX_TABLES.map(() => '?').join(', ')
+  const tables = conn
+    .query(`select count(*) as n from sqlite_master where type = 'table' and name in (${names})`)
+    .get(...INDEX_TABLES) as { n: number }
+  if (tables.n !== INDEX_TABLES.length) return false
+  return (
+    metaValue(conn, 'schema') === String(SCHEMA_VERSION) && metaValue(conn, 'codex_text') === '1'
+  )
+}
+
+/**
+ * Create the tables and run the one-time upgrades, as ONE transaction.
+ *
+ * These used to be six statements, each its own autocommit, and in `delete` journal mode every
+ * commit creates the -journal file, flushes it and the database, and deletes it again: a fresh
+ * file's open made six of those before the first transcript was read (strace, 2026-10-18). GitHub's
+ * Windows runner pays dearly for each commit (scripts/checks/sqlite-fixture-autocommits.mjs: fixtures
+ * of nine timed out), and a fresh index is what every test of search-index.test.ts starts from:
+ * "indexes sessions and finds them by word and by phrase" timed out there at 5470 ms (2026-10-18)
+ * before its first transcript was committed, as the first search of a run once spent 7.2 s opening
+ * a fresh index file (session-search.ts, 2026-10-13).
+ *
+ * IMMEDIATE: the setup reads (the schema version, the Codex rows) before it writes. A deferred
+ * transaction asks for the write lock only at its first write, and if another connection is writing
+ * by then SQLite answers "database is locked" at once, never waiting out busy_timeout. The open then
+ * failed and the cooldown switched the index off for 30 s (the root suite, 2026-10-11: a fresh index
+ * opened beside a writer). The version is read again inside, under the lock, in case another
+ * process set the file up in between.
+ */
+function setUp(conn: Database): void {
+  conn
+    .transaction(() => {
+      conn.exec('create table if not exists meta (k text primary key, v text not null)')
+      const version = Number(metaValue(conn, 'schema') ?? 0)
+      // A version bump rebuilds everything, and the doc table's shape is part of it (v4 added the
+      // incremental-update columns), so it is dropped rather than emptied.
+      if (version !== SCHEMA_VERSION) conn.exec('drop table if exists doc')
+      // done_bytes: end of the last complete transcript line already indexed; nseg: FTS segments held.
+      conn.exec(`
+        create table if not exists doc (
+          rowid      integer primary key,
+          key        text    not null unique,
+          source     text    not null,
+          path       text    not null,
+          mtime_ms   real    not null,
+          size_bytes integer not null,
+          done_bytes integer not null default 0,
+          nseg       integer not null default 0
+        );
+      `)
+      // contentless_delete=1 is what makes this incremental: a changed transcript can be dropped by
+      // rowid and re-inserted without the index having kept the old text to hand back.
+      conn.exec(
+        "create virtual table if not exists conv using fts5(body, tokenize='unicode61', content='', contentless_delete=1)",
+      )
+      // The index's own word list, read-only. Typo repair suggests only words this returns, so a
+      // suggestion can never be a word the index does not hold.
+      conn.exec("create virtual table if not exists conv_vocab using fts5vocab(conv, 'row')")
+      if (version !== SCHEMA_VERSION) {
+        conn.exec('delete from conv')
+        conn
+          .query('insert or replace into meta (k, v) values (?, ?)')
+          .run('schema', String(SCHEMA_VERSION))
+      }
+      // Until 2026-10-10 a Codex rollout was recorded with none of its words (only Claude's lines
+      // were read), so the index claimed Codex sessions it could never match. Those rows are dropped
+      // once; the next refresh reads them again. Claude's rows are kept: a full rebuild would re-read
+      // them all.
+      if (metaValue(conn, 'codex_text') !== '1') {
+        const dropSegments = conn.query('delete from conv where rowid >= ? and rowid < ?')
+        for (const { rowid } of conn
+          .query("select rowid from doc where source = 'codex'")
+          .all() as Array<{ rowid: number }>)
+          dropSegments.run(rowid * SEGMENT_STRIDE, (rowid + 1) * SEGMENT_STRIDE)
+        conn.exec("delete from doc where source = 'codex'")
+        conn.query('insert or replace into meta (k, v) values (?, ?)').run('codex_text', '1')
+      }
+    })
+    .immediate()
+}
+
 function open(): Database | null {
   if (db) return db
   if (now() < openBlockedUntil) return null
@@ -124,65 +215,8 @@ function open(): Database | null {
     // One file, always: a WAL sidecar would make "just delete search-index.db" a corruption bug.
     db.exec('pragma journal_mode = delete')
     db.exec('pragma synchronous = normal')
-    db.exec('create table if not exists meta (k text primary key, v text not null)')
-    const version = Number(
-      (db.query('select v from meta where k = ?').get('schema') as { v?: string } | null)?.v ?? 0,
-    )
-    // A version bump rebuilds everything, and the doc table's shape is part of it (v4 added the
-    // incremental-update columns), so it is dropped rather than emptied.
-    if (version !== SCHEMA_VERSION) db.exec('drop table if exists doc')
-    // done_bytes: end of the last complete transcript line already indexed; nseg: FTS segments held.
-    db.exec(`
-      create table if not exists doc (
-        rowid      integer primary key,
-        key        text    not null unique,
-        source     text    not null,
-        path       text    not null,
-        mtime_ms   real    not null,
-        size_bytes integer not null,
-        done_bytes integer not null default 0,
-        nseg       integer not null default 0
-      );
-    `)
-    // contentless_delete=1 is what makes this incremental: a changed transcript can be dropped by
-    // rowid and re-inserted without the index having kept the old text to hand back.
-    db.exec(
-      "create virtual table if not exists conv using fts5(body, tokenize='unicode61', content='', contentless_delete=1)",
-    )
-    // The index's own word list, read-only. Typo repair suggests only words this returns, so a
-    // suggestion can never be a word the index does not hold.
-    db.exec("create virtual table if not exists conv_vocab using fts5vocab(conv, 'row')")
-    if (version !== SCHEMA_VERSION) {
-      db.exec('delete from conv')
-      db.query('insert or replace into meta (k, v) values (?, ?)').run(
-        'schema',
-        String(SCHEMA_VERSION),
-      )
-    }
-    // Until 2026-10-10 a Codex rollout was recorded with none of its words (only Claude's lines were
-    // read), so the index claimed Codex sessions it could never match. Those rows are dropped once;
-    // the next refresh reads them again. Claude's rows are kept: a full rebuild would re-read them all.
-    if (
-      (db.query('select v from meta where k = ?').get('codex_text') as { v?: string } | null)?.v !==
-      '1'
-    ) {
-      const conn = db
-      // IMMEDIATE: this transaction reads before it writes. A deferred one asks for the write lock only
-      // at its first write, and if another connection is writing by then SQLite answers "database is
-      // locked" at once, never waiting out busy_timeout. The open then failed and the cooldown switched
-      // the index off for 30 s (the root suite, 2026-10-11: a fresh index opened beside a writer).
-      conn
-        .transaction(() => {
-          const dropSegments = conn.query('delete from conv where rowid >= ? and rowid < ?')
-          for (const { rowid } of conn
-            .query("select rowid from doc where source = 'codex'")
-            .all() as Array<{ rowid: number }>)
-            dropSegments.run(rowid * SEGMENT_STRIDE, (rowid + 1) * SEGMENT_STRIDE)
-          conn.exec("delete from doc where source = 'codex'")
-          conn.query('insert or replace into meta (k, v) values (?, ?)').run('codex_text', '1')
-        })
-        .immediate()
-    }
+    // An index already at this version is only read here; anything else is set up in one write.
+    if (!isSetUp(db)) setUp(db)
     return db
   } catch {
     // A corrupt or unwritable index is not an error the user should ever see: it just means the
