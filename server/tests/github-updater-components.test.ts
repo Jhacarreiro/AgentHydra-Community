@@ -29,6 +29,7 @@ import {
   currentTarget,
   type DeskSeam,
   installedComponentVersion,
+  installReleaseNotices,
   missingComponents,
   RELEASE_COMPONENTS,
   RELEASE_VERSION_FILE,
@@ -671,6 +672,55 @@ test('the Agent SDK Desk 2 fetched into node_modules stays across an update; the
     expect(existsSync(join(nm, '@anthropic-ai/claude-agent-sdk/.agenthydra-sdk.json'))).toBe(true)
     expect(readFileSync(join(nm, 'zod/index.js'), 'utf8')).toBe('new zod')
     expect(existsSync(join(nm, 'retired/index.js'))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("an update brings the release's licence files to the install, and LICENSES/ is the release's own", async () => {
+  const { root, bundle, install } = applyFixture()
+  try {
+    put(bundle, 'LICENSE', 'new licence')
+    put(bundle, 'THIRD-PARTY-NOTICES.md', 'new notices')
+    put(bundle, 'THIRD-PARTY-LICENSES', 'new list')
+    put(bundle, 'LICENSES/MIT.txt', 'mit')
+    put(install, 'LICENSE', 'old licence')
+    put(install, 'LICENSES/retired.txt', 'a text the release no longer carries')
+    put(install, 'notes.txt', 'the person kept this here')
+    const { desk } = fakeDesk(install)
+    const result = await applyUpdate(applyDeps(install, bundle, { desk }))
+    expect(result.ok).toBe(true)
+    expect(readFileSync(join(install, 'LICENSE'), 'utf8')).toBe('new licence')
+    expect(readFileSync(join(install, 'THIRD-PARTY-NOTICES.md'), 'utf8')).toBe('new notices')
+    expect(readFileSync(join(install, 'THIRD-PARTY-LICENSES'), 'utf8')).toBe('new list')
+    expect(readdirSync(join(install, 'LICENSES'))).toEqual(['MIT.txt'])
+    expect(readFileSync(join(install, 'notes.txt'), 'utf8')).toBe('the person kept this here')
+    expect(result.output).toContain(
+      'installed LICENSE, THIRD-PARTY-NOTICES.md, THIRD-PARTY-LICENSES, LICENSES',
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a bundle without licence files leaves the install's as they are, and one that will not copy fails nothing", () => {
+  const root = scratchRoot()
+  try {
+    const bundle = join(root, 'bundle')
+    const install = join(root, 'install')
+    put(install, 'LICENSE', 'old licence')
+    const output: string[] = []
+    expect(installReleaseNotices(bundle, install, output)).toEqual({ installed: [], failed: [] })
+    expect(readFileSync(join(install, 'LICENSE'), 'utf8')).toBe('old licence')
+    expect(output).toEqual([])
+    // A folder where the file goes cannot be copied over: reported, the rest still installed.
+    put(bundle, 'LICENSE', 'new licence')
+    put(bundle, 'THIRD-PARTY-LICENSES', 'new list')
+    put(install, 'THIRD-PARTY-LICENSES/in-the-way.txt', 'x')
+    const r = installReleaseNotices(bundle, install, output)
+    expect(r).toEqual({ installed: ['LICENSE'], failed: ['THIRD-PARTY-LICENSES'] })
+    expect(readFileSync(join(install, 'LICENSE'), 'utf8')).toBe('new licence')
+    expect(output.some((l) => l.startsWith('could not install THIRD-PARTY-LICENSES: '))).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

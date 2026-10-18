@@ -775,6 +775,44 @@ export function reconcileComponent(
   return { installed: true, removed, locked, movedAside }
 }
 
+/** The licence files at a release's top level, beside the executable (scripts/package-release.ts puts them there). */
+export const RELEASE_NOTICES = [
+  'LICENSE',
+  'THIRD-PARTY-NOTICES.md',
+  'THIRD-PARTY-LICENSES',
+  'LICENSES',
+] as const
+
+/**
+ * Copies the release's licence files over the install's, so an updated install says what it now carries: the
+ * components are installed folder by folder and nothing else at the top level was. LICENSES/ is replaced whole, so a
+ * text the release no longer carries goes with it. A file the bundle lacks (an older release) is left as it is.
+ * Best-effort, as misc/ is: one that will not copy is reported, and the next update tries again.
+ */
+export function installReleaseNotices(
+  bundleDir: string,
+  installDir: string,
+  output: string[],
+): { installed: string[]; failed: string[] } {
+  const installed: string[] = []
+  const failed: string[] = []
+  for (const name of RELEASE_NOTICES) {
+    const src = join(bundleDir, name)
+    if (!existsSync(src)) continue
+    const dest = join(installDir, name)
+    try {
+      if (name === 'LICENSES') rmSync(dest, { recursive: true, force: true })
+      cpSync(src, dest, { recursive: true, force: true })
+      installed.push(name)
+    } catch (e) {
+      failed.push(name)
+      output.push(`could not install ${name}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  if (installed.length) output.push(`installed ${installed.join(', ')}`)
+  return { installed, failed }
+}
+
 /** The version stamp an installed component carries, or null (older install, never stamped). */
 export function installedComponentVersion(installDir: string, name: string): string | null {
   try {
@@ -1181,6 +1219,7 @@ async function swapInBundle(
       copy: ctx.copy,
     })
   }
+  installReleaseNotices(bundleDir, installDir, output)
   // Only the running install has a tray host and shortcuts to carry across the rename, the same rule
   // defaultDesk applies to Desk 2. Any other install dir is a test's scratch copy, where the retirement
   // was a PowerShell scanning this machine's processes and Start Menu: 1.5 s idle, 2.3 s median and up
