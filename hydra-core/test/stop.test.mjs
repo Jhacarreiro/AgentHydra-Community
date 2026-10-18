@@ -107,7 +107,8 @@ test("with no owner-tier person in the catalog there is nobody to ask first, so 
     assert.throws(() => readFileSync(path.join(dir, "log.jsonl"), "utf8"));
   }));
 
-test("a creator person folder the catalog builder built is an owner, as a hand entry is", () =>
+// Runs the real builder as a process: a cold runner can take longer than bun's 5 s default.
+test("a creator person folder the catalog builder built is an owner, as a hand entry is", { timeout: 20_000 }, () =>
   withCore(async (dir) => {
     // The usual way to have an owner: ~/.agenthydra/people/creator/<slug>/persona.json, built into generated-people.json.
     const home = path.join(dir, "home");
