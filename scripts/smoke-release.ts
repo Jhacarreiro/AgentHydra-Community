@@ -167,6 +167,9 @@ try {
     join(bundle, 'app/release.json'),
     join(bundle, 'app/bun-version'),
     join(bundle, 'desk2/server/src/index.ts'),
+    join(bundle, 'LICENSE'),
+    join(bundle, 'THIRD-PARTY-NOTICES.md'),
+    join(bundle, 'LICENSES/Apache-2.0.txt'),
   ]
   if (isWin) {
     required.push(

@@ -35,6 +35,7 @@ import {
   SERVER_ALIAS,
   SERVER_MODULES_DIR,
   sourceFilesUnder,
+  stageLicenceFiles,
   unresolvedImports,
 } from './release-bundle'
 
@@ -269,6 +270,9 @@ const stage = join(out, name)
 rmSync(stage, { recursive: true, force: true })
 mkdirSync(stage, { recursive: true })
 console.log(`Packaging AgentHydra ${VERSION} for ${target} into ${stage} (Bun ${bunVersion})`)
+// What the MIT licence asks of every copy, at the top of every bundle: the licence itself, the notices for the code
+// AgentHydra adapts from other projects, and the licence texts those notices point to.
+stageLicenceFiles(ROOT, stage)
 
 // The daemon as app/ (server.js, its misc assets, release.json and bun-version, the pin the launcher
 // downloads), then the launcher that runs it.

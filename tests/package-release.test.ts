@@ -1,17 +1,20 @@
 // tests/package-release.test.ts - the steps scripts/package-release.ts takes to decide what a release bundle holds
 // (scripts/release-bundle.ts), run on small trees in a temp folder rather than on a real build.
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   aliasedImports,
   bundleServerModules,
+  LICENCE_FILES,
   pointAliasAtBundle,
   SERVER_MODULES_DIR,
   sourceFilesUnder,
+  stageLicenceFiles,
   unresolvedImports,
 } from '../scripts/release-bundle'
+import { findRepoRoot } from './repo-root'
 
 const scratch = mkdtempSync(join(tmpdir(), 'package-release-test-'))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
@@ -93,6 +96,26 @@ describe('the daemon modules Desk imports', () => {
     const stage = tree({ 'desk2/x': '' })
     await expect(bundleServerModules(root, join(stage, 'desk2'), ['broken'])).rejects.toThrow(
       'server/src/broken.ts',
+    )
+  })
+})
+
+describe('the licence files', () => {
+  test('every bundle gets LICENSE, THIRD-PARTY-NOTICES.md and LICENSES/ from the checkout', () => {
+    const root = findRepoRoot(import.meta.dir)
+    const stage = tree({ 'app/server.js': '' })
+    stageLicenceFiles(root, stage)
+    for (const name of LICENCE_FILES) expect(existsSync(join(stage, name))).toBe(true)
+    expect(readFileSync(join(stage, 'LICENSE'), 'utf8')).toBe(
+      readFileSync(join(root, 'LICENSE'), 'utf8'),
+    )
+    expect(existsSync(join(stage, 'LICENSES/Apache-2.0.txt'))).toBe(true)
+  })
+
+  test('a checkout without one of them cannot be packaged', () => {
+    const root = tree({ LICENSE: 'MIT', 'LICENSES/x.txt': 'x' })
+    expect(() => stageLicenceFiles(root, tree({ x: '' }))).toThrow(
+      'THIRD-PARTY-NOTICES.md is missing',
     )
   })
 })

@@ -2,8 +2,21 @@
  * The steps of scripts/package-release.ts that decide what a bundle holds, kept apart from its command line so
  * tests/package-release.test.ts can run them on a small tree.
  */
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
+
+/** The files every bundle carries at its root: the licence, the notices for adapted code, the licence texts. */
+export const LICENCE_FILES = ['LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES'] as const
+
+/** Copies LICENSE, THIRD-PARTY-NOTICES.md and LICENSES/ from the checkout to the bundle's root. */
+export function stageLicenceFiles(root: string, stage: string): void {
+  for (const name of LICENCE_FILES) {
+    const from = join(root, name)
+    if (!existsSync(from))
+      throw new Error(`${name} is missing from the checkout, and every bundle carries it`)
+    cpSync(from, join(stage, name), { recursive: true })
+  }
+}
 
 /** The alias Desk's server imports the daemon's own modules by (desk2/tsconfig.base.json). */
 export const SERVER_ALIAS = '@agenthydra/server/'
