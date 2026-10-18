@@ -163,11 +163,23 @@ the PC: a PC build matches CI's hash when its Visual Studio build tools are the 
   the runner only for a Windows target).
 
 A source checkout runs without them, with less: the shortcut that `misc/Create-Shortcut.ps1` makes runs
-the PowerShell tray (`misc/AgentHydra-Tray.ps1`), Desk 2's launcher opens the window's page in the default
-browser, and CliMayte's workers run under AgentHydra in runner mode, as on macOS and Linux, without the
-native runner's job and process ceiling. Each says how to build the missing program.
-`scripts/live-checkout.ps1 -Apply` builds them in the live checkout when cargo is installed. A release
-missing one is broken and says so.
+the PowerShell tray (`misc/AgentHydra-Tray.ps1`), Desk 2's launcher starts that tray (`-Background`) and
+opens the window's page in the default browser, Desk 2's `install-shortcuts.ps1` takes the shortcut icon
+from `misc/AgentHydra.ico`, and CliMayte's workers run under AgentHydra in runner mode, as on macOS and
+Linux, without the native runner's job and process ceiling. Each says how to build the missing program.
+On Windows, `bun test` skips the tests that start a native program it does not find, and names the build
+command; CI builds the tray host and the runner first, so nothing is skipped there.
+`scripts/live-checkout.ps1 -Apply` builds them in the live checkout when cargo is installed, warns and
+goes on when that build fails, and points a tray shortcut whose exe is not built at the PowerShell tray.
+A release missing one is broken and says so.
+
+A checkout made while the three were committed loses them when it updates past their removal: git deletes
+them. Its "AgentHydra" shortcut, made by `misc/Create-Shortcut.ps1` back then, runs
+`misc\AgentHydra-Tray.exe` and so opens nothing until you either build the programs
+(`bun scripts/build-natives.ts`) or run `misc\Create-Shortcut.ps1` again, which makes it run the PowerShell
+tray. Desk 2's shortcut still opens AgentHydra (its icon came from `HydraDesk2.exe`, so it shows a blank one
+until `install-shortcuts.ps1` runs again). A copy Windows would not let git delete because it was running
+stays behind as an ignored file built from the old commit, until the next build replaces it.
 
 A cross-built check is possible off Windows: `bun scripts/build-natives.ts --target x86_64-pc-windows-gnu
 --out <dir>` (with mingw-w64 installed) shows that the source compiles and that two builds from different

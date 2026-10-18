@@ -157,7 +157,8 @@ release `rust-toolchain.toml` pins, `--locked`, machine paths remapped and the l
 puts it in `misc/`; `.github/workflows/natives.yml` does the same on every change here and checks that
 two builds match, and every release builds its own (docs/RELEASING.md, "The native programs are built,
 never committed"). Without a build, `misc/Create-Shortcut.ps1` makes the shortcut run the PowerShell
-tray instead.
+tray instead, and Desk 2's launcher starts the PowerShell tray with `-Background`, its version of
+`--background` below.
 
 By hand, in this folder:
 
