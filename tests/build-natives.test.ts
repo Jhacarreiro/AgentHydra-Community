@@ -157,6 +157,16 @@ describe('the workflows build what they use', () => {
       release.indexOf('bun scripts/package-release.ts'),
     )
   })
+
+  test('the release carries the three checksums, inside SHA256SUMS.txt too', () => {
+    const job = release.slice(release.indexOf('\n  release:\n'))
+    expect(job).toContain(`natives/${SUMS_FILE}`)
+    // The shell's own ${GITHUB_REF_NAME#v}, built here so it reads as text, not a template.
+    const named = `"out/AgentHydra-${'$'}{GITHUB_REF_NAME#v}-windows-x64-natives.sha256"`
+    expect(job).toContain(named)
+    expect(job.indexOf(named)).toBeLessThan(job.indexOf('sha256sum out/* > out/SHA256SUMS.txt'))
+    expect(job.match(/out\/\*-natives\.sha256 out\/SHA256SUMS\.txt/g)?.length).toBe(2)
+  })
 })
 
 // A source checkout has none of the three until it builds them, and an older checkout that updates past

@@ -27,7 +27,8 @@
 # - The Windows programs the Windows zip carries (misc/AgentHydra-Tray.exe, desk2/launcher/HydraDesk2.exe
 #   and CliMayte's runner in app/misc) are built by the `natives` job from this commit's Rust source with
 #   the pinned toolchain (scripts/build-natives.ts); none is committed. The packaging leg checks each copy
-#   against the hashes that job printed, and those hashes are in the run's summary.
+#   against the hashes that job printed, those hashes are in the run's summary, and the release carries
+#   them as AgentHydra-<version>-windows-x64-natives.sha256.
 # - What building does NOT prove is that the bundle RUNS: the smoke job boots each bundle on real
 #   hardware for its OS, through the launcher, with the downloads refused and a seeded Bun, and
 #   asserts /api/health.
@@ -363,7 +364,7 @@ jobs:
     timeout-minutes: 60
     name: publish the GitHub release
     if: github.ref_type == 'tag'
-    needs: [channel, build, smoke]
+    needs: [channel, natives, build, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -384,6 +385,22 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: out
+
+      # The three Windows programs the zip carries, as the natives job built them from this tag, named by
+      # their paths in the extracted zip (CliMayte's runner is app/misc's copy there): `sha256sum -c` in that
+      # folder checks them, and a build of the tag compares against it. The artifact lasts 3 days; this stays.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: natives
+          path: natives
+      - name: The native programs' checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed 's#  misc/climayte-runner.exe$#  app/misc/climayte-runner.exe#' natives/natives.sha256 \
+            > "out/AgentHydra-${GITHUB_REF_NAME#v}-windows-x64-natives.sha256"
+          cat "out/AgentHydra-${GITHUB_REF_NAME#v}-windows-x64-natives.sha256"
+
       - name: Build checksums
         shell: bash
         run: sha256sum out/* > out/SHA256SUMS.txt
@@ -410,7 +427,7 @@ jobs:
             fi
             # Archives go first so pre-transition updaters, which selected the first matching
             # target asset, receive a bundle rather than the new human-facing direct executable.
-            gh release upload "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/SHA256SUMS.txt \
+            gh release upload "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/*-natives.sha256 out/SHA256SUMS.txt \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release edit "$GITHUB_REF_NAME" \
@@ -420,7 +437,7 @@ jobs:
               --prerelease="$PRERELEASE" \
               --draft=false
           else
-            gh release create "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/SHA256SUMS.txt \
+            gh release create "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/*-natives.sha256 out/SHA256SUMS.txt \
               --repo "$GITHUB_REPOSITORY" \
               --title "AgentHydra ${GITHUB_REF_NAME#v}" \
               --notes-file RELEASE_NOTES.md \

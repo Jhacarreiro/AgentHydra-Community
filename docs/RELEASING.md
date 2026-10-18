@@ -160,7 +160,10 @@ the PC: a PC build matches CI's hash when its Visual Studio build tools are the 
 - `release.yml`'s `natives` job builds all three, with each crate's own tests first. The Windows
   package leg fetches them into the checkout, checks them against `natives.sha256` and, once packaged,
   checks the bundle's copies again. Linux and macOS bundles carry none of them (scripts/build.ts embeds
-  the runner only for a Windows target).
+  the runner only for a Windows target). The release attaches their hashes as
+  `AgentHydra-<version>-windows-x64-natives.sha256`, one line per program under its path in the extracted
+  zip (the runner as `app/misc/climayte-runner.exe`), so `sha256sum -c` run in that folder checks a
+  download, and a build of the tag can be compared with it; `SHA256SUMS.txt` lists that file too.
 
 A source checkout runs without them, with less: the shortcut that `misc/Create-Shortcut.ps1` makes runs
 the PowerShell tray (`misc/AgentHydra-Tray.ps1`), Desk 2's launcher starts that tray (`-Background`) and
