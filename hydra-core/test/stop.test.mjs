@@ -96,9 +96,10 @@ test("a consult of a non-owner person does not count", () =>
     assert.equal((await fire(input, envFor(dir))).decision, "block");
   }));
 
-test("with no owner-tier person in the catalog there is nobody to ask first, so a question stops as asked", () =>
+test("a catalog that names nobody as owner leaves nobody to ask first, so a question stops as asked", () =>
   withCore(async (dir) => {
-    turnOn(dir, [{ kind: "person", id: "person:someone", tier: "employee" }]);
+    const helpersOnly = [{ kind: "person", id: "person:example-helper", tier: "employee" }];
+    turnOn(dir, helpersOnly);
     const input = stop(dir, [prompt("fix it"), says("Should I delete the old folder?")]);
     assert.equal(await fire(input, envFor(dir)), null);
     turnOn(dir);

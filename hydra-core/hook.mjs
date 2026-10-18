@@ -405,7 +405,7 @@ function stopCheck(input, env, dir) {
   try {
     const { text, tools } = lastTurn(input);
     if (!asksQuestion(text)) return null;
-    // A catalog with no owner-tier person leaves nobody to consult first, so the question stands as asked.
+    // Nobody in the catalog has tier "owner", so there is nobody to consult first and the question stands as asked.
     owners = ownerIds(dir);
     if (owners.size === 0) return null;
     if (tools.some((tool) => consults(tool, owners))) return null;
