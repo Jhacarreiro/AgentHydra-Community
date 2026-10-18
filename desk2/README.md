@@ -31,7 +31,7 @@ data in `~/.hydra-desk-2/`, the window host `launcher/HydraDesk2.exe` (WebView2 
 `%LOCALAPPDATA%\HydraDesk2\webview`). The daemon on 7787 no longer shows the old window where this folder
 is beside it: a page asked of it goes on to this window (`server/src/index.ts`, `DESK2_URL`).
 
-It began as the other owner's copy of the owner's Hydra Desk (`desk/`, retired from this repo on 2026-10-07; its history keeps it), made on 2026-10-04 to try new things on
+It began as the other owner's copy of the owner's Hydra Desk (`desk/`, retired from upstream's repository on 2026-10-07, before this fork's base; upstream's history keeps it), made on 2026-10-04 to try new things on
 without touching the owner's app. Everything below is Hydra Desk's own description, with the ports and
 folders changed to Desk 2's.
 

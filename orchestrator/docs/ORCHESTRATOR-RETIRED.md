@@ -15,6 +15,9 @@ one cut, to be rebuilt from nothing, one piece at a time.
 - **Branch `archive/orchestrator-v1`** - the complete final state of the code, docs and tests.
 - **Tag `orchestrator-v1-final`** - the same commit, annotated with an inventory.
 
+Both are in upstream AgentHydra's repository, not in AgentHydra Community's, whose history starts
+at the import of upstream's last MIT commit ([docs/FORK.md](../../docs/FORK.md)).
+
 Everything is there: `server/src/orchestrator*.ts`, `codex-orchestration.ts`, `orch-agent.ts`,
 `proposals.ts`, `placements.ts`, `backlog.ts`, `new-chat-opening.ts`, sixteen test files, the
 `/api/orchestrator/*` HTTP surface, seven MCP tools, `OrchestratorSettings.vue`, and

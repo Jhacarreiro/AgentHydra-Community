@@ -48,7 +48,7 @@ the first full release, the one installed copies update to ([RELEASING.md](RELEA
 - **The old window's table settings moved too.** Desk's Settings has an Instances section (CLI, Desktop, Free)
   holding what the tables' gears held; see `desk2/README.md`.
 - **Hydra Desk 1 is off the owner's PC.** Its shortcuts and data went to the Recycle Bin. `desk/` was
-  removed from the repo on 2026-10-07 (the owner's call; history keeps it).
+  removed from the repo on 2026-10-07 (the owner's call; upstream's history keeps it, not this repository's).
 - **The old window is gone (Order step 4, 2.0.0).** `web/` was deleted with everything that served,
   built or checked it: the daemon's static serving and the release bundle's embedded copy, the portable
   window and its `portable_mode` setting, the `web` workspace and scripts, its CI and release steps, the tray's
@@ -76,4 +76,4 @@ the queue, Free instances, notifications and the shortcut sheet.
    `~/.hydra-desk-2/`, `%LOCALAPPDATA%\HydraDesk2`, port 7798 and the `desk2/` folder.
 4. **Remove `web/`.** Done for 2.0.0 (above). `orchestrator/web/`, the remote gateway, is a separate
    interface and stays.
-5. **`desk/`**: removed 2026-10-07 (the owner's call; history keeps it).
+5. **`desk/`**: removed 2026-10-07 (the owner's call; upstream's history keeps it, not this repository's).
