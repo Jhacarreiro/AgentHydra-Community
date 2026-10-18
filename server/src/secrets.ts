@@ -33,6 +33,8 @@ export const PATTERNS: readonly SecretPattern[] = [
   { kind: 'aws-access-key-id', source: /\bAKIA[0-9A-Z]{16}\b/g, keep: 4 },
   { kind: 'api-token', source: /\b(?:sk|rk)-[A-Za-z0-9_-]{20,}\b/g, keep: 3 },
   { kind: 'github-token', source: /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g, keep: 4 },
+  // A Codex hub PC's own token (server/src/core/codex-hub-ids.ts).
+  { kind: 'codex-hub-pc-token', source: /\bchp_[0-9a-f]{16}_[0-9a-f]{64}\b/g, keep: 4 },
 ]
 
 /** True when the text carries any of the formats above. The context pack's own gate. */

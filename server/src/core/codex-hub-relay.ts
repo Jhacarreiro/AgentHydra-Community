@@ -14,8 +14,10 @@
 //   PC -> hub  { t: 'line', sid, line }  one line from its stdout
 //              { t: 'exit', sid, why }   it ended, or never started
 // The PC decides what its app-server may be asked (codex-hub-relay-pc.ts): the hub is not trusted with more.
-// A socket from another install under a name one already holds is closed with RELAY_NAME_TAKEN (codex-hub.ts
-// hubNameRefused) and never replaces the PC's own.
+// Each socket is held under the credential it was let in with: a PC token's id, or 'legacy' for the shared token of
+// before (codex-hub-pcs.ts). The route refuses everything else before the upgrade; once a socket is open, a change
+// of that PC's credential (paired again, revoked, retired, moved, forgotten) closes it with RELAY_REFUSED
+// (closeRelayUnless), and every Desk session on it ends with the reason.
 
 import { randomUUID } from 'node:crypto'
 
@@ -30,7 +32,8 @@ export type RelayFromPc =
 /** A PC's live socket, as the route hands it over. */
 export interface PcLink {
   send(msg: RelayToPc): void
-  close(why: string): void
+  /** Closes the socket with `why`, and `code` (1000 unless said). */
+  close(why: string, code?: number): void
 }
 
 /** Desk's end of one app-server session. */
@@ -52,13 +55,20 @@ interface Session {
   desk: DeskEnd
 }
 
-/** The close code for a socket refused because another install holds its PC's name. */
+/**
+ * The close code a socket refused because another install held its PC's name was sent. The hub refuses that before
+ * the upgrade now; pushers from before still know the code, so it stays.
+ */
 export const RELAY_NAME_TAKEN = 4409
+/** The close code for a live socket whose credential changed: the PC waits its longest before it dials again. */
+export const RELAY_REFUSED = 4403
 
 interface Pc {
   link: PcLink
   /** The install id its pusher sent, or null for one from before install ids. */
   install: string | null
+  /** The credential it was let in with: a PC token's id, or 'legacy' (codex-hub-pcs.ts). */
+  tokenId: string
 }
 
 const pcs = new Map<string, Pc>()
@@ -74,6 +84,11 @@ export function relayPcInstall(key: string): string | null | undefined {
   return pcs.get(key)?.install
 }
 
+/** The credential behind PC `key`'s live socket (a token id, or 'legacy'); undefined with no socket. */
+export function relayPcToken(key: string): string | undefined {
+  return pcs.get(key)?.tokenId
+}
+
 function endSession(sid: string, why: string): void {
   const s = sessions.get(sid)
   if (!s) return
@@ -82,24 +97,48 @@ function endSession(sid: string, why: string): void {
 }
 
 /**
- * A PC connected. A second socket from the same PC replaces the first (a reconnect the hub has not noticed yet);
- * one from another install under the same name was refused before it got here (routes/codex-hub.ts).
+ * A PC connected with credential `tokenId`. A second socket from the same PC replaces the first (a reconnect the hub
+ * has not noticed yet); one that may not act for this PC was refused before it got here (routes/codex-hub.ts).
  */
-export function relayPcConnected(key: string, link: PcLink, install: string | null = null): void {
+export function relayPcConnected(
+  key: string,
+  link: PcLink,
+  install: string | null,
+  tokenId: string,
+): void {
   const old = pcs.get(key)?.link
-  pcs.set(key, { link, install })
+  pcs.set(key, { link, install, tokenId })
   if (old && old !== link) relayPcGone(key, old, 'The PC connected again.')
 }
 
-/** A PC's socket closed: every session on it ends. `link` guards against a replaced socket's late close. */
-export function relayPcGone(key: string, link: PcLink, why = 'The PC went offline.'): void {
+/**
+ * A PC's socket closed, or is closed here with `code`: every session on it ends with `why`. `link` guards against a
+ * replaced socket's late close.
+ */
+export function relayPcGone(
+  key: string,
+  link: PcLink,
+  why = 'The PC went offline.',
+  code = 1000,
+): void {
   if (pcs.get(key)?.link === link) pcs.delete(key)
   for (const [sid, s] of [...sessions]) if (s.link === link) endSession(sid, why)
   try {
-    link.close(why)
+    link.close(why, code)
   } catch {
     // already closed
   }
+}
+
+/**
+ * Closes PC `key`'s live socket with RELAY_REFUSED and `why`, unless it holds credential `keep` (null keeps none).
+ * Answers whether one was closed.
+ */
+export function closeRelayUnless(key: string, keep: string | null, why: string): boolean {
+  const pc = pcs.get(key)
+  if (!pc || (keep !== null && pc.tokenId === keep)) return false
+  relayPcGone(key, pc.link, why, RELAY_REFUSED)
+  return true
 }
 
 /** One message from a PC's socket. Anything malformed or for a session it does not carry is dropped. */

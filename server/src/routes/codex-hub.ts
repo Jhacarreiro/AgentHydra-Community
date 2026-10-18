@@ -199,7 +199,7 @@ app.get(
           close: (why) => ws.close(1000, reason(why)),
         }
         link = pcLink
-        relayPcConnected(key, link, install)
+        relayPcConnected(key, link, install, 'legacy')
       },
       onMessage(event) {
         if (link) relayFromPc(link, String(event.data))

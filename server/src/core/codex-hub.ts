@@ -14,11 +14,13 @@
 // (kit/ingest-foreign.ts): it is the other PC's usage, which kit sync would count twice. Read-only:
 // nothing here can start a turn on, rename or archive a chat on the PC it came from.
 //
-// Off unless AGENTHYDRA_CODEX_HUB_TOKEN is set; then every push must carry it as a bearer token.
-// Any number of PCs may push with the same token; each is kept apart by the name it sends, and two
-// that send one name by the install id each sends with it (hubNameRefused).
+// Off unless AGENTHYDRA_CODEX_HUB_TOKEN is set. That value is the owner's admin token, which no PC is given: each PC
+// pushes with a token of its own (codex-hub-pcs.ts), and the hub takes the PC's name from that token, never from
+// what the push says. A PC that has not moved off the shared token of before acts, while the migration window is
+// open, only for its own folder (codex-hub-pcs.ts pendingKeys), and two such PCs that send one name are kept apart
+// by the install id each sends with it (hubNameRefused).
 
-import { timingSafeEqual } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import {
   createReadStream,
   existsSync,
@@ -33,8 +35,11 @@ import {
 import { dirname, join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { appEnv, CONFIG_DIR } from '../config'
+import { hubPcKey, isPcToken } from './codex-hub-ids'
 import { relayPcInstall } from './codex-hub-relay'
 import { HUB_PLATFORMS } from './codex-hub-signature'
+
+export { hubPcKey, isPcToken, PC_TOKEN } from './codex-hub-ids'
 
 /** One chat as the PC's app-server listed it (the subset of its `Thread` the hub keeps). */
 export interface HubThread {
@@ -79,7 +84,6 @@ export interface HubManifest {
 
 export const CODEX_HUB_DIR = join(CONFIG_DIR, 'codex-hub')
 const MANIFEST = 'manifest.json'
-const PC_MAX = 63
 /** Only paths a rollout can have: under sessions/, no `..`, a .jsonl file. */
 const ROLLOUT_PATH = /^sessions\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.jsonl$/
 /**
@@ -104,16 +108,34 @@ const HUB_NAME_HOLD_MS = 10 * 60_000
 export const HUB_PUSH_INTERVAL_MAX_MS = 8 * 60 * 60_000
 const INSTALL_ID = /^[A-Za-z0-9_-]{8,64}$/
 
+/**
+ * The admin token: the owner's own secret, which turns the hub on and is the one bearer Desk's end and the admin API
+ * take. A value shaped like a PC token is a PC daemon's own token (it pushes with it), not a hub's: null, as unset.
+ */
 export function codexHubToken(): string | null {
-  return appEnv('CODEX_HUB_TOKEN')?.trim() || null
+  const token = appEnv('CODEX_HUB_TOKEN')?.trim() || null
+  return token && !isPcToken(token) ? token : null
 }
 
+/**
+ * The one token every PC shared before each had its own. It opens nothing unless the migration window is open
+ * (codex-hub-pcs.ts legacyWindow), and then only for the PCs that have not moved yet.
+ */
+export function legacyToken(): string | null {
+  return appEnv('CODEX_HUB_LEGACY_TOKEN')?.trim() || null
+}
+
+/** The bearer token an Authorization header carries, trimmed; null for none. */
+export function hubBearer(header: string | undefined): string | null {
+  return header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || null
+}
+
+const digest = (s: string): Buffer => createHash('sha256').update(s, 'utf8').digest()
+
+/** Whether the header carries `token`. Digests are compared, so a token's length does not show through timing. */
 export function hubTokenMatches(header: string | undefined, token: string): boolean {
-  const presented = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
-  if (!presented) return false
-  const a = Buffer.from(presented)
-  const b = Buffer.from(token)
-  return a.length === b.length && timingSafeEqual(a, b)
+  const presented = hubBearer(header)
+  return !!presented && timingSafeEqual(digest(presented), digest(token))
 }
 
 /** An install id as a pusher sent it, or null for none, or for what is not one (taken as none). */
@@ -172,17 +194,6 @@ export function hubNameRefused(
     last.install !== claim &&
     Date.now() - Date.parse(last.pushedAt) < hubNameHoldMs(last.intervalMs)
   )
-}
-
-/** The folder name for a PC: its name lowercased to letters, digits and dashes. */
-export function hubPcKey(pc: string): string | null {
-  const key = pc
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, PC_MAX)
-  return key || null
 }
 
 /** A rollout path from another machine, relative to its CODEX_HOME: the part from `sessions/` on. */
@@ -248,19 +259,22 @@ export type HubPushResult =
  * Answers the rollout paths the hub still lacks at the version listed, so the PC sends those next;
  * a rollout no listed chat names any more (archived or deleted there) is removed here.
  * A refused push writes nothing: every time is checked and every rollout unpacked first.
- * `install` is the pusher's install id: a name another install holds is refused (hubNameRefused).
+ * `install` is the pusher's install id: a name another install holds is refused (hubNameRefused), unless
+ * `opts.hold` is false, as for a PC token, which is the PC's name on its own (routes/codex-hub.ts).
  */
 export function acceptCodexHubPush(
   body: unknown,
   root: string = CODEX_HUB_DIR,
   maxUnpacked: number = ROLLOUT_UNPACKED_MAX,
   install: string | null = null,
+  opts: { hold?: boolean } = {},
 ): HubPushResult {
   const push = body as Partial<HubPush> | null
   const pc = typeof push?.pc === 'string' ? push.pc.trim() : ''
   const key = pc ? hubPcKey(pc) : null
   if (!key) return { ok: false, status: 400, error: 'pc is required' }
-  if (hubNameRefused(key, install, root)) return { ok: false, status: 409, error: hubNameTaken(pc) }
+  if ((opts.hold ?? true) && hubNameRefused(key, install, root))
+    return { ok: false, status: 409, error: hubNameTaken(pc) }
   if (!Array.isArray(push?.threads))
     return { ok: false, status: 400, error: 'threads must be a list' }
   const threads = push.threads.map(cleanThread).filter((t): t is HubThread => t !== null)
