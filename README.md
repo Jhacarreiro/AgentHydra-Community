@@ -232,6 +232,10 @@ cd AgentHydra-Community && bun install && bun install --cwd desk2
 bun run build && bun run start
 ```
 
+On Windows, `bun scripts/build-natives.ts` also builds the tray icon, the window and CliMayte's worker runner from
+their Rust source (it needs Rust). Without them AgentHydra still runs: the tray is the PowerShell one, and
+AgentHydra opens in your browser.
+
 **Windows, one line**, once releases exist (no Administrator; the download's SHA-256 is checked before anything
 unpacks):
 
@@ -243,13 +247,26 @@ Until this project publishes its first release, the installer stops with a messa
 anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
 
 <details>
-<summary><b>Read more: downloads, versions, updates, requirements, what reaches the network</b></summary>
+<summary><b>Read more: downloads, Windows programs, versions, updates, requirements, network</b></summary>
 
 - **Downloads,** once published: the Windows `.zip` holds the whole app: the window, the tray icon and the
   orchestrator tools. The single `.exe` is a small launcher that fetches the rest of the app from the same release
   the first time you run it. Linux and macOS get a `.tar.gz`. No download packs Bun or Claude Code: the launcher
   fetches the Bun the release was built with on first run (checked against Bun's published checksums), and the
   window fetches Claude Code when a chat first needs it.
+- **Windows programs:** the tray icon (`misc\AgentHydra-Tray.exe`), the window (`desk2\launcher\HydraDesk2.exe`) and
+  CliMayte's worker runner (`misc\climayte-runner.exe`) are built from the Rust source in this repository and are
+  never committed. Every Windows release builds its own copies and publishes their checksums beside the download
+  (`AgentHydra-<version>-windows-x64-natives.sha256`). In a source checkout, build them with
+  `bun scripts/build-natives.ts`, which needs Rust ([rustup.rs](https://rustup.rs)) and Visual Studio's C++ build
+  tools. Until you do, AgentHydra still runs, with less:
+  - the shortcut that `misc\Create-Shortcut.ps1` makes runs the PowerShell tray;
+  - the shortcut from `desk2\launcher\install-shortcuts.ps1` starts that tray and opens AgentHydra in your default
+    browser instead of its own window;
+  - CliMayte workers run without the native runner's process limit.
+
+  A checkout from before these programs left the tree loses its copies when it updates. Build them, or run
+  `misc\Create-Shortcut.ps1` again, so the AgentHydra shortcut opens again.
 - **Versions** are numbered by date, `YYYY.M.PATCH`, starting at `2026.10.0`, so they never collide with the
   `0.x`, `1.x` and `2.0.x` releases of the project this one was forked from.
 - **Updates** come only from this repository, the one named in `release-channel.json`, and auto-update is off
@@ -259,7 +276,8 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
   `SHA256SUMS.txt`. A source checkout updates with `git pull --ff-only` of the branch it tracks, and only when that
   remote is this repository on GitHub; any other remote is reported in Settings and never contacted. It checks
   that remote whether auto-update is on or off: turning it on only lets the update apply.
-- **Requirements:** Bun only for a source checkout. The `claude` CLI and/or Claude Desktop for the
+- **Requirements:** Bun only for a source checkout (and on Windows, Rust and Visual Studio's C++ build tools if you
+  build the programs above). The `claude` CLI and/or Claude Desktop for the
   Claude features. Optional: Codex Desktop/CLI, OpenCode, Hermes Agent, the DeepSeek Harness
   (`~/.dsh`), whose sessions show up when their stores exist. Windows for the tray; macOS and Linux
   builds exist but are not verified yet. Windows instance management needs the classic Squirrel
