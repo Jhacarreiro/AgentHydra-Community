@@ -209,7 +209,7 @@ describe('a checkout without them', () => {
       ps.indexOf('# 1. The live worktree'),
     )
     expect(build).not.toContain('Fail ')
-    expect(ps).toMatch(/\$code = Invoke-NativeBuild \$Live\n\s+if \(\$code -ne 0\) \{/)
+    expect(ps).toMatch(/\$code = Invoke-NativeBuild \$Live\r?\n\s+if \(\$code -ne 0\) \{/)
   })
 
   test('live-checkout.ps1 points a tray shortcut whose exe is not built at the PowerShell tray', () => {
