@@ -14,12 +14,6 @@
       "reason": "Test fixture: the LAN Network URL a dev server prints. The ranking under test puts a private address between loopback and every other one, so it has to be a private address. It is no real host."
     },
     {
-      "rule": "pii.path",
-      "path": "desk2/web/src/dev/sections/ComposerSection.vue",
-      "fp": "8ce423cd71247c2b",
-      "reason": "Demo data for the composer's dev gallery page, which only a dev build serves: recent folders under upstream's projects folder. It names no account."
-    },
-    {
       "rule": "secret.token",
       "path": "hswarm/tests/test_config.py",
       "fp": "22513d47a92229e3",

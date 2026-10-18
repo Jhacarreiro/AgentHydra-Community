@@ -50,7 +50,7 @@ function chat(
   }
 }
 
-const C = 'C:/Users/me/Desktop/Project/connections'
+const C = 'C:/Users/me/Desktop/Project/acme-storefront'
 const N = 'C:/Users/me/Desktop/nexuscode-2d'
 const P = 'C:/Users/me/Desktop/audio-lab'
 
@@ -293,7 +293,7 @@ function demoProjects(): ProjectsResponse {
   })
   return {
     projects: [
-      row(C, 'connections', 'Work', ['projecthydra', 'chats'], git({ behind: 2 }), 3),
+      row(C, 'acme-storefront', 'Work', ['projecthydra', 'chats'], git({ behind: 2 }), 3),
       row(N, 'nexuscode-2d', null, ['chats'], git({ dirty: 3 }), 1),
       row(P, 'audio-lab', null, ['recent'], git({ ahead: 1 })),
       row('C:/Users/me/Desktop/Project/billing-api', 'billing-api', 'Work', ['projecthydra'], git({})),

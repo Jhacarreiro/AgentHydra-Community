@@ -20,7 +20,7 @@ const git: GitStatus = {
   ]
 }
 // The folder menu's list, kept here so choosing, removing and Add new folder show in the gallery.
-let recentFolders = ['D:/NEWProjects/connections', 'C:/Users/me/Desktop/Project/Agent Hydra/desk', 'D:/NEWProjects/web', 'C:/Users/me/Desktop/Project/Agent Hydra/desk/web']
+let recentFolders = ['C:/Users/me/code/acme-storefront', 'C:/Users/me/Desktop/Project/Agent Hydra/desk', 'C:/Users/me/code/web', 'C:/Users/me/Desktop/Project/Agent Hydra/desk/web']
 const fixtureApi: ComposerApi = {
   // The real model menu's order.
   models: async () => [
@@ -43,15 +43,15 @@ const fixtureApi: ComposerApi = {
   rememberFolder: async (path) => (recentFolders = [path, ...recentFolders.filter((p) => p !== path)]),
   forgetFolder: async (path) => (recentFolders = recentFolders.filter((p) => p !== path)),
   pickFolder: async () => {
-    recentFolders = ['D:/NEWProjects/IronWerx', ...recentFolders.filter((p) => p !== 'D:/NEWProjects/IronWerx')]
-    return 'D:/NEWProjects/IronWerx'
+    recentFolders = ['C:/Users/me/code/pico-cli', ...recentFolders.filter((p) => p !== 'C:/Users/me/code/pico-cli')]
+    return 'C:/Users/me/code/pico-cli'
   },
-  browse: async (path) => ({ path: path ?? 'D:/NEWProjects/connections', parent: 'D:/NEWProjects', dirs: ['web', 'server', 'docs'] }),
+  browse: async (path) => ({ path: path ?? 'C:/Users/me/code/acme-storefront', parent: 'C:/Users/me/code', dirs: ['web', 'server', 'docs'] }),
   accounts: async () => accountFixtures,
   pickAccount: async () => accountFixtures[1],
   mcpServers: async () => [
     { name: 'codegraph', scope: 'user', transport: 'stdio' },
-    { name: 'connections', scope: 'user', transport: 'http' },
+    { name: 'tracker', scope: 'user', transport: 'http' },
     { name: 'docs', scope: 'project', transport: 'sse' },
     { name: 'agenthydra', scope: 'hydra-desk', transport: 'stdio' }
   ],
@@ -59,7 +59,7 @@ const fixtureApi: ComposerApi = {
     live: true,
     servers: [
       { name: 'codegraph', status: 'connected' },
-      { name: 'connections', status: 'failed' },
+      { name: 'tracker', status: 'failed' },
       { name: 'docs', status: 'pending' },
       { name: 'agenthydra', status: 'disabled' }
     ]
@@ -70,7 +70,7 @@ provide(COMPOSER_API, fixtureApi)
 
 const base: ChatSummary = {
   ...chatFixtures[0],
-  cwd: 'D:/NEWProjects/connections',
+  cwd: 'C:/Users/me/code/acme-storefront',
   status: 'idle',
   activity: null,
   turnStartedAt: null,
@@ -105,7 +105,7 @@ type Case = { id: string; label: string; chat: ChatSummary | null; demo: Instanc
 const cases: Case[] = [
   { id: 'idle', label: 'Idle chat with a draft (real: composer-dock.png)', chat: idle, demo: { text: 'how we looking' } },
   { id: 'empty', label: 'Idle chat, empty box: placeholder', chat: idle, demo: { text: '' } },
-  { id: 'new', label: 'New session (chat null): folder and account pickers in the strip', chat: null, demo: { cwd: 'D:/NEWProjects/connections' } },
+  { id: 'new', label: 'New session (chat null): folder and account pickers in the strip', chat: null, demo: { cwd: 'C:/Users/me/code/acme-storefront' } },
   { id: 'working', label: 'Working chat, empty box: Stop (Esc)', chat: working, demo: { text: '' } },
   { id: 'extras', label: 'Hydra Desk row: waiting for you, queued', chat: extras, demo: { text: '' } },
   { id: 'attach', label: 'Attachments', chat: attach, demo: { text: 'What is wrong in these two?', images: pics } },

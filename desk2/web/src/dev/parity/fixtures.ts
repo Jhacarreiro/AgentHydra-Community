@@ -5,7 +5,7 @@ import type { AccountInfo, ChatStatus, ChatSummary, TranscriptItem } from '@shar
 import { PARITY_NOW } from './clock'
 
 const MIN = 60_000
-const C = 'C:/Users/me/Desktop/Project/connections'
+const C = 'C:/Users/me/Desktop/Project/acme-storefront'
 const N = 'C:/Users/me/Desktop/nexuscode-2d'
 const P = 'C:/Users/me/Desktop/audio-lab'
 

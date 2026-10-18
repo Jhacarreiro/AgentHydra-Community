@@ -164,7 +164,7 @@ foreach ($m in $mains) {
     $expanded = 0
     # THE ALLOW-LIST IS BUILT FROM THE APP ITSELF. Every project group in the sidebar has a
     # companion button named "New session in <that group>" - measured across five live
-    # instances 2026-09-01 (connections, NormWind, odin, PublicProjects, RoloDexter). Nothing
+    # instances 2026-09-01, each with its own project groups. Nothing
     # else in the window has one. So the set of names worth expanding is derived, not guessed,
     # and it cannot include 'More models', 'Effort: Max', 'Bypass permissions', the account
     # menu, 'Filter', 'Remote Control' or a 'Ran 6 commands' disclosure - every one of which
