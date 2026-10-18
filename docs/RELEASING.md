@@ -282,16 +282,20 @@ release tag, the hook checks CI:
    remote, private ones too. A finding refuses the push until it is fixed or allowed in
    `scripts/audit-public.allow.json`, and an audit that gives no verdict (it cannot load, start or
    finish, or that check fails, as in a shallow clone) refuses it as well.
-6. **No tag may point at upstream's work.** Every commit up to `3a65ba8e` is upstream's, and so
-   are its tags (`v0.1.0` to `v2.0.4`, `orchestrator-v1-final`); a `git push --tags` or `--mirror`
-   from a clone that also fetched upstream would publish them as this repository's, and a
-   `v2.0.x` one would pass rule 3 and start `release.yml`. The import commit is upstream's work
-   too: its tree is `3a65ba8e`'s, upstream's own `release.yml` included, and a tag runs the
-   workflow of the commit it points to. So a tag is refused when its commit is `3a65ba8e` or in its
-   history, or when its tree is `3a65ba8e`'s (`d6eda7b9`). The audit config's `upstreamBase` and
-   `baseTree` can add a commit and a tree, never take these away; its `base` is not read here. A
-   clone without `3a65ba8e` has none of upstream's tags, so only the tree is checked there. Tag a
-   release on this repository's own commits, and push branches by name. No override.
+6. **No tag may point at upstream's work, or run upstream's release workflow.** Every commit up to
+   `3a65ba8e` is upstream's, and so are its tags (`v0.1.0` to `v2.0.4`, `orchestrator-v1-final`);
+   a `git push --tags` or `--mirror` from a clone that also fetched upstream would publish them as
+   this repository's, and a `v2.0.x` one would pass rule 3 and start `release.yml`. A tag runs the
+   `release.yml` of the commit it points to. The import commit's tree is `3a65ba8e`'s, upstream's
+   own `release.yml` included, and this repository's first commits keep that `release.yml` until
+   the one that added the channel job; upstream's has no channel check and publishes a tag push as
+   a full release. So a tag is refused when its commit is `3a65ba8e` or in its history, when its
+   tree is `3a65ba8e`'s (`d6eda7b9`), or when its `.github/workflows/release.yml` is the one in that
+   tree. The audit config's `upstreamBase` and `baseTree` can add a commit and a tree, never take
+   these away; its `base` is not read here. A clone without `3a65ba8e` cannot look for upstream's
+   commits, so only the tree and the workflow are checked there, and one of upstream's older tags
+   fetched into it is refused by rule 7. Tag a release on this repository's own commits, and push
+   branches by name. No override.
 7. **No ref may carry upstream's history, or any history but this repository's.** This history
    starts at the import commit, which has no parent; upstream's history up to `3a65ba8e` stays in
    upstream's repository. On every push to any remote, a ref is refused when its history shares a

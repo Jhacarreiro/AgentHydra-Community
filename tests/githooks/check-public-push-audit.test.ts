@@ -44,6 +44,7 @@ import {
   licenseBoundaries,
   licenseRefusals,
   parseRefLines,
+  RELEASE_WORKFLOW,
   runPushAudit,
   UPSTREAM_BASE,
   UPSTREAM_TREE,
@@ -324,6 +325,68 @@ describe("rules 6 and 7: upstream's base and its tree", () => {
   )
 
   test(
+    "rule 6: a tag on a commit that still has upstream's release.yml is refused; once release.yml is this repository's, it is not",
+    () => {
+      // Upstream's tree with a release workflow of its own, the import commit with that tree, then
+      // this repository's commits: one that keeps upstream's release.yml, one that replaces it, one
+      // after it, and, beside them, one that removes it.
+      const dir = scratch('upstream-workflow')
+      git(dir, 'init', '-q', '-b', 'main')
+      git(dir, 'checkout', '-q', '--orphan', 'upstream')
+      const upstreamBase = commit(
+        dir,
+        { [RELEASE_WORKFLOW]: "name: upstream's release\n", 'a.txt': 'a\n' },
+        "upstream's last MIT commit",
+      )
+      const tree = git(dir, 'rev-parse', `${upstreamBase}^{tree}`)
+      const imported = git(dir, 'commit-tree', tree, '-m', 'the import commit')
+      git(dir, 'checkout', '-q', '-B', 'main', imported)
+      const early = commit(dir, { 'c.txt': 'c\n' }, "own work, upstream's release.yml still in it")
+      git(dir, 'checkout', '-q', '-b', 'without', early)
+      git(dir, 'rm', '-q', RELEASE_WORKFLOW)
+      const removed = commit(dir, {}, 'own work, no release workflow at all')
+      git(dir, 'checkout', '-q', 'main')
+      const channel = commit(
+        dir,
+        { [RELEASE_WORKFLOW]: 'name: release, with a channel job\n' },
+        "release.yml becomes this repository's",
+      )
+      const later = commit(dir, { 'd.txt': 'd\n' }, 'later work')
+      git(dir, 'tag', '-a', '-m', 'annotated', 'early-annotated', early)
+      const tagObject = git(dir, 'rev-parse', 'early-annotated')
+      const workflow = git(dir, 'rev-parse', `${tree}:${RELEASE_WORKFLOW}`)
+
+      const refs = parseRefLines(
+        [
+          `refs/tags/v2026.10.0 ${early} refs/tags/v2026.10.0 ${ZERO}`,
+          `refs/tags/early-annotated ${tagObject} refs/tags/early-annotated ${ZERO}`,
+          `refs/tags/removed ${removed} refs/tags/removed ${ZERO}`,
+          `refs/tags/channel ${channel} refs/tags/channel ${ZERO}`,
+          `refs/tags/later ${later} refs/tags/later ${ZERO}`,
+          `refs/heads/early ${early} refs/heads/early ${ZERO}`,
+        ].join('\n'),
+      )
+      const upstream = { bases: [], trees: [tree] }
+      const refused = upstreamTagRefusals(refs, upstream, dir)
+      expect(refused.map((r) => r.ref)).toEqual([
+        'refs/tags/v2026.10.0',
+        'refs/tags/early-annotated',
+      ])
+      expect(refused[0]?.why).toBe(
+        `it points at ${early.slice(0, 8)}, whose ${RELEASE_WORKFLOW} is still upstream's ${workflow.slice(0, 8)}`,
+      )
+      // Without upstream's tree to read it from, there is no workflow of upstream's to compare.
+      expect(upstreamTagRefusals(refs, { bases: [], trees: [] }, dir)).toEqual([])
+      // A clone of this repository's branch alone still has the import commit's tree, and so the
+      // workflow.
+      const clone = cloneOf(dir, 'main')
+      const inClone = upstreamTagRefusals(refs.slice(0, 1).concat(refs.slice(3)), upstream, clone)
+      expect(inClone.map((r) => r.ref)).toEqual(['refs/tags/v2026.10.0'])
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
     "rule 7: a ref that shares upstream's history is refused, whatever it shares; this repository's own history is not",
     () => {
       const dir = scratch('upstream-history')
@@ -475,6 +538,46 @@ describe("rules 6 and 7: upstream's base and its tree", () => {
       expect(refused[0]?.why).toBe(
         `this shallow clone cuts its history off at ${tip.slice(0, 8)}, so whether it starts at the import commit ${imported.slice(0, 8)} cannot be told (git fetch --unshallow)`,
       )
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+})
+
+// --- rules 6 and 7 on this repository's own history ----------------------------------------------
+
+/** Whether this clone has `sha` as a commit: ci.yml's shallow checkouts do not reach the import commit. */
+function hasCommit(sha: string): boolean {
+  return spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: REPO_ROOT }).status === 0
+}
+
+describe('this repository', () => {
+  test.skipIf(!hasCommit(IMPORT_COMMIT))(
+    "rule 6 refuses a tag on its first commit, which still has upstream's release.yml, and not on HEAD; rule 7 passes HEAD",
+    () => {
+      const first = execFileSync(
+        'git',
+        ['rev-list', '--reverse', '--ancestry-path', `${IMPORT_COMMIT}..HEAD`],
+        { cwd: REPO_ROOT, encoding: 'utf8', timeout: HOOK_TEST_TIMEOUT },
+      )
+        .split('\n')[0]
+        ?.trim()
+      expect(first).toMatch(/^[0-9a-f]{40}$/)
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }).trim()
+      const refs = parseRefLines(
+        [
+          `refs/tags/v2026.10.0 ${first} refs/tags/v2026.10.0 ${ZERO}`,
+          `refs/tags/v2026.10.1 ${head} refs/tags/v2026.10.1 ${ZERO}`,
+        ].join('\n'),
+      )
+      // Only trees and blobs are read here: the import commit's, never a file of upstream's history.
+      const upstream = { bases: [], trees: upstreamTrees(REPO_ROOT) }
+      const refused = upstreamTagRefusals(refs, upstream, REPO_ROOT)
+      expect(refused.map((r) => r.ref)).toEqual(['refs/tags/v2026.10.0'])
+      expect(refused[0]?.why).toContain(`whose ${RELEASE_WORKFLOW} is still upstream's`)
+      expect(foreignRootRefusals(refs.slice(1), importCommit(REPO_ROOT), REPO_ROOT)).toEqual([])
     },
     HOOK_TEST_TIMEOUT,
   )

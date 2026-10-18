@@ -46,18 +46,22 @@
  *     history) refuses the push as well, and says so rather than calling it a finding. A checkout
  *     without the script has nothing to audit with and passes, as for rule 3.
  *
- *  6. No tag may point at upstream's work. Every commit up to 3a65ba8e is upstream's, and the tags
- *     on them (v0.1.0 to v2.0.4, orchestrator-v1-final) are upstream's releases, which a
- *     `git push --tags` from a clone that also has upstream's history would publish as this
- *     repository's. A v2.0.x one would even pass rule 3 and start release.yml. The import commit at
- *     the root of this repository's history is upstream's work too: its tree is 3a65ba8e's,
- *     unchanged, upstream's own release.yml included, and a tag runs the workflow of the commit it
- *     points to. So a tag is refused when its commit is 3a65ba8e or in its history, or when its tree
- *     is 3a65ba8e's tree. The audit config's upstreamBase and baseTree may name a further commit and
- *     tree, never take these away; its `base`, the import commit, is not what this rule reads. A
- *     clone without 3a65ba8e (every clone of this repository) cannot look for upstream's commits,
- *     so only the tree is checked there; one of upstream's older tags fetched into such a clone is
- *     refused by rule 7, since its history has a root of its own. No override.
+ *  6. No tag may point at upstream's work, or at a commit that still runs upstream's release
+ *     workflow. Every commit up to 3a65ba8e is upstream's, and the tags on them (v0.1.0 to v2.0.4,
+ *     orchestrator-v1-final) are upstream's releases, which a `git push --tags` from a clone that
+ *     also has upstream's history would publish as this repository's. A v2.0.x one would even pass
+ *     rule 3 and start release.yml. And a tag runs the release.yml of the commit it points to, on a
+ *     tag push or on a dispatch against the tag. The import commit at the root of this history has
+ *     3a65ba8e's tree unchanged, upstream's own release.yml included, and so do this repository's
+ *     first commits, up to the one that gave release.yml its channel job: upstream's copy has no
+ *     channel check and publishes a tag push as a full release. So a tag is refused when its commit
+ *     is 3a65ba8e or in its history, when its tree is 3a65ba8e's tree, or when its
+ *     .github/workflows/release.yml is the one in that tree. The audit config's upstreamBase and
+ *     baseTree may name a further commit and tree, never take these away; its `base`, the import
+ *     commit, is not what this rule reads. A clone without 3a65ba8e (every clone of this
+ *     repository) cannot look for upstream's commits, so only the tree and the workflow are checked
+ *     there; one of upstream's older tags fetched into such a clone is refused by rule 7, since its
+ *     history has a root of its own. No override.
  *
  *  7. No ref may carry upstream's history, or any history but this repository's. This
  *     repository's history starts at the import commit, which has no parent: upstream's history up
@@ -102,6 +106,8 @@ export const LICENSE_BOUNDARY = "aee9dfc4f7dd0228d8e1740be90b646b30204f37";
 export const UPSTREAM_BASE = "3a65ba8e6497c16732f627fc8934723839c82fdd";
 // Rule 6: that commit's tree, which the import commit at the root of this repository's history has.
 export const UPSTREAM_TREE = "d6eda7b9e375d15e916c7a001099fa96051d6cc2";
+// Rule 6: where a commit keeps the workflow a tag on it runs. The one in UPSTREAM_TREE is upstream's.
+export const RELEASE_WORKFLOW = ".github/workflows/release.yml";
 // Rule 7: the import commit, the one root of this repository's history. The audit config's base names
 // it; this is the value for a checkout without that config.
 export const IMPORT_COMMIT = "c81335b7e90a85880cffbb54e51743a459cc7172";
@@ -298,24 +304,32 @@ export function licenseRefusals(refs, boundaries, cwd = process.cwd()) {
 
 /**
  * Rule 6: each pushed tag that points at upstream's work, with the reason: a commit that is one of
- * `bases` or in its history (upstream's own tags), or a commit whose tree is one of `trees` (the
- * import commit, whose tree is upstream's). A base this clone does not have is in no tag's history,
- * so then only the trees are checked; a git answer that is neither yes nor no refuses (fail closed).
+ * `bases` or in its history (upstream's own tags), a commit whose tree is one of `trees` (the import
+ * commit, whose tree is upstream's), or a commit whose RELEASE_WORKFLOW is the one in one of `trees`
+ * (this repository's first commits, which still run upstream's). A base this clone does not have is
+ * in no tag's history, so then only the trees and the workflow are checked; a git answer that is
+ * neither yes nor no refuses (fail closed).
  */
 export function upstreamTagRefusals(refs, { bases = [], trees = [] } = {}, cwd = process.cwd()) {
   const present = bases.filter((base) => hasCommit(base, cwd));
+  const workflows = new Set(trees.map((tree) => blobAt(tree, RELEASE_WORKFLOW, cwd)).filter(Boolean));
   const out = [];
   for (const r of refs) {
     if (r.isDelete || !(r.remoteRef || "").startsWith("refs/tags/")) continue;
     const commit = peeledCommit(r.localSha, cwd);
     if (!commit) continue; // a tag on a tree or a blob points at no commit
-    const refusal = upstreamTagReason(commit, present, trees, cwd);
+    const refusal = upstreamTagReason(commit, present, trees, workflows, cwd);
     if (refusal) out.push({ ref: r.remoteRef, why: refusal });
   }
   return out;
 }
 
-function upstreamTagReason(commit, bases, trees, cwd) {
+/** The blob at `path` in the tree or commit `rev`, or "" when there is none (or no such object). */
+function blobAt(rev, path, cwd) {
+  return (git(["rev-parse", "--verify", "--quiet", `${rev}:${path}`], cwd).stdout || "").trim();
+}
+
+function upstreamTagReason(commit, bases, trees, workflows, cwd) {
   const at = commit.slice(0, 8);
   for (const base of bases) {
     const s = git(["merge-base", "--is-ancestor", commit, base], cwd);
@@ -328,6 +342,10 @@ function upstreamTagReason(commit, bases, trees, cwd) {
   const tree = (peeled.stdout || "").trim();
   if (!tree) return `git could not read the tree of ${at}`;
   if (trees.includes(tree)) return `it points at ${at}, whose tree is upstream's ${tree.slice(0, 8)}`;
+  const workflow = blobAt(commit, RELEASE_WORKFLOW, cwd);
+  if (workflow && workflows.has(workflow)) {
+    return `it points at ${at}, whose ${RELEASE_WORKFLOW} is still upstream's ${workflow.slice(0, 8)}`;
+  }
   return null;
 }
 
@@ -472,13 +490,16 @@ async function main() {
     console.error(
       [
         "",
-        "✗ push refused: a pushed tag is one of upstream's, on its history or on its tree.",
+        "✗ push refused: a pushed tag is one of upstream's, on its history or on its tree, or would run",
+        "  upstream's release workflow.",
         ...upstreamTags.map((r) => `    ${r.ref}: ${r.why}`),
         "",
         "  Upstream's commits and their tags are upstream's own releases. The import commit at the root",
         "  of this history is upstream's too: its tree is 3a65ba8e's, unchanged, upstream's release.yml",
-        "  included. Push the branches without them (git push <remote> <branch>, not --tags or --mirror),",
-        "  and tag this repository's own releases on its own commits. There is no override for this rule.",
+        "  included, and this repository's first commits still carry that release.yml, which a tag on",
+        "  them would run. Push the branches without them (git push <remote> <branch>, not --tags or",
+        "  --mirror), and tag this repository's own releases on its own commits, after release.yml got",
+        "  its channel job. There is no override for this rule.",
         "",
       ].join("\n"),
     );

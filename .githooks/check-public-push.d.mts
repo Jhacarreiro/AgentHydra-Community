@@ -54,9 +54,13 @@ export function upstreamBases(cwd?: string): string[]
 /** Rule 6's trees: UPSTREAM_TREE plus the audit config's baseTree, when it names another. */
 export function upstreamTrees(cwd?: string): string[]
 
+/** Rule 6: where a commit keeps the release workflow a tag on it runs. */
+export const RELEASE_WORKFLOW: string
+
 /** Rule 6: the pushed tags that point at one of `bases` or at a commit in its history (upstream's own
- *  tags), or at a commit whose tree is one of `trees` (the import commit). Fail-closed on an unclear
- *  answer; only the trees are checked for a base that is not in this clone. */
+ *  tags), at a commit whose tree is one of `trees` (the import commit), or at a commit whose
+ *  RELEASE_WORKFLOW is the one in one of `trees`. Fail-closed on an unclear answer; only the trees
+ *  and the workflow are checked for a base that is not in this clone. */
 export function upstreamTagRefusals(
   refs: PushRef[],
   upstream: { bases?: string[]; trees?: string[] },
