@@ -388,8 +388,8 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
 ## The public audit
 
 `bun run audit:public` checks what this repository would publish: the tree at `HEAD`, and every commit in its history
-after the one at its root, which imports `3a65ba8e`, the MIT base. CI runs it on every push and pull request, and the
-pre-push hook runs it on every push.
+after the one at its root, which imports `3a65ba8e`, the MIT base. The pre-push hook runs it on every push and
+refuses what it objects to; CI runs it again on every push and pull request, after the push has landed.
 
 <details>
 <summary><b>Read more: what it looks for and how to use it</b></summary>
@@ -422,6 +422,10 @@ pre-push hook runs it on every push.
   the audit look at commit ancestry and object hashes only: code copied or cherry-picked from upstream's later work
   makes new commits with no upstream commit in their history, and nothing flags them. That is kept out by the
   clean-room rule in [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
+- `--no-verify` skips the hook, and CI cannot stand in for it: GitHub runs the audit the pushed commit carries, after
+  the push, so a branch or tag that carries an older audit or none (upstream's history, or a clone made before this
+  history began) passes there. [docs/RELEASING.md](docs/RELEASING.md#what-github-itself-must-refuse) lists the
+  GitHub rulesets that refuse those.
 - [docs/FORK.md](docs/FORK.md) shows how to check the import against upstream yourself.
 
 </details>

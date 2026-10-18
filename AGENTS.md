@@ -131,8 +131,12 @@ whose tree is `3a65ba8e`'s, unchanged; upstream's history stays in upstream's re
   screenshots of real chats; this repository publishes none of it. The pre-push hook refuses any ref that shares a
   commit with upstream's history up to `3a65ba8e` or has a root other than the import commit, which needs none of
   upstream's objects, and any tag on that history, on the import commit or on a commit that still has upstream's
-  `release.yml`; a full run of the audit stops on such history too. A clone that also fetched upstream to compare
-  holds that history locally: push branches by name, never `--all`, `--tags` or `--mirror`.
+  `release.yml`; a full run of the audit stops on such history too. CI is no backstop for the hook: GitHub runs the
+  audit the pushed commit carries, after the push has landed, and a branch from a clone made before the import commit
+  carries an older one that passes upstream's history. So never push with `--no-verify`, and delete such a clone
+  rather than push from it; on GitHub's side, only the rulesets in
+  [docs/RELEASING.md](docs/RELEASING.md#what-github-itself-must-refuse) refuse such a push. A clone that also fetched
+  upstream to compare holds that history locally: push branches by name, never `--all`, `--tags` or `--mirror`.
 - The audit's history mode reads the import commit's author, committer and message and every line each later
   commit adds, not the import's tree: that is upstream's at `3a65ba8e`, fixed by its hash, and still holds values
   later commits took out. A file restored from it brings them back as added lines, which the audit flags.

@@ -90,7 +90,8 @@ finding prints its rule, `file:line` and a fingerprint, never the value.
   the import commit, whose tree is upstream's, or a commit that still has upstream's release workflow), runs the
   audit on what the push would publish, and gates release tags. It also stops a push to a
   public remote, your own fork included, until you repeat the command with `AGENTHYDRA_PUSH_PUBLIC=1`, so a public
-  push is always deliberate.
+  push is always deliberate. CI runs the audit again after a push lands, but only the copy the pushed commit
+  carries, so it is no substitute for the hook: never push with `--no-verify`.
 
 </details>
 

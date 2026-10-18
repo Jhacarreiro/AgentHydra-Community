@@ -170,15 +170,15 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **A public audit checks this repository's files and every change made since the import.** One command reads every
   file as it stands, and every line each later commit added, for secrets, personal data, private addresses, the
   original project's hosts and release links, committed build output, and icons or stylesheets whose licence has no
-  notice, and fails any commit that carries the original project's history or its relicensing. CI runs it on every
-  push and pull request, and a push it objects to is refused.
+  notice, and fails any commit that carries the original project's history or its relicensing. The pre-push hook
+  runs it and refuses a push it objects to, and CI runs it again on every push and pull request.
 - **The public audit fails when an allowlist entry no longer clears anything.** A full run lists each stale entry
   and exits with an error, so an exemption cannot linger after its value is gone.
-- **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged.** It no
-  longer republishes the original project's own history, or the list of that project's contributors that came with
-  it; that history stays in the original project's repository. Anyone can check the import against the original
-  project, where its last MIT-licensed commit has the very same tree hash. A copy cloned from here before this
-  change cannot update with `git pull`: clone it again.
+- **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged.** Its
+  history no longer includes the original project's own commits, or the list of that project's contributors that
+  came with them; that history stays in the original project's repository. Anyone can check the import against the
+  original project, where its last MIT-licensed commit has the very same tree hash. A copy cloned from here before
+  this change cannot update with `git pull`: delete it and clone again.
 - **The connector list stops polling fast when nothing changes.** A connector stuck installing or starting is asked about every second; after a minute with the same answer the poll falls back to every 5 seconds. A Desk window at rest asks once every 5 seconds (7 requests in 30 s).
 - **When a Claude Desktop or Codex app goes down with chats running, the Instance manager moves them and starts them
   again.** If the app crashed, was signed out, or its plan or organization stopped working, it opens the same kind of

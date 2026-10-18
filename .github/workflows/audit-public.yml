@@ -3,8 +3,13 @@ name: Public audit
 # audit:public (scripts/audit-public.mjs) on every push and pull request: the tree as it stands and
 # every commit after the import commit, the root of this repository's history (upstream's tree at
 # 3a65ba8e, its last MIT commit, with no parent). The pre-push hook runs the same audit on what a push
-# carries; this is the copy a hook cannot skip (--no-verify, a push from a machine without the hooks,
-# a pull request from a fork).
+# carries, before it leaves a PC. This job runs after the push has landed, so it reports and refuses
+# nothing, and GitHub runs it from the pushed commit itself: it covers what a hook can miss
+# (--no-verify, a push from a machine without the hooks, a pull request from a fork) only for commits
+# that carry this workflow and this audit. A branch from a clone made before this history began carries
+# an older audit that passes upstream's history, and upstream's own commits and tags carry none. The
+# hook and the repository's rulesets are what stop those (docs/RELEASING.md, "What GitHub itself must
+# refuse").
 #
 # No paths-ignore, unlike ci.yml: a docs-only or Markdown-only change can publish an email address or
 # a token as easily as code can, and history is checked commit by commit, so a value added and

@@ -251,9 +251,14 @@ Auto-update (see the README's Auto-update section) applies each update to a sour
 `git pull --ff-only` of the branch it tracks, and only when that remote is the release channel's repository
 (`server/src/updater.ts`). There is no separate publish step for that path: as soon as `main` moves, every
 checkout with auto-update enabled will fast-forward to it on its next check. Treat a push to `main` as
-user-facing, not as a staging step. One push could not be followed: the one that replaced upstream's history with
-the import commit. A checkout made before it shares no commit with `main` and has to be cloned again
-([FORK.md](FORK.md)).
+user-facing, not as a staging step.
+
+A checkout made while this repository still carried upstream's history shares no commit with `main` and cannot
+follow it ([FORK.md](FORK.md)). Delete it and clone again rather than push from it: its hook and audit are older
+ones, which pass upstream's history. Nor does a force-push take that history off GitHub: GitHub keeps the commits a
+force-push leaves behind, viewable by their hash, and the repository's Activity view links the old head. To take it
+off, delete the repository and create it again before this history is pushed to it, or force-push and ask GitHub
+Support to remove the commits nothing points to any more.
 
 ## The pre-push gate
 
@@ -323,6 +328,28 @@ A commit whose subject starts with `wip: bundle` must also list every file in it
 `Swept:` (`.githooks/commit-msg`); `bun run save:bundle -- --mine <paths>` writes that message
 from the dirty tree. Both hooks have suites under `tests/githooks/`.
 
+## What GitHub itself must refuse
+
+The pre-push hook is the only check that reads a push before it lands, and `--no-verify`, or a push from a clone
+without the hooks, skips it. CI does not stand in for it. GitHub runs a push's workflows from the pushed commit,
+after the push has landed, so `audit-public.yml` reports what it finds and refuses nothing, and a commit that does
+not carry the current audit gets an older one or none: a branch from a clone made before this history started at
+the import commit carries an audit that passes upstream's history, and upstream's own commits and tags carry no
+audit at all. A tag made in GitHub's web page or through its API never meets the hook either.
+
+Set two repository rulesets for that (**Settings → Rules → Rulesets**). With nobody on their bypass list, they
+refuse those on GitHub's side:
+
+- **Branches**, targeting all branches: restrict creations, restrict deletions, block force pushes. Only a
+  fast-forward push to a branch that already exists (`main`) gets through, so no branch of upstream's history or
+  of a clone made before the import commit can land, and `main` cannot be replaced.
+- **Tags**, targeting all tags: restrict creations, updates and deletions. No tag can be pushed or made on GitHub,
+  so none of upstream's tags, and no tag on a commit that still has upstream's `release.yml`, can start a release.
+
+To push a release tag (step 6 of the recipe below) or a new branch, add yourself to that ruleset's bypass list for
+that push, and take yourself off again afterwards. No ruleset reads what a fast-forward push to `main` carries: a
+merge that brings upstream's history in is refused by the hook, and fails `audit-public.yml` once it has landed.
+
 ## Recipe
 
 1. **Bump the version.** Update it in the four `package.json` files and `desk2/bun.lock` that "The version line"
@@ -358,7 +385,8 @@ from the dirty tree. Both hooks have suites under `tests/githooks/`.
    Push nothing else to `main` until that run has STARTED: a newer push cancels a run still
    queued behind another one, and the tag in step 6 needs a green run on the bump commit itself
    (2.0.4, 2026-10-09: the bump's run queued behind a test fix's, and the next landing waited for it).
-6. **Tag only once `main` is green:**
+6. **Tag only once `main` is green,** with yourself on the tag ruleset's bypass list for this push
+   ("What GitHub itself must refuse", above), and off it again afterwards:
    ```sh
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z

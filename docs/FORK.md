@@ -60,7 +60,8 @@ exists is in the [README](../README.md).
 - Docs and code comments that came with the import cite upstream's commits by hash (the CliMayte notes, for
   example). Those commits are in upstream's repository, not in this one.
 - A clone of this repository made while it still carried upstream's history cannot fast-forward to this one, which
-  shares no commit with it. Clone it again.
+  shares no commit with it. Delete it and clone again: it holds upstream's history, and the hook and audit it
+  carries are older ones that would let a push of that history back through.
 
 </details>
 
@@ -100,13 +101,18 @@ git log -1 --format=%P aee9dfc4           # the relicensing commit's only parent
   built into `scripts/audit-public.mjs`; its configuration can add a commit to either but cannot remove these. Both
   need that commit in the clone to find it, and a clone of this repository holds no upstream commit. Upstream's older
   history can still come into such a clone without them, with one of upstream's earlier tags; it has a root of its
-  own, so the root check above stops it there. CI runs the audit on every push and pull request.
+  own, so the root check above stops it there.
 - The pre-push hook (`.githooks/check-public-push.mjs`, enabled by `bun install`) refuses, on every remote and with
   no override, any ref whose history contains `aee9dfc4` or any commit up to `3a65ba8e`, or has a root other than
   the import commit, and any tag on upstream's work: on `3a65ba8e` or a commit before it (upstream's own release
   tags), on a commit with `3a65ba8e`'s tree (the import commit), or on a commit whose release workflow is still the
   one in that tree (this fork's first commits, which a tag would publish with upstream's workflow). It also runs the
-  audit on what the push would publish.
+  audit on what the push would publish. `--no-verify`, or a clone without the hooks, skips it.
+- CI runs the audit on every push and pull request, but GitHub runs the copy the pushed commit carries, after the
+  push has landed: it reports, and refuses nothing. A branch from a clone made before this history began carries an
+  older audit, which passes upstream's history, and upstream's own commits and tags carry none. What can stop those
+  on GitHub's side is a pair of repository rulesets, described in
+  [RELEASING.md](RELEASING.md#what-github-itself-must-refuse).
 - The audit reads the tree at `HEAD`, the import commit's author, committer and message, and every line each later
   commit adds. It does not read the import commit's tree line by line: that is upstream's tree at `3a65ba8e`, fixed
   by its hash, and it still holds values this fork's later commits took out, such as upstream's service hosts and

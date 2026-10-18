@@ -43,7 +43,9 @@
 #   that added the `channel` job, and every commit of upstream's has a release.yml of upstream's. No step
 #   here can refuse a tag on one of them. The pre-push hook does, before the tag leaves a PC: rule 6 refuses
 #   a tag on a commit whose release.yml is the one in 3a65ba8e's tree, or on upstream's history, and rule 7
-#   any ref on upstream's history (.githooks/check-public-push.mjs).
+#   any ref on upstream's history (.githooks/check-public-push.mjs). A tag made on GitHub itself, or pushed
+#   with --no-verify, never meets the hook; the tag ruleset in docs/RELEASING.md ("What GitHub itself must
+#   refuse") is what stops that.
 name: Release
 
 on:
