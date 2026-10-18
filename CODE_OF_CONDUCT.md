@@ -6,5 +6,6 @@ Be decent to each other.
 - No harassment, threats or slurs, here or anywhere else about this project.
 - Stay on topic.
 
-If someone is making the project a worse place to be, tell a maintainer in an issue or by mentioning
-@LunarWerxs. Maintainers may edit or remove comments and block anyone who keeps it up.
+If someone is making the project a worse place to be, tell a maintainer of this repository through GitHub: open an
+issue, or mention [@Jhacarreiro](https://github.com/Jhacarreiro). Maintainers may edit or remove comments and block
+anyone who keeps it up.
