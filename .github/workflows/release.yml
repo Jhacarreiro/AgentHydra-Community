@@ -37,6 +37,10 @@
 #   updates and its repairs, and what it may do about a newer release. The `channel` job refuses a run in
 #   any other repository, and while the channel says updates are "off" every release is published as a
 #   pre-release, so it is never `releases/latest` (docs/RELEASING.md, "This repository's releases").
+# - A tag runs the release.yml of the commit it points to, not this one. The import commit at the root of
+#   this repository's history is upstream's tree at 3a65ba8e unchanged, upstream's own release.yml included,
+#   and so is every commit of upstream's, so no step here can refuse a tag on one of them: the pre-push
+#   hook's rule 6 does, before the tag leaves a PC (.githooks/check-public-push.mjs).
 name: Release
 
 on:
