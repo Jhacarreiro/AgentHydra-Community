@@ -29,9 +29,12 @@ right-click menus, pop-ups or developer-menu toggles.
   this launch setting.
 - The user-facing control is **Settings → Instances → Desktop → Claude native
   control → Start debugger automatically**, per account. Preserve existing port and routing
-  mode; each profile must have a distinct debugger port. New profiles are not
-  automatically opted in. Check saved settings instead of assuming a fleet-wide
-  default.
+  mode; each profile must have a distinct debugger port. On Windows, AgentHydra's own
+  profiles (those under its instances folder) get native control (`native-only`,
+  `launchDebugger: true`, the first free port) when they are created and on any Open
+  that finds them unconfigured, unless a person opted the profile out in Settings. The
+  machine's default Claude profile is never configured automatically. Check saved
+  settings for a profile instead of assuming either.
 - `developer_settings.json` with `allowDevTools: true` enables Claude's developer
   controls on its next startup; it does **not** start the debugger. The AgentHydra
   launch setting is what makes the connection automatic.
