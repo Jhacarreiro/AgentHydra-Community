@@ -97,7 +97,9 @@ const toolResult = (text: string) =>
 // later calls would have opened and written the NEXT test's index too, since the path is shared. So
 // every test body here is tracked, and afterEach, which bun runs for a timed-out test before the
 // next one starts, waits for it: a late test finishes on its own index, and the timeout is the one
-// failure reported. 60 s: longer than any test's own timeout below (40 s).
+// failure reported. The wait takes the bodies out of the set first and gives up at 55 s, longer than
+// any test's own timeout below (40 s) and short of the hook's 60 s, so a body that never settles
+// fails its own test only, not every test after it.
 const running = new Set<Promise<unknown>>()
 const test = (name: string, fn: () => unknown, timeout?: number) =>
   bunTest(
@@ -117,8 +119,16 @@ beforeEach(() => {
   setSearchIndexPathForTests(join(dir, 'index.db'))
 })
 afterEach(async () => {
-  await Promise.allSettled(running)
+  const late = [...running]
   running.clear()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([
+    Promise.allSettled(late),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, 55_000)
+    }),
+  ])
+  clearTimeout(timer)
 }, 60_000)
 
 /** Write a transcript and describe it the way the daemon's own file index would. */
