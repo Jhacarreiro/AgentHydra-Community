@@ -98,12 +98,13 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   is not linked to a Git remote.
 - **A fresh install checks for updates every six hours, as documented.** It checked every 15 minutes until you
   saved your own interval. An interval you have saved is kept as before.
-- **The Windows installer installs only this project's releases.** While this project has published none, it
-  stops with a message before downloading anything. A zip you built yourself still installs.
-- **With updates off, a launcher that finds part of the install missing tells you how to restore it.** Instead of
-  trying a download that could only fail, it names the missing part and says to copy it from the AgentHydra folder
-  of an unpacked release archive, or to run from a source checkout. Naming your own release base still repairs from
-  there.
+- **The Windows installer installs only this project's releases.** While updates are off, as they are until the
+  first release, it stops with a message before downloading anything. A zip you downloaded or built yourself still
+  installs.
+- **With updates off, a launcher that finds part of the install missing tells you how to restore it.** It downloads
+  none of the app, so it names the missing part and says to copy it from the AgentHydra folder of an unpacked
+  release archive, or to run from a source checkout. Releases built with updates off have no separate Windows
+  `.exe`, only the zip. Naming your own release base still repairs from there.
 - **The Windows programs AgentHydra runs are built from this project's own code, and every release publishes their
   checksums.** The tray icon, the app window and CliMayte's worker runner are built for each Windows release from
   that release's code with a pinned Rust release, instead of being copied from files nobody could trace, and their

@@ -32,7 +32,7 @@ the first full release, the one installed copies update to ([RELEASING.md](RELEA
   Desk 2's own suite (the `desk2` job in `ci.yml`). The updater treats `desk2/` as a release component (stops Desk 2
   before the swap, starts it after), and on an install with no `desk2/` (one updated by a 1.x updater, or the
   lone `.exe`) the launcher restores it, with any other missing part, from its own version's archive before it
-  starts the daemon.
+  starts the daemon, when its channel has updates on (with them off it restores nothing and says what is missing).
 - **The daemon's openers lead to Desk 2 (Order step 2, 2026-10-06).** `server/src/desk2.ts` is the one place that
   knows Desk 2: present, URL, health, which bun, start, stop, open. A page asked of the daemon, the Connections
   sign-in's return included, goes on to Desk 2 when it answers; when it does not, the daemon starts it and shows a

@@ -55,9 +55,10 @@ and nothing in a build reaches for the one it was forked from: not the update ch
   `changelogUrl` (`misc/AgentHydra-Tray.json`); and the release workflow's guard.
   `tests/release-channel-drift.test.ts` holds every copy to the file.
 - `updates` is what a release build may do about a newer release:
-  - `off`: no check and no download. The updater says why, the auto-update loop records its check and installs
-    nothing, and `install.ps1` refuses to download (`-FromZip` still installs). This is the state while the
-    repository has published no release.
+  - `off`: no check and no download, not even a launcher's repair from its own version's archive. The updater says
+    why, the auto-update loop records its check and installs nothing, and `install.ps1` refuses to download
+    (`-FromZip` still installs). This is the state until the first release has been installed by hand. A release
+    built from a commit that says `off` is published as a pre-release with no lone `.exe` (see below).
   - `notify`: asks GitHub for the channel repository's `releases/latest` and says when a newer version exists, with
     the releases page, but never installs it.
   - `auto`: installs a newer release when the person turned auto-update on (Settings; it is off until they do).
@@ -71,7 +72,11 @@ and nothing in a build reaches for the one it was forked from: not the update ch
 commit says `off` is published as a pre-release (see "What the tag push triggers"), so it is never `releases/latest`.
 To make a release the one installs take, set `updates` to `notify` or `auto` in `release-channel.json` and in
 `install.ps1`'s `$Updates` (the drift test refuses one without the other) in the commit you tag. A copy built with
-`off` never checks, so install that first release by hand; from then on, installed copies find the next ones.
+`off` never checks, so install that first release by hand, from its zip; from then on, installed copies find the
+next ones. While a commit says `off`, `scripts/package-release.ts` makes no lone `.exe` and `release.yml` lists and
+publishes none: run on its own, that launcher would have to download the rest of the app, and a build with updates
+off downloads no part of AgentHydra, so it could only stop and say so. The release page says the zip is the
+Windows download.
 
 **The version line** is a calendar version, `YYYY.M.PATCH`: the year, the month without a leading zero, then the
 count of releases in that month from 0. The first is `2026.10.0`. The repository this one was forked from numbers
@@ -90,8 +95,8 @@ Every bundle (`AgentHydra-<version>-<target>`, a `.zip` on Windows, a `.tar.gz` 
 
 - the launcher (`AgentHydra.exe` on Windows, the sh script `agenthydra` elsewhere), `app/` (the
   daemon as plain JS in `app/server.js`, its misc assets, `release.json`, and `bun-version`, the Bun
-  this release runs on) and `orchestrator/`; on Windows also `misc/` (the tray) and the lone
-  `.exe` beside the archive, which is the same launcher;
+  this release runs on) and `orchestrator/`; on Windows also `misc/` (the tray) and, once updates are
+  on, the lone `.exe` beside the archive, which is the same launcher;
 - `desk2/`, AgentHydra 2.0's window: its server source, `shared/`, production `node_modules`
   (installed hoisted, for the target's OS and CPU, with Claude Code's platform binary removed: Desk 2
   resolves or downloads it itself; and without the Claude Agent SDK, below), `sdk-pin.json`, the
@@ -119,10 +124,10 @@ mirror `npm_config_registry` names), checks it against the pin and unpacks it in
 `bun install` put there. The launcher downloads the Bun that `app/bun-version` names (from
 oven-sh/bun's release, its SHA-256 checked) into `runtime/` the first time it runs, and again
 whenever an update brings a new pin. `runtime/` is created by the launcher, is never in an
-archive and is never replaced by the updater. Run on its own, the lone `.exe` finds no `app/` and
-installs everything from its own version's archive first. `release.yml` resolves the newest Bun
-release once and passes it to the packager as `--bun-version`, and builds and smokes on that same
-Bun; a PC build pins the running `Bun.version`. The packager fails the Windows archive when it is
+archive and is never replaced by the updater. Run on its own, the lone `.exe` (published once
+updates are on) finds no `app/` and installs everything from its own version's archive first.
+`release.yml` resolves the newest Bun release once and passes it to the packager as `--bun-version`,
+and builds and smokes on that same Bun; a PC build pins the running `Bun.version`. The packager fails the Windows archive when it is
 over 30 MB (11.7 MB on 2026-10-06, and 8.2 MB for linux-x64, against 198 MB before). A POSIX
 target must be packaged on Linux or macOS: Windows cannot put the launcher's execute bit in the tar,
 so the packager refuses one there. The smoke seeds `runtime/` with its
@@ -414,12 +419,12 @@ starts it again after. Desk 2 includes its own dev-servers service that manages 
 without requiring a separate daemon. `install.ps1` installs the new layout and leaves Bun to the launcher's first run. Whatever part is
 missing (`app/`, `desk2/`, `orchestrator/`, `misc/`: a 1.x updater's install, or the lone `.exe`),
 the launcher restores it from its own version's release archive before it starts the daemon,
-without a click. A build whose release channel says `"updates": "off"` has no release to restore
-from, so its launchers (both get the policy written in at build time, like the download base) name
-the missing part and say how to get it back, copying it from the `AgentHydra-<version>-<target>`
-folder of an unpacked bundle (unpacking straight into the install would nest that folder inside
-it) or running from source, without making a request that could only fail. Setting `AGENTHYDRA_RELEASE_BASE` repairs from the
-base it names even then.
+without a click. A build whose release channel says `"updates": "off"` downloads no part of AgentHydra, even when
+its own version is published as a pre-release, so its launchers (both get the policy written in at
+build time, like the download base) name the missing part and say how to get it back, copying it from
+the `AgentHydra-<version>-<target>` folder of an unpacked bundle (unpacking straight into the install
+would nest that folder inside it) or running from source. Setting `AGENTHYDRA_RELEASE_BASE` repairs
+from the base it names even then.
 
 ## The 2.0 update mechanism and the 1.x→2.0 migration
 
@@ -519,9 +524,9 @@ Pushing a tag matching `v*.*.*` triggers `.github/workflows/release.yml`. It bui
 programs from the tagged source ("The native programs are built, never committed"), packages one bundle
 for every supported OS (Windows x64, Linux x64/arm64, macOS x64/arm64; see "What a 2.0 bundle
 holds"), boots every bundle **except darwin-x64** with `scripts/smoke-release.ts`, then publishes
-the GitHub Release automatically from the matching changelog section. Windows exposes the lone
-launcher `.exe` for people plus the zip the installer and the updater take; the other targets
-expose a `.tar.gz`. `SHA256SUMS.txt` covers every asset (its lines name `out/<asset>`; both
+the GitHub Release automatically from the matching changelog section. Windows exposes the zip the
+installer and the updater take, plus, once updates are on, the lone launcher `.exe` for people; the
+other targets expose a `.tar.gz`. `SHA256SUMS.txt` covers every asset (its lines name `out/<asset>`; both
 launchers match on the file name). `workflow_dispatch` runs the same build and smoke matrix without
 publishing a release.
 

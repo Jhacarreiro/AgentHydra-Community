@@ -192,9 +192,10 @@ Each path is where the feature is defined.
 - **Small release: a launcher plus a bundle, Bun fetched on first run** - A release is a small launcher
   (`AgentHydra.exe` on Windows, an sh launcher elsewhere) plus `app/server.js`, a `bun build` bundle that carries
   every runtime helper in `RUNTIME_MISC_FILES`. No Bun, no Claude Code and no Claude Agent SDK are shipped: the
-  launcher downloads Bun into `runtime/` on first run and restores any missing part from the release archive,
-  verified against `SHA256SUMS.txt`, Desk fetches the SDK version `desk2/sdk-pin.json` pins when a chat first needs
-  it, and the packager fails a Windows archive over 30 MB. Every bundle carries `LICENSE`, `THIRD-PARTY-NOTICES.md`,
+  launcher downloads Bun into `runtime/` on first run and, once updates are on, restores any missing part from the
+  release archive, verified against `SHA256SUMS.txt` (while they are off it downloads no part of the app, and a
+  release has no lone `.exe`), Desk fetches the SDK version `desk2/sdk-pin.json` pins when a chat first needs it, and
+  the packager fails a Windows archive over 30 MB. Every bundle carries `LICENSE`, `THIRD-PARTY-NOTICES.md`,
   `LICENSES/` and `THIRD-PARTY-LICENSES`, the licence and text of every third-party package inside it, and is not
   built when one falls outside the permissive allowlist. - `launcher/windows/AgentHydra.cs`,
   `server/src/misc-assets.ts`, `scripts/package-release.ts`, `scripts/third-party-licenses.ts`,
@@ -282,7 +283,7 @@ Each path is where the feature is defined.
 - **One-line Windows installer with SHA-256 verification** - `irm .../install.ps1 | iex` installs the release archive
   under `%LOCALAPPDATA%` without admin, downloads only from the release channel's repository, refuses to install
   unless the download matches the release's published `SHA256SUMS.txt`, and creates a Start Menu shortcut. While
-  the channel has no releases it refuses before downloading anything; `-FromZip` installs a local build. -
+  the channel says updates are off it refuses before downloading anything; `-FromZip` installs a local zip. -
   `install.ps1`
 - **The public audit** - One command reads the tree and every commit since the MIT base for secrets, personal data,
   private addresses, upstream hosts and private repository names, unrecorded binaries, non-noreply commit emails and

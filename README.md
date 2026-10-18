@@ -243,18 +243,20 @@ unpacks):
 irm https://raw.githubusercontent.com/Jhacarreiro/AgentHydra-Community/main/install.ps1 | iex
 ```
 
-Until this project publishes its first release, the installer stops with a message instead of downloading
-anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
+While `release-channel.json` says updates are off, as it does until the first release has been installed by hand,
+the installer stops with a message instead of downloading anything; `install.ps1 -FromZip <zip>` installs a zip you
+downloaded or built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
 
 <details>
 <summary><b>Read more: downloads, Windows programs, licences, versions, updates, requirements, network</b></summary>
 
 - **Downloads,** once published: the Windows `.zip` holds the whole app: the window, the tray icon and the
-  orchestrator tools. The single `.exe` is a small launcher that fetches the rest of the app from the same release
-  the first time you run it. Linux and macOS get a `.tar.gz`. No download packs Bun, Claude Code or the Claude Agent
-  SDK: the launcher fetches the Bun the release was built with on first run, and again after an update that changes
-  that version (checked against Bun's published checksums), and the window fetches Claude Code, and the Agent SDK
-  the release pins, when a chat first needs them.
+  orchestrator tools. Once updates are on, a release also has a single `.exe`, a small launcher that fetches the
+  rest of the app from the same release the first time you run it; a release built while they are off has the zip
+  only, since a build with updates off downloads no part of AgentHydra. Linux and macOS get a `.tar.gz`. No download
+  packs Bun, Claude Code or the Claude Agent SDK: the launcher fetches the Bun the release was built with on first
+  run, and again after an update that changes that version (checked against Bun's published checksums), and the
+  window fetches Claude Code, and the Agent SDK the release pins, when a chat first needs them.
 - **Windows programs:** the tray icon (`misc\AgentHydra-Tray.exe`), the window (`desk2\launcher\HydraDesk2.exe`) and
   CliMayte's worker runner (`misc\climayte-runner.exe`) are built from the Rust source in this repository and are
   never committed. Every Windows release builds its own copies and publishes their checksums beside the download
