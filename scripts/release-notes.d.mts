@@ -19,11 +19,22 @@ export function refusal(changelog: string, version: string): string | null
 /** Why the [Unreleased] section may not stay as it is (long, with no TL;DR), or null when it may. */
 export function unreleasedRefusal(changelog: string): string | null
 
-/** The release page body; throws with the refusal when the version may not be released. */
-export function formatReleaseBody(changelog: string, version: string, options?: { history?: boolean }): string
+/** The release page body; throws with the refusal when the version may not be released. `updates` is the release
+ *  channel's policy the page is for (release-channel.json's by default): with "off" the Windows download is the zip
+ *  alone. */
+export function formatReleaseBody(
+  changelog: string,
+  version: string,
+  options?: { history?: boolean; updates?: 'off' | 'notify' | 'auto' },
+): string
 
 /** A section's details as a release page shows them: wrapped bullets on one line, emoji headings, single blank lines. */
 export function renderSectionDetails(lines: string[]): string
 
 /** One release line's page: the kept version with its folded patches (TL;DR, details oldest first, downloads). */
-export function formatLineBody(changelog: string, keptVersion: string, patchVersions: string[], options?: { history?: boolean }): string
+export function formatLineBody(
+  changelog: string,
+  keptVersion: string,
+  patchVersions: string[],
+  options?: { history?: boolean; updates?: 'off' | 'notify' | 'auto' },
+): string
