@@ -338,8 +338,13 @@ jobs:
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.bun/install/cache
-          key: bun-desk2-${{ runner.os }}-${{ hashFiles('desk2/bun.lock') }}
+          key: bun-desk2-${{ runner.os }}-${{ hashFiles('bun.lock', 'desk2/bun.lock') }}
           restore-keys: bun-desk2-${{ runner.os }}-
+
+      # Desk's server runs some of the daemon's own modules (@agenthydra/server/*, ../server/src), and those import
+      # the root's packages (hono, for one), which only the root install puts where they resolve from.
+      - name: Install dependencies (root)
+        run: bun install --frozen-lockfile
 
       - name: Install dependencies (desk2)
         working-directory: desk2
