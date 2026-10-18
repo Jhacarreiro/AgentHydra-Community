@@ -7,7 +7,7 @@ import { computed, shallowReactive, watchEffect, type Ref } from "vue";
  * center over the *visible* content area instead of the full viewport — they're portaled
  * and position:fixed, so a CSS var is the only signal that reaches them.
  *
- * usePushPanel contributes automatically; bespoke panels (e.g. RepoYeti's file viewer)
+ * usePushPanel contributes automatically; bespoke panels (e.g. a docked file viewer)
  * register their own reactive width. Contributions are additive.
  */
 const sources = shallowReactive(new Set<Ref<number>>());

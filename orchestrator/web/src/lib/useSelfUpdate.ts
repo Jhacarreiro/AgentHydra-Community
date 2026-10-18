@@ -1,7 +1,7 @@
 import { ref, type Ref } from "vue";
 
 /**
- * Shared self-update state machine for all LunarWerx apps. Wraps an app's two
+ * Shared self-update state machine for this repository's app pages. Wraps an app's two
  * update endpoints in the identical check/apply guards each app was duplicating:
  * `checkForUpdate()` is single-flight (a re-entrant call returns the cached
  * status), and `applyUpdate()` toggles `updateApplying` while folding the

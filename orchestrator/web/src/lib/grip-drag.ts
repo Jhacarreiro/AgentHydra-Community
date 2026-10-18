@@ -1,7 +1,6 @@
 // Everything a resize grip needs: hardened drag-to-resize pointer handling (useGripDrag) and the
 // double-click reset's glide back to the natural size (useGripGlide). The ONLY sanctioned way to
-// implement a resize grip in a family app — consumers are RepoYeti's changed-files tree grip, its
-// History viewport grip, and its file-viewer edge grip.
+// implement a resize grip in these app pages.
 //
 // History: naive per-grip window-listener drags repeatedly "stuck" — the resize kept
 // tracking the cursor after the mouse button was released, until the next stray click

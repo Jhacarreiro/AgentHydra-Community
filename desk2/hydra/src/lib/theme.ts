@@ -3,22 +3,21 @@ import { useStorage, usePreferredDark } from "@vueuse/core";
 import { prefersReducedMotion } from "./utils";
 
 /**
- * Shared theme composable for every LunarWerx app (RepoYeti · DevWebUI · Reimagine).
+ * Shared theme composable for this repository's app pages (desk2/hydra and orchestrator/web
+ * carry the same file).
  *
- * ONE implementation, merged from what each app used to hand-roll separately:
- *  - light / dark / system modes, persisted to localStorage, DEFAULTING TO **dark**
- *    (RepoYeti + Reimagine identity; DevWebUI adopts it here, dropping its old OS-`auto`
- *    default, the lone outlier);
+ * ONE implementation, in place of a hand-rolled one per app:
+ *  - light / dark / system modes, persisted to localStorage, DEFAULTING TO **dark**;
  *  - toggles `.dark` on <html>, mirrors the raw mode to `html[data-theme]`, and sets
  *    `html.style.colorScheme` so native form controls / scrollbars match;
  *  - a brief crossfade on change, via the View Transitions API where available (one
  *    GPU-composited snapshot fade — cheap even on huge DOMs); otherwise falls back to
  *    adding `html.theme-transitioning` (styled in base.css, 280 ms) around the swap,
- *    then stripping it (ex-RepoYeti). An `activeScopes` ref-count clears any pending
+ *    then stripping it. An `activeScopes` ref-count clears any pending
  *    fallback transition once the last consumer unmounts, so no timer/class leaks
  *    across a full teardown (reduced-motion skips the view transition in code and
  *    neutralises the fallback in base.css);
- *  - syncs the mobile browser-chrome `<meta name="theme-color">` when present (ex-Reimagine).
+ *  - syncs the mobile browser-chrome `<meta name="theme-color">` when present.
  *    Each app declares its OWN chrome colours via `data-theme-color-dark` / `-light` on that
  *    meta tag (defaults #0a0a0a / #ffffff); apps without the meta simply opt out for free.
  *

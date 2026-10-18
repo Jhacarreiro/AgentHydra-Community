@@ -1,5 +1,5 @@
 /**
- * Shared free-port finder for the LunarWerx daemons. Walks upward from `preferred`,
+ * Shared free-port finder for this repository's daemons. Walks upward from `preferred`,
  * actually binding a throwaway net.Server at each candidate (the only race-free way
  * to know a port is free), and resolves the first one that binds, so a daemon never
  * dies on a busy port; it just moves over. Promoted verbatim from DevWebUI's

@@ -1,5 +1,5 @@
 /**
- * Shared HTTP client primitive for all LunarWerx app front-ends. One place that
+ * Shared HTTP client primitive for this repository's app pages. One place that
  * does fetch + non-2xx handling, so each app's `api.ts` keeps only its endpoint
  * table (behind a thin local adapter that matches its historic call signature).
  *

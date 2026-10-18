@@ -1,5 +1,5 @@
 /**
- * Shared "this build HAS a tray, and it is running" primitive for the LunarWerx daemons.
+ * Shared "this build HAS a tray, and it is running" primitive for this repository's daemons.
  *
  * ⛔ WHY EVERY KIT APP NEEDS THIS (owner, 2026-09-11, on finding a freshly compiled AgentHydra with
  * no icon): "if we're not including a tray in that compiled executable, that's a [bug] - it needs to

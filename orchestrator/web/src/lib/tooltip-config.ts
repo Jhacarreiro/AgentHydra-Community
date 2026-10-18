@@ -1,7 +1,7 @@
 import { useStorage } from "@vueuse/core";
 
 /**
- * App-wide "show tooltips" switch shared by every LunarWerx app.
+ * App-wide "show tooltips" switch, the same in every app page of this repository.
  *
  * One localStorage-persisted reactive flag (same posture as lib/theme.ts) that the kit's
  * TooltipProvider wrapper consumes as its default `disabled` state, so a single Settings

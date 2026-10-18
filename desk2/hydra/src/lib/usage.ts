@@ -100,7 +100,7 @@ export function pctDetail(pct: number): string {
 }
 
 /** "3m ago" style relative time for a snapshot's `capturedAt`, English fallback (see
- *  lib/relativeTime.ts, the shared LunarWerx formatter). Used for the popover's
+ *  lib/relativeTime.ts, the shared formatter). Used for the popover's
  *  "checked <x> ago" line. */
 export function usageCheckedAgo(capturedAt: string): string {
   const ms = Date.parse(capturedAt)

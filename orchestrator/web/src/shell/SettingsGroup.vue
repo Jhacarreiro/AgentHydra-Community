@@ -2,8 +2,8 @@
 import InfoHint from './InfoHint.vue';
 /**
  * SettingsGroup, one labelled section of a settings sidebar: a small caps label
- * (+ optional ⓘ info tooltip) over a rounded, hairline-divided card. Every LunarWerx
- * app's settings use this (+ SettingsRow) so the three read identically. A section-level
+ * (+ optional ⓘ info tooltip) over a rounded, hairline-divided card. Every app page's
+ * settings here use this (+ SettingsRow) so they all read identically. A section-level
  * `description` is disclosed behind the info icon, never as a verbose paragraph. Put
  * SettingsRow children inside, or arbitrary content for richer sections.
  */

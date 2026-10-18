@@ -19,7 +19,7 @@ interface SheetContentProps extends DialogContentProps {
   class?: HTMLAttributes["class"]
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
-  /** Render the dimming backdrop. Set false for a "pure push" panel (LunarWerx). */
+  /** Render the dimming backdrop. Set false for a "pure push" panel (Sidebar's push mode). */
   showOverlay?: boolean
   /** Nudge a right-docked panel left by N px so it can stack with another shifted
    *  panel (e.g. a file viewer). Only applies when side="right". */

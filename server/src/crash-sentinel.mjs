@@ -1,5 +1,5 @@
 /**
- * Crash sentinel and safe mode for a LunarWerx daemon: notice that the PREVIOUS run never shut
+ * Crash sentinel and safe mode for a daemon here: notice that the PREVIOUS run never shut
  * down cleanly, and let a launch come up quiet (no auto-started watchers, child processes or
  * background jobs) so a crash inside startup work stops repeating on every relaunch.
  *

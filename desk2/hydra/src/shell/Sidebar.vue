@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { type PushPanelSide, DEFAULT_PANEL_WIDTH, maxOpenPushPanelWidth } from "./usePushPanel";
 
 /**
- * Sidebar, the ONE slide-in panel every LunarWerx app uses (settings, drawers,
+ * Sidebar, the ONE slide-in panel every app page here uses (settings, drawers,
  * viewers). No bespoke per-app sidebar code.
  *
  * mode="push" (default, desktop side="right"): non-modal, NO backdrop. The panel

@@ -1,5 +1,5 @@
 /**
- * Shared "portable window" opener for the LunarWerx daemons. Opens the app's UI in a
+ * Shared "portable window" opener for this repository's daemons. Opens the app's UI in a
  * chromeless Chromium app window (`msedge --app=URL`, falling back to Chrome) so the
  * app presents as its own desktop window instead of a browser tab. Each app exposes
  * this through a POST /api/portable-window route; the tray launchers implement the

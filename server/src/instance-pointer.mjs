@@ -1,5 +1,5 @@
 /**
- * Shared running-instance pointer for the LunarWerx daemons. The daemon may bind a
+ * Shared running-instance pointer for this repository's daemons. The daemon may bind a
  * different port than requested (the preferred one was busy), so it records the port
  * it ACTUALLY bound in `<configDir>/runtime.json`. Launchers read this to open the
  * browser at the right URL and to detect an already-running instance via /api/health;

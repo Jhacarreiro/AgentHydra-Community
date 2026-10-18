@@ -1,5 +1,5 @@
 /**
- * Shared "time ago" formatting for all LunarWerx apps.
+ * Shared "time ago" formatting for this repository's app pages.
  *
  * `formatAgo(nowMs, ts, t?)` buckets an elapsed duration to seconds / minutes /
  * hours / days. Pass the caller's clock as `nowMs` (callers own "now", testable

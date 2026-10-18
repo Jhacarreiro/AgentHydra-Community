@@ -12,10 +12,9 @@ export interface MessageCatalog {
 }
 
 /**
- * Shared vue-i18n bootstrap for all LunarWerx apps. Promotes DevWebUI's setup
- * (the superset) into one factory so RepoYeti / DevWebUI / Reimagine stop
- * re-deriving the same `createI18n` call, localStorage persistence, and
- * `<html lang>` sync.
+ * Shared vue-i18n bootstrap for this repository's app pages: one factory for
+ * the `createI18n` call, localStorage persistence, and `<html lang>` sync, so
+ * no app re-derives them.
  *
  * `createAppI18n(messages, storageKey)`:
  *   - builds the Composition-API i18n instance (`legacy: false`, `globalInjection`)

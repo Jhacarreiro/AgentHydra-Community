@@ -1,5 +1,5 @@
 /**
- * Shared self-update engine for the LunarWerx daemons. Checks the app's configured
+ * Shared self-update engine for this repository's daemons. Checks the app's configured
  * update remote for a newer commit and (on request) fast-forward-pulls + reinstalls +
  * rebuilds, returning a step-by-step transcript. The git/spawn/parse plumbing was
  * duplicated near-verbatim across the apps, this is the one copy, parameterised by:

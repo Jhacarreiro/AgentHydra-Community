@@ -193,7 +193,7 @@ forbidSyncIndexBuild()
 
 // Persist console output to <CONFIG_DIR>/logs/daemon.log BEFORE anything else can throw, so the
 // crash reason logged just below actually survives the process (the tray runs us with a hidden
-// console, so without this the output would vanish). Best-effort; never throws. Shared LunarWerx
+// console, so without this the output would vanish). Best-effort; never throws. Shared
 // server-lib (./log-file.mjs); the config dir comes from CONFIG_DIR (config.ts), passed in
 // explicitly since the shared lib is app-agnostic and has no built-in default.
 initFileLogging(CONFIG_DIR)

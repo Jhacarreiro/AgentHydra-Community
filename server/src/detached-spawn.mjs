@@ -1,5 +1,5 @@
 /**
- * Shared "detached launch" primitive for the LunarWerx daemons — the ONE place that knows how to
+ * Shared "detached launch" primitive for the daemons here — the ONE place that knows how to
  * spawn a child process so it OUTLIVES the daemon (survives a tray Quit or an auto-update relaunch).
  *
  * WHY the daemon needs this: the tray host (misc/Tray-Host.ps1, and the native host built from

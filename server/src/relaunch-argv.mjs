@@ -1,5 +1,5 @@
 /**
- * Build the argv that relaunches THIS build of a LunarWerx daemon, pinned to the port it is
+ * Build the argv that relaunches THIS build of a daemon here, pinned to the port it is
  * actually serving on. Returns `[command, ...args]`, ready to hand to buildDetachedSpawn().
  *
  * Every app here self-relaunches to apply an update: it spawns a copy of its own launch command,
