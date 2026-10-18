@@ -321,8 +321,9 @@ missing (`app/`, `desk2/`, `orchestrator/`, `misc/`: a 1.x updater's install, or
 the launcher restores it from its own version's release archive before it starts the daemon,
 without a click. A build whose release channel says `"updates": "off"` has no release to restore
 from, so its launchers (both get the policy written in at build time, like the download base) name
-the missing part and say how to get it back, unpacking the bundle again or running from source,
-without making a request that could only fail. Setting `AGENTHYDRA_RELEASE_BASE` repairs from the
+the missing part and say how to get it back, copying it from the `AgentHydra-<version>-<target>`
+folder of an unpacked bundle (unpacking straight into the install would nest that folder inside
+it) or running from source, without making a request that could only fail. Setting `AGENTHYDRA_RELEASE_BASE` repairs from the
 base it names even then.
 
 ## The 2.0 update mechanism and the 1.x→2.0 migration
