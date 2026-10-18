@@ -283,7 +283,7 @@ missing `HUB_URL` or `PAIR_URL`, a pairing page over `http://`, and a tray built
 - `SHA256SUMS`.
 - On a Mac (`TARGETS=macos`, which runs `build-macos.sh`): `Codex Hub.app`, its zip to hand out, and
   `codex-hub-tray-darwin-arm64` and `codex-hub-tray-darwin-x64` for the hub. A Mac build needs the Xcode command line
-  tools.
+  tools. The darwin builds go into `SHA256SUMS`; the zip's hash goes into `SHA256SUMS-macos-zip` (see below).
 
 ### The same bytes every time
 
@@ -298,7 +298,8 @@ The machine that builds puts nothing of itself into a build:
 So anyone can rebuild a commit with the same addresses and key, and compare. To compare the tray a PC runs, use the
 SHA-256 in its menu (Version, first eight characters) or its file. On every change to `codex-hub-tray/`, the workflow
 builds twice, the second time from another folder with an empty build cache, and compares `SHA256SUMS`. On a Mac only
-the two darwin builds are compared, because the zip holds file times.
+the two darwin builds are compared. The zip holds file times, so it is not the same bytes twice: its hash is kept
+apart, in `SHA256SUMS-macos-zip`, only for checking that the copy you hand a Mac is the one you built.
 
 ### The pusher builds
 
@@ -346,7 +347,7 @@ makes it check now.
 
 Give each PC its tray build in a way you trust: copy it over yourself, or put it behind the same sign-in as the
 pairing page. The hub's own download needs the token, which a new PC does not have yet. Before you open the file,
-compare its SHA-256 with your `SHA256SUMS`.
+compare its SHA-256 with your `SHA256SUMS`, or, for a Mac's zip, with your `SHA256SUMS-macos-zip`.
 
 ### Pairing from the Connect button
 
@@ -375,9 +376,11 @@ The exe has no code-signing certificate, so SmartScreen may ask first: choose Mo
 
 ### macOS
 
-1. Unzip `codex-hub-tray-macos.zip` and open `Codex Hub.app`.
-2. The app is not notarized, so the first open needs System Settings, Privacy & Security, Open Anyway.
-3. It installs itself as `~/Applications/Codex Hub.app`, adds a LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`)
+1. Check the zip: `shasum -a 256 codex-hub-tray-macos.zip` prints the hash in your `SHA256SUMS-macos-zip`. Or put
+   that file beside the zip and run `shasum -a 256 -c SHA256SUMS-macos-zip`, which says OK.
+2. Unzip `codex-hub-tray-macos.zip` and open `Codex Hub.app`.
+3. The app is not notarized, so the first open needs System Settings, Privacy & Security, Open Anyway.
+4. It installs itself as `~/Applications/Codex Hub.app`, adds a LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`)
    that starts it at each log in, and sits in the menu bar.
 
 ### Linux
@@ -395,9 +398,14 @@ token in `tray.json` yourself:
 
 ```sh
 umask 077
-printf '{\n  "token": "%s"\n}\n' '<the hub token>' >~/.local/share/codex-hub/tray.json
+printf '{\n  "hub": "%s",\n  "token": "%s"\n}\n' 'https://hub.example.test' '<the hub token>' \
+  >~/.local/share/codex-hub/tray.json
 pkill -USR1 -x codex-hub-tray   # or wait for its next check, at most 10 minutes
 ```
+
+This writes the whole file. `tray.json` holds the hub's address as well as the token, so give both, the address as
+in your `HUB_URL`: a tray built without `HUB_URL` has no other place to find its hub, and one built with it takes
+that address as its own. To change only the token in a file that is already there, edit its `"token"` line instead.
 
 ### What the tray shows, and its logs
 

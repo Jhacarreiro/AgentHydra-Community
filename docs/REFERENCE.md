@@ -898,9 +898,10 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   `main.updateKey` (see **Signed builds**); and, once the hub has moved, `main.oldHubURLs` (see **Moving
   the hub**). `codex-hub-tray/build.sh` builds the Windows and Linux trays, and on a Mac the app and the hub's
   darwin builds (through `build-macos.sh`), from `HUB_URL`, `PAIR_URL`, `INBOX_URL`, `UPDATE_KEY`, `OLD_HUB_URLS`
-  and `BUNDLE_ID`, into `codex-hub-tray/dist/` with their `SHA256SUMS`: the same bytes each time from one commit,
-  with the Go that `go.mod`'s `toolchain` line names (-trimpath, -buildvcs=false, an empty build id, no cgo off a
-  Mac). `.github/workflows/codex-hub-tray.yml` builds it twice on each change and compares. Opened once, the tray
+  and `BUNDLE_ID`, into `codex-hub-tray/dist/` with their `SHA256SUMS` (the Mac's zip, which holds file times, in
+  `SHA256SUMS-macos-zip` beside it): the same bytes each time from one commit, with the Go that `go.mod`'s
+  `toolchain` line names (-trimpath, -buildvcs=false, an empty build id, no cgo off a Mac).
+  `.github/workflows/codex-hub-tray.yml` builds it twice on each change and compares. Opened once, the tray
   installs itself for the user and starts at each log in (the Run key on Windows, a LaunchAgent on a Mac, an XDG
   autostart entry on Linux, or a systemd `--user` unit where there is no desktop). It runs the compiled
   pusher with the hub and token from its config and `AGENTHYDRA_CODEX_HUB_UPDATE=off`, and keeps both
