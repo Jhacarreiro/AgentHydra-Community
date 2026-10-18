@@ -97,8 +97,8 @@ function inlinedCard() {
   return html;
 }
 
-/** Width and height from a PNG's IHDR chunk, or null when the bytes are not a PNG. */
-function pngSize(bytes) {
+/** Reads the IHDR width and height; anything that does not open with PNG's signature gives null. */
+function pngDimensions(bytes) {
   const signature = '89504e470d0a1a0a';
   if (bytes.length < 24 || bytes.subarray(0, 8).toString('hex') !== signature) return null;
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
@@ -256,7 +256,7 @@ async function main() {
   writeFileSync(page, inlinedCard());
 
   const bytes = await shoot(page);
-  const size = pngSize(bytes);
+  const size = pngDimensions(bytes);
   if (!size || size.width !== WIDTH || size.height !== HEIGHT) {
     throw new Error(`the shot is ${size ? `${size.width}x${size.height}` : 'not a PNG'}, not ${WIDTH}x${HEIGHT}`);
   }
