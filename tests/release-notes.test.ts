@@ -205,4 +205,17 @@ describe("the page's links", () => {
     )
     expect(body.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
   })
+
+  test("the closing line sends questions to the channel repository's issues, on both kinds of page", () => {
+    const issues = `[open an issue](https://github.com/${RELEASE_CHANNEL.repo}/issues)`
+    const kept = formatReleaseBody(
+      changelog(LONG.replace('## [2.0.0]', '## [2026.10.0]')),
+      '2026.10.0',
+    )
+    const folded = formatLineBody(changelog(LONG), '2.0.0', [], { history: true })
+    for (const body of [kept, folded]) {
+      expect(body.trimEnd().split('\n').at(-1)).toContain(issues)
+      expect(body.toLowerCase()).not.toContain('discord')
+    }
+  })
 })

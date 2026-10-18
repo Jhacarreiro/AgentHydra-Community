@@ -84,6 +84,6 @@ export default {
   },
   helpQuestion: {
     title: 'Where can I ask a question?',
-    body: `Ask in the LunarWerx Discord (https://discord.gg/PsWpeNUzhk), or open an issue on GitHub (${PROJECT_HOMEPAGE}/issues). Check the full guide at ${PROJECT_HOMEPAGE}#readme for everything in more depth.`,
+    body: `Open an issue on GitHub (${PROJECT_HOMEPAGE}/issues); it needs a free account. Check the full guide at ${PROJECT_HOMEPAGE}#readme for everything in more depth.`,
   },
 }

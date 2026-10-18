@@ -1,5 +1,3 @@
+# New issues start blank. Questions, ideas and bug reports all go to this repository's issues; there is
+# no outside chat server to send people to.
 blank_issues_enabled: true
-contact_links:
-  - name: 💬 Ask on Discord
-    url: https://discord.gg/PsWpeNUzhk
-    about: Questions, ideas and help from the LunarWerx community, with the people who build these tools in the room.

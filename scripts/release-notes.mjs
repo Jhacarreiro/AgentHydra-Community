@@ -43,7 +43,8 @@ export const MIN_RELEASE = '2.0.0'
 
 // The page's icon is this repository's own copy at the release's tag: the release channel names the repository.
 const REPO = readReleaseChannel().repo
-const DISCORD = 'https://discord.gg/PsWpeNUzhk'
+// Where a reader takes a question or a bug: that same repository's issues.
+const ISSUES = `https://github.com/${REPO}/issues`
 const HEADING_EMOJI = {
   Added: '🆕 Added',
   Changed: '🔁 Changed',
@@ -267,7 +268,7 @@ export function formatLineBody(changelog, keptVersion, patchVersions, options = 
     '',
     '---',
     '',
-    `💬 Questions, ideas, or a hello: the [LunarWerx Discord](${DISCORD}).`,
+    `💬 Questions, ideas or a bug: [open an issue](${ISSUES}).`,
   )
 
   return out.join('\n')
@@ -323,7 +324,7 @@ export function formatReleaseBody(changelog, version, options = {}) {
     '',
     '---',
     '',
-    `💬 Questions, ideas, or a hello: the [LunarWerx Discord](${DISCORD}).`,
+    `💬 Questions, ideas or a bug: [open an issue](${ISSUES}).`,
   )
   const text = out.join('\n')
 
