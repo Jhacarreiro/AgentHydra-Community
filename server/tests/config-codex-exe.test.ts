@@ -109,7 +109,7 @@ test.skipIf(process.platform === 'win32')(
     )
     // A bare `codex` is PATH's to find, and starts in the environment as it is.
     const env = { PATH: '/usr/bin:/bin' }
-    expect(codexSpawnEnv('codex', env, home)).toBe(env)
+    expect(codexSpawnEnv('codex', env, home)).toEqual(env)
   },
 )
 

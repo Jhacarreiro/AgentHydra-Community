@@ -576,6 +576,9 @@ export function posixCodexCandidates(
   return bins.map((bin) => posix.join(bin, 'codex'))
 }
 
+/** The Codex hub's settings (a PC's token, its install id, the access layer's headers): no `codex` needs them. */
+const CODEX_HUB_SETTING = /^(AGENTHYDRA|CCMANAGERUI)_CODEX_HUB_/i
+
 /**
  * The environment to start the Codex at `exe` in. npm's `codex` (bun's too) is a script that
  * starts `#!/usr/bin/env node`, and a PATH like launchd's has no node, so a codex found by
@@ -583,14 +586,20 @@ export function posixCodexCandidates(
  * in goes ahead of PATH, since an npm install keeps its node in the same bin, and so does the
  * folder of the file it links to; the places node itself is installed (Homebrew, Volta, the newest
  * nvm) go after PATH. A folder PATH already has keeps its place.
+ *
+ * The Codex hub's settings are left out, so the commands a relayed turn runs on a PC never see
+ * its token or the access headers (core/codex-hub-relay-pc.ts). A Windows name is any case.
  */
 export function codexSpawnEnv(
   exe: string,
   env: Record<string, string | undefined> = process.env,
   home: string = HOME,
 ): Record<string, string | undefined> {
-  if (process.platform === 'win32' || !posix.isAbsolute(exe)) return env
-  const path = (env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(Boolean)
+  const kept = Object.fromEntries(
+    Object.entries(env).filter(([name]) => !CODEX_HUB_SETTING.test(name)),
+  )
+  if (process.platform === 'win32' || !posix.isAbsolute(exe)) return kept
+  const path = (kept.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(Boolean)
   let real = exe
   try {
     real = realpathSync(exe)
@@ -600,5 +609,5 @@ export function codexSpawnEnv(
   const before = [posix.dirname(exe), posix.dirname(real)]
   const after = [...BREW_BINS, posix.join(home, '.volta', 'bin'), ...nvmBins(home, env).slice(0, 1)]
   const added = (dirs: string[]) => dirs.filter((dir) => !path.includes(dir))
-  return { ...env, PATH: [...new Set([...added(before), ...path, ...added(after)])].join(':') }
+  return { ...kept, PATH: [...new Set([...added(before), ...path, ...added(after)])].join(':') }
 }
