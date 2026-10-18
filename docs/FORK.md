@@ -35,11 +35,12 @@ public: the git history itself and GitHub's public record of the upstream reposi
 - Everything up to and including `3a65ba8e` is upstream's history, unchanged.
 - After it come only commits by this fork's maintainer, [@Jhacarreiro](https://github.com/Jhacarreiro), each with a
   GitHub noreply address:
-  - first, the work of the maintainer's pull requests to AgentHydra, #8 to #24 (14 to 17 October 2026), which were
-    written against the MIT code: Claude Code cloud sessions, the Codex hub and its tray app, and a set of fixes and
-    test repairs. They keep their original author dates. Where a pull request had been written on a newer upstream
-    `main`, only the maintainer's own lines were carried over, and anything upstream had added after the base was
-    left out;
+  - first, the work of the maintainer's pull requests to AgentHydra, #8 to #24 (14 to 17 October 2026): Claude
+    Code cloud sessions, the Codex hub and its tray app, and a set of fixes and test repairs. The earliest of them
+    were started on the MIT code; the later ones were started on upstream's `main` of those days, which by then
+    held the relicensing commit, and most of the early ones merged that `main` in later. From every one of them,
+    only the maintainer's own lines were carried onto `3a65ba8e`, keeping their original author dates, and anything
+    upstream had added after the base was left out;
   - then the changes that make it a project of its own: its release channel and version line, the removals listed
     below, the public audit, and its documentation.
 - There are no merges from upstream, and nothing upstream wrote after `3a65ba8e` (its code, its text or its
