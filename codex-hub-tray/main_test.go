@@ -613,7 +613,7 @@ func TestTheBuildsHubIsNotKeptAsTheUsers(t *testing.T) {
 		t.Errorf("with the next build's hub: %+v", c)
 	}
 
-	const mine = "http://10.0.0.5:18788"
+	const mine = "http://192.0.2.5:18788"
 	if err := saveConfig(config{Hub: mine, Token: token}); err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestAnEarlierBuildsHubIsNotKeptAsTheUsers(t *testing.T) {
 	// A hub the user set, that no build had, stays; so does one when the list is empty.
 	for _, old := range []string{oldHubURLs, ""} {
 		oldHubURLs = old
-		const mine = "http://10.0.0.5:18788"
+		const mine = "http://192.0.2.5:18788"
 		if err := saveConfig(config{Hub: mine, Token: token}); err != nil {
 			t.Fatal(err)
 		}

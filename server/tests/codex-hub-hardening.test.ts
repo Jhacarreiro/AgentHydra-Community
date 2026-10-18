@@ -57,7 +57,8 @@ test('the pairing page refuses a DNS-rebinding Host, and a cross-site fetch, wit
     { host: 'rebind.example.test:7787', 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors' },
     // A navigation is let through Sec-Fetch-Site, never through Host.
     { host: 'rebind.example.test', 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' },
-    { host: '10.0.0.20:7787' },
+    // A machine on the network (an RFC 5737 address): any Host that is not loopback is refused.
+    { host: '192.0.2.20:7787' },
     // Another site's fetch, through the hub's own address.
     { host: '127.0.0.1:7787', 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'cors' },
     { host: '127.0.0.1:7787', origin: 'https://attacker.example.test' },
