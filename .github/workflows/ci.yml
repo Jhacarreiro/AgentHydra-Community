@@ -4,10 +4,10 @@ name: CI
 # control, the orchestrator's UI Automation actuators), so the Windows leg is the real gate and stays
 # on every change; it already runs side by side with the Linux leg, and the slow part of it (the
 # Python orchestrator suite) is split into parallel shards below.
-# rust-ci-speed: no step of this workflow builds Rust (misc/tray-host-native is not compiled here,
-# nor misc/climayte-runner-native: its exe is committed, its build.ps1 runs its unit tests before
-# every rebuild, and the Windows leg's runner tests run the committed exe), so the cargo-only
-# settings (cache, test timing, no-fail-fast) have nothing to attach to.
+# rust-ci-speed: the one Rust step here is the Windows leg's build of the tray host and CliMayte's
+# runner (scripts/build-natives.ts tray runner), which the tests below start: neither crate has a
+# dependency to cache, and their own tests run in natives.yml with the window host, on every change to
+# their source. So the cargo-only settings (cache, test timing, no-fail-fast) have nothing to attach to.
 on:
   push:
     branches: [main]
@@ -204,6 +204,13 @@ jobs:
       # ends a "..." string early: `powershell -File install.ps1` could not even parse (2026-09-28).
       - name: Guardrail (install.ps1 parses under Windows PowerShell 5.1)
         run: bun scripts/checks/ps1-read-as-ansi.mjs
+
+      # The tray host (tests/launcher.test.ts) and CliMayte's runner (the runner tests) are built from
+      # their Rust source, not committed, and the Windows tests start them. The window host has no test
+      # here; natives.yml builds all three.
+      - name: Build the tray host and CliMayte's runner (Windows)
+        if: runner.os == 'Windows'
+        run: bun scripts/build-natives.ts tray runner
 
       - name: Test
         # ⛔ SERIAL ON PURPOSE. `bun run test` is --parallel=4 for a fast local loop (34.9s

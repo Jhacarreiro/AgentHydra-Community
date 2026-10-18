@@ -1,6 +1,6 @@
 // tests/build-natives.test.ts - the three Windows programs are built from this repository's source:
-// scripts/build-natives.ts knows each one's crate and place, and every build pins the same Rust release
-// and remaps every machine path.
+// scripts/build-natives.ts knows each one's crate and place, every build pins the same Rust release and
+// remaps every machine path, and each workflow that needs one builds it first.
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,6 +11,7 @@ import {
   namedPath,
   pinnedToolchain,
   rustFlags,
+  SUMS_FILE,
   selectPrograms,
 } from '../scripts/build-natives'
 import { REPO_ROOT } from './repo-root'
@@ -113,4 +114,33 @@ describe('before it builds', () => {
     expect(r.exitCode).toBe(1)
     expect(r.stderr.toString()).toContain('No native program called nonesuch')
   }, 20_000)
+})
+
+describe('the workflows build what they use', () => {
+  const natives = read('.github/workflows/natives.yml')
+  const ci = read('.github/workflows/ci.yml')
+  const release = read('.github/workflows/release.yml')
+
+  test('natives.yml runs on a change to any program source or to the script', () => {
+    for (const p of NATIVE_PROGRAMS) expect(natives).toContain(`'${p.crate}/**'`)
+    expect(natives).toContain("'scripts/build-natives.ts'")
+    expect(natives).toContain("'misc/AgentHydra.ico'")
+    expect(natives).toContain('bun scripts/build-natives.ts --test --out')
+  })
+
+  test('the Windows CI leg builds the tray and the runner before the tests that start them', () => {
+    const build = ci.indexOf('run: bun scripts/build-natives.ts tray runner')
+    expect(build).toBeGreaterThan(0)
+    expect(build).toBeLessThan(ci.indexOf('run: bun test\n'))
+  })
+
+  test('a release builds all three and packages the Windows bundle from those builds', () => {
+    expect(release).toMatch(/natives:\n[\s\S]*?runs-on: windows-latest/)
+    expect(release).toContain(`bun scripts/build-natives.ts --test --out natives`)
+    expect(release).toMatch(/needs: \[bun, natives\]/)
+    expect(release).toContain(`sha256sum -c ${SUMS_FILE}`)
+    expect(release.indexOf(`sha256sum -c ${SUMS_FILE}`)).toBeLessThan(
+      release.indexOf('bun scripts/package-release.ts'),
+    )
+  })
 })

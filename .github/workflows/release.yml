@@ -24,6 +24,10 @@
 #   a Linux runner). The lone Windows .exe is the same launcher: run on its own it installs the rest
 #   from its own version's zip. The zip also holds misc/ (the tray toolkit) and orchestrator/. The
 #   packager fails a Windows zip over 30 MB.
+# - The Windows programs the Windows zip carries (misc/AgentHydra-Tray.exe, desk2/launcher/HydraDesk2.exe
+#   and CliMayte's runner in app/misc) are built by the `natives` job from this commit's Rust source with
+#   the pinned toolchain (scripts/build-natives.ts); none is committed. The packaging leg checks each copy
+#   against the hashes that job printed, and those hashes are in the run's summary.
 # - What building does NOT prove is that the bundle RUNS: the smoke job boots each bundle on real
 #   hardware for its OS, through the launcher, with the downloads refused and a seeded Bun, and
 #   asserts /api/health.
@@ -111,8 +115,35 @@ jobs:
           echo "Bun $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  build:
+  # The tray host, CliMayte's runner and the window host, built from this commit (scripts/build-natives.ts:
+  # the pinned Rust release, --locked, machine paths remapped, /Brepro), each crate's own tests first. The
+  # Windows bundle takes these builds; natives.yml shows on every change to their source that two builds
+  # of one commit are the same bytes.
+  natives:
     needs: bun
+    timeout-minutes: 60
+    name: build the native programs (windows-x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ needs.bun.outputs.version }}
+
+      - name: Build and test
+        run: bun scripts/build-natives.ts --test --out natives
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: natives
+          path: natives/
+          if-no-files-found: error
+          retention-days: 3
+
+  build:
+    needs: [bun, natives]
     timeout-minutes: 60
     name: package (${{ matrix.target }})
     strategy:
@@ -164,6 +195,20 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      # Into their places in the checkout (misc/, desk2/launcher/), where the packager takes them from,
+      # with natives.sha256 beside; only the Windows bundle carries them.
+      - name: Fetch the native programs (Windows)
+        if: matrix.target == 'windows-x64'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: natives
+          path: .
+
+      - name: Check the native programs against the hashes they were built with (Windows)
+        if: matrix.target == 'windows-x64'
+        shell: bash
+        run: sha256sum -c natives.sha256
+
       - name: Package release
         shell: bash
         run: |
@@ -180,6 +225,8 @@ jobs:
               fi
               echo "::warning::the Windows bundle has no desk2/launcher/start.vbs (fine for a branch run, refused for a tag)"
             fi
+            # The bundle carries the natives job's builds byte for byte (the daemon's copy of the runner is app/misc's).
+            (cd "out/${name}" && sed 's#  misc/climayte-runner.exe$#  app/misc/climayte-runner.exe#' ../../natives.sha256 | sha256sum -c -)
           fi
 
           ls -la out
