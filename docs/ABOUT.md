@@ -25,10 +25,10 @@ There is no hosted service or account sign-up: it reads the local stores the CLI
 talks to localhost, with a Windows system-tray launcher and an MCP server so agents can drive all of it themselves.
 What does leave the machine is listed in the README's network section: the update check (a release build's is off
 until this repository publishes releases; a source checkout's `git ls-remote` runs on its timer either way), Bun and
-Claude Code downloads, the Claude upkeep pass on Windows (Claude Desktop's own update feed, about hourly, with the
-device id, version and OS version the app sends; the install's own updater and an npm update of the CLI when they
-are behind), a daily price list, usage lookups for your own accounts, and whatever you turn on. Nothing goes to a
-service the original publisher runs.
+Claude Code downloads (and, in a release, the Claude Agent SDK at the version it pins), the Claude upkeep pass on
+Windows (Claude Desktop's own update feed, about hourly, with the device id, version and OS version the app sends;
+the install's own updater and an npm update of the CLI when they are behind), a daily price list, usage lookups for
+your own accounts, and whatever you turn on. Nothing goes to a service the original publisher runs.
 
 What this fork adds first is one home server for several PCs: a Codex hub that collects every PC's Codex chats and
 continues them on the PC they belong to, a tray app that pairs each PC with the hub, Claude Code cloud sessions
@@ -93,10 +93,13 @@ The intricacies worth remembering: the gotchas, the half-built parts, the decisi
 - **Repository:** https://github.com/Jhacarreiro/AgentHydra-Community, releases from the channel in
   `release-channel.json`, versions `YYYY.M.PATCH` from `2026.10.0`.
 - **Written in:** TypeScript (about 1,900 files), Vue (about 550), Python (about 520), with some JavaScript, Go (the
-  Codex hub tray app), Rust (the window host and the tray host), C# (the Windows launcher) and PowerShell.
+  Codex hub tray app), Rust (the window host, the tray host and CliMayte's worker runner), C# (the Windows launcher)
+  and PowerShell.
 - **Built with:** Bun, Hono, Vue, Vite, Tailwind.
 - **Tests:** about 1,000 test files across the Bun, Python and Go suites.
-- **CI:** `ci.yml`, `release.yml` and `audit-public.yml` (the public audit, on every push and pull request).
+- **CI:** `ci.yml`, `natives.yml` (the three Windows programs, built from source), `codex-hub-tray.yml` (the hub's
+  tray, tested and built twice to compare), `release.yml` and `audit-public.yml` (the public audit, on every push and
+  pull request).
 
 ## Architecture
 
@@ -148,7 +151,9 @@ Each path is where the feature is defined.
   `server/src/core/codex-hub-push.ts`, `server/src/core/codex-hub-relay.ts`, `server/src/routes/codex-hub.ts`
 - **Codex hub tray app and signed builds** - A tray app per PC pairs it through a page behind the operator's
   sign-in, starts at login, runs the pusher, and updates the pusher and itself from the hub, taking only builds signed
-  with the operator's ed25519 key (or, without a key, only over https). - `codex-hub-tray/`,
+  with the operator's ed25519 key (or, built without a key on request, only over https). A build can trust two keys,
+  so the key can change without setting each PC up again, and two builds of one commit are the same bytes. -
+  `codex-hub-tray/`, `codex-hub-tray/build.sh`,
   `server/src/core/codex-hub-update.ts`, `server/src/core/codex-hub-signature.ts`, `scripts/codex-hub-sign.ts`
 - **Reply into live Claude sessions, single or bulk** - The session composer types a message into the chat's own
   running Claude Desktop window and confirms it landed by watching the transcript grow; select several sessions to
@@ -174,14 +179,21 @@ Each path is where the feature is defined.
   lightweight daemon on a separate port and can coexist with the full manager. - `server/src/fleet-instances.ts`
 - **Windows system tray & native launcher** - A native Rust tray host whose Open starts AgentHydra's window through
   Desk 2's own launcher, and which starts, probes and stops the daemon by matching `/api/health`'s own service
-  identity, so a neighbouring dev server on another port is never adopted or killed. -
-  `misc/tray-host-native/src/daemon.rs`, `misc/tray-host-native/src/main.rs`, `misc/AgentHydra-Tray.json`
+  identity, so a neighbouring dev server on another port is never adopted or killed. The tray host, the window host
+  and CliMayte's runner are built from their Rust source, never committed: each Windows release builds its own and
+  publishes their checksums, and a checkout that has not built them runs the PowerShell tray, opens the window in the
+  browser and runs CliMayte's workers under Bun. - `misc/tray-host-native/src/daemon.rs`,
+  `misc/tray-host-native/src/main.rs`, `misc/AgentHydra-Tray.json`, `scripts/build-natives.ts`
 - **Small release: a launcher plus a bundle, Bun fetched on first run** - A release is a small launcher
   (`AgentHydra.exe` on Windows, an sh launcher elsewhere) plus `app/server.js`, a `bun build` bundle that carries
-  every runtime helper in `RUNTIME_MISC_FILES`. No Bun and no Claude Code are shipped: the launcher downloads Bun
-  into `runtime/` on first run and restores any missing part from the release archive, verified against
-  `SHA256SUMS.txt`, and the packager fails a Windows archive over 30 MB. - `launcher/windows/AgentHydra.cs`,
-  `server/src/misc-assets.ts`, `scripts/package-release.ts`
+  every runtime helper in `RUNTIME_MISC_FILES`. No Bun, no Claude Code and no Claude Agent SDK are shipped: the
+  launcher downloads Bun into `runtime/` on first run and restores any missing part from the release archive,
+  verified against `SHA256SUMS.txt`, Desk fetches the SDK version `desk2/sdk-pin.json` pins when a chat first needs
+  it, and the packager fails a Windows archive over 30 MB. Every bundle carries `LICENSE`, `THIRD-PARTY-NOTICES.md`,
+  `LICENSES/` and `THIRD-PARTY-LICENSES`, the licence and text of every third-party package inside it, and is not
+  built when one falls outside the permissive allowlist. - `launcher/windows/AgentHydra.cs`,
+  `server/src/misc-assets.ts`, `scripts/package-release.ts`, `scripts/third-party-licenses.ts`,
+  `desk2/server/src/host/sdk-package.ts`
 - **Auto-update (off by default, held to the release channel)** - Off until turned on in Settings (a saved choice
   overrides it); a background check updates a source checkout by git pull + reinstall + rebuild, only from the release
   channel's repository, and a release install by downloading that repository's latest release bundle and swapping it
