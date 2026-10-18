@@ -246,7 +246,8 @@ function Get-TrayHost {
 # AgentHydra's PowerShell tray, found by the script on its command line (as misc/Restart-Daemon.ps1 finds it).
 function Get-PowerShellTray {
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { ([string]$_.CommandLine).ToLowerInvariant().Contains('agenthydra-tray.ps1') } | Select-Object -First 1
+    Where-Object { $_.ProcessId -ne $PID -and ([string]$_.CommandLine).ToLowerInvariant().Contains('agenthydra-tray.ps1') } |
+    Select-Object -First 1
 }
 
 # A source checkout without the native tray host (it is built, not committed: scripts/build-natives.ts) runs
