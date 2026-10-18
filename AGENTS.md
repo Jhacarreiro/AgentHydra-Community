@@ -78,6 +78,10 @@ real agent homes (`~/.claude`, `~/.claude-instances`, `~/.codex`, `~/.hswarm`, `
 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` the shell started with) and a remove of the working folder; point a test at its
 scratch folder instead. desk2's suites have their own preload (desk2/AGENTS.md).
 
+On Windows, the tests that start the tray host or CliMayte's runner need them built
+(`bun scripts/build-natives.ts tray runner`, which needs Rust); without them those tests are skipped, and CI builds
+both first.
+
 ## Releases, CHANGELOG and READMEs
 
 - **This repository's releases come from its own channel and its own version line.** Versions are calendar
