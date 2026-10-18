@@ -1,11 +1,29 @@
 # Changelog
 
-All notable changes to AgentHydra are documented here. Entries up to v0.13.0 were written when the
-project was called CC Manager UI and are left in its name, because that is what shipped. The format
-is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to AgentHydra Community, and before it to AgentHydra, are documented here. AgentHydra
+Community continues AgentHydra from its last MIT-licensed commit, so the entries below [Unreleased] are
+AgentHydra's own, left as they shipped; entries up to v0.13.0 were written when the project was called CC Manager UI
+and are left in its name. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+AgentHydra's releases followed [Semantic Versioning](https://semver.org/spec/v2.0.0.html); this project's are
+numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
+
+**TL;DR**
+
+- **Updates come only from this project's own releases, and stay off until it publishes one**
+- **Versions are now numbered by date, starting at 2026.10.0**
+- **Codex chats from your other PCs appear here, and Desk can continue them**
+- **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click**
+- **Claude Code cloud and Remote Control sessions can show beside your local chats**
+- **The window can run on a server with no screen and open on your phone behind your own sign-in**
+- **The effort picker is back beside the model**
+- **Nothing depends on a service the original project's owner runs**
+- **Remote access to the orchestrator is off until you set it up**
+- **A public audit checks everything this repository publishes**
+- **And every change below that AgentHydra had made, not yet released, by its last MIT-licensed commit**
+
+**Everything in Unreleased**
 
 - **Updates come only from this project's own releases, and stay off until it publishes one.** An installed copy no
   longer asks the original project's update service and sends no install id. It installs only files from this
@@ -13,6 +31,75 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this p
   source updates only from this repository, and says so when its remote is another one.
 - **Versions are now numbered by date, starting at 2026.10.0.** A release can no longer share a number or a file
   name with one of the original project's.
+- **Codex chats from your other PCs appear here, and Desk can continue them.** Each PC can send its Codex chats
+  to one AgentHydra you pick as the hub, which lists, searches and opens them beside its own, each marked with its
+  PC. While that PC is on, Desk continues one of its chats there, on that PC's files and Codex sign-in, asking for
+  approvals as usual. Nothing changes until a hub is set up.
+- **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click.** No release includes
+  it: you build it from this repository with your hub's addresses and update key, for Windows, macOS or Linux.
+  Opened once on a PC, it installs itself, starts at login, and takes the hub's token from the pairing page you
+  serve behind your own sign-in, so nothing is copied by hand. Its icon shows whether the PC is sending, not
+  connected, or cannot reach the hub.
+- **A PC's Codex pusher and tray app update themselves from the hub.** Put a new build on the hub and each PC
+  fetches the one for its own system, checks its signature and makes sure it starts before it replaces the old
+  one. A PC that has your public key refuses a build without your signature, and any PC can keep the build it has
+  instead.
+- **Codex starts on a Mac or Linux PC that runs AgentHydra as a service.** A service sees fewer program folders
+  than your terminal does, so AgentHydra could miss Codex, or find an npm install of it that could not start. It
+  now looks where Codex is usually installed and starts it so it finds its own Node.js, and a Codex that fails to
+  start says why.
+- **Claude Code cloud and Remote Control sessions can show beside your local chats.** With
+  `AGENTHYDRA_CLOUD_SESSIONS=1`, each signed-in Claude Code account's cloud and Remote Control sessions are listed
+  with your other Claude chats, marked working, waiting on you or done. Their transcripts open read-only, and the
+  login they are read with is never stored or refreshed.
+- **The window can start with the daemon.** With `AGENTHYDRA_DESK_AT_BOOT=1`, AgentHydra starts its window's
+  server as soon as it is up, instead of when the first page is asked. Useful on a server or in a container,
+  where nobody opens the window locally.
+- **The window can sit behind a sign-in proxy.** List the proxy's address in `HYDRA_DESK_PUBLIC_ORIGINS` and the
+  window answers there too, so you can reach it from your phone through Cloudflare Access or a similar sign-in.
+  Other sites and names are still refused.
+- **The effort picker is back beside the model.** The message box has an effort menu next to the model again:
+  Low, Medium, High, Extra or Max (keys 1 to 5), or Default to leave it to the account. It changes the open chat,
+  or a new chat before its first message, and is hidden for chats pinned to Codex or ChatGPT.
+- **The tray menu says which version is running.** Right-click the tray icon and pick About AgentHydra to see the
+  version that is running, with an offer to open the changelog.
+- **A daemon restart waits for a chat move started from `chats`.** While `chats --move-to <account> --yes` is
+  moving chats, a restart is refused the same way it already was for `migrate_chat` and `migrate_batch`, so it no
+  longer leaves a chat on its new account and still unarchived on the old one. Planning a move without `--yes`
+  does not hold a restart.
+- **An unused database index stays removed after a restart.** An earlier storage cleanup removed an index nothing
+  reads, but every later start of AgentHydra created it again and kept it updated as chats were scanned. It is now
+  removed at every start, also after an older copy of AgentHydra opened the same database.
+- **A CliMayte dispatch sent again answers with its workers' own group.** A dispatch retried with the same request
+  ids and no group name returned the workers it had already started, but under a new group name that held none of
+  them, so checking or cancelling that group found nothing. The retry now answers with the group they are in, and
+  a task new in it joins that group.
+- **HSwarm's routes now sit behind the same guard as every other API route.** HSwarm's status, its account names
+  and the proxy to its console were set up before AgentHydra's check on where a request comes from. They now come
+  after it, like the rest of the API.
+- **Settings says why updates are off.** When an install has nothing to update from, the version row now gives
+  the reason, such as a release channel that is off or a copy run from another repository, instead of saying it
+  is not linked to a Git remote.
+- **The Windows installer installs only this project's releases.** While this project has published none, it
+  stops with a message before downloading anything. A zip you built yourself still installs.
+- **The changelog, help, issue and homepage links open this project's repository.** The window's What's new, the
+  tray's Changelog item, the built-in connectors' homepage and HSwarm's Help and Issues no longer send you to the
+  original project's pages.
+- **Nothing depends on a service the original project's owner runs.** Settings no longer sync through
+  Connections, Desk has no Connections connector, chip or pane, the 4MAN to-do board and its dashboard widget are
+  gone, and HSwarm sends no usage pings. The price check, Sue and Dredd tools, which needed a private checkout, are
+  gone too.
+- **Remote access to the orchestrator is off until you set it up.** A fresh install has no built-in sign-in
+  provider, relay or tunnel: the remote dashboard answers only on this PC, and the tray's Remote access starts off.
+  To use it, name your own sign-in provider; a tunnel on your own Cloudflare zone takes your own account details.
+- **Orchestrator jobs use only the folders you name.** The to-do sweep runs only once you point it at your Project
+  Hydra clone, and rescued to-dos are filed into a repository only under folders you list. Otherwise they stay in
+  the orchestrator's own to-do folder, and the run says so.
+- **The Hydra Core catalog is built only from your own people, skills, agents and repositories.** Sources that
+  only worked on the original owner's machine are gone, and a rebuild removes the files they left behind.
+- **A public audit checks everything this repository publishes.** One command reads every file, and every commit
+  since the fork began, for secrets, personal data, private addresses, the original project's hosts and anything
+  from after its relicensing. CI runs it on every push and pull request, and a push it objects to is refused.
 - **The connector list stops polling fast when nothing changes.** A connector stuck installing or starting is asked about every second; after a minute with the same answer the poll falls back to every 5 seconds. A Desk window at rest asks once every 5 seconds (7 requests in 30 s).
 - **When a Claude Desktop or Codex app goes down with chats running, the Instance manager moves them and starts them
   again.** If the app crashed, was signed out, or its plan or organization stopped working, it opens the same kind of
