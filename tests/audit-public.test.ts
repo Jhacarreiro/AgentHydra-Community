@@ -58,9 +58,10 @@ function scratch(name: string): string {
   mkdirSync(dir, { recursive: true })
   return dir
 }
+// Removing every throwaway repository at the end can outlast bun's 5 s hook default on a loaded box.
 afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true })
-})
+}, GIT_TEST_TIMEOUT)
 
 // --- synthetic values, assembled here so this file never holds one -----------------------------
 

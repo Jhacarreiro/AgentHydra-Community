@@ -69,9 +69,10 @@ function scratch(name: string) {
   mkdirSync(dir, { recursive: true })
   return dir
 }
+// Removing every throwaway repository at the end can outlast bun's 5 s hook default on a loaded box.
 afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true })
-})
+}, HOOK_TEST_TIMEOUT)
 
 const j = (...parts: string[]) => parts.join('')
 const MAILBOX = j('pat.person', '@', 'mail-fixture', '.zz')
