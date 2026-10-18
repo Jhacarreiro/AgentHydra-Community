@@ -15,11 +15,16 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Versions are now numbered by date, starting at 2026.10.0**
 - **Codex chats from your other PCs appear here, and Desk can continue them**
 - **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click**
+- **A guide to running your own Codex hub, with tray builds that come out the same every time**
 - **Claude Code cloud and Remote Control sessions can show beside your local chats**
 - **The window can run on a server with no screen and open on your phone behind your own sign-in**
 - **The effort picker is back beside the model**
+- **The Windows programs are built from this project's own code, and each release publishes their checksums**
+- **Releases carry the licences of everything inside them**
+- **A release no longer includes the Claude Agent SDK, and fetches it the first time a chat needs it**
 - **Nothing depends on a service the original project's owner runs**
 - **Remote access to the orchestrator is off until you set it up**
+- **HSwarm's Free web accounts and the RepoYeti and ReDesign connectors stay off until you turn them on**
 - **A public audit checks everything this repository publishes**
 - **And every change below that AgentHydra had made, not yet released, by its last MIT-licensed commit**
 
@@ -44,6 +49,16 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   fetches the one for its own system, checks its signature and makes sure it starts before it replaces the old
   one. A PC that has your public key refuses a build without your signature, and any PC can keep the build it has
   instead.
+- **The Codex hub tray can move to a new signing key without setting each PC up again.** A tray or pusher can now
+  trust two public keys, built in, so a build signed with the old key can bring in the new one. A build that is
+  unsigned, or signed with any other key, is still refused.
+- **Tray builds come out the same every time, and a build without a key is made only on request.** One build script
+  makes the Windows and Linux trays, and on a Mac the macOS one, with your own hub address, pairing page and key.
+  Two builds of one commit give the same checksums, so you can check what a PC runs, and a Mac's download has a
+  checksum of its own to compare. The script stops if no key is given, unless you ask for a tray without one.
+- **A guide to running your own Codex hub.** It covers the home server and its port, your own proxy and sign-in,
+  pairing each PC with Connect, installing the tray on Windows, macOS and Linux, and changing the key or the token.
+  It also says plainly what the token allows: whoever has it can push and relay under any PC's name.
 - **Codex starts on a Mac or Linux PC that runs AgentHydra as a service.** A service sees fewer program folders
   than your terminal does, so AgentHydra could miss Codex, or find an npm install of it that could not start. It
   now looks where Codex is usually installed and starts it so it finds its own Node.js, and a Codex that fails to
@@ -80,15 +95,63 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Settings says why updates are off.** When an install has nothing to update from, the version row now gives
   the reason, such as a release channel that is off or a copy run from another repository, instead of saying it
   is not linked to a Git remote.
+- **A fresh install checks for updates every six hours, as documented.** It checked every 15 minutes until you
+  saved your own interval. An interval you have saved is kept as before.
 - **The Windows installer installs only this project's releases.** While this project has published none, it
   stops with a message before downloading anything. A zip you built yourself still installs.
+- **With updates off, a launcher that finds part of the install missing tells you how to restore it.** Instead of
+  trying a download that could only fail, it names the missing part and says to copy it from the AgentHydra folder
+  of an unpacked release archive, or to run from a source checkout. Naming your own release base still repairs from
+  there.
+- **The Windows programs AgentHydra runs are built from this project's own code, and every release publishes their
+  checksums.** The tray icon, the app window and CliMayte's worker runner are built for each Windows release from
+  that release's code with a pinned Rust release, instead of being copied from files nobody could trace, and their
+  checksums beside the download let anyone check one or compare it with their own build. The tray icon now matches
+  its code, so its About item is there too.
+- **A copy run from source works before its Windows programs are built, and says how to build them.** Until you
+  build them, the tray shortcut runs the PowerShell tray, the AgentHydra window shortcut starts that tray and opens
+  AgentHydra in your browser, and CliMayte workers run without the native runner's process limit. A copy that was
+  set up before this change loses those programs when it updates: build them, or make the tray shortcut again, and
+  it opens as before.
+- **Moving to a live checkout no longer stops when the Windows programs cannot be built.** It warns, finishes the
+  move, and points any tray shortcut whose program is missing at the PowerShell tray.
+- **Releases carry the licences of everything inside them.** Every download now includes AgentHydra's licence, the
+  notices for the code it adapts from other projects, and a list of every third-party package it contains, each
+  with its licence text, and an in-app update brings the new release's copies. A release with a package that has no
+  licence, no licence text, or a licence outside the permissive list is not built.
+- **A release no longer includes the Claude Agent SDK.** The first time a chat needs it, AgentHydra downloads the
+  exact version the release pins, checks it against the pin and keeps it, across updates too. While it waits the
+  chat says it is getting the SDK, and if the download fails it says whether the network, the download or the disk
+  is the problem, and offers a Retry. A copy run from source is unchanged.
+- **Desk in a release carries every part of AgentHydra it uses.** A release built from this code would have left
+  out some of them, so Desk's chat engine, project menu and several other parts would not load. They now ship with
+  it, and a release missing any of them is not built.
+- **The notices credit ponytail and Material UI.** The HSwarm parts adapted from those two MIT projects now carry
+  their notices, and the Hermes notice says only what anyone can check.
 - **The changelog, help, issue and homepage links open this project's repository.** The window's What's new, the
   tray's Changelog item, the built-in connectors' homepage and HSwarm's Help and Issues no longer send you to the
   original project's pages.
+- **The orchestrator dashboard credits AgentHydra Community and links its repository.** Its credit line now reads
+  "Maintained by AgentHydra Community" instead of naming the original studio, and it has no chat-server invite. The
+  top-bar button in AgentHydra's pages that opened the studio's Discord now opens this repository.
+- **Questions go to this repository's issues, not a Discord server.** The Discord invite is gone from HSwarm's
+  console, and its Help page, the "Where can I ask a question?" card and every release page now send you to the
+  issues page.
+- **Links to this project show its own preview card.** The card shown when the repository is shared names
+  AgentHydra Community and this repository instead of the original project's name and site.
+- **The tray launcher's error messages name AgentHydra.** When the launcher cannot find its tray script, the
+  message box is titled AgentHydra instead of the original studio.
 - **Nothing depends on a service the original project's owner runs.** Settings no longer sync through
   Connections, Desk has no Connections connector, chip or pane, the 4MAN to-do board and its dashboard widget are
   gone, and HSwarm sends no usage pings. The price check, Sue and Dredd tools, which needed a private checkout, are
   gone too.
+- **HSwarm sends nothing to your Free web accounts until you turn it on.** Tasks used to go to your signed-in Free
+  claude.ai and ChatGPT accounts by default; set `route_via_free = true` in HSwarm's settings to use them. A Free
+  model A/B run still uses them, because running one is the request.
+- **RepoYeti and ReDesign stay off until you turn them on.** They are LunarWerx's own apps, not part of AgentHydra
+  Community, and Settings > Connectors marks them as third-party. Until you switch one on, or install or start it
+  from there, Desk never starts or downloads it, shows no button for it under the message box and gives chats none
+  of its tools.
 - **Remote access to the orchestrator is off until you set it up.** A fresh install has no built-in sign-in
   provider, relay or tunnel: the remote dashboard answers only on this PC, and the tray's Remote access starts off.
   To use it, name your own sign-in provider; a tunnel on your own Cloudflare zone takes your own account details.
@@ -97,10 +160,15 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   the orchestrator's own to-do folder, and the run says so.
 - **The Hydra Core catalog is built only from your own people, skills, agents and repositories.** Sources that
   only worked on the original owner's machine are gone, and a rebuild removes the files they left behind.
+- **Hydra Core's Stop hook asks whichever owner your people catalog names.** It had the original project's owner
+  built in. The owner tier is now any person your catalog marks as owner (the creator family by default), and with
+  no such person, a question stops as asked.
 - **A public audit checks everything this repository publishes.** One command reads every file, and every commit
   since the fork began, for secrets, personal data, private addresses and the original project's hosts, and fails
   any commit built on the original project's relicensing. CI runs it on every push and pull request, and a push it
   objects to is refused.
+- **The public audit fails when an allowlist entry no longer clears anything.** A full run lists each stale entry
+  and exits with an error, so an exemption cannot linger after its value is gone.
 - **The connector list stops polling fast when nothing changes.** A connector stuck installing or starting is asked about every second; after a minute with the same answer the poll falls back to every 5 seconds. A Desk window at rest asks once every 5 seconds (7 requests in 30 s).
 - **When a Claude Desktop or Codex app goes down with chats running, the Instance manager moves them and starts them
   again.** If the app crashed, was signed out, or its plan or organization stopped working, it opens the same kind of
