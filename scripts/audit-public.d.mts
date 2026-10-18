@@ -15,7 +15,12 @@ export const LICENSE_BOUNDARY: string
 export const RULES: { readonly [rule: string]: string }
 
 export interface AuditConfig {
+  /** The import commit: the root of this repository's history, with baseTree as its tree. */
   base: string
+  /** The tree of upstream's last MIT commit, which the import commit has unchanged. */
+  baseTree: string
+  /** Upstream's last MIT commit, whose history this repository does not carry. */
+  upstreamBase?: string
   licenseBoundary?: string
   placeholderUsers: string[]
   commitEmails?: string[]
@@ -134,6 +139,13 @@ export function licenseBoundaries(config?: Partial<AuditConfig>): string[]
 /** A license.boundary finding for each of `commits` with one of `boundaries` in its history. */
 export function licenseFindings(cwd: string, boundaries: string[], commits: string[]): Finding[]
 
+/** The base's provenance: in this clone, a root commit, with the config's baseTree, and an ancestor
+ *  of every one of `tips`. Returns its sha; throws AuditError (exit 2) saying what is wrong. */
+export function checkBase(cwd: string, config: AuditConfig, tips?: string[]): string
+
+/** The base's own author, committer and message, read as any commit's are (its tree is not). */
+export function auditBaseCommit(cwd: string, base: string, ctx: AuditContext): Finding[]
+
 /** The git log arguments for what a pre-push hook's ref lines carry, or null when nothing is new. */
 export function pushRevArgs(
   cwd: string,
@@ -145,8 +157,8 @@ export function pushRevArgs(
 /** Marks each finding an entry clears; returns the entries nothing matched. */
 export function applyAllow(findings: Finding[], allow: AllowEntry[]): AllowEntry[]
 
-/** Whether the run reads the tree at a commit and every commit from `base` to it, so an allow entry
- *  nothing matched is stale. */
+/** Whether the run reads the tree at a commit, the base and every commit from `base` to it, so an
+ *  allow entry nothing matched is stale. */
 export function readsEverything(
   cwd: string,
   modes: { tree: string[]; history: string[] },

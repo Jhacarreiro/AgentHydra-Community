@@ -35,7 +35,7 @@
     "check": "biome check .",
     "//check:deep": "The everything lane, run before a release and by nobody in a hurry: check, every package typecheck, then test:full (25+ minutes of Python unittest included). .githooks/pre-push runs it for a release tag (v*.*.*) only when gh cannot confirm a green ci.yml run on the tagged commit, since every lane here is a ci.yml step; with that confirmation it runs nothing more. It exists so the orchestrator suites are reachable from a gate lane by name, which is how the Architect decides a test script verifies anything.",
     "check:deep": "bun run check && bun run typecheck && bun run test:full",
-    "//audit:public": "The public-safety gate, scripts/audit-public.mjs. With no arguments it reads the tree at HEAD and every commit since 3a65ba8e, the MIT base this repository is built from. .githooks/check-public-push.mjs runs its --push mode on every push, and .github/workflows/audit-public.yml runs the tree and history audits on every push and pull request.",
+    "//audit:public": "The public-safety gate, scripts/audit-public.mjs. With no arguments it checks the import commit at the root of this repository's history (upstream's tree at 3a65ba8e, its last MIT commit, with no parent), then reads the tree at HEAD and every commit after it. .githooks/check-public-push.mjs runs its --push mode on every push, and .github/workflows/audit-public.yml runs the tree and history audits on every push and pull request.",
     "audit:public": "bun scripts/audit-public.mjs",
     "lint": "biome check .",
     "typecheck": "bun run --cwd server typecheck && bun run --cwd orchestrator/web typecheck && bun run --cwd orchestrator/server typecheck",

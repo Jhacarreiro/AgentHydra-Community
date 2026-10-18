@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // scripts/audit-public.mjs - audit:public, the gate between this repository and the public.
 //
-// AgentHydra Community is a public repository built from 3a65ba8e, the last commit upstream published
-// under MIT. Whatever is pushed to it is published, history included, so this checks for what nobody
-// should publish by accident: a token or a private key, a credential file, an address on a private
-// network, an email address, a path that names someone's account, upstream's own service hosts and
-// private repositories, a link to upstream's releases or raw files, a machine name from a home or
-// office network, a build output or generated file, an SVG or stylesheet that states a licence no
-// notice covers, and a binary nobody can say where it came from. It reads git objects, never the working tree, so it judges exactly what a push
-// or a clone carries.
+// AgentHydra Community is a public repository whose history starts at one import commit: the tree of
+// 3a65ba8e, the last commit upstream published under MIT, unchanged and with no parent. Whatever is
+// pushed to it is published, history included, so this checks for what nobody should publish by
+// accident: a token or a private key, a credential file, an address on a private network, an email
+// address, a path that names someone's account, upstream's own service hosts and private
+// repositories, a link to upstream's releases or raw files, a machine name from a home or office
+// network, a build output or generated file, an SVG or stylesheet that states a licence no notice
+// covers, and a binary nobody can say where it came from. It reads git objects, never the working
+// tree, so it judges exactly what a push or a clone carries.
 //
 // MODES (any combination; with none, `--tree HEAD --history <base>..HEAD`)
 //   --tree REV        Every file tracked at REV: the text of every file git grep -I calls text, every
@@ -26,6 +27,15 @@
 //                     the ones the push carries: reachable from a pushed sha, not from the base, not
 //                     from what the remote already has. Then as --history.
 //
+// THE BASE. The config's `base` is the import commit, the root of this repository's history. Its tree
+// is the config's `baseTree`, 3a65ba8e's (in a clone of upstream, git rev-parse 3a65ba8e^{tree} prints
+// it). Before a range from the base is read (the default run's history, or a --history range that
+// starts there) and before --push reads anything, the base is checked: it must be in this clone, have
+// no parent, have that tree, and be an ancestor of every commit read from it. Its author, committer
+// and message are this repository's and are read as any commit's are; its tree is upstream's, fixed
+// by its hash, and is not. Anything else stops the audit (exit 2) and says what is wrong, and so does
+// a clone that cannot show it, such as a shallow one. A clone needs the whole history to reach it.
+//
 // NOTHING IT FINDS IS PRINTED. A finding names its rule, its file and line, and a fingerprint: the
 // first 16 hex digits of the sha256 of what matched. A secret printed by its own detector is a secret
 // published in a CI log, and an email or a home path in that log is the leak the rule exists to stop.
@@ -37,9 +47,9 @@
 // one file and nothing else. It never holds the value itself. commit.email and license.boundary cannot
 // be allowed at all: a published address cannot be unpublished, and the licence line is not a matter
 // of opinion. An entry that clears nothing is stale, and a stale entry would quietly clear its value
-// again if it ever came back. A run that reads the tree at a commit and every commit from the base up
-// to that same commit (the default run, and CI's) has seen everything an entry can match, so there a
-// stale entry fails the run with exit 1 and a message of its own. A --tree or a --history run alone
+// again if it ever came back. A run that reads the tree at a commit, the base and every commit from it
+// up to that same commit (the default run, and CI's) has seen everything an entry can match, so there
+// a stale entry fails the run with exit 1 and a message of its own. A --tree or a --history run alone
 // reads half of that, and only counts the entries it did not use.
 //
 // THE RUNNER'S OWN NAME. git user.name and the OS account name are read at run time and looked for as
@@ -313,11 +323,14 @@ export function loadAuditFiles({ config, allow, provenance, notices } = {}) {
   } catch {
     // No notices file: no asset is covered by one.
   }
-  for (const key of ['base', 'placeholderUsers', 'allowedEmails', 'allowedEmailDomains']) {
+  const required = ['base', 'baseTree', 'placeholderUsers', 'allowedEmails', 'allowedEmailDomains']
+  for (const key of required) {
     if (cfg[key] === undefined) throw new AuditError(`the audit config has no "${key}"`)
   }
-  if (cfg.licenseBoundary !== undefined && !COMMIT_ID.test(String(cfg.licenseBoundary).toLowerCase())) {
-    throw new AuditError('the audit config\'s "licenseBoundary" is not a full 40-hex commit id')
+  for (const key of ['base', 'baseTree', 'upstreamBase', 'licenseBoundary']) {
+    if (cfg[key] !== undefined && !COMMIT_ID.test(String(cfg[key]).toLowerCase())) {
+      throw new AuditError(`the audit config's "${key}" is not a full 40-hex object id`)
+    }
   }
   const entries = allowDoc.entries ?? []
   for (const [i, e] of entries.entries()) {
@@ -767,10 +780,93 @@ function emptyTree(cwd) {
 }
 
 function resolveCommit(cwd, rev) {
+  const sha = commitOrNull(cwd, rev)
+  if (!sha) throw new AuditError(`${rev} is not a commit in this repository`)
+  return sha
+}
+
+function commitOrNull(cwd, rev) {
   const r = git(cwd, ['rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { allowFail: true })
   const sha = String(r.stdout).trim()
-  if (r.status !== 0 || !sha) throw new AuditError(`${rev} is not a commit in this repository`)
-  return sha
+  return r.status === 0 && sha ? sha : null
+}
+
+/** The commits whose parents a shallow clone cut off: `git rev-list --parents` shows them as roots. */
+function shallowCommits(cwd) {
+  const r = git(cwd, ['rev-parse', '--is-shallow-repository'], { allowFail: true })
+  if (String(r.stdout).trim() !== 'true') return new Set()
+  const file = resolve(cwd, gitText(cwd, ['rev-parse', '--git-path', 'shallow']).trim())
+  try {
+    return new Set(readFileSync(file, 'utf8').split(/\s+/).filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * The base's provenance: the config's base is in this clone, is a root commit (no parent), has the
+ * config's baseTree as its tree, and is an ancestor of every commit in `tips`. Returns its sha, or
+ * stops the audit (AuditError, exit 2) with what is wrong. A parent would mean history before the
+ * import commit, which is upstream's and is not published here; another tree would mean the base is
+ * not upstream's 3a65ba8e unchanged; a tip not built on it is history the audit has no start for.
+ */
+export function checkBase(cwd, config, tips = []) {
+  const want = String(config.base ?? '').toLowerCase()
+  const short = want.slice(0, 8)
+  const base = commitOrNull(cwd, want)
+  if (!base) {
+    throw new AuditError(
+      `the base ${short} (the import commit) is not in this clone, so the history from it cannot ` +
+        'be read; a shallow clone needs the whole history (git fetch --unshallow)',
+    )
+  }
+  if (shallowCommits(cwd).has(base)) {
+    throw new AuditError(
+      `the base ${short} is at the edge of this shallow clone, so whether it has a parent cannot ` +
+        'be told; fetch the whole history (git fetch --unshallow)',
+    )
+  }
+  const line = gitText(cwd, ['rev-list', '--parents', '-n', '1', base]).trim()
+  const parents = line.split(/\s+/).slice(1).length
+  if (parents) {
+    throw new AuditError(
+      `the base ${short} is not a root commit (it has ${parents} parent${parents === 1 ? '' : 's'}): ` +
+        "this repository's history starts at the import commit, which has none, and anything " +
+        "before it would be upstream's history",
+    )
+  }
+  const tree = gitText(cwd, ['rev-parse', `${base}^{tree}`]).trim()
+  const expected = String(config.baseTree ?? '').toLowerCase()
+  if (tree !== expected) {
+    throw new AuditError(
+      `the base ${short} has the tree ${tree.slice(0, 8)}, not the config's baseTree ` +
+        `${expected.slice(0, 8)} (upstream's tree at its last MIT commit), so it is not the ` +
+        'import commit',
+    )
+  }
+  for (const tip of tips) {
+    const r = git(cwd, ['merge-base', '--is-ancestor', base, tip], { allowFail: true })
+    if (r.status === 1) {
+      throw new AuditError(
+        `${tip.slice(0, 8)} is not built on the base ${short}: every commit published here ` +
+          'descends from the import commit',
+      )
+    }
+    if (r.status !== 0) {
+      const what = `${tip.slice(0, 8)} is built on the base ${short}`
+      throw new AuditError(`could not tell whether ${what} (exit ${r.status})`)
+    }
+  }
+  return base
+}
+
+/** Whether `range` (A..B) starts at the base, so that it reads every commit after the base. */
+function startsAtBase(cwd, range, base) {
+  if (range.includes('...') || !range.includes('..')) return false
+  const start = range.split('..')[0] || 'HEAD'
+  if (start.toLowerCase() === String(base).toLowerCase()) return true
+  const from = commitOrNull(cwd, start)
+  return from !== null && from === commitOrNull(cwd, base)
 }
 
 /** license.boundary's commits: LICENSE_BOUNDARY, plus the config's licenseBoundary when it names another. */
@@ -877,22 +973,7 @@ export function auditTree(cwd, rev, ctx) {
  * with its metadata and the lines it adds, read in two passes: one for messages, one for patches.
  */
 function readHistory(cwd, revArgs) {
-  const meta = gitText(cwd, [
-    'log',
-    '-z',
-    '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B',
-    ...revArgs,
-    '--',
-  ]).split('\0')
-  const commits = new Map()
-  const order = []
-  for (let i = 0; i + 5 < meta.length; i += 6) {
-    const [sha, , authorEmail, , committerEmail, body] = meta.slice(i, i + 6)
-    const id = sha.replace(/^\n/, '')
-    if (!/^[0-9a-f]{40,64}$/.test(id)) continue
-    commits.set(id, { sha: id, authorEmail, committerEmail, body, files: new Map() })
-    order.push(id)
-  }
+  const { commits, order } = readCommitMeta(cwd, revArgs)
   const nonce = randomBytes(12).toString('hex')
   const out = gitText(cwd, [
     '-c',
@@ -979,6 +1060,27 @@ function readHistory(cwd, revArgs) {
   return order.map((sha) => commits.get(sha))
 }
 
+/** Each commit's sha, author and committer emails and message, for git log arguments `revArgs`. */
+function readCommitMeta(cwd, revArgs) {
+  const meta = gitText(cwd, [
+    'log',
+    '-z',
+    '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B',
+    ...revArgs,
+    '--',
+  ]).split('\0')
+  const commits = new Map()
+  const order = []
+  for (let i = 0; i + 5 < meta.length; i += 6) {
+    const [sha, , authorEmail, , committerEmail, body] = meta.slice(i, i + 6)
+    const id = sha.replace(/^\n/, '')
+    if (!/^[0-9a-f]{40,64}$/.test(id)) continue
+    commits.set(id, { sha: id, authorEmail, committerEmail, body, files: new Map() })
+    order.push(id)
+  }
+  return { commits, order }
+}
+
 function commitEmailFindings(c, globs) {
   const out = []
   const check = (email, note) => {
@@ -995,14 +1097,31 @@ function commitEmailFindings(c, globs) {
   return out
 }
 
+function commitGlobs(config) {
+  return (config.commitEmails ?? config.allowedEmails).map(globRe)
+}
+
+/**
+ * The base's own author, committer and message, which are this repository's: read as any commit's
+ * are. Its patch is the whole of upstream's tree, which checkBase fixes by its hash: not read.
+ */
+export function auditBaseCommit(cwd, base, ctx) {
+  const { commits, order } = readCommitMeta(cwd, ['-1', base])
+  const c = commits.get(order[0])
+  if (!c) throw new AuditError(`the base ${String(base).slice(0, 8)} could not be read`)
+  const findings = commitEmailFindings(c, commitGlobs(ctx.config))
+  for (const f of scanText(c.body, MESSAGE_PATH, ctx.rules)) findings.push({ ...f, commit: c.sha })
+  return findings
+}
+
 /** --history and --push: metadata, messages, added lines and binaries of every commit in range. */
 export function auditHistory(cwd, revArgs, ctx) {
-  const commitGlobs = (ctx.config.commitEmails ?? ctx.config.allowedEmails).map(globRe)
+  const globs = commitGlobs(ctx.config)
   const commits = readHistory(cwd, revArgs)
   const findings = []
   const binaries = []
   for (const c of commits) {
-    findings.push(...commitEmailFindings(c, commitGlobs))
+    findings.push(...commitEmailFindings(c, globs))
     for (const f of scanText(c.body, MESSAGE_PATH, ctx.rules)) findings.push({ ...f, commit: c.sha })
     for (const file of c.files.values()) {
       if (file.status === 'D') continue
@@ -1099,17 +1218,16 @@ export function applyAllow(findings, allow) {
 
 /**
  * Whether a run read everything an allow entry can match: the tree at some commit, and a --history
- * range from the base to that same commit. Only then is an entry that cleared nothing stale; a
- * --tree run alone does not read the commits, and a --history run alone does not read the tree.
+ * range from the base to that same commit (which reads the base's own message too). Only then is
+ * an entry that cleared nothing stale; a --tree run alone does not read the commits, and a
+ * --history run alone does not read the tree.
  */
 export function readsEverything(cwd, { tree, history }, base) {
   if (!tree.length || !history.length) return false
   const trees = new Set(tree.map((rev) => resolveCommit(cwd, rev)))
-  const from = resolveCommit(cwd, base)
   return history.some((range) => {
-    if (range.includes('...') || !range.includes('..')) return false
-    const [start, tip] = range.split('..')
-    return resolveCommit(cwd, start || 'HEAD') === from && trees.has(resolveCommit(cwd, tip || 'HEAD'))
+    if (!startsAtBase(cwd, range, base)) return false
+    return trees.has(resolveCommit(cwd, range.split('..')[1] || 'HEAD'))
   })
 }
 
@@ -1181,22 +1299,33 @@ export function main(argv = process.argv.slice(2), { stdin } = {}) {
     }
     const findings = []
     const scope = []
+    const tipOf = (range) =>
+      resolveCommit(opts.cwd, range.includes('..') ? range.split(/\.\.\.?/)[1] || 'HEAD' : range)
+    // The base is checked before anything is read, for every history range from it and for a push
+    // (even one that carries nothing new: without the base there is no telling), and its own
+    // author, committer and message are read once.
+    const fromBase = opts.history.filter((range) => startsAtBase(opts.cwd, range, files.config.base))
+    const push = opts.push
+      ? pushRevArgs(opts.cwd, stdin ?? readStdin(), opts.push, files.config.base)
+      : null
+    if (fromBase.length || opts.push) {
+      const tips = [...fromBase.map(tipOf), ...(push?.include ?? [])]
+      const base = checkBase(opts.cwd, files.config, tips)
+      findings.push(...auditBaseCommit(opts.cwd, base, ctx))
+    }
     for (const rev of opts.tree) {
       const r = auditTree(opts.cwd, rev, ctx)
       findings.push(...r.findings)
       scope.push(`tree ${rev} (${r.stats.files} files, ${r.stats.binaries} binaries)`)
     }
     for (const range of opts.history) {
+      const tipCommit = tipOf(range)
       const r = auditHistory(opts.cwd, [range], ctx)
-      const tip = range.includes('..') ? range.split(/\.\.\.?/)[1] || 'HEAD' : range
-      const tipCommit = resolveCommit(opts.cwd, tip)
       findings.push(...licenseFindings(opts.cwd, licenseBoundaries(files.config), [tipCommit]))
       findings.push(...r.findings)
       scope.push(`history ${range} (${r.commits.length} commits)`)
     }
     if (opts.push) {
-      resolveCommit(opts.cwd, files.config.base)
-      const push = pushRevArgs(opts.cwd, stdin ?? readStdin(), opts.push, files.config.base)
       if (push) {
         const r = auditHistory(opts.cwd, push.args, ctx)
         findings.push(...licenseFindings(opts.cwd, licenseBoundaries(files.config), push.include))

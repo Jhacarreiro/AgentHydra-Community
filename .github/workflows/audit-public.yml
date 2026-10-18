@@ -1,9 +1,10 @@
 name: Public audit
 
 # audit:public (scripts/audit-public.mjs) on every push and pull request: the tree as it stands and
-# every commit since 3a65ba8e, the MIT base this repository is built from. The pre-push hook runs the
-# same audit on what a push carries; this is the copy a hook cannot skip (--no-verify, a push from a
-# machine without the hooks, a pull request from a fork).
+# every commit after the import commit, the root of this repository's history (upstream's tree at
+# 3a65ba8e, its last MIT commit, with no parent). The pre-push hook runs the same audit on what a push
+# carries; this is the copy a hook cannot skip (--no-verify, a push from a machine without the hooks,
+# a pull request from a fork).
 #
 # No paths-ignore, unlike ci.yml: a docs-only or Markdown-only change can publish an email address or
 # a token as easily as code can, and history is checked commit by commit, so a value added and
@@ -28,8 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # The whole history, for --history. A pull request is checked out at its own head commit, not
-      # at the merge commit GitHub makes for it, so the commits read are exactly the ones pushed.
+      # The whole history, down to the import commit at its root: the audit checks that commit (no
+      # parent, upstream's tree, under HEAD) before it reads anything, and a shallow clone that does
+      # not reach it stops the run. A pull request is checked out at its own head commit, not at the
+      # merge commit GitHub makes for it, so the commits read are exactly the ones pushed.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
@@ -40,7 +43,8 @@ jobs:
         with:
           bun-version: 1.4.3
 
-      # With no mode, the audit reads the tree at HEAD and every commit from the config's base (the MIT
-      # base) to HEAD, and fails on an allowlist entry that cleared nothing in either.
+      # With no mode, the audit checks the config's base (the import commit), then reads the tree at
+      # HEAD, the base's own author and message, and every commit after it up to HEAD, and fails on an
+      # allowlist entry that cleared nothing in any of them.
       - name: Tree, history and allowlist
         run: bun scripts/audit-public.mjs

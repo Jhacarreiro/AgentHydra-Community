@@ -1,7 +1,11 @@
 {
   "//": "Settings for scripts/audit-public.mjs (bun run audit:public). Its header says what each rule checks. Findings that are fine go in audit-public.allow.json; binaries are described in binary-provenance.json.",
-  "base": "3a65ba8e6497c16732f627fc8934723839c82fdd",
-  "//base": "The last upstream commit published under MIT, which this repository is built from. History before it is upstream's and is not read; --history <base>..HEAD and the pre-push mode start here.",
+  "base": "c81335b7e90a85880cffbb54e51743a459cc7172",
+  "//base": "The import commit, the root of this repository's history: upstream's tree at upstreamBase, unchanged, committed with no parent. The default run (--history <base>..HEAD) and the pre-push mode read the commits after it, and first check that it is a root commit with baseTree as its tree and that every commit they read is built on it; its own author, committer and message are read too. A clone without it, such as a shallow one, cannot be audited.",
+  "baseTree": "d6eda7b9e375d15e916c7a001099fa96051d6cc2",
+  "//baseTree": "The tree of upstreamBase, and so of the import commit. Anyone can check it in a clone of upstream: git rev-parse 3a65ba8e^{tree} prints it. The pre-push hook refuses a tag on any commit with this tree, and has it built in.",
+  "upstreamBase": "3a65ba8e6497c16732f627fc8934723839c82fdd",
+  "//upstreamBase": "The last upstream commit published under MIT. Its history is upstream's, and this repository does not carry it: the pre-push hook refuses any ref that shares a commit with it and any tag on it or before it. The hook has it built in, so taking it out of this file turns nothing off; a different commit id here is checked as well. A clone without it, which every clone of this repository is, has nothing to refuse.",
   "licenseBoundary": "aee9dfc4f7dd0228d8e1740be90b646b30204f37",
   "//licenseBoundary": "Upstream's commit that moved AgentHydra to the PolyForm Noncommercial license. No commit audited here may have it in its history. The audit and the pre-push hook have it built in, so taking it out of this file turns nothing off; a different commit id here is checked as well.",
   "placeholderUsers": [

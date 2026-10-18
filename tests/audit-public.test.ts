@@ -10,7 +10,7 @@
 // random characters behind a prefix split in two, so no test run shares a value with another.
 //
 // The git-backed tests build throwaway repositories under one scratch folder and never touch this
-// repository's own index or history; the last two read this repository's tree and history as they are.
+// repository's own index or history; the last ones read this repository's tree and history as they are.
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -18,11 +18,14 @@ import { createHash, randomBytes } from 'node:crypto'
 import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   type AuditContext,
   applyAllow,
+  auditBaseCommit,
   auditHistory,
   auditTree,
+  checkBase,
   compileRules,
   fingerprint,
   generatedHeader,
@@ -587,8 +590,24 @@ describe('the allowlist and the config files', () => {
     expect(write([{ ...ok, rule: 'commit.email' }])).toThrow('cannot be allowed')
   })
 
-  test("this repository's own files: the base, the boundary, and entries that hold no values", () => {
-    expect(CONFIG.base).toBe('3a65ba8e6497c16732f627fc8934723839c82fdd')
+  test('a config without baseTree, or with an object id that is not a full one, stops the audit', () => {
+    const file = join(scratch('base-config'), 'config.json')
+    const load = (config: unknown) => {
+      writeFileSync(file, JSON.stringify(config))
+      return () => loadAuditFiles({ config: file })
+    }
+    expect(load(CONFIG)).not.toThrow()
+    expect(load({ ...CONFIG, baseTree: undefined })).toThrow('no "baseTree"')
+    expect(load({ ...CONFIG, base: CONFIG.base.slice(0, 8) })).toThrow('"base" is not a full')
+    expect(load({ ...CONFIG, baseTree: 'HEAD^{tree}' })).toThrow('"baseTree" is not a full')
+    expect(load({ ...CONFIG, upstreamBase: 'main' })).toThrow('"upstreamBase" is not a full')
+  })
+
+  test("this repository's own files: the base and its tree, upstream's base, the boundary, and entries that hold no values", () => {
+    // The import commit, its tree (upstream's 3a65ba8e tree, unchanged), and upstream's commit.
+    expect(CONFIG.base).toBe('c81335b7e90a85880cffbb54e51743a459cc7172')
+    expect(CONFIG.baseTree).toBe('d6eda7b9e375d15e916c7a001099fa96051d6cc2')
+    expect(CONFIG.upstreamBase).toBe('3a65ba8e6497c16732f627fc8934723839c82fdd')
     expect(CONFIG.licenseBoundary).toBe('aee9dfc4f7dd0228d8e1740be90b646b30204f37')
     for (const e of AUDIT.allow) {
       expect(Object.keys(e).sort()).toEqual(['fp', 'path', 'reason', 'rule'])
@@ -903,6 +922,159 @@ describe('--history', () => {
   )
 })
 
+describe('the base', () => {
+  /** A repository like this one: the import commit (a root, with `tree`), then a commit of its own. */
+  function imported(
+    name: string,
+    importEmail = NOREPLY,
+    importFiles: Record<string, string> = { 'README.md': 'upstream\n' },
+  ) {
+    const dir = repo(name)
+    const base = commit(dir, importFiles, 'the import commit', importEmail)
+    const tree = git(dir, NOREPLY, 'rev-parse', `${base}^{tree}`)
+    const own = commit(dir, { 'notes.md': 'own work\n' }, 'own work')
+    return { dir, base, tree, own, config: { ...CONFIG, base, baseTree: tree } }
+  }
+
+  test(
+    'a root commit with baseTree as its tree, under every commit read, is the base',
+    () => {
+      const { dir, base, own, config } = imported('base-ok')
+      expect(checkBase(dir, config, [own, base])).toBe(base)
+      expect(checkBase(dir, { ...config, base: base.toUpperCase() }, [own])).toBe(base)
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    'a base with a parent, a base with another tree, and a commit not built on the base each stop the audit',
+    () => {
+      const { dir, base, tree, own, config } = imported('base-wrong')
+      // Its parent would be history before the import commit: upstream's.
+      const ownTree = git(dir, NOREPLY, 'rev-parse', `${own}^{tree}`)
+      expect(() => checkBase(dir, { ...config, base: own, baseTree: ownTree }, [own])).toThrow(
+        `the base ${own.slice(0, 8)} is not a root commit (it has 1 parent)`,
+      )
+      // A root with another tree is not upstream's tree unchanged.
+      expect(() => checkBase(dir, { ...config, baseTree: ownTree }, [own])).toThrow(
+        `the base ${base.slice(0, 8)} has the tree ${tree.slice(0, 8)}, not the config's baseTree ${ownTree.slice(0, 8)}`,
+      )
+      // A commit on another root has no start for the history audit.
+      git(dir, NOREPLY, 'checkout', '-q', '--orphan', 'elsewhere')
+      const stray = commit(dir, { 'README.md': 'upstream\n' }, 'another root, with the same tree')
+      expect(() => checkBase(dir, config, [own, stray])).toThrow(
+        `${stray.slice(0, 8)} is not built on the base ${base.slice(0, 8)}`,
+      )
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    'a clone without the base, or with it at the edge of a shallow history, stops the audit',
+    () => {
+      const { dir, base, own, config } = imported('base-shallow')
+      const url = pathToFileURL(dir).href
+      const shallow = scratch('base-shallow-clone')
+      git(shallow, NOREPLY, 'clone', '-q', '--depth', '1', url, '.')
+      expect(() => checkBase(shallow, config, [own])).toThrow(
+        `the base ${base.slice(0, 8)} (the import commit) is not in this clone`,
+      )
+      // The clone has `own`, but not its parent: whether it is a root cannot be told.
+      const ownTree = git(dir, NOREPLY, 'rev-parse', `${own}^{tree}`)
+      expect(() => checkBase(shallow, { ...config, base: own, baseTree: ownTree }, [own])).toThrow(
+        `the base ${own.slice(0, 8)} is at the edge of this shallow clone`,
+      )
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    "the base's own author, committer and message are read; its tree is not",
+    () => {
+      const { dir, base, config } = imported('base-meta', MAILBOX)
+      const ctx = ctxWith({ config })
+      const found = auditBaseCommit(dir, base, ctx)
+      expect(rulesOf(found)).toEqual(['commit.email', 'commit.email'])
+      expect(found.every((f) => f.commit === base)).toBe(true)
+      expect(found.map((f) => f.fp)).toEqual([fingerprint(MAILBOX), fingerprint(MAILBOX)])
+
+      // The tree it imports is not read as added lines, even with a value in it.
+      const tree = imported('base-meta-tree', NOREPLY, { 'docs/hosts.md': `${IP.ten}\n` })
+      expect(auditBaseCommit(tree.dir, tree.base, ctxWith({ config: tree.config }))).toEqual([])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    'the default run and --push check the base before they read anything, and exit 2 when it is wrong',
+    () => {
+      const { dir, base, own, config } = imported('base-cli', MAILBOX)
+      const files = scratch('base-cli-files')
+      const cfg = join(files, 'config.json')
+      const allow = join(files, 'allow.json')
+      const provenance = join(files, 'provenance.json')
+      writeFileSync(allow, JSON.stringify({ entries: [] }))
+      writeFileSync(provenance, JSON.stringify({ binaries: [] }))
+      const run = (args: string[], input = '') =>
+        spawnSync(
+          process.execPath,
+          [
+            SCRIPT,
+            ...args,
+            '-C',
+            dir,
+            '--config',
+            cfg,
+            '--allow',
+            allow,
+            '--provenance',
+            provenance,
+            '--no-local-names',
+          ],
+          {
+            encoding: 'utf8',
+            input,
+            timeout: GIT_TEST_TIMEOUT,
+            env: { ...process.env, GITHUB_ACTIONS: '' },
+          },
+        )
+      const pushLine = `refs/heads/main ${own} refs/heads/main ${'0'.repeat(40)}\n`
+
+      // The right base: the run reads on, and the base's own author is a finding.
+      const baseFinding = new RegExp(`commit\\.email +${base.slice(0, 8)} \\(commit\\)`)
+      writeFileSync(cfg, JSON.stringify(config))
+      const full = run([])
+      expect(full.stderr).toContain(`history ${base}..HEAD (1 commits)`)
+      expect(full.stderr).toMatch(baseFinding)
+      expect(full.stderr).not.toContain(MAILBOX)
+      expect(full.status).toBe(1)
+      const pushed = run(['--push', 'origin'], pushLine)
+      expect(pushed.stderr).toContain('push to origin (1 new commits)')
+      expect(pushed.stderr).toMatch(baseFinding)
+      expect(pushed.status).toBe(1)
+
+      // A base with a parent: neither the default run nor --push reads anything.
+      const ownTree = git(dir, NOREPLY, 'rev-parse', `${own}^{tree}`)
+      writeFileSync(cfg, JSON.stringify({ ...config, base: own, baseTree: ownTree }))
+      for (const r of [run([]), run(['--push', 'origin'], pushLine)]) {
+        expect(r.stderr).toContain(`audit:public could not run: the base ${own.slice(0, 8)}`)
+        expect(r.stderr).toContain('is not a root commit')
+        expect(r.stderr).not.toContain('tree HEAD')
+        expect(r.status).toBe(2)
+      }
+
+      // Another tree: a range from the base is checked first; a range from a later commit is not
+      // every commit after the base, and reads on.
+      writeFileSync(cfg, JSON.stringify({ ...config, baseTree: ownTree }))
+      const fromBase = run(['--history', `${base}..HEAD`])
+      expect(fromBase.stderr).toContain("not the config's baseTree")
+      expect(fromBase.status).toBe(2)
+      expect(run(['--history', `${own}..HEAD`]).status).toBe(0)
+    },
+    GIT_TEST_TIMEOUT,
+  )
+})
+
 describe('--push', () => {
   test(
     'only what the push carries is read: not the base, not what the remote already has',
@@ -1023,7 +1195,8 @@ describe('the command line', () => {
       const config = join(files, 'config.json')
       const allow = join(files, 'allow.json')
       const provenance = join(files, 'provenance.json')
-      writeFileSync(config, JSON.stringify({ ...CONFIG, base }))
+      const baseTree = git(dir, NOREPLY, 'rev-parse', `${base}^{tree}`)
+      writeFileSync(config, JSON.stringify({ ...CONFIG, base, baseTree }))
       writeFileSync(provenance, JSON.stringify({ binaries: [] }))
       const entry = (value: string, reason: string) => ({
         rule: 'secret.token',
@@ -1170,7 +1343,17 @@ describe('this repository', () => {
   )
 
   test.skipIf(!hasCommit(CONFIG.base))(
-    'every commit since the MIT base passes the history audit',
+    "the base is the import commit: a root commit with upstream's tree, under HEAD",
+    () => {
+      expect(checkBase(REPO_ROOT, CONFIG, [git(REPO_ROOT, NOREPLY, 'rev-parse', 'HEAD')])).toBe(
+        CONFIG.base,
+      )
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test.skipIf(!hasCommit(CONFIG.base))(
+    'every commit since the import commit passes the history audit',
     () => {
       const r = spawnSync(process.execPath, [SCRIPT, '--history', `${CONFIG.base}..HEAD`], {
         cwd: REPO_ROOT,
@@ -1184,7 +1367,7 @@ describe('this repository', () => {
   )
 
   test.skipIf(!hasCommit(CONFIG.base))(
-    'every allowlist entry clears something in the tree or in a commit since the MIT base',
+    'every allowlist entry clears something in the tree or in a commit since the import commit',
     () => {
       const r = spawnSync(process.execPath, [SCRIPT, '--json'], {
         cwd: REPO_ROOT,

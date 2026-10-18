@@ -35,14 +35,16 @@
  *     add to this one. No override.
  *
  *  5. scripts/audit-public.mjs runs over what the push carries (its --push mode: the commits the
- *     remote does not have yet, from the base commit on): tokens and keys, credential files, private
- *     addresses, email addresses, home paths, upstream's hosts and private repositories, binaries
- *     with no provenance, and commit emails that are not noreply. It runs for every remote, private
- *     ones too: this repository is public by design, a private repository can be made public later,
- *     and "private" here can also mean "does not exist yet". A finding that is fine goes in
- *     scripts/audit-public.allow.json; there is no override. An audit that gives no verdict (it
- *     cannot load, start or finish) refuses the push as well, and says so rather than calling it a
- *     finding. A checkout without the script has nothing to audit with and passes, as for rule 3.
+ *     remote does not have yet, after the import commit, which it checks first): tokens and keys,
+ *     credential files, private addresses, email addresses, home paths, upstream's hosts and private
+ *     repositories, binaries with no provenance, and commit emails that are not noreply. It runs for
+ *     every remote, private ones too: this repository is public by design, a private repository can
+ *     be made public later, and "private" here can also mean "does not exist yet". A finding that is
+ *     fine goes in scripts/audit-public.allow.json; there is no override. An audit that gives no
+ *     verdict (it cannot load, start or finish, or the import commit is missing, as in a shallow
+ *     clone, or is not a root commit with upstream's tree under every pushed commit) refuses the push
+ *     as well, and says so rather than calling it a finding. A checkout without the script has
+ *     nothing to audit with and passes, as for rule 3.
  *
  *  6. No tag may point at upstream's work. Every commit up to 3a65ba8e is upstream's, and the tags
  *     on them (v0.1.0 to v2.0.4, orchestrator-v1-final) are upstream's releases, which a
@@ -52,9 +54,9 @@
  *     unchanged, upstream's own release.yml included, and a tag runs the workflow of the commit it
  *     points to. So a tag is refused when its commit is 3a65ba8e or in its history, or when its tree
  *     is 3a65ba8e's tree. The audit config's upstreamBase and baseTree may name a further commit and
- *     tree, never take these away; its `base` is not what this rule reads. A clone without 3a65ba8e
- *     (every clone of this repository) has none of upstream's tags, so only the tree is checked
- *     there. No override.
+ *     tree, never take these away; its `base`, the import commit, is not what this rule reads. A
+ *     clone without 3a65ba8e (every clone of this repository) has none of upstream's tags, so only
+ *     the tree is checked there. No override.
  *
  *  7. No ref may carry upstream's history. This repository's history starts at the import commit,
  *     which has no parent: upstream's history up to 3a65ba8e stays in upstream's repository, and

@@ -230,6 +230,12 @@ describe("rules 6 and 7: upstream's base and its tree", () => {
     expect(UPSTREAM_TREE).toMatch(/^[0-9a-f]{40}$/)
     expect(upstreamBases(REPO_ROOT)).toEqual([UPSTREAM_BASE])
     expect(upstreamTrees(REPO_ROOT)).toEqual([UPSTREAM_TREE])
+    // The audit config names the same two, beside its own base, the import commit, which has that
+    // tree and is none of upstream's commits.
+    const config = loadAuditFiles().config
+    expect(config.upstreamBase).toBe(UPSTREAM_BASE)
+    expect(config.baseTree).toBe(UPSTREAM_TREE)
+    expect(config.base).not.toBe(UPSTREAM_BASE)
     // A checkout without the config still knows them.
     const dir = scratch('upstream-config')
     expect(upstreamBases(dir)).toEqual([UPSTREAM_BASE])
@@ -607,6 +613,20 @@ describe('.githooks/pre-push: rules 4 to 7, end to end', () => {
       expect(originHas(origin, upstreamBase)).toBe(false)
     },
     HOOK_TEST_TIMEOUT * 2,
+  )
+
+  test(
+    'a branch on a root of its own is refused: the audit has no base to read it from',
+    () => {
+      git(repo, 'checkout', '-q', '--orphan', 'stray')
+      const stray = commit(repo, { 'notes.md': 'nothing to see\n' }, 'another root')
+      const r = push(repo, PRIVATE, 'stray')
+      expect(r.status).not.toBe(0)
+      expect(r.output).toContain(`${stray.slice(0, 8)} is not built on the base`)
+      expect(r.output).toContain('audit:public could not run')
+      expect(originHas(origin, stray)).toBe(false)
+    },
+    HOOK_TEST_TIMEOUT,
   )
 
   test(
