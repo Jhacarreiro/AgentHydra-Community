@@ -108,7 +108,8 @@ Every bundle (`AgentHydra-<version>-<target>`, a `.zip` on Windows, a `.tar.gz` 
   crates of the Rust programs, read with `cargo metadata`), with its licence and text. The packager
   fails the bundle when a package has no licence, no licence text, or one off the allowlist in that
   script. A packaging machine without cargo passes `--third-party <list.json>`, written where the
-  programs were built. An in-app update installs the new release's licence files with the rest.
+  programs were built. `install.ps1` copies them beside the launcher once the components are in, and
+  an in-app update installs the new release's licence files with the rest.
 
 **No Bun, no Claude Code binary and no Claude Agent SDK ship.** The SDK's licence reserves all
 rights, so the bundle carries only `desk2/sdk-pin.json`, the version and sha512 `desk2/bun.lock`
@@ -388,7 +389,10 @@ proceed under a detected running instance (`AgentHydra`/`AgentHydra-Tray` proces
 the staged copy is moved into place, and orchestrator's user-owned `state/` directory is carried
 across the swap rather than dropped. Any failure during the swap rolls every component processed
 so far back to its `.old-` copy, so a disk-full, interrupted, or locked-file mid-copy can no longer
-leave `misc/`, `orchestrator/`, and the exe at silently different versions. `-FromZip`, `-Sha256`,
+leave `misc/`, `orchestrator/`, and the exe at silently different versions. Once every component
+is in, the release's licence files (`$ReleaseNotices`, the same list as the updater's
+`RELEASE_NOTICES`) are copied beside the exe, `LICENSES/` replaced whole; one that will not copy is
+named and does not fail the install. `-FromZip`, `-Sha256`,
 `-InstallDir`, `-NoLaunch`, and `-Force` exist so this is testable offline (see
 `tests/install-transactional.test.ts`) without touching a real install, the real daemon, or the
 real tray; none of them change the default (no-arguments) behaviour a real user gets.

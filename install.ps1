@@ -106,6 +106,14 @@ $ReleaseComponents = @(
   [pscustomobject]@{ Name = 'orchestrator'; RelPath = 'orchestrator' }
 )
 
+# --- the release's licence files ----------------------------------------------------------
+# A release carries them at its top level, beside the exe: LICENSE, THIRD-PARTY-NOTICES.md and
+# LICENSES/ (scripts/release-bundle.ts) and THIRD-PARTY-LICENSES (scripts/package-release.ts).
+# They are no component, so the swap below leaves them in staging; they are copied in after it.
+# server/src/github-updater.ts's RELEASE_NOTICES is the same list for an in-app update, and
+# server/tests/github-updater-components.test.ts checks that the two agree.
+$ReleaseNotices = @('LICENSE', 'THIRD-PARTY-NOTICES.md', 'THIRD-PARTY-LICENSES', 'LICENSES')
+
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Note([string]$Message) { Write-Host "    $Message" -ForegroundColor DarkGray }
 
@@ -374,6 +382,22 @@ try {
         }
       }
       throw
+    }
+
+    # --- (f) the licence files, once every component has landed ------------------------------
+    # Copied over the install's own, as the in-app update does, so an install says what it
+    # carries: LICENSES\ is replaced whole, and a file the release lacks is left as it is.
+    # Best-effort: the app runs without them, so one that will not copy is named, not fatal.
+    foreach ($n in $ReleaseNotices) {
+      $src = Join-Path $staging $n
+      if (-not (Test-Path -LiteralPath $src)) { continue }
+      $dest = Join-Path $InstallDir $n
+      try {
+        if ($n -eq 'LICENSES' -and (Test-Path -LiteralPath $dest)) { Remove-Item -LiteralPath $dest -Recurse -Force }
+        Copy-Item -LiteralPath $src -Destination $dest -Recurse -Force
+      } catch {
+        Write-Note "could not install $n ($($_.Exception.Message)); copy it from the release archive by hand"
+      }
     }
   } finally {
     Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue

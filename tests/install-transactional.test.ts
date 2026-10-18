@@ -118,7 +118,7 @@ interface ReleaseDirOpts {
 
 /** Builds `<baseDir>/AgentHydra-<version>-windows-x64/` with the same top-level shape the release
  *  workflow ships (.github/workflows/release.yml's "Compile + package" step): AgentHydra.exe,
- *  misc/, orchestrator/. Returns the directory (the thing install.ps1 expects to find as the
+ *  app/, desk2/, misc/, orchestrator/ and the licence files. Returns the directory (the thing install.ps1 expects to find as the
  *  archive's sole top-level folder once zipped). */
 function buildReleaseDir(baseDir: string, version: string, opts: ReleaseDirOpts = {}): string {
   const dir = join(baseDir, `AgentHydra-${version}-windows-x64`)
@@ -139,6 +139,14 @@ function buildReleaseDir(baseDir: string, version: string, opts: ReleaseDirOpts 
   const orchDir = join(dir, 'orchestrator')
   mkdirSync(orchDir, { recursive: true })
   writeFileSync(join(orchDir, 'orch.py'), '# placeholder orchestrator entrypoint\n')
+
+  // The licence files a release carries at its top level (scripts/release-bundle.ts,
+  // scripts/package-release.ts), each marked with the version so an upgrade is visible.
+  writeFileSync(join(dir, 'LICENSE'), `MIT licence of ${version}\n`)
+  writeFileSync(join(dir, 'THIRD-PARTY-NOTICES.md'), `notices of ${version}\n`)
+  writeFileSync(join(dir, 'THIRD-PARTY-LICENSES'), `packages of ${version}\n`)
+  mkdirSync(join(dir, 'LICENSES'), { recursive: true })
+  writeFileSync(join(dir, 'LICENSES', `${version}.txt`), 'licence text\n')
 
   return dir
 }
@@ -240,6 +248,35 @@ for (const host of PS_HOSTS) {
       expect(existsSync(join(installDir, 'orchestrator', 'orch.py'))).toBe(true)
       expect(exeVersion(join(installDir, 'AgentHydra.exe'))).toBe('0.20.0')
       // No leftover staging/aside artifacts on a clean fresh install.
+      expect(leftoverArtifacts(installDir)).toEqual([])
+    }, 240_000)
+
+    test("the release's licence files land beside the exe, and an upgrade replaces LICENSES/ whole", () => {
+      const work = workDir('licences')
+      const installDir = join(work, 'install')
+      const args = (zip: string) => [
+        '-FromZip',
+        zip,
+        '-InstallDir',
+        installDir,
+        '-NoShortcut',
+        '-NoLaunch',
+        '-Force',
+      ]
+
+      expect(runInstall(host, args(buildReleaseZip(work, '0.22.0'))).status).toBe(0)
+      expect(readFileSync(join(installDir, 'LICENSE'), 'utf8')).toBe('MIT licence of 0.22.0\n')
+      expect(readFileSync(join(installDir, 'THIRD-PARTY-NOTICES.md'), 'utf8')).toBe(
+        'notices of 0.22.0\n',
+      )
+      expect(readFileSync(join(installDir, 'THIRD-PARTY-LICENSES'), 'utf8')).toBe(
+        'packages of 0.22.0\n',
+      )
+      expect(readdirSync(join(installDir, 'LICENSES'))).toEqual(['0.22.0.txt'])
+
+      expect(runInstall(host, args(buildReleaseZip(work, '0.22.1'))).status).toBe(0)
+      expect(readFileSync(join(installDir, 'LICENSE'), 'utf8')).toBe('MIT licence of 0.22.1\n')
+      expect(readdirSync(join(installDir, 'LICENSES'))).toEqual(['0.22.1.txt'])
       expect(leftoverArtifacts(installDir)).toEqual([])
     }, 240_000)
 

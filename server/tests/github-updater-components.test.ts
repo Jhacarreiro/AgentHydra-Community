@@ -32,6 +32,7 @@ import {
   installReleaseNotices,
   missingComponents,
   RELEASE_COMPONENTS,
+  RELEASE_NOTICES,
   RELEASE_VERSION_FILE,
   reconcileComponent,
   rollbackComponents,
@@ -577,6 +578,25 @@ test('install.ps1 and the self-updater agree on the release components', () => {
   )
   // app/ (the daemon bundle) is install.ps1's alone for now: the updater treats it as part of the exe.
   expect(new Set(names)).toEqual(new Set(['exe', 'app', ...RELEASE_COMPONENTS.map((c) => c.name)]))
+})
+
+// The licence files are no component: install.ps1 copies them in once every component has landed,
+// as installReleaseNotices does on an in-app update. Its list must be the updater's, and the copy
+// must run after the swap and before the staging folder that holds them is deleted.
+test('install.ps1 installs the same licence files as the self-updater, after the swap', () => {
+  const script = readFileSync(resolve(import.meta.dir, '../../install.ps1'), 'utf8')
+  const line = script.slice(script.indexOf('$ReleaseNotices = @('))
+  const names = [...line.slice(0, line.indexOf(')')).matchAll(/'([^']+)'/g)].map((m) => m[1])
+  expect(names).toEqual([...RELEASE_NOTICES])
+  const landed = script.indexOf('# Every component landed')
+  const copy = script.indexOf('foreach ($n in $ReleaseNotices)')
+  const cleanup = script.indexOf(
+    'Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue',
+  )
+  expect(landed).toBeGreaterThan(0)
+  expect(copy).toBeGreaterThan(landed)
+  expect(cleanup).toBeGreaterThan(copy)
+  expect(script.slice(copy, cleanup)).toContain('Join-Path $staging $n')
 })
 
 // ── desk2/ as a release component (2.0.0) ────────────────────────────────────────────────────────

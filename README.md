@@ -273,8 +273,8 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
   licence and licence text of every third-party package whose code is in the bundle: its npm packages and, in the
   Windows bundle, the Rust crates of its programs and Rust's own licences. A release is not built if any of them has
   no licence, no licence text, or a licence outside a permissive allowlist (MIT, MIT-0, ISC, BSD, Apache-2.0, 0BSD,
-  BlueOak, CC0, OFL, Unlicense, Zlib, Unicode, BSL-1.0 and MPL-2.0). An in-app update brings the new release's
-  licence files.
+  BlueOak, CC0, OFL, Unlicense, Zlib, Unicode, BSL-1.0 and MPL-2.0). The Windows installer puts them beside
+  `AgentHydra.exe`, and an in-app update brings the new release's copies.
 - **The Claude Agent SDK** is not in any bundle: its licence reserves all rights. The first time a chat needs it,
   AgentHydra downloads the exact version the release pins, checks its sha512 against the pin, and unpacks it into
   `desk2/node_modules`, where it stays across in-app updates. Meanwhile the chat shows "Getting the Claude Agent SDK"
