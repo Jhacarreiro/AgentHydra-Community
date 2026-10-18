@@ -5,7 +5,7 @@
       "rule": "net.private-ipv4",
       "path": "codex-hub-tray/main_test.go",
       "fp": "0546412d61ba57f1",
-      "reason": "Test fixture: a LAN hub address the tray's tests use for a hub on another machine. It is no real host."
+      "reason": "Test fixture: a LAN hub address the tray's tests use, or used in earlier commits, for a hub on another machine. It is no real host."
     },
     {
       "rule": "net.private-ipv4",
@@ -107,7 +107,7 @@
       "rule": "net.private-ipv4",
       "path": "server/tests/codex-hub-hardening.test.ts",
       "fp": "6c49454dcdd640a9",
-      "reason": "Test fixture: a LAN Host header the Codex hub must refuse."
+      "reason": "Test fixture: a LAN Host header the Codex hub must refuse, in the test or in its earlier commits. It is no real host."
     },
     {
       "rule": "infra.internal-host",
