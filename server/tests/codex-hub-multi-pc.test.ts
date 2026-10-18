@@ -45,22 +45,49 @@ function freePort(): number {
   return port
 }
 
-/** The daemon, as `bun server/src/index.ts` with the hub token set, in the scratch HOME; answers once it is up. */
-async function startHub(hubToken: string, port: number): Promise<void> {
+/**
+ * The daemon's environment: the suite's own, isolation and all, with every state root it can write to moved into the
+ * scratch HOME. The daemon is a child without the test preload, so nothing guards its writes but this. Each root is
+ * named outright rather than left to HOME: config.ts moves a checkout's server/data into the data dir when none is
+ * named (a developer's legacy state, deleted with the scratch), and an inherited CLAUDE_CONFIG_DIR would have the
+ * daemon register its MCP entries in that account's real config, pointing its next sessions at a port that is gone.
+ * Only what this hub must differ in is dropped: the port and bind host, and any Codex hub setting of the developer's.
+ */
+function hubEnv(hubToken: string, port: number): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env))
     if (
       v !== undefined &&
-      !/^(AGENTHYDRA_|CCMANAGERUI_|HYDRA_)/.test(k) &&
-      !['NODE_ENV', 'PORT', 'HOST'].includes(k)
+      !/^(AGENTHYDRA_|CCMANAGERUI_)(CODEX_HUB_|PORT_FIXED$|MOCK_)/.test(k) &&
+      !['PORT', 'HOST', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'].includes(k)
     )
       env[k] = v
-  Object.assign(env, {
+  const config = join(HUB_HOME, '.agenthydra')
+  return Object.assign(env, {
     HOME: HUB_HOME,
     PORT: String(port),
     AGENTHYDRA_PORT_FIXED: '1',
     AGENTHYDRA_CODEX_HUB_TOKEN: hubToken,
+    AGENTHYDRA_HOME: config,
+    AGENTHYDRA_DATA_DIR: join(config, 'data'),
+    AGENTHYDRA_DB: join(config, 'data', 'agenthydra.db'),
+    AGENTHYDRA_RUN_LOG_DIR: join(config, 'data', 'run-logs'),
+    AGENTHYDRA_CORE_DIR: join(config, 'core'),
+    AGENTHYDRA_INSTANCES_ROOT: join(HUB_HOME, '.claude-instances'),
+    AGENTHYDRA_CLAUDE_PROJECTS_ROOT: join(HUB_HOME, '.claude', 'projects'),
+    AGENTHYDRA_CODEX_HOME: join(HUB_HOME, '.codex'),
+    AGENTHYDRA_MCP_CONFIG: join(HUB_HOME, '.claude.json'),
+    AGENTHYDRA_HOOKS_CONFIG: join(HUB_HOME, '.claude', 'settings.json'),
+    AGENTHYDRA_CLAUDE_GUARD: '0',
+    AGENTHYDRA_HSWARM_ENABLED: '0',
+    HSWARM_HOME: join(HUB_HOME, '.hswarm'),
+    HYDRA_FAMILY_DIR: join(HUB_HOME, '.hydra-family'),
   })
+}
+
+/** The daemon, as `bun server/src/index.ts` with the hub token set, in the scratch HOME; answers once it is up. */
+async function startHub(hubToken: string, port: number): Promise<void> {
+  const env = hubEnv(hubToken, port)
   const proc = Bun.spawn([process.execPath, join(SERVER, 'src', 'index.ts')], {
     cwd: SERVER,
     env,
@@ -339,6 +366,31 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with two 
       else process.env[k] = v
     }
   }, SLOW_MS)
+
+  test(
+    'the hub keeps its state, its pointer and its MCP entry in its own HOME, as an install on a server does',
+    async () => {
+      const config = join(HUB_HOME, '.agenthydra')
+      const health = await getJson<{
+        dataDir: string
+        dbPath: string
+        dataDirNotice: string | null
+        sideRun: boolean
+        pointerFile: string
+      }>('/api/health')
+      expect(health).toMatchObject({
+        dataDir: join(config, 'data'),
+        dbPath: join(config, 'data', 'agenthydra.db'),
+        dataDirNotice: null,
+        sideRun: false,
+      })
+      expect(health.pointerFile.startsWith(`${config}/`)).toBe(true)
+      // Registered at boot, before it listened, and in the file the test named.
+      const mcp = JSON.parse(readFileSync(join(HUB_HOME, '.claude.json'), 'utf8'))
+      expect(mcp.mcpServers.agenthydra.url).toBe(`${hubUrl()}/api/mcp`)
+    },
+    SLOW_MS,
+  )
 
   test(
     'two PCs paired through the pairing page push a chat each, and the hub lists each under its PC',
