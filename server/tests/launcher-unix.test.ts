@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -452,8 +453,12 @@ describe.skipIf(!SH)('POSIX launcher', () => {
     expect(said).toContain('Updates are off in this build')
     // The archive's one top folder would nest inside the install, so the parts are copied out of it.
     expect(said).toContain(
-      `Unpack AgentHydra-${VERSION}-${TARGET}.tar.gz anywhere and copy them from its AgentHydra-${VERSION}-${TARGET} folder into ${w.install},`,
+      `Unpack AgentHydra-${VERSION}-${TARGET}.tar.gz anywhere and copy them from its AgentHydra-${VERSION}-${TARGET} folder into `,
     )
+    // Into the install, named as the shell names it: Git for Windows' sh says /c/Users/<long name>/... for
+    // a C:\Users\RUNNER~1\... TEMP, so the two are compared once both are resolved.
+    const into = said.match(/ folder into (.+?), or run /)?.[1] ?? ''
+    expect(realpathSync.native(native(into))).toBe(realpathSync.native(w.install))
     expect(said).toContain('source checkout')
     expect(said).toContain('AGENTHYDRA_RELEASE_BASE')
     expect(w.requests).toEqual([])
