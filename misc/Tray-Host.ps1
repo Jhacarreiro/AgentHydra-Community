@@ -213,6 +213,11 @@ function Start-TrayHost($Config) {
   # Stray-daemon policy when we win the mutex but a daemon is already alive.
   $onStray = Get-TrayConfigValue $Config 'OnStrayDaemon' 'attach'
 
+  # Background start (the native host's --background): an app's own window launcher starts the tray
+  # beside the window it is opening anyway, so the tray opens nothing at start, and a second start
+  # while a tray already runs exits quietly instead of opening the UI.
+  $background = [bool](Get-TrayConfigValue $Config 'Background' $false)
+
   # Append a tray-side line to the daemon log, so the watchdog's decisions land in the SAME file
   # the balloons tell the user to open. Without this a "stopped unexpectedly - restarting" balloon
   # pointed at a log containing no trace of the restart, which reads as "the log is empty, so
@@ -714,10 +719,11 @@ function Start-TrayHost($Config) {
     # the winning instance is still cold-starting (daemon not bound to its port yet) — tell the
     # user to wait rather than opening a browser tab against the bare, unvalidated preferred-port
     # guess URL, which would just show a connection-refused error since nothing is listening.
-    $u = Get-LiveUrl
+    # A background start opens nothing: the tray it wanted is already there.
+    $u = if ($background) { $null } else { Get-LiveUrl }
     if ($u) {
       Open-AppUi $u
-    } else {
+    } elseif (-not $background) {
       [System.Windows.Forms.MessageBox]::Show("$displayName is already starting in the tray. Wait a moment, then open it from the tray icon.", $displayName) | Out-Null
     }
     if ($script:trayMutex) { try { $script:trayMutex.Dispose() } catch {} }
@@ -1300,7 +1306,7 @@ function Start-TrayHost($Config) {
     $readyUrl = Wait-ForUrl $infoFile $port $serviceName $urlHost $startupWaitSec $null
     if ($readyUrl) { $script:url = $readyUrl }
   }
-  Open-AppUi $script:url
+  if (-not $background) { Open-AppUi $script:url }
 
   # Run the WinForms message loop (keeps the tray alive until Quit). The finally guarantees the
   # mutex is released even on a crashed exit of the loop.

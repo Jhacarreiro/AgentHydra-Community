@@ -158,3 +158,36 @@ describe('the workflows build what they use', () => {
     )
   })
 })
+
+// A source checkout has none of the three until it builds them, and an older checkout that updates past
+// the commit that took them out of git loses the copies it had. Each launcher keeps working without them.
+describe('a checkout without them', () => {
+  test("Desk 2's shortcuts take the window host's icon from misc/AgentHydra.ico when the host is not built", () => {
+    const ps = read('desk2/launcher/install-shortcuts.ps1')
+    expect(ps).not.toMatch(/foreach \(\$f in \$Vbs, \$Icon\)/)
+    expect(ps).toContain("'misc\\AgentHydra.ico'")
+    expect(ps).toContain('bun scripts/build-natives.ts window')
+    expect(existsSync(join(REPO_ROOT, 'misc', 'AgentHydra.ico'))).toBe(true)
+  })
+
+  test("Desk 2's launcher starts the PowerShell tray in the background when the native one is not built", () => {
+    const ps = read('desk2/launcher/start.ps1')
+    const startTray = ps.slice(ps.indexOf('function Start-Tray {'))
+    expect(startTray.indexOf('Start-PowerShellTray')).toBeLessThan(startTray.indexOf('$trayDir'))
+    expect(startTray).toMatch(/-not \$IsRelease -and \(Test-Path -LiteralPath \$TrayScript\)/)
+    expect(ps).toMatch(/-File `"\$TrayScript`" -Background/)
+    expect(ps).toContain("'misc\\AgentHydra-Tray.ps1'")
+  })
+
+  test("the PowerShell tray's -Background opens nothing, at start or when a tray already runs", () => {
+    expect(read('misc/AgentHydra-Tray.ps1')).toMatch(/\[switch\]\$Background\)/)
+    expect(read('misc/AgentHydra-Tray.ps1')).toMatch(/Background\s+= \[bool\]\$Background/)
+    const engine = read('misc/Tray-Host.ps1')
+    expect(engine).toContain("Get-TrayConfigValue $Config 'Background' $false")
+    expect(engine).toContain('if (-not $background) { Open-AppUi $script:url }')
+    const loser = engine.slice(engine.indexOf('if (-not $script:ownsTrayMutex)'))
+    expect(loser.slice(0, loser.indexOf('return'))).toContain(
+      '$u = if ($background) { $null } else { Get-LiveUrl }',
+    )
+  })
+})

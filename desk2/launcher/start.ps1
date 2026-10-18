@@ -13,8 +13,10 @@
 #      (scripts/build-natives.ts): a source checkout that has not built it opens the URL in the
 #      default browser and says how to build it; a release without it is broken and says so.
 #   5. Start AgentHydra's tray icon (misc/AgentHydra-Tray.exe AgentHydra-Tray.json --background) when it is
-#      not running: the icon goes with this window, and its Open runs this launcher (openCommand). Then
-#      add the server's bun pid to the pid file, when this run started the server.
+#      not running: the icon goes with this window, and its Open runs this launcher (openCommand). A source
+#      checkout that has not built the tray host starts the PowerShell tray instead (misc/AgentHydra-Tray.ps1
+#      -Background), whose Open opens the daemon's address in the browser, which sends it on to this server.
+#      Then add the server's bun pid to the pid file, when this run started the server.
 #
 # Safe to run twice: a named mutex serialises launches, and a second run only focuses the window.
 # The shortcut runs this through launcher/start.vbs so no console window ever flashes. When the server
@@ -47,6 +49,7 @@ $WebViewData = Join-Path $env:LOCALAPPDATA 'HydraDesk2\webview'
 $HealthTimeoutSec = 20
 $TrayExe = Join-Path (Split-Path -Parent $DeskRoot) 'misc\AgentHydra-Tray.exe'
 $TrayConfig = 'AgentHydra-Tray.json'
+$TrayScript = Join-Path (Split-Path -Parent $DeskRoot) 'misc\AgentHydra-Tray.ps1'  # the PowerShell tray
 
 function Say([string]$msg) {
   if ($DryRun) { Write-Output "[dry-run] $msg"; return }
@@ -240,13 +243,45 @@ function Get-TrayHost {
     Where-Object { ([string]$_.CommandLine).ToLowerInvariant().Contains($TrayConfig.ToLowerInvariant()) } | Select-Object -First 1
 }
 
+# AgentHydra's PowerShell tray, found by the script on its command line (as misc/Restart-Daemon.ps1 finds it).
+function Get-PowerShellTray {
+  Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { ([string]$_.CommandLine).ToLowerInvariant().Contains('agenthydra-tray.ps1') } | Select-Object -First 1
+}
+
+# A source checkout without the native tray host (it is built, not committed: scripts/build-natives.ts) runs
+# the PowerShell tray, hidden and through WMI like the native one. -Background: it opens nothing of its own,
+# and one that finds a tray already running exits quietly. Same mutex as the native host, so never two icons.
+function Start-PowerShellTray {
+  $running = Get-PowerShellTray
+  if ($running) { Say "AgentHydra's PowerShell tray already running (pid $($running.ProcessId))"; return }
+  $root = Split-Path -Parent $DeskRoot
+  $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$TrayScript`" -Background"
+  try {
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [UInt16]0 }
+    $made = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+      CommandLine = $cmd; CurrentDirectory = $root; ProcessStartupInformation = $startup
+    }
+    if ($made.ReturnValue -eq 0) {
+      Say "no native tray at ${TrayExe} (build it: bun scripts/build-natives.ts tray): started the PowerShell tray (pid $($made.ProcessId))"
+      return
+    }
+  } catch { }
+  Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$TrayScript`"", '-Background' -WorkingDirectory $root -WindowStyle Hidden | Out-Null
+  Say "no native tray at ${TrayExe}: started the PowerShell tray with Start-Process (WMI did not start it)"
+}
+
 # AgentHydra's tray icon, started beside this window when it is not running (it starts or adopts the
 # AgentHydra daemon itself). --background: no window of its own, since this launcher opens Desk 2 anyway.
 # Through WMI, as the server is, so a tray started from a worker's shell does not die with that worker's job.
 function Start-Tray {
   $running = Get-TrayHost
   if ($running) { Say "AgentHydra tray already running (pid $($running.ProcessId))"; return }
-  if (-not (Test-Path -LiteralPath $TrayExe)) { Say "no AgentHydra tray at ${TrayExe} (a checkout builds it: bun scripts/build-natives.ts tray): not starting one"; return }
+  if (-not (Test-Path -LiteralPath $TrayExe)) {
+    if (-not $IsRelease -and (Test-Path -LiteralPath $TrayScript)) { Start-PowerShellTray; return }
+    Say "no AgentHydra tray at ${TrayExe}: not starting one$(if ($IsRelease) { ' (this install is incomplete: install this version again)' })"
+    return
+  }
   $trayDir = Split-Path -Parent $TrayExe
   try {
     $made = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
@@ -290,6 +325,11 @@ if ($DryRun) {
   $tray = Get-TrayHost
   if ($tray) { Say "AgentHydra tray already running (pid $($tray.ProcessId))" }
   elseif (Test-Path -LiteralPath $TrayExe) { Say "would start the AgentHydra tray hidden: $TrayExe $TrayConfig --background" }
+  elseif (-not $IsRelease -and (Test-Path -LiteralPath $TrayScript)) {
+    $psTray = Get-PowerShellTray
+    if ($psTray) { Say "no native tray at ${TrayExe}; AgentHydra's PowerShell tray already running (pid $($psTray.ProcessId))" }
+    else { Say "no native tray at ${TrayExe} (build it: bun scripts/build-natives.ts tray): would start the PowerShell tray hidden: $TrayScript -Background" }
+  }
   else { Say "no AgentHydra tray at ${TrayExe}: would not start one" }
   if ($NoWindow) { Say 'would not open or focus a window (-NoWindow)' }
   elseif (-not (Test-Path -LiteralPath $HostExe) -and $IsRelease) { Say "$HostExe is missing: would fail with an error box" }

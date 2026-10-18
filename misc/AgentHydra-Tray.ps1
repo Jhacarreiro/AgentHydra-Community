@@ -16,7 +16,11 @@
 # Port handling: -Port is the PREFERRED port. If it's busy, the daemon picks the next free
 # port itself and records where it landed in ~/.agenthydra/runtime.json — the engine never
 # assumes the port; it reads the real URL from there (validated by /api/health).
-param([int]$Port = 7787, [switch]$SelfTest)
+#
+# -Background starts the tray without opening anything, and exits quietly when a tray already runs,
+# as the native host's --background does. Desk 2's launcher uses it in a source checkout that has
+# not built misc\AgentHydra-Tray.exe (desk2\launcher\start.ps1).
+param([int]$Port = 7787, [switch]$SelfTest, [switch]$Background)
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $appRoot = Split-Path -Parent $scriptDir
@@ -112,6 +116,7 @@ $TrayConfig = @{
   # rebind (was hardcoded Wait-ForUrl ... 15000 on both paths) — pin it explicitly rather than
   # inherit the engine's 12s family default, which would time out 3s earlier than before.
   WorkerWaitSec        = 15
+  Background           = [bool]$Background
 }
 
 # Dot-source the shared engine (app-agnostic: AgentHydra's specifics stay above) and hand off.

@@ -764,7 +764,11 @@ AgentHydra window and Hydra Desk 1 are retired). The launcher starts the tray (`
 AgentHydra-Tray.json --background`, hidden, through WMI like the server) whenever it is not running, and
 the tray keeps the AgentHydra daemon alive as before. The tray's Open (its menu, a double-click, the
 AgentHydra shortcut, the tray's own start) runs this launcher (`openCommand` in `..\misc\AgentHydra-Tray.json`),
-so the icon opens or focuses this window, never the old one. Either one brings up the other.
+so the icon opens or focuses this window, never the old one. Either one brings up the other. The tray host is
+built, never committed (`bun scripts/build-natives.ts tray`); a source checkout that has not built it gets the
+PowerShell tray from the launcher instead (`..\misc\AgentHydra-Tray.ps1 -Background`, which opens nothing at
+start, as `--background` does). It keeps the daemon alive the same way, but its Open shows AgentHydra in the
+browser (the daemon's address sends it on here), not in this window.
 
 ```powershell
 powershell -NoProfile -File launcher\install-shortcuts.ps1   # make the shortcuts (-DryRun to preview)
