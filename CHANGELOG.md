@@ -76,8 +76,9 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **The effort picker is back beside the model.** The message box has an effort menu next to the model again:
   Low, Medium, High, Extra or Max (keys 1 to 5), or Default to leave it to the account. It changes the open chat,
   or a new chat before its first message, and is hidden for chats pinned to Codex or ChatGPT.
-- **The tray menu says which version is running.** Right-click the tray icon and pick About AgentHydra to see the
-  version that is running, with an offer to open the changelog.
+- **About AgentHydra in the tray menu shows the running version and offers the changelog.** The item is on the
+  tray icon's right-click menu. It reads the version from the running daemon, so when AgentHydra is not running it
+  says that instead.
 - **A daemon restart waits for a chat move started from `chats`.** While `chats --move-to <account> --yes` is
   moving chats, a restart is refused the same way it already was for `migrate_chat` and `migrate_batch`, so it no
   longer leaves a chat on its new account and still unarchived on the old one. Planning a move without `--yes`
