@@ -848,9 +848,14 @@ anyone can reach without the proxy's sign-in.
 Chats run through `@anthropic-ai/claude-agent-sdk` 0.3.288. Each chat is a long-lived SDK session with
 your Claude Code settings, CLAUDE.md files, hooks and MCP servers loaded as Claude Code would load them.
 
-A release does not ship Claude Code's binary. AgentHydra fetches it once, on a chat's first start, from
-npm (checked against the registry's sha512 and kept in `~/.hydra-desk-2/claude-code/`), and that chat waits
-for it, showing the download's progress and a Retry if it fails. A checkout uses the installed SDK package.
+A release does not ship Claude Code's binary, nor the SDK itself, whose licence reserves all rights. Both come
+from npm (or the mirror `npm_config_registry` names) on a chat's first start. Claude Code is fetched once, checked
+against the registry's sha512 and kept in `~/.hydra-desk-2/claude-code/`. The SDK is the exact version and sha512
+the release's `sdk-pin.json` names, unpacked into `node_modules/@anthropic-ai/claude-agent-sdk`, where an in-app
+update leaves it (`server/src/host/sdk-package.ts`). That chat waits for them, showing the download's progress
+("Getting the Claude Agent SDK 0.3.288" when only the SDK is still out), and a failed download says whether the
+network, the download or the disk was the problem, with a Retry. A checkout has no pin and uses the SDK package
+`bun install` put in `node_modules`, Claude Code's binary included.
 
 ## How it plugs into AgentHydra
 
