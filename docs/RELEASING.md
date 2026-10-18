@@ -146,6 +146,10 @@ rustc would write into the program is remapped and the build refuses an exe that
 the MSVC linker gets `/Brepro`, so the PE timestamp is a hash of the content. It needs Rust
 (https://rustup.rs) and Visual Studio's C++ build tools, which rustup offers on Windows. With `--out`,
 the exes go under that folder with a `natives.sha256` beside them instead of into the checkout.
+The bytes depend on the commit, the Rust release and the MSVC build tools (the linker writes its version
+into the program, along with start-up code from Microsoft's C runtime libraries), not on the folder or
+the PC: a PC build matches CI's hash when its Visual Studio build tools are the version on the
+`windows-latest` image that run used.
 
 - `.github/workflows/natives.yml` runs on every change to their source (and to `misc/AgentHydra.ico`,
   which the window host embeds, and the script): it builds all three twice, from two checkouts in

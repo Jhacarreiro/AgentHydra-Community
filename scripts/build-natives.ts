@@ -15,14 +15,16 @@
  * what that source says. They were committed exes until 2026-10, and nothing recorded how they had been
  * built; the tray's was older than its own source.
  *
- * What makes two builds of the same source the same bytes, on any PC or runner:
+ * What makes two builds of the same source with the same tools the same bytes, whatever folder or PC:
  * - each crate's rust-toolchain.toml pins the Rust release (rustup installs it here when it is missing);
  * - --locked: the crates in each Cargo.lock and nothing newer;
  * - every machine path rustc would write into a panic message is remapped (the crate's folder to its path
  *   in this repository, CARGO_HOME to `cargo`, RUSTUP_HOME to `rustup`), and the build refuses an exe that
- *   still names one, as misc/climayte-runner-native/build.ps1 did;
+ *   still names one, as the runner's own build script did before this one;
  * - the MSVC linker gets /Brepro, so the PE timestamp and debug ids are a hash of the content instead of
  *   the time of the build (GNU ld, for a check build, gets --no-insert-timestamp).
+ * The MSVC build tools are the one input not pinned here: the linker writes its version into the program,
+ * so a PC build matches CI's hash only with the Visual Studio build tools of CI's runner image.
  *
  * --test runs each crate's own tests first (on Windows only: they are Windows programs).
  * --out <dir> writes each exe under <dir> at its path in the checkout, plus <dir>/natives.sha256 in

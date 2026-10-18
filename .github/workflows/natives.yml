@@ -7,8 +7,10 @@
 # of the time. They are not committed: a release builds its own (release.yml), the Windows CI leg builds
 # the two its tests start (ci.yml), and a PC builds them with the same script. This workflow builds all
 # three twice, from two checkouts in different folders, and fails when the two builds differ, so the
-# sha256 it prints (in the run's summary and in the natives-windows-x64 artifact) is what anyone gets
-# from the same commit.
+# sha256 it prints (in the run's summary and in the natives-windows-x64 artifact) depends on the commit
+# and the tools, not on where it was built: another PC gets the same bytes from the same commit with the
+# same Rust release and the same MSVC build tools (the runner image's; the linker writes its version
+# into the program).
 #
 # The Codex hub tray (codex-hub-tray/, Go) is built for Windows, Linux and macOS with -trimpath,
 # -buildvcs=false and an empty build id. These builds carry no hub address or update key (main.go's -X
