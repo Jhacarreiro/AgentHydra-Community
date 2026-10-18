@@ -402,8 +402,9 @@ refuses what it objects to; CI runs it again on every push and pull request, aft
   licence or copyright comment has no entry in `THIRD-PARTY-NOTICES.md`, binaries with no recorded provenance,
   commit emails that are not noreply, commit messages with the line `git cherry-pick -x` adds or with a trailer
   that is neither a credit (`Co-authored-by:`, `Signed-off-by:` or `Reviewed-by:` with a GitHub noreply address)
-  nor one of the `Mine:` and `Swept:` lists a `save:bundle` commit ends with, and any commit that has upstream's
-  relicensing commit `aee9dfc4`, or any commit of upstream's up to `3a65ba8e`, in its history.
+  nor one of the `Mine:` and `Swept:` lists a `save:bundle` commit ends with (a tool's trailer is found wherever
+  it sits in the message, and a `Note:` line with a sentence after it is prose), and any commit that has
+  upstream's relicensing commit `aee9dfc4`, or any commit of upstream's up to `3a65ba8e`, in its history.
 - Modes: `--tree REV`, `--history A..B` and `--push REMOTE`, plus `--json` and `--suggest-allow`. It exits 0 when
   clean, 1 on a finding and 2 when it could not run. A finding is printed as its rule, `file:line` and a short
   fingerprint of the value, never the value itself.

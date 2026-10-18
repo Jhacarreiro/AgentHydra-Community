@@ -297,9 +297,9 @@ Each path is where the feature is defined.
   every commit after it for secrets, personal data, private addresses, upstream hosts, release links and private
   repository names, build outputs and generated files, SVG and stylesheet files whose licence has no notice,
   unrecorded binaries, non-noreply commit emails, commit messages with a cherry-pick line or with a trailer other
-  than a credit by GitHub noreply address or a bundle commit's file lists, and any commit with the relicensing
-  commit or upstream's own history in its history; the pre-push hook runs it before a push leaves a PC, and CI
-  again once it has landed. -
+  than a credit by GitHub noreply address or a bundle commit's file lists (a tool's trailer wherever it sits in
+  the message), and any commit with the relicensing commit or upstream's own history in its history; the
+  pre-push hook runs it before a push leaves a PC, and CI again once it has landed. -
   `scripts/audit-public.mjs`, `.githooks/check-public-push.mjs`, `.github/workflows/audit-public.yml`
 
 **Partial - exists but incomplete, gated off, or known broken**

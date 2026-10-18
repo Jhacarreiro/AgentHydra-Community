@@ -46,13 +46,21 @@
 // Reviewed-by (in any case) whose address is a GitHub noreply one (users.noreply.github.com)
 // passes: it is how a contribution a maintainer adapts or rewrites still credits its author
 // (CONTRIBUTING.md). So do the Mine: and Swept: lists that end a `wip: bundle` message
-// (scripts/save-bundle.ts writes them, and the commit-msg hook checks them against the commit).
-// Any other trailer is a finding, a tool's own (a session link, a Generated-by) included, and so is
-// a credit with any other address or with none: once, as commit.email, when that rule already
-// files its address. The "(cherry picked from commit <id>)" line git cherry-pick -x writes is a
-// finding wherever it sits in the message: it names the commit a change was picked from, which can
-// be one of a history this repository does not publish. A published commit says where its change
-// came from in its own words, or not at all.
+// (scripts/save-bundle.ts writes them, and the commit-msg hook checks them against the commit), and
+// a line whose key is one word with no hyphen and whose value is a sentence (three words or more,
+// none a URL, an address or an id), as a Note: line is: git reads a last paragraph of such lines as
+// trailers, and they are prose. Any other trailer is a finding, a tool's own (a session link, a
+// Generated-by) included, and so is a credit with any other address or with none: once, as
+// commit.email, when that rule already files its address. git reads a paragraph that holds prose
+// as trailers only when a quarter of it is and one is of a kind git writes itself (a Signed-off-by),
+// so a tool's trailers under a prose line, above one or in a paragraph before the last are found by
+// their shape as well: a Key: Name <address> line anywhere in the message, a Key: value line
+// anywhere whose value is a URL, an address or an id alone, and a line of the last paragraph (when
+// it is not the subject) whose key is capitalised words joined by hyphens, as Generated-by,
+// Change-Id and a *-Session are. The "(cherry picked from commit <id>)" line git cherry-pick -x
+// writes is a finding wherever it sits in the message: it names the commit a change was picked
+// from, which can be one of a history this repository does not publish. A published commit says
+// where its change came from in its own words, or not at all.
 // Rule upstream.history: no commit read may share a commit with upstream's own history (the config's
 // upstreamBase, 3a65ba8e, built in like the relicensing commit). It needs 3a65ba8e in the clone, and a
 // clone of this repository does not have it; a clone can still hold upstream's older history without
@@ -154,7 +162,7 @@ export const RULES = {
     'an SVG or stylesheet whose comment states a licence or copyright, with no entry in THIRD-PARTY-NOTICES.md or binary-provenance.json',
   'commit.email': 'a commit author, committer or trailer email that is not a noreply address',
   'commit.trailer':
-    "a trailer in a commit message, as git reads one, that is not a credit (Co-authored-by, Signed-off-by or Reviewed-by) with a GitHub noreply address or a bundle's Mine:/Swept: list, or the line git cherry-pick -x adds, which names the commit it was picked from",
+    "a trailer in a commit message that is not a credit (Co-authored-by, Signed-off-by or Reviewed-by) with a GitHub noreply address or a bundle's Mine:/Swept: list: a line of the trailer block git reads, unless its key is one word and a sentence follows it (Note: ...), or a line shaped like a tool's trailer anywhere in the message; or the line git cherry-pick -x adds, which names the commit it was picked from. Take the line out or say it in a sentence (git commit --amend)",
   'license.boundary': 'history that contains the commit that took upstream off MIT',
   'upstream.history':
     "history that shares a commit with upstream's own (its last MIT commit or one before it), which this repository does not carry",
@@ -1228,16 +1236,70 @@ const GITHUB_NOREPLY = /^[^@\s<>]+@users\.noreply\.github\.com$/i
 // scripts/save-bundle.ts ends a bundle's message with them, and git reads them as trailers.
 const BUNDLE_SUBJECT = /^wip: bundle\b/i
 const BUNDLE_LIST = /^(Mine|Swept):\s*$/
+// The key of a tool's trailer: capitalised words joined by hyphens (Generated-by, Change-Id, a
+// *-Session). It is looked for in the last paragraph only, and a prose line there that a wrap starts
+// with a lower-case hyphenated word and a colon ("mingw-w64:") is not one.
+const TOOL_KEY = /^[A-Z][A-Za-z]*(?:-[A-Za-z]+)+$/
+// The words a tool's trailer gives as its value: a URL, an address, or a commit, change or session id
+// (a hex commit id with a digit in it, a Gerrit Change-Id, a UUID, or a prefix_ and 16 characters).
+const URL_WORD = /^[a-z][a-z0-9+.-]*:\/\/\S+$/i
+const ADDRESS_WORD = /^[^\s<>@]+@[^\s<>@]+\.[A-Za-z]{2,}$/
+const ID_WORD =
+  /^(?:I?(?=[0-9a-f]*[0-9])[0-9a-f]{7,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[a-z]+_[A-Za-z0-9]{16,})$/
+
+function isNamingWord(word) {
+  return URL_WORD.test(word) || ADDRESS_WORD.test(word) || ID_WORD.test(word)
+}
+
+/** Three words or more, none of them a URL, an address or an id: what a Note: line says. */
+function isSentence(value) {
+  const words = value.split(/\s+/).filter(Boolean)
+  return (
+    words.length >= 3 &&
+    !words.some((w) => isNamingWord(w.replace(/^[(<"'[]+|[)>"'\].,;:!?]+$/g, '')))
+  )
+}
+
+/** A value that is one URL, address or id and nothing else, as a tool's trailer gives one. */
+function namesOnly(value) {
+  const word = value.trim().replace(/^<(.*)>$/, '$1').replace(/[.,;]$/, '')
+  return word !== '' && !/\s/.test(word) && isNamingWord(word)
+}
+
+/**
+ * The line ranges, 0-based and inclusive, of the message's first paragraph (its subject) and its last,
+ * or null for a message with no text.
+ */
+function paragraphsOf(lines) {
+  const blank = (i) => !lines[i].trim()
+  let first = 0
+  while (first < lines.length && blank(first)) first++
+  if (first === lines.length) return null
+  let firstEnd = first
+  while (firstEnd + 1 < lines.length && !blank(firstEnd + 1)) firstEnd++
+  let lastEnd = lines.length - 1
+  while (blank(lastEnd)) lastEnd--
+  let last = lastEnd
+  while (last > 0 && !blank(last - 1)) last--
+  return { first: [first, firstEnd], last: [last, lastEnd] }
+}
 
 /**
  * Rule commit.trailer. Every line of the message that holds the line git cherry-pick -x writes is a
  * finding. In the trailer block git reads (%(trailers): its lines as they are in the message, a
  * folded trailer's further lines indented), each trailer is a finding unless it credits a person
- * with a GitHub noreply address (Co-authored-by, Signed-off-by or Reviewed-by, in any case) or is
- * one of a bundle's Mine: and Swept: lists; so is a line of the block that is no trailer at all. A
- * credit with any other address is one finding only: commit.email's, when that rule files the line
- * (its address is not a noreply one), and this rule's otherwise. Filed under the message, at the
- * line each starts on.
+ * with a GitHub noreply address (Co-authored-by, Signed-off-by or Reviewed-by, in any case), is one
+ * of a bundle's Mine: and Swept: lists, or has a key of one word with no hyphen and a sentence for
+ * its value (three words or more, none a URL, an address or an id), as a Note: line has: git reads
+ * a last paragraph of such lines as trailers, and they are prose. A line of the block that is no
+ * trailer at all is a finding too. Elsewhere in the message git reads no trailer, so a tool's
+ * trailers under a prose line, above one or in a paragraph before the last are found by their
+ * shape: a Key: Name <address> line anywhere, as commit.email reads one; a Key: value line anywhere
+ * whose value is a URL, an address or an id alone; and, in a last paragraph that is not the
+ * subject, a line whose key is a tool's (capitalised words joined by hyphens). Each is held to what
+ * a trailer of the block is. A credit with any other address is one finding only: commit.email's,
+ * when that rule files the line (its address is not a noreply one), and this rule's otherwise.
+ * Filed under the message, at the line each starts on.
  */
 function commitTrailerFindings(c, globs) {
   const lines = String(c.body || '').split('\n')
@@ -1249,6 +1311,17 @@ function commitTrailerFindings(c, globs) {
   lines.forEach((line, index) => {
     if (CHERRY_PICK.test(line)) add(index + 1, [line], 'cherry-pick')
   })
+  // A trailer that is not a credit with a GitHub noreply address is a finding, in the block or out.
+  const judge = (line, texts, key, value) => {
+    if (CREDIT_KEYS.has(key.toLowerCase())) {
+      const credit = /^[^<>]*\S[^<>]*<([^<>\s]+)>$/.exec(value)
+      if (credit && GITHUB_NOREPLY.test(credit[1])) return
+      if (commitEmailOf(line > 0 ? lines[line - 1] : texts[0], globs)) return // commit.email's
+      add(line, texts, `trailer ${key} with no GitHub noreply address`)
+      return
+    }
+    add(line, texts, `trailer ${key}`)
+  }
 
   const block = String(c.trailers || '').split('\n')
   while (block.length && !block[block.length - 1].trim()) block.pop()
@@ -1271,27 +1344,42 @@ function commitTrailerFindings(c, globs) {
   const bundle = BUNDLE_SUBJECT.test((lines.find((l) => l.trim()) || '').trim())
   for (const { line, texts } of entries) {
     if (texts.some((t) => CHERRY_PICK.test(t))) continue // filed above, at its own line
-    const head = line > 0 ? lines[line - 1] : texts[0]
     const key = TRAILER_KEY.exec(texts[0])
     if (!key) {
       add(line, texts, 'trailer block')
       continue
     }
     if (bundle && BUNDLE_LIST.test(texts[0].trim())) continue
-    if (CREDIT_KEYS.has(key[1].toLowerCase())) {
-      const value = texts
-        .map((t) => t.trim())
-        .join(' ')
-        .slice(key[0].length)
-        .trim()
-      const credit = /^[^<>]*\S[^<>]*<([^<>\s]+)>$/.exec(value)
-      if (credit && GITHUB_NOREPLY.test(credit[1])) continue
-      if (commitEmailOf(head, globs)) continue // commit.email's finding already
-      add(line, texts, `trailer ${key[1]} with no GitHub noreply address`)
-      continue
-    }
-    add(line, texts, `trailer ${key[1]}`)
+    const value = texts
+      .map((t) => t.trim())
+      .join(' ')
+      .slice(key[0].length)
+      .trim()
+    // git reads any Word: text line of a last paragraph made of them as a trailer. One with a
+    // one-word key and a sentence after it, as a Note: line has, is prose.
+    if (!key[1].includes('-') && isSentence(value)) continue
+    judge(line, texts, key[1], value)
   }
+
+  // The rest of the message: the lines a tool's trailers take where git reads them as none.
+  const read = new Set(numbers.filter((n) => n > 0).map((n) => n - 1))
+  const paragraphs = paragraphsOf(lines)
+  const inLast = (i) =>
+    paragraphs !== null &&
+    paragraphs.last[0] > paragraphs.first[1] &&
+    i >= paragraphs.last[0] &&
+    i <= paragraphs.last[1]
+  lines.forEach((text, index) => {
+    if (read.has(index) || CHERRY_PICK.test(text)) return
+    const addressed = EMAIL_TRAILER.exec(text)
+    const key = TRAILER_KEY.exec(text)
+    if (!addressed && !key) return
+    const name = key ? key[1] : addressed[1]
+    const value = key ? text.slice(key[0].length).trim() : ''
+    const shaped =
+      addressed !== null || namesOnly(value) || (inLast(index) && TOOL_KEY.test(name))
+    if (shaped) judge(index + 1, [text], name, value)
+  })
   return out.sort((a, b) => a.line - b.line)
 }
 

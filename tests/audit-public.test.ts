@@ -935,6 +935,143 @@ describe('--history', () => {
   )
 
   test(
+    "a tool's trailers are findings wherever they sit, where git reads no trailer block too",
+    () => {
+      const dir = repo('tool-trailers')
+      const base = commit(dir, {}, 'base')
+      const tool = 'Co-Authored-By: Some Tool (a model) <noreply@example.invalid>'
+      const session = 'Some-Session: https://example.invalid/code/session_0123456789abcdef'
+      // Under a prose line, with no blank line between them.
+      const glued = commit(dir, {}, `Glued\n\nThe last paragraph is prose.\n${session}`)
+      const gluedTwo = commit(
+        dir,
+        {},
+        `Glued two\n\nThe body, one paragraph,\nends here.\n${tool}\n${session}`,
+      )
+      // In a paragraph of their own that one prose line ends.
+      const thenProse = commit(
+        dir,
+        {},
+        `Then prose\n\nA body.\n\n${tool}\n${session}\nGenerated with a tool.`,
+      )
+      // In a paragraph before the last.
+      const middle = commit(dir, {}, `Middle\n\nA body.\n\n${tool}\n${session}\n\nThe end.`)
+      // A change id and a key with a hyphen, under prose: Gerrit's and a tool's.
+      const changeId = `Change-Id: I${'0123456789abcdef'.repeat(2)}01234567`
+      const gerrit = commit(
+        dir,
+        {},
+        `Gerrit\n\nA body that ends here.\n${changeId}\nGenerated-by: Some Tool`,
+      )
+      // A credit with a personal address, under prose, is commit.email's finding only.
+      const personal = commit(
+        dir,
+        {},
+        'Personal\n\nA body.\nCo-authored-by: Someone <someone@example.invalid>',
+      )
+      // Prose that looks like it passes: a hyphenated word and a colon in the subject or a paragraph
+      // before the last, a wrapped line that starts with a lowercase one, an id or a URL inside a
+      // sentence, and a credit with a GitHub noreply address, under prose or in the middle.
+      const prose = commit(
+        dir,
+        {},
+        [
+          'Pre-push: a subject with a hyphenated word before its colon',
+          '',
+          'Windows-only: a sentence that starts a paragraph before the last.',
+          `Co-authored-by: Example Owner <${NOREPLY}>`,
+          '',
+          'The last paragraph is prose, wrapped where a line starts with a',
+          'mingw-w64: word, and it names 0123abcd and https://example.invalid/x in a sentence.',
+          `Co-authored-by: Example Owner <${NOREPLY}>`,
+        ].join('\n'),
+      )
+      // git reads none of these as a trailer block.
+      for (const sha of [glued, gluedTwo, thenProse, middle, gerrit, personal, prose]) {
+        expect(git(dir, NOREPLY, 'log', '-1', '--format=%(trailers)', sha)).toBe('')
+      }
+
+      const { findings } = auditHistory(dir, [`${base}..HEAD`], ctxWith())
+      const trailers = findings.filter((f) => f.rule === 'commit.trailer')
+      const credit = 'trailer Co-Authored-By with no GitHub noreply address'
+      expect(trailers.map((f) => [f.commit, f.path, f.line, f.note])).toEqual([
+        [gerrit, MESSAGE_PATH, 4, 'trailer Change-Id'],
+        [gerrit, MESSAGE_PATH, 5, 'trailer Generated-by'],
+        [middle, MESSAGE_PATH, 5, credit],
+        [middle, MESSAGE_PATH, 6, 'trailer Some-Session'],
+        [thenProse, MESSAGE_PATH, 5, credit],
+        [thenProse, MESSAGE_PATH, 6, 'trailer Some-Session'],
+        [gluedTwo, MESSAGE_PATH, 5, credit],
+        [gluedTwo, MESSAGE_PATH, 6, 'trailer Some-Session'],
+        [glued, MESSAGE_PATH, 4, 'trailer Some-Session'],
+      ])
+      expect(trailers.map((f) => f.fp)).toEqual([
+        fingerprint(changeId),
+        fingerprint('Generated-by: Some Tool'),
+        ...[1, 2, 3].flatMap(() => [fingerprint(tool), fingerprint(session)]),
+        fingerprint(session),
+      ])
+      expect(findings.filter((f) => f.commit === prose)).toEqual([])
+      expect(findings.filter((f) => f.commit === personal)).toMatchObject([
+        {
+          rule: 'commit.email',
+          note: 'trailer Co-authored-by',
+          fp: fingerprint('someone@example.invalid'),
+        },
+      ])
+      // commit.email lets the tool's address through: it is a noreply one.
+      expect(findings.filter((f) => f.rule === 'commit.email' && f.commit !== personal)).toEqual([])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    'a last paragraph of Note: sentences is prose, though git reads it as trailers; a Fixes: #12 is not',
+    () => {
+      const dir = repo('note-lines')
+      const base = commit(dir, {}, 'base')
+      const notes = [
+        'Note: the Mac build is not made in CI.',
+        'Note: the Windows build needs the signing key.',
+      ]
+      const list = commit(dir, {}, `Notes\n\nA body.\n\n${notes.join('\n')}`)
+      const one = commit(dir, {}, `Note one\n\nA body.\n\n${notes[0]}`)
+      expect(git(dir, NOREPLY, 'log', '-1', '--format=%(trailers)', list)).toBe(notes.join('\n'))
+      expect(git(dir, NOREPLY, 'log', '-1', '--format=%(trailers)', one)).toBe(notes[0])
+      // A one-word key is a trailer still when its value is no sentence, or names a URL, an
+      // address or an id; a key with a hyphen is one whatever its value.
+      const closes = commit(dir, {}, 'Closes\n\nA body.\n\nFixes: #12')
+      const named = commit(
+        dir,
+        {},
+        [
+          'Named',
+          '',
+          'A body.',
+          '',
+          'Tool: Some Tool',
+          'See: the log at https://example.invalid/log/1 for it.',
+          'Picked: from 0123abcd4 of another branch.',
+          'Mail: write to someone@example.invalid about it.',
+          'Follow-up: the tray build is next, in a commit of its own.',
+        ].join('\n'),
+      )
+
+      const { findings } = auditHistory(dir, [`${base}..HEAD`], ctxWith())
+      expect(findings.map((f) => [f.rule, f.commit, f.line, f.note])).toEqual([
+        ['commit.trailer', named, 5, 'trailer Tool'],
+        ['commit.trailer', named, 6, 'trailer See'],
+        ['commit.trailer', named, 7, 'trailer Picked'],
+        ['commit.trailer', named, 8, 'trailer Mail'],
+        ['commit.trailer', named, 9, 'trailer Follow-up'],
+        ['commit.trailer', closes, 5, 'trailer Fixes'],
+      ])
+      expect(findings[findings.length - 1]?.fp).toBe(fingerprint('Fixes: #12'))
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'a commit save:bundle makes is publishable: git reads its Mine: and Swept: lists as trailers, and they pass',
     () => {
       // scripts/save-bundle.ts itself, through the real commit-msg hook, as on a contributor's PC.

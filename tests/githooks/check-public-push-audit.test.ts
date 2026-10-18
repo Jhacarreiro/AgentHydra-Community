@@ -1055,4 +1055,99 @@ describe('.githooks/pre-push: rules 4 to 7, end to end', () => {
     },
     HOOK_TEST_TIMEOUT * 2,
   )
+
+  test(
+    "a tool's trailers where git reads no trailer block are refused: under prose, before it, or mid-message",
+    () => {
+      const tool = 'Co-Authored-By: Some Tool (a model) <noreply@example.invalid>'
+      const session = 'Some-Session: https://example.invalid/code/session_0123456789abcdef'
+      const messages = [
+        `Glued\n\nThe last paragraph is prose.\n${session}`,
+        `Glued two\n\nThe body, one paragraph,\nends here.\n${tool}\n${session}`,
+        `Then prose\n\nA body.\n\n${tool}\n${session}\nGenerated with a tool.`,
+        `Middle\n\nA body.\n\n${tool}\n${session}\n\nThe end.`,
+      ]
+      const shas = messages.map((message, i) => {
+        const sha = commit(repo, { [`tool-${i}.md`]: `change ${i}\n` }, message)
+        expect(git(repo, 'log', '-1', '--format=%(trailers)')).toBe('')
+        return sha
+      })
+      const refused = push(repo, PRIVATE, 'main')
+      expect(refused.status).not.toBe(0)
+      expect(refused.output).toContain('audit:public found something this push would publish')
+      expect(refused.output).toContain('✗ 7 finding(s)')
+      for (const [sha, line] of [
+        [shas[0], 4],
+        [shas[1], 6],
+        [shas[2], 6],
+        [shas[3], 6],
+      ] as const) {
+        expect(refused.output).toContain(`${sha.slice(0, 8)} (commit message):${line}`)
+      }
+      expect(refused.output).toContain('(trailer Some-Session)')
+      expect(refused.output).toContain('(trailer Co-Authored-By with no GitHub noreply address)')
+      expect(refused.output).not.toContain('example.invalid')
+      for (const sha of shas) expect(originHas(origin, sha)).toBe(false)
+
+      // The same changes with the tool's lines taken out go out.
+      git(repo, 'reset', '-q', '--hard', `HEAD~${shas.length}`)
+      const plain = messages.map((message, i) =>
+        commit(
+          repo,
+          { [`tool-${i}.md`]: `change ${i}\n` },
+          message
+            .split('\n')
+            .filter((l) => l !== tool && l !== session)
+            .join('\n'),
+        ),
+      )
+      const pushed = push(repo, PRIVATE, 'main')
+      expect(pushed.output).not.toContain('commit.trailer')
+      expect(pushed.status).toBe(0)
+      for (const sha of plain) expect(originHas(origin, sha)).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT * 2,
+  )
+
+  test(
+    'a last paragraph of Note: sentences goes out; a Fixes: #12 git reads as a trailer does not',
+    () => {
+      const listed = commit(
+        repo,
+        { 'notes.md': 'notes\n' },
+        'Notes\n\nA body.\n\nNote: the Mac build is not made in CI.\nNote: the Windows build needs the signing key.',
+      )
+      const one = commit(
+        repo,
+        { 'note.md': 'one note\n' },
+        'Note one\n\nA body.\n\nNote: the Mac build is not made in CI.',
+      )
+      expect(git(repo, 'log', '-1', '--format=%(trailers)')).toBe(
+        'Note: the Mac build is not made in CI.',
+      )
+      const pushed = push(repo, PRIVATE, 'main')
+      expect(pushed.output).not.toContain('commit.trailer')
+      expect(pushed.status).toBe(0)
+      expect(originHas(origin, listed)).toBe(true)
+      expect(originHas(origin, one)).toBe(true)
+
+      const closes = commit(repo, { 'fix.md': 'a fix\n' }, 'Closes\n\nA body.\n\nFixes: #12')
+      const refused = push(repo, PRIVATE, 'main')
+      expect(refused.status).not.toBe(0)
+      expect(refused.output).toContain(
+        `commit.trailer       ${closes.slice(0, 8)} (commit message):5`,
+      )
+      expect(refused.output).toContain('(trailer Fixes)')
+      expect(originHas(origin, closes)).toBe(false)
+
+      // Said in a sentence, it goes out.
+      git(repo, 'commit', '-q', '--amend', '-m', 'Closes\n\nA body. This fixes #12.')
+      const reworded = git(repo, 'rev-parse', 'HEAD')
+      const again = push(repo, PRIVATE, 'main')
+      expect(again.output).not.toContain('commit.trailer')
+      expect(again.status).toBe(0)
+      expect(originHas(origin, reworded)).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT * 3,
+  )
 })

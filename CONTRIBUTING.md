@@ -78,7 +78,13 @@ its rule, `file:line` and a fingerprint, never the value.
   `Reviewed-by:` (in any case) with a GitHub noreply address, as in the credit a rewritten contribution carries
   (see how contributions are credited, below). The `Mine:` and `Swept:` lists `bun run save:bundle` writes pass
   too. Any other trailer is refused, a tool's own (a session link, a `Generated-by:` line) included, and so is a
-  credit with any other address or with none.
+  credit with any other address or with none. A tool's trailer is refused wherever it sits, under a prose line or
+  above one as well, where git reads no trailers: a `Key: Name <address>` line, a `Key:` line whose value is only
+  a URL, an address or an id, and, in the last paragraph, a line whose key is hyphenated, such as `Change-Id:`.
+- git reads a last paragraph made only of `Word: text` lines as trailers. A one-word key with a sentence after it
+  (three words or more, with no URL, address or commit id), such as `Note: the Mac build is not made in CI.`, is
+  prose and passes. Anything shorter, such as `Fixes: #12`, is a trailer and is refused: say it in a sentence
+  ("This fixes #12.") or take it out.
 - Cherry-pick without `-x`: its line names the commit a change was picked from, which can be one this repository
   does not have. The audit refuses it wherever it sits in the message, and no allowlist entry clears it or a
   refused trailer.

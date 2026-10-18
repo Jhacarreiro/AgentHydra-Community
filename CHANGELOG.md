@@ -178,8 +178,8 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   line `git cherry-pick -x` adds names the commit a change was picked from, which may be one this repository does
   not publish. A `Co-authored-by:`, `Signed-off-by:` or `Reviewed-by:` line with a GitHub noreply address still
   passes, so a contribution a maintainer rewrites keeps its author, and so do the file lists a bundle commit ends
-  with; any other trailer, such as one a tool adds, is refused on push and in CI, and no allowlist entry clears
-  either.
+  with; any other trailer, such as one a tool adds, is refused on push and in CI wherever it sits in the message,
+  and no allowlist entry clears either. A closing `Note:` line with a sentence after it is prose and passes.
 - **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged.** Its
   history no longer includes the original project's own commits, or the list of that project's contributors that
   came with them; that history stays in the original project's repository. Anyone can check the import against the
