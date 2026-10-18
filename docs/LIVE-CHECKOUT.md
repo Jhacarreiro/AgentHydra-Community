@@ -48,8 +48,10 @@ remote.
 `-Apply` creates the worktree, runs `bun install` and the web build there, then the same two in its
 `desk2\` (Desk 2, the window, has its own packages), all through `fairjob` when it is installed. When cargo is
 installed it also builds the tray host, CliMayte's runner and the window host there
-(`bun scripts/build-natives.ts`), which are not committed; without cargo it warns, and `live\` runs the
-PowerShell tray, opens the window's page in the browser and runs CliMayte workers under Bun until they are built.
+(`bun scripts/build-natives.ts`), which are not committed. Without cargo, or when that build fails (no Visual
+Studio build tools, say), it warns and goes on, and until they are built `live\` runs with less: a tray shortcut
+whose native exe is not there is pointed at the PowerShell tray (`misc\Tray-Launch.vbs`), Desk 2's launcher
+starts the PowerShell tray and opens the window's page in the browser, and CliMayte workers run under Bun.
 It moves the state, sets the variable, rewrites the job wrappers, the tasks and the shortcuts.
 It never stops or restarts anything. It ends by printing the one restart step:
 

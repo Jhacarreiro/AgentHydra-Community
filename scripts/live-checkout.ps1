@@ -249,6 +249,34 @@ function Invoke-Heavy([string]$what, [string]$dir) {
   if ($code -ne 0) { Fail "'$what' in $dir failed (exit $code)." }
 }
 
+# The native programs' build, run like Invoke-Heavy but never stopping the script: a checkout runs
+# without them (the PowerShell tray, the window's page in the browser, CliMayte workers under Bun), so a
+# failed build (no Visual Studio build tools, rustup offline, a compile error) is a warning, and the
+# state, tasks and shortcuts still move. Returns the exit code; the output goes to the console.
+function Invoke-NativeBuild([string]$dir) {
+  $what = 'bun scripts/build-natives.ts'
+  Push-Location $dir
+  try {
+    if (Test-Path -LiteralPath $Fairjob) { & $Fairjob -Weight 3 -Run $what | Out-Host } else { & cmd /c $what | Out-Host }
+    $code = $LASTEXITCODE
+  } finally { Pop-Location }
+  return $code
+}
+
+# The tray shortcut misc\Create-Shortcut.ps1 makes runs misc\AgentHydra-Tray.exe, which is built, never
+# committed: a checkout without Rust has none, and one updated past the commit that took it out of git
+# lost it. Such a shortcut points at nothing, so it is pointed at the PowerShell tray instead, as
+# Create-Shortcut.ps1 does when the exe is not built: wscript.exe running misc\Tray-Launch.vbs. Returns
+# the new target and arguments, or $null when the shortcut is not one of those or its exe is there.
+function Get-UnbuiltTrayFallback([string]$target) {
+  if ($target -notmatch '(?i)^(.+\\misc)\\AgentHydra-Tray\.exe$') { return $null }
+  if (Test-Path -LiteralPath $target) { return $null }
+  # Tray-Launch.vbs is tracked: a plan's live checkout that is not there yet will have it.
+  $vbs = Join-Path $Matches[1] 'Tray-Launch.vbs'
+  if ((Test-Path -LiteralPath $Matches[1]) -and -not (Test-Path -LiteralPath $vbs)) { return $null }
+  return [pscustomobject]@{ Target = (Join-Path $env:SystemRoot 'System32\wscript.exe'); Arguments = "`"$vbs`"" }
+}
+
 # =============================================================================================
 # 1. The live worktree
 # =============================================================================================
@@ -312,7 +340,7 @@ if ($Direction -eq 'forward') {
   Step "bun install          in $LiveDesk   via $via   (Desk 2; when HEAD moved or node_modules is missing)"
   Step "bun run build        in $LiveDesk   via $via   (Desk 2's web\dist and hydra; when HEAD moved or web\dist is missing)"
   # The tray host, CliMayte's runner and the window host are built from their Rust source, not committed.
-  Step "bun scripts/build-natives.ts   in $Live   via $via   (the tray, CliMayte's runner and the window; when HEAD moved or one is missing; needs cargo)"
+  Step "bun scripts/build-natives.ts   in $Live   via $via   (the tray, CliMayte's runner and the window; when HEAD moved or one is missing; needs cargo; a failure only warns)"
   if (-not $DryRun -and $script:Problems.Count -eq 0) {
     if (Test-Path -LiteralPath $bunDir) { $env:Path = "$bunDir;$env:Path" }
     $headAfter = (Invoke-Git @('rev-parse', 'HEAD') $Live).Out
@@ -324,13 +352,20 @@ if ($Direction -eq 'forward') {
     }
     $natives = @('misc\AgentHydra-Tray.exe', 'misc\climayte-runner.exe', 'desk2\launcher\HydraDesk2.exe')
     $unbuilt = @($natives | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Live $_)) })
+    $without = 'the tray shortcuts run the PowerShell tray (the launchers step below points them there), the window opens in the browser and CliMayte workers run under Bun'
     if ($moved -or $unbuilt.Count) {
       $cargoDir = Join-Path $env:USERPROFILE '.cargo\bin'
       if (Test-Path -LiteralPath $cargoDir) { $env:Path = "$cargoDir;$env:Path" }
-      if (Get-Command cargo -ErrorAction SilentlyContinue) { Invoke-Heavy 'bun scripts/build-natives.ts' $Live }
-      elseif ($unbuilt.Count) {
-        Warn ("cargo was not found, so $($unbuilt -join ', ') in $Live stay unbuilt: the shortcut runs the PowerShell tray, " +
-          'the window opens in the browser and CliMayte workers run under Bun. Install Rust (https://rustup.rs) and rerun -Apply.')
+      if (Get-Command cargo -ErrorAction SilentlyContinue) {
+        $code = Invoke-NativeBuild $Live
+        if ($code -ne 0) {
+          $why = if ($code -eq 75) { 'fairjob did not start it (exit 75: low memory)' } else { "it failed (exit $code; its output is above)" }
+          $left = @($natives | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Live $_)) })
+          $what = if ($left.Count) { "$($left -join ', ') in $Live stay unbuilt: $without" } else { "the native programs in $Live keep the build they had" }
+          Warn "'bun scripts/build-natives.ts' in ${Live}: $why, so $what. Fix the build and rerun -Apply."
+        }
+      } elseif ($unbuilt.Count) {
+        Warn "cargo was not found, so $($unbuilt -join ', ') in $Live stay unbuilt: $without. Install Rust (https://rustup.rs) and rerun -Apply."
       } else { Warn "cargo was not found: the native programs in $Live keep the build they had (rerun -Apply once Rust is installed)." }
     } else { Info '[skip] native programs: built' }
   }
@@ -532,7 +567,7 @@ foreach ($t in $tasks) {
 
 # =============================================================================================
 # 7. Launchers: shortcuts and the Run key that start the tray (its config is relative, so only
-#    the launch path moves)
+#    the launch path moves). A tray shortcut whose native exe is not built runs the PowerShell tray.
 # =============================================================================================
 Section 'Launchers (tray and instance shortcuts, Run key)'
 $shell = New-Object -ComObject WScript.Shell
@@ -540,17 +575,29 @@ $lnkDirs = @($App, [Environment]::GetFolderPath('Desktop'), [Environment]::GetFo
 $lnks = @(foreach ($d in $lnkDirs) { Get-ChildItem -LiteralPath $d -Filter '*.lnk' -File -ErrorAction SilentlyContinue })
 $lnks += @(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Programs')) -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Filter '*.lnk' -File -ErrorAction SilentlyContinue })
 $anyLauncher = $false
+# A plan builds nothing: a tray exe the live checkout lacks may still come from section 2's native build.
+$cargoForPlan = $DryRun -and $Direction -eq 'forward' -and ((Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe')) -or [bool](Get-Command cargo -ErrorAction SilentlyContinue))
 foreach ($f in $lnks) {
   $l = $shell.CreateShortcut($f.FullName)
   $tp = Convert-PathText $l.TargetPath; $h1 = $script:Hit
   $ar = Convert-PathText $l.Arguments; $h2 = $script:Hit
   $wd = Convert-PathText $l.WorkingDirectory; $h3 = $script:Hit
+  $fallback = Get-UnbuiltTrayFallback $tp
+  if ($fallback -and $cargoForPlan) {
+    Info "$($f.Name) runs $tp, which the install and build step makes; if that build fails, -Apply points it at the PowerShell tray ($($fallback.Arguments))."
+    $fallback = $null
+  }
+  if ($fallback) { $tp = $fallback.Target; $ar = $fallback.Arguments }
   if ($tp -ceq $l.TargetPath -and $ar -ceq $l.Arguments -and $wd -ceq $l.WorkingDirectory) { continue }
   $anyLauncher = $true
   foreach ($k in @($h1.Kept) + @($h2.Kept) + @($h3.Kept)) { Warn "$($f.Name) keeps app\$k (not on $Upstream)" }
   Info "$($f.FullName)"
   Info "    old: $($l.TargetPath) $($l.Arguments)   [in $($l.WorkingDirectory)]"
   Info "    new: $tp $ar   [in $wd]"
+  if ($fallback) {
+    Info ("    (its native tray is not built there, so it runs the PowerShell tray; after building it " +
+      "(bun scripts/build-natives.ts tray), misc\Create-Shortcut.ps1 points it back at the native one)")
+  }
   Step "rewrite shortcut $($f.Name)"
   if (-not $DryRun -and $script:Problems.Count -eq 0) { $l.TargetPath = $tp; $l.Arguments = $ar; $l.WorkingDirectory = $wd; $l.Save() }
 }

@@ -190,4 +190,32 @@ describe('a checkout without them', () => {
       '$u = if ($background) { $null } else { Get-LiveUrl }',
     )
   })
+
+  test('live-checkout.ps1 -Apply warns about a failed native build instead of stopping', () => {
+    const ps = read('scripts/live-checkout.ps1')
+    expect(ps).not.toContain("Invoke-Heavy 'bun scripts/build-natives.ts'")
+    const build = ps.slice(
+      ps.indexOf('function Invoke-NativeBuild'),
+      ps.indexOf('# 1. The live worktree'),
+    )
+    expect(build).not.toContain('Fail ')
+    expect(ps).toMatch(/\$code = Invoke-NativeBuild \$Live\n\s+if \(\$code -ne 0\) \{/)
+  })
+
+  test('live-checkout.ps1 points a tray shortcut whose exe is not built at the PowerShell tray', () => {
+    const ps = read('scripts/live-checkout.ps1')
+    const fallback = ps.slice(ps.indexOf('function Get-UnbuiltTrayFallback'))
+    const m = /-notmatch '([^']+)'/.exec(fallback)
+    const rx = new RegExp(m?.[1]?.replace('(?i)', '') ?? '$^', 'i')
+    expect(rx.exec('C:\\Users\\me\\live\\misc\\AgentHydra-Tray.exe')?.[1]).toBe(
+      'C:\\Users\\me\\live\\misc',
+    )
+    expect(rx.test('C:\\Users\\me\\live\\misc\\AgentHydra-Tray.ps1')).toBe(false)
+    expect(fallback).toContain("Join-Path $Matches[1] 'Tray-Launch.vbs'")
+    expect(fallback).toContain('System32\\wscript.exe')
+    // Every shortcut is looked at, including one the move itself leaves unchanged.
+    const loop = ps.slice(ps.indexOf('foreach ($f in $lnks)'))
+    expect(loop.indexOf('Get-UnbuiltTrayFallback $tp')).toBeLessThan(loop.indexOf('{ continue }'))
+    expect(existsSync(join(REPO_ROOT, 'misc', 'Tray-Launch.vbs'))).toBe(true)
+  })
 })
