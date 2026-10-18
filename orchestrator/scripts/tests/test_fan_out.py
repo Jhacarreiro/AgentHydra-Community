@@ -70,20 +70,20 @@ class FanOutBase(unittest.TestCase):
         # Three open accounts with room (best first: charlie 70 > alice 60 > bob 50), one open
         # with NO room (dave, 5-hour at 100), one closed with room (erin), one unreadable.
         self.stub.routes["/api/usage/survey"] = {"rows": [
-            survey_row(1, "alice", "alice@x.com", week=20),
-            survey_row(2, "bob", "bob@x.com", week=30),
-            survey_row(3, "charlie", "charlie@x.com", week=10),
-            survey_row(4, "dave", "dave@x.com", five=100, week=40),
-            survey_row(5, "erin", "erin@x.com", week=0, running=False),
-            survey_row(6, "frank", "frank@x.com", reason="check_failed"),
+            survey_row(1, "alice", "alice@example.test", week=20),
+            survey_row(2, "bob", "bob@example.test", week=30),
+            survey_row(3, "charlie", "charlie@example.test", week=10),
+            survey_row(4, "dave", "dave@example.test", five=100, week=40),
+            survey_row(5, "erin", "erin@example.test", week=0, running=False),
+            survey_row(6, "frank", "frank@example.test", reason="check_failed"),
         ]}
         self.stub.routes["/api/fleet"] = {"instances": [
-            fleet_row(1, "alice", "alice@x.com"),
-            fleet_row(2, "bob", "bob@x.com"),
-            fleet_row(3, "charlie", "charlie@x.com"),
-            fleet_row(4, "dave", "dave@x.com"),
-            fleet_row(5, "erin", "erin@x.com", running=False),
-            fleet_row(6, "frank", "frank@x.com"),
+            fleet_row(1, "alice", "alice@example.test"),
+            fleet_row(2, "bob", "bob@example.test"),
+            fleet_row(3, "charlie", "charlie@example.test"),
+            fleet_row(4, "dave", "dave@example.test"),
+            fleet_row(5, "erin", "erin@example.test", running=False),
+            fleet_row(6, "frank", "frank@example.test"),
         ]}
         self.stub.routes["/api/sessions"] = []
         self.stub.routes["/api/sessions/live"] = {"count": 0, "sessions": []}
@@ -174,7 +174,7 @@ class PlanTest(FanOutBase):
     def test_only_and_exclude_filter_by_number_name_or_email_and_a_bad_ref_refuses(self):
         r = fan_out.rank_targets(exclude=["3"])
         self.assertEqual([t["name"] for t in r["targets"]], ["alice", "bob"])
-        r = fan_out.rank_targets(only=["bob@x.com", "charlie"])
+        r = fan_out.rank_targets(only=["bob@example.test", "charlie"])
         self.assertEqual([t["name"] for t in r["targets"]], ["charlie", "bob"])
         with self.assertRaises(ValueError):
             fan_out.rank_targets(exclude=["nobody"])
@@ -724,7 +724,7 @@ class OpenAndWaitTest(FanOutBase):
             now[0] += secs
 
         def fleet(method, path, query, body):
-            return {"instances": [fleet_row(5, "erin", "erin@x.com", running=now[0] >= comes_up_at)]}
+            return {"instances": [fleet_row(5, "erin", "erin@example.test", running=now[0] >= comes_up_at)]}
 
         self.stub.routes["/api/fleet"] = fleet
         self.stub.routes["/api/instances/c%3A%5Ci%5Cerin/open"] = {"ok": True}
@@ -868,7 +868,7 @@ class RecoverTest(FanOutBase):
         self.assertEqual(code, 4)
         self.assertEqual(fan_out.find_group("g3")["members"][1]["state"], "unassigned")
         # dave's window resets; alice (more room than dave) is still behind the group's fence
-        self.stub.routes["/api/usage/survey"]["rows"][3] = survey_row(4, "dave", "dave@x.com",
+        self.stub.routes["/api/usage/survey"]["rows"][3] = survey_row(4, "dave", "dave@example.test",
                                                                       five=5, week=40)
         # the survey is shared across processes for minutes (hydralib.usage_survey); drop the
         # copy the spawn left, as a later tick would, so the re-rank reads dave's new window

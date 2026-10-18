@@ -50,7 +50,7 @@ def test_parse_runtime_grammar_and_option_injection():
     assert parse_runtime("") is None and parse_runtime("host") is None and parse_runtime(None) is None
     assert parse_runtime("docker-container:abc123") == Runtime("docker", "abc123")
     assert parse_runtime("podman-container:web_1").spec == "podman-container:web_1"
-    assert parse_runtime("ssh:ci@mac-vm.local") == Runtime("ssh", "ci@mac-vm.local")
+    assert parse_runtime("ssh:ci@mac-vm.example.test") == Runtime("ssh", "ci@mac-vm.example.test")
     for bad in ("ssh:-oProxyCommand=calc", "docker-container:--privileged", "docker:abc", "ssh:", "ssh:a b", "vm:x"):
         with pytest.raises(ValueError):
             parse_runtime(bad)

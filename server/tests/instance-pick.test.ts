@@ -91,10 +91,10 @@ test('a name beats an email, and both lose to a number', () => {
   // One row's NAME is another row's email address: contrived, but the order has to be decided
   // somewhere, and "the more specific spelling wins" is the only defensible one.
   const odd = [
-    row({ num: 1, name: 'x@y.com', email: 'a@b.com' }),
-    row({ num: 2, email: 'x@y.com' }),
+    row({ num: 1, name: 'x@example.test', email: 'a@example.test' }),
+    row({ num: 2, email: 'x@example.test' }),
   ]
-  expect(pickInstance(odd, 'x@y.com')?.num).toBe(1)
+  expect(pickInstance(odd, 'x@example.test')?.num).toBe(1)
   expect(pickInstance(odd, 2)?.num).toBe(2)
 })
 

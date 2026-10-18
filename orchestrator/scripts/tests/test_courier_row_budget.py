@@ -84,7 +84,7 @@ class RowBudgetTest(unittest.TestCase):
         self.stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "temp1", "dir": "c:\\i\\temp1", "isRunning": True,
              "signedIn": True,
-             "account": {"email": "a@x.com", "planLabel": "Max 20×"}}]}
+             "account": {"email": "a@example.test", "planLabel": "Max 20×"}}]}
 
     def tearDown(self):
         self.stub.close()

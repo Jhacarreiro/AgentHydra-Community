@@ -20,7 +20,7 @@ import type { UsageSnapshot } from '../src/types'
 
 function snap(patch: Partial<UsageSnapshot> = {}): UsageSnapshot {
   return {
-    account: 'a@b.com',
+    account: 'a@example.test',
     session: { pct: 0, resets: '' },
     weekAll: { pct: 10, resets: 'Sep 9, 3:00am' },
     weekModel: null,

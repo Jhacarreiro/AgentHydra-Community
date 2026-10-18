@@ -151,9 +151,9 @@ class PlanAndServerTest(unittest.TestCase):
         self.stub.routes["/api/health"] = {"ok": True, "version": "t", "distribution": "test"}
         self.stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "closed1", "dir": "c:\\i\\c1", "isRunning": False, "signedIn": True,
-             "account": {"email": "a@x.com", "planLabel": "Max 20x"}},
+             "account": {"email": "a@example.test", "planLabel": "Max 20x"}},
             {"num": 2, "name": "open2", "dir": "c:\\i\\o2", "isRunning": True, "signedIn": True,
-             "account": {"email": "b@x.com", "planLabel": "Pro"}},
+             "account": {"email": "b@example.test", "planLabel": "Pro"}},
         ]}
         self.stub.routes["/api/sessions"] = [
             {"session_id": "s-done", "archived": False, "title": "Done chat", "instance": "closed1",
@@ -181,7 +181,7 @@ class PlanAndServerTest(unittest.TestCase):
         self.assertEqual(by_id["s-done"]["decision"]["kind"], "archive")
         self.assertEqual(by_id["s-offer"]["decision"]["kind"], "wait-on-person")
         self.assertIn(by_id["s-live"]["decision"]["kind"], ("leave-alone", "judgment"))
-        self.assertEqual(by_id["s-done"]["account"]["email"], "a@x.com")
+        self.assertEqual(by_id["s-done"]["account"]["email"], "a@example.test")
         self.assertFalse(by_id["s-done"]["account"]["appRunning"])
         self.assertTrue(by_id["s-live"]["account"]["appRunning"])
         self.assertEqual(self.stub.posts, [])  # READ-ONLY: the whole plan sent zero POSTs

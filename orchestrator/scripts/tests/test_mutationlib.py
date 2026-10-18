@@ -328,7 +328,7 @@ class ArchiveAndRenameMutationRailTest(unittest.TestCase):
         ]
         self.stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "cold", "dir": "c:\\i\\cold", "isRunning": False, "signedIn": True,
-             "account": {"email": "c@x.com", "planLabel": "Max 20x"}}]}
+             "account": {"email": "c@example.test", "planLabel": "Max 20x"}}]}
 
     def tearDown(self):
         self.stub.close()

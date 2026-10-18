@@ -47,8 +47,8 @@ async function remoteRepo(): Promise<string> {
   await $`git -c init.defaultBranch=main init -q ${dir}`.quiet();
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", version: "0.1.0" }));
   writeFileSync(join(dir, "marker.txt"), "v1\n");
-  await $`git -C ${dir} -c user.name=S -c user.email=s@s.io add -A`.quiet();
-  await $`git -C ${dir} -c user.name=S -c user.email=s@s.io commit -q -m init`.quiet();
+  await $`git -C ${dir} -c user.name=S -c user.email=s@example.test add -A`.quiet();
+  await $`git -C ${dir} -c user.name=S -c user.email=s@example.test commit -q -m init`.quiet();
   return dir;
 }
 
@@ -56,15 +56,15 @@ async function cloneRepo(remote: string): Promise<string> {
   const dir = scratchDir("ue-local-");
   await $`git clone -q ${remote} ${dir}`.quiet();
   await $`git -C ${dir} config user.name S`.quiet();
-  await $`git -C ${dir} config user.email s@s.io`.quiet();
+  await $`git -C ${dir} config user.email s@example.test`.quiet();
   return dir;
 }
 
 async function advanceRemote(remote: string, version: string): Promise<void> {
   writeFileSync(join(remote, "package.json"), JSON.stringify({ name: "x", version }));
   writeFileSync(join(remote, "marker.txt"), `${version}\n`);
-  await $`git -C ${remote} -c user.name=S -c user.email=s@s.io add -A`.quiet();
-  await $`git -C ${remote} -c user.name=S -c user.email=s@s.io commit -q -m ${version}`.quiet();
+  await $`git -C ${remote} -c user.name=S -c user.email=s@example.test add -A`.quiet();
+  await $`git -C ${remote} -c user.name=S -c user.email=s@example.test commit -q -m ${version}`.quiet();
 }
 
 /** A runtime `-e` step that appends `label` to a log file — a real subprocess, no mocking.
@@ -459,7 +459,7 @@ test("cooldownDays adopts the newest aged commit and holds back a younger tip", 
   const logPath = join(scratchDir("ue-log-"), "log.txt");
   const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000).toISOString();
   writeFileSync(join(remote, "marker.txt"), "0.2.0\n");
-  await $`git -C ${remote} -c user.name=S -c user.email=s@s.io commit -q -am aged`
+  await $`git -C ${remote} -c user.name=S -c user.email=s@example.test commit -q -am aged`
     .env({ ...process.env, GIT_AUTHOR_DATE: tenDaysAgo, GIT_COMMITTER_DATE: tenDaysAgo })
     .quiet();
   const agedCommit = (await $`git -C ${remote} rev-parse HEAD`.text()).trim();
@@ -630,8 +630,8 @@ test.skipIf(process.platform !== "win32")(
     const remote = await remoteRepo();
     mkdirSync(join(remote, "bin"));
     copyFileSync(join(system32, "PING.EXE"), join(remote, "bin", "tool.exe"));
-    await $`git -C ${remote} -c user.name=S -c user.email=s@s.io add -A`.quiet();
-    await $`git -C ${remote} -c user.name=S -c user.email=s@s.io commit -q -m tool`.quiet();
+    await $`git -C ${remote} -c user.name=S -c user.email=s@example.test add -A`.quiet();
+    await $`git -C ${remote} -c user.name=S -c user.email=s@example.test commit -q -m tool`.quiet();
     const local = await cloneRepo(remote);
 
     // Holds the clone's bin/tool.exe image open for the rest of the test.

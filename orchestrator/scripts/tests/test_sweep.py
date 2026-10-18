@@ -74,7 +74,7 @@ class SweepTest(unittest.TestCase):
         stub.routes["/api/health"] = {"ok": True, "version": "t", "distribution": "test"}
         stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "cold", "dir": "c:\\i\\cold", "isRunning": False, "signedIn": True,
-             "account": {"email": "cold@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "cold@example.test", "planLabel": "Max 20×"}},
         ]}
         stub.routes["/api/sessions"] = [
             {"session_id": "s-done1", "archived": False, "title": "Done one", "instance": "cold",
@@ -87,7 +87,7 @@ class SweepTest(unittest.TestCase):
         stub.routes["/api/usage/survey"] = {"rows": [{
             "kind": "desktop", "num": 1, "id": "c:\\i\\cold", "label": "cold",
             "result": {"snapshot": {
-                "account": "cold <cold@x.com> · Max 20×",
+                "account": "cold <cold@example.test> · Max 20×",
                 "session": {"pct": 1}, "weekAll": {"pct": 10}, "weekModel": {"pct": 10, "label": "Fable"},
                 "capturedAt": iso_now()}, "cached": False, "key": "k", "reason": "ok"},
             "advice": {"severity": "normal", "bindingPct": 10, "shouldOffload": False,
@@ -158,7 +158,7 @@ class SweepTest(unittest.TestCase):
 
         self.stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "cold", "dir": "c:\\i\\cold", "isRunning": True, "signedIn": True,
-             "account": {"email": "cold@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "cold@example.test", "planLabel": "Max 20×"}},
         ]}
 
         def fake_ui(instance, title, unarchive, session_id=""):
@@ -275,20 +275,20 @@ class SweepTest(unittest.TestCase):
 
         self.stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "cold", "dir": "c:\\i\\cold", "isRunning": True, "signedIn": True,
-             "account": {"email": "cold@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "cold@example.test", "planLabel": "Max 20×"}},
             {"num": 2, "name": "spare", "dir": "c:\\i\\spare", "isRunning": True, "signedIn": True,
-             "account": {"email": "spare@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "spare@example.test", "planLabel": "Max 20×"}},
         ]}
         self.stub.routes["/api/usage/survey"] = {"rows": [
             {"kind": "desktop", "num": 1, "id": "c:\\i\\cold", "label": "cold",
-             "result": {"snapshot": {"account": "cold <cold@x.com> · Max 20×",
+             "result": {"snapshot": {"account": "cold <cold@example.test> · Max 20×",
                                       "session": {"pct": 95}, "weekAll": {"pct": 95},
                                       "weekModel": {"pct": 95, "label": "Fable"},
                                       "capturedAt": iso_now()}, "cached": False, "key": "k1", "reason": "ok"},
              "advice": {"severity": "critical", "bindingPct": 95, "shouldOffload": True,
                         "safeToFanOut": False, "advice": "hot"}},
             {"kind": "desktop", "num": 2, "id": "c:\\i\\spare", "label": "spare",
-             "result": {"snapshot": {"account": "spare <spare@x.com> · Max 20×",
+             "result": {"snapshot": {"account": "spare <spare@example.test> · Max 20×",
                                       "session": {"pct": 5}, "weekAll": {"pct": 5},
                                       "weekModel": {"pct": 5, "label": "Fable"},
                                       "capturedAt": iso_now()}, "cached": False, "key": "k2", "reason": "ok"},
@@ -315,9 +315,9 @@ class SweepTest(unittest.TestCase):
 
         self.stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "cold", "dir": "c:\\i\\cold", "isRunning": False, "signedIn": True,
-             "account": {"email": "cold@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "cold@example.test", "planLabel": "Max 20×"}},
             {"num": 2, "name": "warm", "dir": "c:\\i\\warm", "isRunning": True, "signedIn": True,
-             "account": {"email": "warm@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "warm@example.test", "planLabel": "Max 20×"}},
         ]}
         holdlib.hold("s-done1", "grabbed after the batch was built")
         row = {"sessionId": "s-done1", "title": "Done one", "argv": ["s-done1", "--to", "warm"]}

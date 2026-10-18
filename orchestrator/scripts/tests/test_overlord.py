@@ -493,9 +493,9 @@ class OverlordTest(unittest.TestCase):
             {"num": 9, "name": "p2", "dir": "c:\\i\\p2", "isRunning": True, "signedIn": True},
             {"num": 5, "name": "fz", "dir": "c:\\i\\fz", "isRunning": True, "signedIn": True}]}
         self.stub.routes[f"/api/sessions/{SID}/migrate"] = {"ok": True}
-        hot = {"band": "over-hard", "email": "a@x.com", "peakPct": 91,
+        hot = {"band": "over-hard", "email": "a@example.test", "peakPct": 91,
                "instances": [{"name": "p2"}]}
-        cool = {"email": "b@x.com", "peakPct": 3, "mustOpen": False}
+        cool = {"email": "b@example.test", "peakPct": 3, "mustOpen": False}
         with mock.patch.object(overlord, "pending_work",
                                return_value={"any": True, "why": "work"}), \
              mock.patch("balance.usage_rows_with_fallback",
@@ -536,7 +536,7 @@ class OverlordTest(unittest.TestCase):
              mock.patch("balance.usage_rows_with_fallback",
                         return_value=({"rows": []}, "survey")), \
              mock.patch("balance.accounts_overview",
-                        return_value=[{"band": "ok", "email": "a@x.com", "peakPct": 20,
+                        return_value=[{"band": "ok", "email": "a@example.test", "peakPct": 20,
                                        "instances": [{"name": "p2"}]}]), \
              mock.patch.object(courier, "main", return_value=0):
             code, out_text, _ = run_cli(overlord.main, [])
@@ -554,8 +554,8 @@ class OverlordTest(unittest.TestCase):
             {"num": 9, "name": "p2", "dir": "c:\\i\\p2", "isRunning": True, "signedIn": True},
             {"num": 5, "name": "fz", "dir": "c:\\i\\fz", "isRunning": True, "signedIn": True}]}
         self.stub.routes[f"/api/sessions/{SID}/migrate"] = {"ok": True}
-        fine = {"band": "ok", "email": "a@x.com", "peakPct": 11, "instances": [{"name": "p2"}]}
-        cool = {"email": "b@x.com", "peakPct": 3, "mustOpen": False}
+        fine = {"band": "ok", "email": "a@example.test", "peakPct": 11, "instances": [{"name": "p2"}]}
+        cool = {"email": "b@example.test", "peakPct": 3, "mustOpen": False}
         with mock.patch.object(overlord, "pending_work",
                                return_value={"any": True, "why": "work"}), \
              mock.patch("balance.usage_rows_with_fallback",
@@ -577,7 +577,7 @@ class OverlordTest(unittest.TestCase):
              mock.patch("balance.usage_rows_with_fallback",
                         return_value=({"rows": []}, "survey")), \
              mock.patch("balance.accounts_overview",
-                        return_value=[{"band": "ok", "email": "a@x.com", "peakPct": 20,
+                        return_value=[{"band": "ok", "email": "a@example.test", "peakPct": 20,
                                        "instances": [{"name": "p2"}]}]), \
              mock.patch.object(courier, "main", return_value=0):
             code, out_text, _ = run_cli(overlord.main, [])
@@ -593,8 +593,8 @@ class OverlordTest(unittest.TestCase):
             {"num": 9, "name": "p2", "dir": "c:\\i\\p2", "isRunning": True, "signedIn": True},
             {"num": 5, "name": "fz", "dir": "c:\\i\\fz", "isRunning": True, "signedIn": True}]}
         self.stub.routes[f"/api/sessions/{SID}/migrate"] = (500, {"error": "boom"})
-        hot = {"band": "over-soft", "email": "a@x.com", "peakPct": 88, "instances": [{"name": "p2"}]}
-        cool = {"email": "b@x.com", "peakPct": 3, "mustOpen": False}
+        hot = {"band": "over-soft", "email": "a@example.test", "peakPct": 88, "instances": [{"name": "p2"}]}
+        cool = {"email": "b@example.test", "peakPct": 3, "mustOpen": False}
         row = {"session_id": SID, "instance": "p2", "title": "Orchestrate"}
         with mock.patch("balance.usage_rows_with_fallback",
                        return_value=({"rows": []}, "survey")), \

@@ -115,9 +115,9 @@ class HoldRailTest(unittest.TestCase):
         ]
         stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "cold", "dir": "c:\\i\\cold", "isRunning": False, "signedIn": True,
-             "account": {"email": "c@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "c@example.test", "planLabel": "Max 20×"}},
             {"num": 2, "name": "warm", "dir": "c:\\i\\warm", "isRunning": True, "signedIn": True,
-             "account": {"email": "w@x.com", "planLabel": "Max 20×"}}]}
+             "account": {"email": "w@example.test", "planLabel": "Max 20×"}}]}
         stub.routes["/api/usage/survey"] = {"rows": []}
         stub.routes["/api/usage/cache"] = {"cache": {}}
 

@@ -17,7 +17,7 @@ def iso(hours_ago=0.0):
     return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def survey_row(kind="desktop", num=1, id_="c:\\i\\a", label="a", email="a@x.com",
+def survey_row(kind="desktop", num=1, id_="c:\\i\\a", label="a", email="a@example.test",
                plan="Max 20×", five=5, week=10, model=12, binding=None, offload=False,
                reason="ok", hours_ago=0.5):
     binding = binding if binding is not None else week
@@ -54,7 +54,7 @@ def _email(r):
     return m.group(1) if m else None
 
 
-def chat(sid, kind, instance="a", email="a@x.com", action="", state=None):
+def chat(sid, kind, instance="a", email="a@example.test", action="", state=None):
     return {"sessionId": sid, "title": sid, "instance": instance,
             "origin": "desktop" if instance else "console",
             "account": {"email": email} if instance else None,
@@ -64,28 +64,28 @@ def chat(sid, kind, instance="a", email="a@x.com", action="", state=None):
 
 class AccountsOverviewTest(unittest.TestCase):
     def test_parse_account_string(self):
-        self.assertEqual(balance._parse_account_string("ape <ape@x.com> · Max 20×"),
-                         ("ape@x.com", "Max 20×"))
+        self.assertEqual(balance._parse_account_string("ape <ape@example.test> · Max 20×"),
+                         ("ape@example.test", "Max 20×"))
         self.assertEqual(balance._parse_account_string("linked-cli"), (None, None))
 
     def test_desktop_rows_join_fleet_and_cli_rows_parse(self):
-        rows = [survey_row(), survey_row(kind="cli", num=None, id_="cli:u1", label="linked", email="c@x.com")]
+        rows = [survey_row(), survey_row(kind="cli", num=None, id_="cli:u1", label="linked", email="c@example.test")]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
         by = {a["identity"]: a for a in accts}
-        self.assertIn("a@x.com", by)
-        self.assertEqual(by["a@x.com"]["instances"][0]["name"], "a")
-        self.assertIn("c@x.com", by)
-        self.assertFalse(by["c@x.com"]["usable"])  # cli logins cannot host desktop chats
+        self.assertIn("a@example.test", by)
+        self.assertEqual(by["a@example.test"]["instances"][0]["name"], "a")
+        self.assertIn("c@example.test", by)
+        self.assertFalse(by["c@example.test"]["usable"])  # cli logins cannot host desktop chats
 
     def test_stale_or_failed_reading_is_never_usable(self):
         rows = [survey_row(hours_ago=100), survey_row(num=2, id_="c:\\i\\b", label="b",
-                                                      email="b@x.com", reason="check_failed")]
+                                                      email="b@example.test", reason="check_failed")]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
         self.assertTrue(all(not a["usable"] for a in accts))
 
     def test_pressure_via_pct_and_via_daemon_advice(self):
         rows = [survey_row(week=85, binding=85),
-                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@x.com", week=30, offload=True)]
+                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@example.test", week=30, offload=True)]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
         self.assertTrue(all(a["underPressure"] for a in accts))
 
@@ -93,9 +93,9 @@ class AccountsOverviewTest(unittest.TestCase):
         # Both OPEN (num=1 renders isRunning in the fixture fleet): most room under the
         # ceiling wins - deliberately filling under-used accounts is the point.
         rows = [survey_row(week=60, binding=60),
-                survey_row(num=1, id_="c:\\i\\b", label="b", email="b@x.com", week=10, binding=10)]
+                survey_row(num=1, id_="c:\\i\\b", label="b", email="b@example.test", week=10, binding=10)]
         ranked = balance.rank_next(balance.accounts_overview({"rows": rows}, fleet_for(rows)))
-        self.assertEqual(ranked[0]["email"], "b@x.com")
+        self.assertEqual(ranked[0]["email"], "b@example.test")
 
 
 class UsageFallbackTest(unittest.TestCase):
@@ -127,7 +127,7 @@ class UsageFallbackTest(unittest.TestCase):
     def test_survey_failure_falls_back_to_cache_labeled_as_cached(self):
         self.stub.routes["/api/usage/survey"] = (500, {"error": "down"})
         self.stub.routes["/api/usage/cache"] = {"cache": {
-            "desktop:c:\\i\\a": {"account": "a <a@x.com> · Max 20×", "session": {"pct": 1},
+            "desktop:c:\\i\\a": {"account": "a <a@example.test> · Max 20×", "session": {"pct": 1},
                                   "weekAll": {"pct": 12, "severity": "normal"},
                                   "weekModel": {"pct": 12}, "capturedAt": iso(0.2)}}}
         rows, source = balance.usage_rows_with_fallback()
@@ -145,7 +145,7 @@ class UsageFallbackTest(unittest.TestCase):
 class PlanMovesTest(unittest.TestCase):
     def accounts(self, hot_pct=90, cool_pct=10):
         rows = [survey_row(week=hot_pct, binding=hot_pct),
-                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@x.com",
+                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@example.test",
                            week=cool_pct, binding=cool_pct)]
         return balance.accounts_overview({"rows": rows}, fleet_for(rows))
 
@@ -174,28 +174,28 @@ class PlanMovesTest(unittest.TestCase):
     def test_hot_closed_account_is_a_self_note_not_a_move_driver(self):
         # 'a' is OPEN and cool; make 'b' CLOSED and hot: pressure on b must move nothing.
         rows = [survey_row(week=10, binding=10),
-                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@x.com", week=95, binding=95)]
+                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@example.test", week=95, binding=95)]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
         by = {a["email"]: a for a in accts}
-        self.assertTrue(by["b@x.com"]["underPressure"] and not by["b@x.com"]["open"])
-        plan = balance.plan_moves(accts, [chat("s1", "wait-on-person", instance="b", email="b@x.com")])
+        self.assertTrue(by["b@example.test"]["underPressure"] and not by["b@example.test"]["open"])
+        plan = balance.plan_moves(accts, [chat("s1", "wait-on-person", instance="b", email="b@example.test")])
         self.assertEqual(plan["moves"], [])
         self.assertIn("no OPEN account is under pressure", plan["likelihood"]["why"])
 
     def test_handoff_prefers_open_account_over_cooler_closed_one(self):
         # OPEN 'a' at 34% beats CLOSED 'b' at 0% - you always use open accounts unless you must open.
         rows = [survey_row(week=34, binding=34),
-                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@x.com", week=0, binding=0)]
+                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@example.test", week=0, binding=0)]
         ranked = balance.rank_next(balance.accounts_overview({"rows": rows}, fleet_for(rows)))
-        self.assertEqual(ranked[0]["email"], "a@x.com")
+        self.assertEqual(ranked[0]["email"], "a@example.test")
         self.assertFalse(ranked[0]["mustOpen"])
         self.assertTrue(ranked[1]["mustOpen"])
 
     def test_closed_account_is_last_resort_when_no_open_has_headroom(self):
         rows = [survey_row(week=90, binding=90),
-                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@x.com", week=0, binding=0)]
+                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@example.test", week=0, binding=0)]
         ranked = balance.rank_next(balance.accounts_overview({"rows": rows}, fleet_for(rows)))
-        self.assertEqual([a["email"] for a in ranked], ["b@x.com"])  # the hot open one is no target
+        self.assertEqual([a["email"] for a in ranked], ["b@example.test"])  # the hot open one is no target
         self.assertTrue(ranked[0]["mustOpen"])
 
     def test_pressure_without_headroom_is_blocked(self):
@@ -250,8 +250,8 @@ class PlanMovesTest(unittest.TestCase):
         # Owner, 2026-08-31: "load balancing does not mean dump everything in one account" -
         # four movable chats over two cool open targets must land 2/2, not 4/0.
         rows = [survey_row(week=92, binding=92),
-                survey_row(num=1, id_="c:\\i\\b", label="b", email="b@x.com", week=10, binding=10),
-                survey_row(num=1, id_="c:\\i\\c", label="c", email="c@x.com", week=12, binding=12)]
+                survey_row(num=1, id_="c:\\i\\b", label="b", email="b@example.test", week=10, binding=10),
+                survey_row(num=1, id_="c:\\i\\c", label="c", email="c@example.test", week=12, binding=12)]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
         chats = [chat(f"s{i}", "wait-on-person") for i in range(4)]
         plan = balance.plan_moves(accts, chats)
@@ -265,10 +265,10 @@ class PlanMovesTest(unittest.TestCase):
         # 'a' is OPEN and cool -> it is the fill surface; 'b' is closed and never appears
         # (filling a closed app is opening an account, which is the marked last resort).
         rows = [survey_row(week=10, binding=10),
-                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@x.com", week=5, binding=5)]
+                survey_row(num=2, id_="c:\\i\\b", label="b", email="b@example.test", week=5, binding=5)]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
         plan = balance.plan_moves(accts, [])
-        self.assertEqual([f["email"] for f in plan["fill"]], ["a@x.com"])
+        self.assertEqual([f["email"] for f in plan["fill"]], ["a@example.test"])
         self.assertIn("simpler chats", plan["fill"][0]["note"])
         self.assertEqual(plan["fill"][0]["fillCeiling"], 83)
 
@@ -291,7 +291,7 @@ class PlanMovesTest(unittest.TestCase):
         # the held row wrongly called next_target and debited it, the following real stray
         # would come up empty.
         rows = [survey_row(week=95, binding=95),
-                survey_row(num=1, id_="c:\\i\\b", label="b", email="b@x.com", week=79, binding=79)]
+                survey_row(num=1, id_="c:\\i\\b", label="b", email="b@example.test", week=79, binding=79)]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
         chats = [chat("s1", "on-hold", instance=None, email=None),
                  chat("s2", "wait-on-person", instance=None, email=None)]
@@ -332,9 +332,9 @@ class PlanMovesTest(unittest.TestCase):
     def test_moves_only_target_other_accounts(self):
         # the only cool account is the chat's own -> nothing to move to
         rows = [survey_row(week=90, binding=90),
-                survey_row(num=2, id_="c:\\i\\b", label="b", email="a@x.com", week=10, binding=10)]
+                survey_row(num=2, id_="c:\\i\\b", label="b", email="a@example.test", week=10, binding=10)]
         accts = balance.accounts_overview({"rows": rows}, fleet_for(rows))
-        plan = balance.plan_moves(accts, [chat("s1", "wait-on-person", email="a@x.com")])
+        plan = balance.plan_moves(accts, [chat("s1", "wait-on-person", email="a@example.test")])
         self.assertEqual(plan["moves"], [])
 
 

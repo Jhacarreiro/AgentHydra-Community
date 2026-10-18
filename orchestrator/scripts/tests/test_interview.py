@@ -64,7 +64,7 @@ class InterviewTest(unittest.TestCase):
         ]
         stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "cold", "dir": "c:\\i\\cold", "isRunning": False, "signedIn": True,
-             "account": {"email": "a@x.com", "planLabel": "Max 20×"}}]}
+             "account": {"email": "a@example.test", "planLabel": "Max 20×"}}]}
         stub.routes["/api/usage/survey"] = {"rows": []}
         stub.routes["/api/usage/cache"] = {"cache": {}}
 

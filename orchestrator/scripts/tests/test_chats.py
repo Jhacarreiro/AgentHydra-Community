@@ -28,9 +28,9 @@ class ChatsTest(unittest.TestCase):
         os.environ["ORCHESTRATOR_STATE_DIR"] = self._state.name
         self.stub.routes["/api/fleet"] = {"instances": [
             {"num": 1, "name": "alpha", "dir": "c:\\i\\alpha", "isRunning": True, "signedIn": True,
-             "account": {"email": "a@x.com", "planLabel": "Max 20×"}},
+             "account": {"email": "a@example.test", "planLabel": "Max 20×"}},
             {"num": 2, "name": "beta", "dir": "c:\\i\\beta", "isRunning": False, "signedIn": True,
-             "account": {"email": "b@x.com", "planLabel": "Pro"}},
+             "account": {"email": "b@example.test", "planLabel": "Pro"}},
         ]}
         self.stub.routes["/api/sessions"] = [
             {"session_id": "s1", "title": "RoloDexter coverage", "instance": "alpha",
@@ -52,7 +52,7 @@ class ChatsTest(unittest.TestCase):
         rows = chats.collect(False, None, None, None, False)
         self.assertEqual({r["sessionId"] for r in rows}, {"s1", "s2", "s4"})
         by = {r["sessionId"]: r for r in rows}
-        self.assertEqual(by["s1"]["email"], "a@x.com")
+        self.assertEqual(by["s1"]["email"], "a@example.test")
         self.assertTrue(by["s1"]["appRunning"])
         self.assertEqual(by["s2"]["plan"], "Pro")
         self.assertEqual(by["s4"]["origin"], "console")
@@ -72,7 +72,7 @@ class ChatsTest(unittest.TestCase):
                       chats.render([every["20260918-223854-25cc"]]))
 
     def test_filters(self):
-        self.assertEqual([r["sessionId"] for r in chats.collect(False, "a@x.com", None, None, False)], ["s1"])
+        self.assertEqual([r["sessionId"] for r in chats.collect(False, "a@example.test", None, None, False)], ["s1"])
         self.assertEqual([r["sessionId"] for r in chats.collect(False, None, "beta", None, False)], ["s2"])
         self.assertEqual([r["sessionId"] for r in chats.collect(False, None, None, "rolodexter", False)], ["s1"])
         self.assertEqual([r["sessionId"] for r in chats.collect(False, None, None, None, True)], ["s4"])

@@ -61,7 +61,8 @@ export function accountAuth(accountId: string): { auth: UsageAuth; label: string
 }
 
 /** Desktop instances authenticate via safeStorage (not the dispatch `accounts` table); match on the
- *  resolved email appearing in a dispatch account's free-text label (e.g. "Alex <x@y.com>"). */
+ *  resolved email appearing in a dispatch account's free-text label
+ *  (e.g. "Alex <alex@example.test>"). */
 export function findDispatchAccountByEmail(email: string): { id: string; label: string } | null {
   const needle = email.toLowerCase()
   const rows = db.query<{ id: string; label: string }, []>('select id, label from accounts').all()
