@@ -189,14 +189,19 @@ export function runnerKind(
   return release || nativeFound ? 'native' : 'bun'
 }
 
+/** Whether runners here are the native one (runnerKind for this process). The Windows tests of the
+ *  runner's job use it to skip in a checkout that has not built it. */
+export function usesNativeRunner(): boolean {
+  return runnerKind(process.platform, IS_RELEASE, foundNativeRunner() !== null) === 'native'
+}
+
 /** Said once per daemon, in its log, when a Windows checkout falls back. */
 let unbuiltRunnerNoted = false
 
 /** How a runner is started for `specPath`: the native runner on Windows; elsewhere this program in
  *  runner mode (a release runs its bundle on the downloaded bun, a source run goes through main.ts). */
 export function runnerArgv(specPath: string): string[] {
-  const kind = runnerKind(process.platform, IS_RELEASE, foundNativeRunner() !== null)
-  if (kind === 'native') return [nativeRunner(), specPath]
+  if (usesNativeRunner()) return [nativeRunner(), specPath]
   if (process.platform === 'win32' && !unbuiltRunnerNoted) {
     unbuiltRunnerNoted = true
     console.warn(

@@ -51,6 +51,32 @@ const INSTANCE_LNK = join(REPO_ROOT, 'AgentHydra Instances.lnk')
 
 const win = process.platform === 'win32'
 
+// The native tray host is built from misc/tray-host-native, never committed (scripts/build-natives.ts).
+// CI builds it before this suite (ci.yml; tests/build-natives.test.ts checks that it does). A Windows
+// checkout that has not built it gets the PowerShell tray from Create-Shortcut.ps1, which is what the
+// shortcut test checks there, and the native shortcut test is skipped with this note.
+const TRAY_EXE = join(MISC, 'AgentHydra-Tray.exe')
+const trayBuilt = existsSync(TRAY_EXE)
+const testNativeTray = test.skipIf(!trayBuilt)
+const testWithoutNativeTray = test.skipIf(trayBuilt)
+if (win && !trayBuilt)
+  console.warn(
+    `${TRAY_EXE} is not built, so the native shortcut test is skipped: build it with \`bun scripts/build-natives.ts tray\` (needs Rust)`,
+  )
+
+/** The .lnk's target, arguments, icon, start folder and description, as COM reads them. */
+function readLnk(lnk: string): string {
+  return execFileSync(
+    'powershell',
+    [
+      '-NoProfile',
+      '-Command',
+      `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk.replace(/\\/g, '\\\\')}'); "$($s.TargetPath)|$($s.Arguments)|$($s.IconLocation)|$($s.WorkingDirectory)|$($s.Description)"`,
+    ],
+    { encoding: 'utf8' },
+  )
+}
+
 function icoHasSmallFrame(path: string): boolean {
   const b = readFileSync(path)
   if (b.length <= 6 || b[0] !== 0 || b[1] !== 0 || b[2] !== 1 || b[3] !== 0) return false
@@ -78,13 +104,12 @@ describe.skipIf(!win)('tray launcher', () => {
     expect(existsSync(join(APP, 'server', 'src', 'index.ts'))).toBe(true)
   })
 
-  test('the native tray host and its config are present and coherent', () => {
-    // The main shortcut runs these two files and nothing else, so a missing or malformed pair is
-    // an app that will not open at all. Asserted here rather than only through the .lnk because
-    // this failure is silent: the shortcut still resolves, it just launches nothing useful.
-    const exe = join(APP, 'misc', 'AgentHydra-Tray.exe')
+  test('the native tray host config is present and coherent', () => {
+    // The main shortcut runs the host with this config and nothing else, so a missing or malformed
+    // config is an app that will not open at all. Asserted here rather than only through the .lnk
+    // because this failure is silent: the shortcut still resolves, it just launches nothing useful.
+    // The host itself is built, not committed: the shortcut tests below take it from there.
     const cfgPath = join(APP, 'misc', 'AgentHydra-Tray.json')
-    expect(existsSync(exe)).toBe(true)
     expect(existsSync(cfgPath)).toBe(true)
 
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
@@ -270,56 +295,65 @@ describe.skipIf(!win)('tray launcher', () => {
 
   // 20s timeout: two real PowerShell spawns + COM. A cold CI runner has taken 6.8s against the
   // 5s default (flaked the 2026-07-16 run); the assertions are unchanged, only the allowance.
-  test('the desktop shortcut points at the native tray host + the icon', () => {
-    // was: asserted wscript.exe + the shared Tray-Launch.vbs. The main shortcut now runs
-    // misc\AgentHydra-Tray.exe directly: the .vbs existed only to launch PowerShell without a
-    // console flash, and a native host suppresses its own console, so both layers are gone.
-    // Measured, alternating runs: the wscript -> powershell chain started the daemon at +475ms and
-    // served at +745-1115ms; the native host starts it at +25ms and serves at ~400ms.
-    //
-    // The QUICK-INSTANCES shortcut below is deliberately NOT migrated and still asserts the
-    // wscript path: it launches a different, trayless mode (--instances) and has no tray host to
-    // replace, so moving it would be churn with nothing to gain.
-    execFileSync(
-      'powershell',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', CREATE_SHORTCUT],
-      {
-        stdio: 'ignore',
-      },
-    )
-    expect(existsSync(LNK)).toBe(true)
-    const out = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${LNK.replace(/\\/g, '\\\\')}'); "$($s.TargetPath)|$($s.Arguments)|$($s.IconLocation)|$($s.WorkingDirectory)|$($s.Description)"`,
-      ],
-      { encoding: 'utf8' },
-    )
-    expect(out.toLowerCase()).toContain('agenthydra-tray.exe')
-    // The config filename IS the per-app surface: the host binary is generic and shared, so a
-    // shortcut that lost this argument would start a tray host with nothing to host.
-    expect(out).toContain('AgentHydra-Tray.json')
-    expect(out.toLowerCase()).not.toContain('wscript.exe')
-    expect(out).toContain('AgentHydra.ico')
-    expect(out).toContain(REPO_ROOT)
-    expect(out).toContain('Launch AgentHydra (system tray)')
+  testNativeTray(
+    'the desktop shortcut points at the native tray host + the icon',
+    () => {
+      // was: asserted wscript.exe + the shared Tray-Launch.vbs. The main shortcut now runs
+      // misc\AgentHydra-Tray.exe directly: the .vbs existed only to launch PowerShell without a
+      // console flash, and a native host suppresses its own console, so both layers are gone.
+      // Measured, alternating runs: the wscript -> powershell chain started the daemon at +475ms and
+      // served at +745-1115ms; the native host starts it at +25ms and serves at ~400ms.
+      //
+      // The QUICK-INSTANCES shortcut below is deliberately NOT migrated and still asserts the
+      // wscript path: it launches a different, trayless mode (--instances) and has no tray host to
+      // replace, so moving it would be churn with nothing to gain.
+      execFileSync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', CREATE_SHORTCUT],
+        {
+          stdio: 'ignore',
+        },
+      )
+      expect(existsSync(LNK)).toBe(true)
+      const out = readLnk(LNK)
+      expect(out.toLowerCase()).toContain('agenthydra-tray.exe')
+      // The config filename IS the per-app surface: the host binary is generic and shared, so a
+      // shortcut that lost this argument would start a tray host with nothing to host.
+      expect(out).toContain('AgentHydra-Tray.json')
+      expect(out.toLowerCase()).not.toContain('wscript.exe')
+      expect(out).toContain('AgentHydra.ico')
+      expect(out).toContain(REPO_ROOT)
+      expect(out).toContain('Launch AgentHydra (system tray)')
 
-    expect(existsSync(INSTANCE_LNK)).toBe(true)
-    const quick = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${INSTANCE_LNK.replace(/\\/g, '\\\\')}'); "$($s.TargetPath)|$($s.Arguments)|$($s.IconLocation)|$($s.WorkingDirectory)|$($s.Description)"`,
-      ],
-      { encoding: 'utf8' },
-    )
-    expect(quick.toLowerCase()).toContain('wscript.exe')
-    expect(quick).toContain('Instance-Launch.vbs')
-    expect(quick).toContain('Quick launch AgentHydra instances')
-  }, 20_000)
+      expect(existsSync(INSTANCE_LNK)).toBe(true)
+      const quick = readLnk(INSTANCE_LNK)
+      expect(quick.toLowerCase()).toContain('wscript.exe')
+      expect(quick).toContain('Instance-Launch.vbs')
+      expect(quick).toContain('Quick launch AgentHydra instances')
+    },
+    20_000,
+  )
+
+  // A checkout that has not built the native host: the same script makes the shortcut run the
+  // PowerShell tray (wscript + Tray-Launch.vbs), so the app still opens and says how to build it.
+  testWithoutNativeTray(
+    'without a native tray host, the shortcut runs the PowerShell tray',
+    () => {
+      const said = execFileSync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', CREATE_SHORTCUT],
+        { encoding: 'utf8' },
+      )
+      expect(said).toContain('build-natives')
+      const out = readLnk(LNK)
+      expect(out.toLowerCase()).toContain('wscript.exe')
+      expect(out).toContain('Tray-Launch.vbs')
+      expect(out.toLowerCase()).not.toContain('agenthydra-tray.exe')
+      expect(out).toContain('AgentHydra.ico')
+      expect(out).toContain(REPO_ROOT)
+    },
+    20_000,
+  )
 
   // 20s for the same reason as the shortcut test above, and it was the odd one out: a real
   // PowerShell spawn that loads an icon and probes PATH, left on the 5s default while its siblings

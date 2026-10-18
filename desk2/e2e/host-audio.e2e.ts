@@ -139,7 +139,7 @@ async function waitFor(what: string, test: (d: Detail) => boolean, from: number,
   return fail(`no ${what} within ${ms / 1000} s`)
 }
 
-if (!existsSync(EXE)) fail(`${EXE} is missing`)
+if (!existsSync(EXE)) fail(`${EXE} is not built: run bun scripts/build-natives.ts window from the repository root (needs Rust)`)
 
 const env: Record<string, string> = {}
 for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v

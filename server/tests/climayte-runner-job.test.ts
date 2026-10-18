@@ -7,7 +7,12 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type RunnerExit, type RunnerPids, runnerArgv } from '../src/climayte-runner'
+import {
+  type RunnerExit,
+  type RunnerPids,
+  runnerArgv,
+  usesNativeRunner,
+} from '../src/climayte-runner'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -75,7 +80,15 @@ const alive = (pid: number): boolean => {
   }
 }
 
-describe.skipIf(process.platform !== 'win32')('the Windows runner job', () => {
+// The native runner is built (bun scripts/build-natives.ts runner), never committed. CI builds it before
+// these tests; a Windows checkout that has not runs its workers under Bun, which has no job, so these skip.
+const unbuilt = process.platform === 'win32' && !usesNativeRunner()
+if (unbuilt)
+  console.warn(
+    'misc/climayte-runner.exe is not built, so the Windows runner job tests are skipped: build it with `bun scripts/build-natives.ts runner` (needs Rust)',
+  )
+
+describe.skipIf(process.platform !== 'win32' || unbuilt)('the Windows runner job', () => {
   test('without a ceiling every child runs, and the exit file says how many the tree had', async () => {
     const { printed, exit } = await underRunner(SPAWN_IDLE(12))
     expect(printed).toEqual({ alive: 12, refused: 0 })

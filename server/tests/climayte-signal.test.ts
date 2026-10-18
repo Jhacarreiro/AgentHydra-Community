@@ -1,12 +1,12 @@
 // The wind-down signal and the hooks that carry it into a CliMayte worker (climayte-signal.ts):
 // what the worker's settings say, what the runner answers, and that the runner points the hook at
 // itself before the CLI starts. The runner tests start the runner this platform uses (runnerArgv):
-// misc/climayte-runner.exe on Windows, this app in runner mode elsewhere.
+// misc/climayte-runner.exe on Windows once it is built, this app in runner mode elsewhere.
 import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runnerArgv } from '../src/climayte-runner'
+import { runnerArgv, usesNativeRunner } from '../src/climayte-runner'
 import {
   pointSignalHook,
   RUN_IF_PRESENT,
@@ -428,8 +428,10 @@ console.log('PAGE=' + page.status)
     })
     const exit = JSON.parse(readFileSync(join(dir, 'exit.json'), 'utf8'))
     expect(exit.code).toBe(0)
-    // On Windows the runner's job also counted the worker's tree: the runner and the CLI at least.
-    if (process.platform === 'win32') expect(exit.peakProcesses).toBeGreaterThanOrEqual(2)
+    // The native runner's job also counted the worker's tree: the runner and the CLI at least. (A Windows
+    // checkout that has not built it runs the Bun runner, which counts nothing.)
+    if (process.platform === 'win32' && usesNativeRunner())
+      expect(exit.peakProcesses).toBeGreaterThanOrEqual(2)
   }, 30_000)
 
   test('a spec with no signal leaves the settings as the daemon wrote them', async () => {
