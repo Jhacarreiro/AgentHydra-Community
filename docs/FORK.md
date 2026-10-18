@@ -2,15 +2,18 @@
 
 AgentHydra Community continues [AgentHydra](https://github.com/LunarWerxs/AgentHydra) from its last MIT-licensed
 commit. This page records how its history was built and how anyone can check that, using only facts that are
-public: the git history itself and GitHub's public record of the upstream repository. Why the fork exists is in the
-[README](../README.md).
+public: the git history of both repositories and GitHub's public record of the upstream repository. Why the fork
+exists is in the [README](../README.md).
 
 **TL;DR**
 
 - The base is upstream's `3a65ba8e`, committed on 15 October 2026 at 16:10:12 UTC, under the MIT licence.
+- This history starts with one commit that imports that version unchanged: its tree has the same hash as
+  `3a65ba8e`'s, which anyone can check in a clone of upstream. Upstream's own history stays in upstream's repository.
 - Upstream's next commit, `aee9dfc4`, moved AgentHydra to PolyForm Noncommercial. It is not in this history, and the
   pre-push hook refuses any ref that contains it.
-- On top of the base there are only this fork's own commits: none of the code or text upstream wrote after the base.
+- On top of the import there are only this fork's own commits: none of the code or text upstream wrote after the
+  base.
 - Owner-run services and private-repository tooling were removed; everything else stays from upstream, under MIT,
   with its copyright notices.
 
@@ -32,19 +35,32 @@ public: the git history itself and GitHub's public record of the upstream reposi
 <details>
 <summary><b>Read more: how this history was built</b></summary>
 
-- Everything up to and including `3a65ba8e` is upstream's history, unchanged.
+- The first commit, `c81335b7` ("Import AgentHydra at 3a65ba8e, its last MIT commit"), has no parent. Its tree is
+  `3a65ba8e`'s, `d6eda7b9e375d15e916c7a001099fa96051d6cc2`, so every file in it is upstream's at the base, unchanged,
+  and keeps its authors' copyright ([LICENSE](../LICENSE)). It is not one of upstream's commits: the fork's
+  maintainer committed it, and only its tree is upstream's.
 - After it come only commits by this fork's maintainer, [@Jhacarreiro](https://github.com/Jhacarreiro), each with a
   GitHub noreply address:
   - first, the work of the maintainer's pull requests to AgentHydra, #8 to #24 (14 to 17 October 2026): Claude
     Code cloud sessions, the Codex hub and its tray app, and a set of fixes and test repairs. The earliest of them
     were started on the MIT code; the later ones were started on upstream's `main` of those days, which by then
     held the relicensing commit, and most of the early ones merged that `main` in later. From every one of them,
-    only the maintainer's own lines were carried onto `3a65ba8e`, keeping their original author dates, and anything
+    only the maintainer's own lines were carried onto the base, keeping their original author dates, and anything
     upstream had added after the base was left out;
   - then the changes that make it a project of its own: its release channel and version line, the removals listed
     below, the public audit, and its documentation.
 - There are no merges from upstream, and nothing upstream wrote after `3a65ba8e` (its code, its text or its
   changelog entries) was copied or adapted.
+- Upstream's history up to `3a65ba8e` is not carried. This repository used to carry it unchanged, all 3037 commits up
+  to and including the base. It is upstream's record of its own work, and it is in upstream's repository already,
+  where anyone can read it.
+  Republishing it here listed upstream's authors as this repository's contributors and published again values that
+  upstream had since taken out of its files. The import keeps every file of the base, and its tree hash ties it to
+  upstream's commit, so the fork's provenance does not depend on that history.
+- Docs and code comments that came with the import cite upstream's commits by hash (the CliMayte notes, for
+  example). Those commits are in upstream's repository, not in this one.
+- A clone of this repository made while it still carried upstream's history cannot fast-forward to this one, which
+  shares no commit with it. Clone it again.
 
 </details>
 
@@ -54,33 +70,51 @@ public: the git history itself and GitHub's public record of the upstream reposi
 From a clone of this repository:
 
 ```sh
-# Fetch upstream to compare against. This only reads it; never push anything from it.
-git remote add upstream https://github.com/LunarWerxs/AgentHydra.git
-git fetch upstream
-
-git merge-base HEAD upstream/main                # prints 3a65ba8e6497c16732f627fc8934723839c82fdd
-git merge-base --is-ancestor aee9dfc4 HEAD; echo $?   # 1: the relicensing commit is not in this history
-git log --format='%h %an <%ae> %s' 3a65ba8e..HEAD     # only this fork's commits, all with noreply addresses
-bun run audit:public                              # the tree, and every commit since the base
+git rev-list --max-parents=0 HEAD         # one root only: c81335b7e90a85880cffbb54e51743a459cc7172
+git rev-parse c81335b7^{tree}             # d6eda7b9e375d15e916c7a001099fa96051d6cc2, 3a65ba8e's tree
+git log --format='%h %an <%ae> %s' HEAD   # only this fork's commits, all with noreply addresses
+bun run audit:public                      # the root, the tree, and every commit after the root
 ```
 
-- The audit's `license.boundary` rule fails on any commit that has `aee9dfc4` in its history. It is built into
-  `scripts/audit-public.mjs`, and its configuration can add another boundary commit but cannot remove that one.
-  CI runs the audit on every push and pull request.
+Then, in a separate clone of upstream (this only reads it; never push anything from it):
+
+```sh
+git clone https://github.com/LunarWerxs/AgentHydra.git agenthydra-upstream
+cd agenthydra-upstream
+git rev-parse 3a65ba8e^{tree}             # the same d6eda7b9e375d15e916c7a001099fa96051d6cc2
+TZ=UTC git log -1 --date=iso-strict-local --format=%cd 3a65ba8e   # 2026-10-15T16:10:12+00:00
+git rev-list --count 3a65ba8e             # 3037: the history this repository does not carry
+git log -1 --format=%P aee9dfc4           # the relicensing commit's only parent: 3a65ba8e
+```
+
+- One root means every commit in this history descends from the import commit, so none of upstream's commits,
+  `aee9dfc4` included, can be in it. A merge that brought upstream's history in would add upstream's first commit as
+  a second root.
+- Before it reads any history, the audit checks the import commit: it must be in the clone, have no parent and have
+  `3a65ba8e`'s tree, and every commit it reads must descend from it. Anything else stops it with an error, so a
+  shallow clone that does not reach the root cannot be audited.
+- The audit's `license.boundary` rule fails on any commit that has `aee9dfc4` in its history, and its
+  `upstream.history` rule on any commit that shares a commit with upstream's history up to `3a65ba8e`. Both are
+  built into `scripts/audit-public.mjs`; its configuration can add a commit to either but cannot remove these. A
+  clone of this repository holds no upstream commit, so they find nothing there: they stop a branch that would bring
+  one in. CI runs the audit on every push and pull request.
 - The pre-push hook (`.githooks/check-public-push.mjs`, enabled by `bun install`) refuses, on every remote and with
-  no override, any ref whose history contains `aee9dfc4` and any tag on a commit up to the base (those are
-  upstream's own release tags), and runs the audit on what the push would publish.
-- The audit reads the tree and the commits after the base. The commits up to `3a65ba8e` are upstream's published
-  history, carried unchanged, and it does not read them: they still hold values this fork took out of the tree,
-  such as upstream's infrastructure ids, its maintainers' email addresses and home-folder paths. All of it was
-  public in upstream's repository already.
+  no override, any ref whose history contains `aee9dfc4` or any commit up to `3a65ba8e`, and any tag on upstream's
+  work: on `3a65ba8e` or a commit before it (upstream's own release tags), or on a commit with `3a65ba8e`'s tree (the
+  import commit, which holds upstream's own release workflow). It also runs the audit on what the push would
+  publish.
+- The audit reads the tree at `HEAD`, the import commit's author, committer and message, and every line each later
+  commit adds. It does not read the import commit's tree line by line: that is upstream's tree at `3a65ba8e`, fixed
+  by its hash, and it still holds values this fork's later commits took out, such as upstream's service hosts and
+  account ids, the names of its private repositories, and its maintainers' email addresses and home-folder paths.
+  All of it was public in upstream's repository at that commit already.
 - A `pii.local-name` finding comes from your own name: the audit also looks for your git `user.name` and your
   account name, and a one-word name that is also a folder name in this repository matches it. Check those findings,
   or run `bun scripts/audit-public.mjs --no-local-names` to get the result anyone else gets.
-- Both look at commit ancestry only. Code copied or cherry-picked from upstream's later commits would make new
-  commits without `aee9dfc4` in their history, and neither would flag them. That is kept out by the clean-room rule
-  every contribution follows ([CONTRIBUTING.md](../CONTRIBUTING.md)), and anyone can compare the code itself with
-  upstream's.
+- The audit and the hook look at commit ancestry and tree hashes only. Code copied or cherry-picked from upstream's
+  later commits would make new commits with no upstream commit in their history, and neither would flag them. That
+  is kept out by the clean-room rule every contribution follows ([CONTRIBUTING.md](../CONTRIBUTING.md)), and anyone
+  can compare the code itself with upstream's.
 
 </details>
 
