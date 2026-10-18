@@ -128,5 +128,13 @@ export function pushRevArgs(
 /** Marks each finding an entry clears; returns the entries nothing matched. */
 export function applyAllow(findings: Finding[], allow: AllowEntry[]): AllowEntry[]
 
+/** Whether the run reads the tree at a commit and every commit from `base` to it, so an allow entry
+ *  nothing matched is stale. */
+export function readsEverything(
+  cwd: string,
+  modes: { tree: string[]; history: string[] },
+  base: string,
+): boolean
+
 /** The command line run: prints the report and returns the exit code (0, 1 or 2). */
 export function main(argv?: string[], options?: { stdin?: string }): number

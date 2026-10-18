@@ -7,8 +7,9 @@ name: Public audit
 #
 # No paths-ignore, unlike ci.yml: a docs-only or Markdown-only change can publish an email address or
 # a token as easily as code can, and history is checked commit by commit, so a value added and
-# removed again is still caught. Nothing is installed: the audit needs only git and bun (and jq,
-# which the runner has, to read the base commit from the audit config).
+# removed again is still caught. Both are read in one run, because only a run that has read both can
+# tell that an allowlist entry clears nothing anywhere; such a stale entry fails it. Nothing is
+# installed: the audit needs only git and bun.
 on:
   push:
   pull_request:
@@ -39,9 +40,7 @@ jobs:
         with:
           bun-version: 1.4.3
 
-      - name: Tree (every tracked file, path and binary at this commit)
-        run: bun scripts/audit-public.mjs --tree HEAD
-
-      - name: History (every commit since the MIT base)
-        if: ${{ !cancelled() }}
-        run: bun scripts/audit-public.mjs --history "$(jq -r .base scripts/audit-public.config.json)..HEAD"
+      # With no mode, the audit reads the tree at HEAD and every commit from the config's base (the MIT
+      # base) to HEAD, and fails on an allowlist entry that cleared nothing in either.
+      - name: Tree, history and allowlist
+        run: bun scripts/audit-public.mjs

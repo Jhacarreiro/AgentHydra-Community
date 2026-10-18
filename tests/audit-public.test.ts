@@ -819,6 +819,99 @@ describe('the command line', () => {
   )
 
   test(
+    'a full run fails on an allow entry that clears nothing; a tree or history run alone only counts it',
+    () => {
+      const dir = repo('stale')
+      const base = commit(dir, { 'README.md': 'base\n' }, 'base')
+      const kept = j('gh', 'p_', rand(36)) // in the tree at HEAD
+      const gone = j('gh', 'p_', rand(36)) // added, then taken out again: only in a commit
+      const never = j('gh', 'p_', rand(36)) // nowhere at all
+      const added = commit(
+        dir,
+        { 'src/a.ts': `export const t = "${kept}"\nexport const u = "${gone}"\n` },
+        'add',
+      )
+      commit(dir, { 'src/a.ts': `export const t = "${kept}"\n` }, 'take one out')
+
+      const files = scratch('stale-files')
+      const config = join(files, 'config.json')
+      const allow = join(files, 'allow.json')
+      const provenance = join(files, 'provenance.json')
+      writeFileSync(config, JSON.stringify({ ...CONFIG, base }))
+      writeFileSync(provenance, JSON.stringify({ binaries: [] }))
+      const entry = (value: string, reason: string) => ({
+        rule: 'secret.token',
+        path: 'src/a.ts',
+        fp: fingerprint(value),
+        reason,
+      })
+      const inTree = entry(kept, 'synthetic token in the tree')
+      const inHistory = entry(gone, 'synthetic token in an earlier commit')
+      const stale = entry(never, 'synthetic token that is nowhere')
+      const run = (...modes: string[]) =>
+        spawnSync(
+          process.execPath,
+          [
+            SCRIPT,
+            ...modes,
+            '-C',
+            dir,
+            '--config',
+            config,
+            '--allow',
+            allow,
+            '--provenance',
+            provenance,
+            '--no-local-names',
+          ],
+          {
+            encoding: 'utf8',
+            timeout: GIT_TEST_TIMEOUT,
+            env: { ...process.env, GITHUB_ACTIONS: '' },
+          },
+        )
+
+      writeFileSync(allow, JSON.stringify({ entries: [inTree, inHistory, stale] }))
+      const full = run()
+      expect(full.status).toBe(1)
+      expect(full.stderr).toContain('1 stale allowlist entry: it clears nothing')
+      expect(full.stderr).toMatch(/stale allowlist entry: secret\.token +src\/a\.ts/)
+      expect(full.stderr).toContain(stale.fp)
+      expect(full.stderr).not.toContain(inTree.fp)
+      expect(full.stderr).not.toContain(inHistory.fp)
+      expect(full.stderr).not.toContain('✓ clean')
+      expect(full.stderr).not.toContain('matched nothing here')
+      // The same two halves named on the command line are a full run as well.
+      expect(run('--tree', 'HEAD', '--history', `${base}..HEAD`).status).toBe(1)
+      const doc = JSON.parse(run('--json').stdout) as {
+        ok: boolean
+        findings: Array<{ allowed?: string }>
+        staleAllow: unknown[]
+      }
+      expect(doc.ok).toBe(false)
+      expect(doc.findings.length).toBeGreaterThan(0)
+      expect(doc.findings.every((f) => Boolean(f.allowed))).toBe(true)
+      expect(doc.staleAllow).toEqual([stale])
+
+      // Half a run cannot tell an entry the other half needs from one nobody needs.
+      const tree = run('--tree', 'HEAD')
+      expect(tree.status).toBe(0)
+      expect(tree.stderr).toContain('✓ clean')
+      expect(tree.stderr).toContain('(2 allowlist entries matched nothing here)')
+      expect(run('--history', `${base}..HEAD`).status).toBe(0)
+      // History from a later commit than the base is not every commit since it.
+      expect(run('--tree', 'HEAD', '--history', `${added}..HEAD`).status).toBe(0)
+
+      writeFileSync(allow, JSON.stringify({ entries: [inTree, inHistory] }))
+      const fixed = run()
+      expect(fixed.status).toBe(0)
+      expect(fixed.stderr).toContain('✓ clean: 3 finding(s) allowed')
+      expect(fixed.stderr).not.toContain('stale')
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'without the token formats of server/src/secrets.ts the audit could not run (exit 2), not "found"',
     () => {
       // A copy of the audit with its three files and no server/ beside it: the same failed import
@@ -900,6 +993,23 @@ describe('this repository', () => {
       })
       expect(r.stderr).toContain('✓ clean')
       expect(r.status).toBe(0)
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test.skipIf(!hasCommit(CONFIG.base))(
+    'every allowlist entry clears something in the tree or in a commit since the MIT base',
+    () => {
+      const r = spawnSync(process.execPath, [SCRIPT, '--json'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        timeout: GIT_TEST_TIMEOUT,
+        maxBuffer: 64 * 1024 * 1024,
+      })
+      expect([0, 1]).toContain(r.status ?? 2)
+      const doc = JSON.parse(r.stdout) as { scope: string[]; staleAllow: unknown[] }
+      expect(doc.scope).toHaveLength(2)
+      expect(doc.staleAllow).toEqual([])
     },
     GIT_TEST_TIMEOUT,
   )

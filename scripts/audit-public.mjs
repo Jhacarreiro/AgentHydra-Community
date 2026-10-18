@@ -34,7 +34,11 @@
 // harmless: {rule, path, fp, reason}, matched on all three, so an entry clears that one value in that
 // one file and nothing else. It never holds the value itself. commit.email and license.boundary cannot
 // be allowed at all: a published address cannot be unpublished, and the licence line is not a matter
-// of opinion.
+// of opinion. An entry that clears nothing is stale, and a stale entry would quietly clear its value
+// again if it ever came back. A run that reads the tree at a commit and every commit from the base up
+// to that same commit (the default run, and CI's) has seen everything an entry can match, so there a
+// stale entry fails the run with exit 1 and a message of its own. A --tree or a --history run alone
+// reads half of that, and only counts the entries it did not use.
 //
 // THE RUNNER'S OWN NAME. git user.name and the OS account name are read at run time and looked for as
 // well (rule pii.local-name), so nobody has to write their own name into the repository to keep it
@@ -982,6 +986,22 @@ export function applyAllow(findings, allow) {
   return allow.filter((e) => !used.has(`${e.rule}\0${e.path}\0${e.fp}`))
 }
 
+/**
+ * Whether a run read everything an allow entry can match: the tree at some commit, and a --history
+ * range from the base to that same commit. Only then is an entry that cleared nothing stale; a
+ * --tree run alone does not read the commits, and a --history run alone does not read the tree.
+ */
+export function readsEverything(cwd, { tree, history }, base) {
+  if (!tree.length || !history.length) return false
+  const trees = new Set(tree.map((rev) => resolveCommit(cwd, rev)))
+  const from = resolveCommit(cwd, base)
+  return history.some((range) => {
+    if (range.includes('...') || !range.includes('..')) return false
+    const [start, tip] = range.split('..')
+    return resolveCommit(cwd, start || 'HEAD') === from && trees.has(resolveCommit(cwd, tip || 'HEAD'))
+  })
+}
+
 /** GitHub's workflow-command escaping: the message, and a property value (which also escapes , :). */
 function ghData(s) {
   return String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
@@ -1074,7 +1094,8 @@ export function main(argv = process.argv.slice(2), { stdin } = {}) {
       }
     }
     const unused = applyAllow(findings, files.allow)
-    return report(findings, unused, scope, opts, Date.now() - started)
+    const stale = readsEverything(opts.cwd, opts, files.config.base) ? unused : []
+    return report(findings, unused, stale, scope, opts, Date.now() - started)
   } catch (err) {
     if (err instanceof AuditError) {
       console.error(`audit:public could not run: ${err.message}`)
@@ -1084,13 +1105,19 @@ export function main(argv = process.argv.slice(2), { stdin } = {}) {
   }
 }
 
-function report(findings, unused, scope, opts, ms) {
+function describeEntry(e) {
+  return `${e.rule.padEnd(20)} ${e.path}  fp ${e.fp}`
+}
+
+/** `stale` is `unused` when the run read everything (readsEverything), else empty. */
+function report(findings, unused, stale, scope, opts, ms) {
   const open = findings.filter((f) => !f.allowed)
   const allowedCount = findings.length - open.length
+  const failed = open.length > 0 || stale.length > 0
   if (opts.json) {
-    const doc = { ok: open.length === 0, scope, findings, unusedAllow: unused }
+    const doc = { ok: !failed, scope, findings, unusedAllow: unused, staleAllow: stale }
     console.log(JSON.stringify(doc, null, 2))
-    return open.length ? 1 : 0
+    return failed ? 1 : 0
   }
   if (opts.suggest) {
     const seen = new Set()
@@ -1112,6 +1139,11 @@ function report(findings, unused, scope, opts, ms) {
     const msg = `${RULES[f.rule]}; fp ${f.fp}${f.note ? ` (${f.note})` : ''}`
     annotations.push(`::error ${loc},title=${ghProp(f.rule)}::${ghData(msg)}`)
   }
+  for (const e of stale) {
+    out.push(`  ✗ stale allowlist entry: ${describeEntry(e)}`)
+    const msg = `stale entry: ${e.rule} in ${e.path} (fp ${e.fp}) clears nothing; take it out`
+    annotations.push(`::error file=${ghProp(ALLOW_FILE)},title=allowlist.stale::${ghData(msg)}`)
+  }
   // In GitHub Actions each finding is also an annotation on the file and line it names.
   if (process.env.GITHUB_ACTIONS === 'true' && annotations.length) console.log(annotations.join('\n'))
   const secs = (ms / 1000).toFixed(1)
@@ -1124,14 +1156,24 @@ function report(findings, unused, scope, opts, ms) {
       '  Fix them, or, for one that is really fine, add {rule, path, fp, reason} to the allowlist',
       '  (--suggest-allow prints the entries without their reasons). Never paste the value itself.',
     )
-  } else {
+  } else if (!stale.length) {
     out.push(`✓ clean: ${allowedCount} finding(s) allowed by ${ALLOW_FILE}, in ${secs} s.`)
+  } else {
+    out.push('', `No finding is open (${allowedCount} allowed by ${ALLOW_FILE}), in ${secs} s.`)
   }
-  if (unused.length) {
+  if (stale.length) {
+    const one = stale.length === 1
+    const entries = `${stale.length} stale allowlist entr${one ? 'y' : 'ies'}`
+    out.push(
+      `✗ ${entries}: ${one ? 'it clears' : 'they clear'} nothing in the tree or in any commit`,
+      `  since the base. Take ${one ? 'it' : 'them'} out of ${ALLOW_FILE}: an entry nobody`,
+      '  needs would clear its value again if it came back.',
+    )
+  } else if (unused.length) {
     out.push(`  (${unused.length} allowlist entr${unused.length === 1 ? 'y' : 'ies'} matched nothing here)`)
   }
   console.error(out.join('\n'))
-  return open.length ? 1 : 0
+  return failed ? 1 : 0
 }
 
 const invokedDirectly =
