@@ -140,8 +140,10 @@ Each path is where the feature is defined.
 
 **Shipped**
 
-- **Foreign-tool session reading (Cursor, Windsurf, Zed, Copilot CLI)** - A shared adapter reads and lists session
-  history from other AI coding tools alongside Claude, Codex and OpenCode, read-only. - `server/src/foreign-sessions.ts`
+- **Foreign-tool session reading (Zed, Copilot CLI, VS Code Copilot, Grok, Kimi, Pi)** - A shared adapter reads and
+  lists session history from other AI coding tools alongside Claude, Codex and OpenCode, read-only. Tools whose store
+  format is not known, such as Cursor and Windsurf, are only detected, not read (`format: null` in the catalog). -
+  `server/src/foreign-sessions.ts`, `server/src/agent-catalog.ts`
 - **Claude Code cloud and Remote Control sessions** - Opt-in (`AGENTHYDRA_CLOUD_SESSIONS=1`): lists each account's
   cloud and Remote Control sessions from Anthropic's API with the CLI's own login, never storing or refreshing its
   token, and shows them beside local chats, read-only, with working, waiting-on-you and done states. -
