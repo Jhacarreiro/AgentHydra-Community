@@ -26,6 +26,7 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Remote access to the orchestrator is off until you set it up**
 - **HSwarm's Free web accounts and the RepoYeti and ReDesign connectors stay off until you turn them on**
 - **A public audit checks everything this repository publishes**
+- **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged**
 - **And every change below that AgentHydra had made, not yet released, by its last MIT-licensed commit**
 
 **Everything in Unreleased**
@@ -173,6 +174,11 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   objects to is refused.
 - **The public audit fails when an allowlist entry no longer clears anything.** A full run lists each stale entry
   and exits with an error, so an exemption cannot linger after its value is gone.
+- **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged.** It no
+  longer republishes the original project's own history, or the list of that project's contributors that came with
+  it; that history stays in the original project's repository. Anyone can check the import against the original
+  project, where its last MIT-licensed commit has the very same tree hash. A copy cloned from here before this
+  change cannot update with `git pull`: clone it again.
 - **The connector list stops polling fast when nothing changes.** A connector stuck installing or starting is asked about every second; after a minute with the same answer the poll falls back to every 5 seconds. A Desk window at rest asks once every 5 seconds (7 requests in 30 s).
 - **When a Claude Desktop or Codex app goes down with chats running, the Instance manager moves them and starts them
   again.** If the app crashed, was signed out, or its plan or organization stopped working, it opens the same kind of
