@@ -7,8 +7,8 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import type { ChatSummary } from '@shared/protocol'
-import { type CatalogEntry, loadCatalog } from '../../../../server/src/hydra-core/catalog'
-import { leadName, parseHydra } from '../../../../server/src/hydra-core/hydra-md'
+import { type CatalogEntry, loadCatalog } from '@agenthydra/server/hydra-core/catalog'
+import { leadName, parseHydra } from '@agenthydra/server/hydra-core/hydra-md'
 import { coreDir } from './hydra-core-mode'
 import { AVATAR_TYPES, type AvatarExt, currentManager, type ManagerAvatar, MANAGER_SLUG, managerAvatar, managerName } from './managers'
 

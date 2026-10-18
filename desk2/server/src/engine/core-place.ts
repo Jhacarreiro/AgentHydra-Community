@@ -1,6 +1,6 @@
 // Run by core-slot.ts as its own process: reads one placement ask as JSON on stdin, places the chat's pack with Hydra
 // Core's placeChat, and prints {text} (or {error}) as the last line of stdout.
-import { APPEND_MAX, pickForPlace, placeChat } from '../../../../server/src/hydra-core/placement'
+import { APPEND_MAX, pickForPlace, placeChat } from '@agenthydra/server/hydra-core/placement'
 
 try {
   const req = JSON.parse(await Bun.stdin.text()) as {

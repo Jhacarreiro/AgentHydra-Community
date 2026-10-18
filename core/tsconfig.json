@@ -8,6 +8,7 @@
     "lib": ["ESNext", "DOM"],
     "paths": {
       "@shared/*": ["../desk2/shared/*"],
+      "@agenthydra/server/*": ["../server/src/*"],
       "@anthropic-ai/claude-agent-sdk": [
         "../desk2/server/node_modules/@anthropic-ai/claude-agent-sdk"
       ]

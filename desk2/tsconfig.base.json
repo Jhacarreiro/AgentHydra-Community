@@ -10,6 +10,9 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "paths": { "@shared/*": ["./shared/*"] }
+    // @agenthydra/server: the modules of AgentHydra's own server (../server/src) that Desk's server runs. A release
+    // has no server/src: scripts/package-release.ts bundles the ones imported into agenthydra-server/ and points the
+    // alias there, so the imports are written once and resolve in both.
+    "paths": { "@shared/*": ["./shared/*"], "@agenthydra/server/*": ["../server/src/*"] }
   }
 }
