@@ -60,11 +60,11 @@ function macLocalHostName(): string | undefined {
 
 /**
  * The name a PC is listed under when AGENTHYDRA_CODEX_HUB_PC is unset. A Mac's hostname changes with the network
- * (`Mac.lan` at home, `Mac.local` elsewhere, `Mac.home.arpa`, `Mac.fritz.box`, or whatever name the network's DNS
- * has for it), and hubPcKey keeps all of it (`mac-lan`), so one Mac showed up as two PCs: on a Mac it is the
- * Bonjour name (`scutil --get LocalHostName`), else the hostname's first label. Elsewhere it is the computer's name
- * less a trailing `.local`, `.lan`, `.home` or `.localdomain`; a Windows computer name has none, so the PCs already
- * on a hub keep their key.
+ * (`Example-Mac.lan` on one, `Example-Mac.local` on another, `Example-Mac.home.arpa`, `Example-Mac.fritz.box`, or
+ * whatever name the network's DNS has for it), and hubPcKey keeps all of it (`example-mac-lan`), so one Mac showed
+ * up as two PCs: on a Mac it is the Bonjour name (`scutil --get LocalHostName`), else the hostname's first label.
+ * Elsewhere it is the computer's name less a trailing `.local`, `.lan`, `.home` or `.localdomain`; a Windows computer
+ * name has none, so the PCs already on a hub keep their key.
  */
 export function defaultPcName(
   host: string = hostname(),

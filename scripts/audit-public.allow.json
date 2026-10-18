@@ -35,19 +35,19 @@
       "rule": "infra.internal-host",
       "path": "server/src/core/codex-hub-push.ts",
       "fp": "80f4fbd938b9aa0b",
-      "reason": "The names macOS gives a Mac called Mac on different networks (.lan, .local, .home.arpa), as examples in a comment. They identify no network."
+      "reason": "The names macOS gives a Mac called Mac on different networks (.lan, .local, .home.arpa), as examples in a comment in earlier commits only; the comment now names Example-Mac. They identify no network."
     },
     {
       "rule": "infra.internal-host",
       "path": "server/src/core/codex-hub-push.ts",
       "fp": "aab71a5e61a9015d",
-      "reason": "The names macOS gives a Mac called Mac on different networks (.lan, .local, .home.arpa), as examples in a comment. They identify no network."
+      "reason": "The names macOS gives a Mac called Mac on different networks (.lan, .local, .home.arpa), as examples in a comment in earlier commits only; the comment now names Example-Mac. They identify no network."
     },
     {
       "rule": "infra.internal-host",
       "path": "server/src/core/codex-hub-push.ts",
       "fp": "ebce48cc505a20cc",
-      "reason": "The names macOS gives a Mac called Mac on different networks (.lan, .local, .home.arpa), as examples in a comment. They identify no network."
+      "reason": "The names macOS gives a Mac called Mac on different networks (.lan, .local, .home.arpa), as examples in a comment in earlier commits only; the comment now names Example-Mac. They identify no network."
     },
     {
       "rule": "infra.internal-host",
@@ -65,7 +65,7 @@
       "rule": "infra.internal-host",
       "path": "server/tests/codex-hub-names.test.ts",
       "fp": "a60cdbf1e691f1b9",
-      "reason": "A comment's example of a machine name with and without .local, which the hub must file under one folder."
+      "reason": "A comment's example, in earlier commits only, of a machine name with and without .local, which the hub must file under one folder; the comment now names example-pc."
     },
     {
       "rule": "secret.token",
