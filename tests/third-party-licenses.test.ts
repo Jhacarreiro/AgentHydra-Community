@@ -435,6 +435,9 @@ describe('the file', () => {
     ])
     const text = renderThirdPartyLicenses(merged, 'AgentHydra 2026.10.0 for linux-x64')
     expect(text).toContain('AgentHydra 2026.10.0 for linux-x64')
+    // It points at the files beside it: the licence, where the project comes from, and the adapted code's notices.
+    expect(text).toContain('the licence in LICENSE, and NOTICE says where it comes from')
+    expect(text).toContain('is described in THIRD-PARTY-NOTICES.md')
     expect(text).toContain('2 packages:')
     expect(text.split('Apache License').length - 1).toBe(1)
     expect(text).toContain("--- LICENSE: the same text as one 1.0.0's LICENSE above ---")

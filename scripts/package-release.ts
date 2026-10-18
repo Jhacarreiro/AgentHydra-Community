@@ -282,8 +282,9 @@ const stage = join(out, name)
 rmSync(stage, { recursive: true, force: true })
 mkdirSync(stage, { recursive: true })
 console.log(`Packaging AgentHydra ${VERSION} for ${target} into ${stage} (Bun ${bunVersion})`)
-// What the MIT licence asks of every copy, at the top of every bundle: the licence itself, the notices for the code
-// AgentHydra adapts from other projects, and the licence texts those notices point to.
+// What the MIT licence asks of every copy, at the top of every bundle: the licence itself, NOTICE (where this
+// project comes from), the notices for the code AgentHydra adapts from other projects, and the licence texts those
+// notices point to.
 stageLicenceFiles(ROOT, stage)
 // The build metafiles the licence list is read from live outside the bundle.
 const scratch = mkdtempSync(join(tmpdir(), 'package-release-'))

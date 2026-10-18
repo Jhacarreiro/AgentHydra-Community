@@ -273,13 +273,14 @@ downloaded or built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
 
   A checkout from before these programs left the tree loses its copies when it updates. Build them, or run
   `misc\Create-Shortcut.ps1` again, so the AgentHydra shortcut opens again.
-- **Licences in a release:** every bundle carries `LICENSE` (MIT), `NOTICE` (where this project comes from), `THIRD-PARTY-NOTICES.md` for the code AgentHydra
-  adapts from other projects, `LICENSES/`, and `THIRD-PARTY-LICENSES`. That last file gives the name, version,
-  licence and licence text of every third-party package whose code is in the bundle: its npm packages and, in the
-  Windows bundle, the Rust crates of its programs and Rust's own licences. A release is not built if any of them has
-  no licence, no licence text, or a licence outside a permissive allowlist (MIT, MIT-0, ISC, BSD, Apache-2.0, 0BSD,
-  BlueOak, CC0, OFL, Unlicense, Zlib, Unicode, BSL-1.0 and MPL-2.0). The Windows installer puts them beside
-  `AgentHydra.exe`, and an in-app update brings the new release's copies.
+- **Licences in a release:** every bundle carries `LICENSE` (MIT), `NOTICE` (where this project comes from),
+  `THIRD-PARTY-NOTICES.md` for the code AgentHydra adapts from other projects, `LICENSES/`, and
+  `THIRD-PARTY-LICENSES`. That last file gives the name, version, licence and licence text of every third-party
+  package whose code is in the bundle: its npm packages and, in the Windows bundle, the Rust crates of its programs
+  and Rust's own licences. A release is not built if any of them has no licence, no licence text, or a licence
+  outside a permissive allowlist (MIT, MIT-0, ISC, BSD, Apache-2.0, 0BSD, BlueOak, CC0, OFL, Unlicense, Zlib,
+  Unicode, BSL-1.0 and MPL-2.0). The Windows installer puts them beside `AgentHydra.exe`, and an in-app update
+  brings the new release's copies.
 - **The Claude Agent SDK** is not in any bundle: its licence reserves all rights. The first time a chat needs it,
   AgentHydra downloads the exact version the release pins, checks its sha512 against the pin, and unpacks it into
   `desk2/node_modules`, where it stays across in-app updates. Meanwhile the chat shows "Getting the Claude Agent SDK"
@@ -438,9 +439,9 @@ refuses what it objects to; CI runs it again on every push and pull request, aft
   merged with its author's own commits; a contribution a maintainer adapts or rewrites still credits its author.
 - **Security:** report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes.
 - **Code of conduct:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-- **Licence:** [MIT](LICENSE), with where this project comes from in [NOTICE](NOTICE). Third-party material and its licences are listed in
-  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and each release also carries `THIRD-PARTY-LICENSES` for every
-  third-party package inside it.
+- **Licence:** [MIT](LICENSE), with where this project comes from in [NOTICE](NOTICE). Third-party material and its
+  licences are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and each release also carries
+  `THIRD-PARTY-LICENSES` for every third-party package inside it.
 
 ## FAQ
 

@@ -23,10 +23,11 @@
 # It writes codex-hub-tray.exe, codex-hub-tray-linux-x64 and codex-hub-tray-linux-arm64, the names the hub serves
 # them under from <config dir>/codex-hub/.pusher/, each one's THIRD-PARTY-LICENSES-<target>.txt (the Go modules it
 # links and Go's own licence, made by the repository's scripts/third-party-licenses.ts, so Bun is needed), the
-# repository's LICENSE and NOTICE, and SHA256SUMS of all of them. Hand a build out with its licence files. "macos" runs build-macos.sh, which needs cgo and
-# the Xcode command line tools, so it builds on a Mac only; its two hub builds go into SHA256SUMS too. The zip a new
-# Mac is handed holds file times, so it is not the same bytes twice and stays out of SHA256SUMS: its hash goes into
-# SHA256SUMS-macos-zip, for comparing the copy a Mac gets with the one built here.
+# repository's LICENSE and NOTICE, and SHA256SUMS of all of them. Hand a build out with its licence files. "macos"
+# runs build-macos.sh, which needs cgo and the Xcode command line tools, so it builds on a Mac only; its two hub
+# builds go into SHA256SUMS too. The zip a new Mac is handed holds file times, so it is not the same bytes twice and
+# stays out of SHA256SUMS: its hash goes into SHA256SUMS-macos-zip, for comparing the copy a Mac gets with the one
+# built here.
 #
 # Two builds are the same because nothing of the machine goes in: -trimpath leaves out this checkout's folder,
 # -buildvcs=false the commit and whether the tree had changes, -buildid= the build id; cgo is off for these targets,

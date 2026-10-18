@@ -1,12 +1,12 @@
 # Third-party notices
 
-AgentHydra is MIT-licensed (see `LICENSE`). Some parts of it are adapted from, or ship, other
-projects' work under their own licences: most under MIT, one adapted file under the Apache License
-2.0 (vLLM, below), and the Inter typeface under the SIL Open Font License 1.1. Each of those
-licences requires the original copyright notice and licence to travel with any substantial copy, so
-they are reproduced here or in the file each section names. Each adapted source file names its
-source in a header comment, except the shadcn-vue components, which carry none and are listed by
-folder in their section.
+AgentHydra is MIT-licensed (see `LICENSE`), and `NOTICE` says where this project comes from. Some
+parts of it are adapted from, or ship, other projects' work under their own licences: most under
+MIT, one adapted file under the Apache License 2.0 (vLLM, below), and the Inter typeface under the
+SIL Open Font License 1.1. Each of those licences requires the original copyright notice and licence
+to travel with any substantial copy, so they are reproduced here or in the file each section names.
+Each adapted source file names its source in a header comment, except the shadcn-vue components,
+which carry none and are listed by folder in their section.
 
 This file is about code adapted into AgentHydra's own source. The third-party packages a release
 bundle carries as they are (the npm packages bundled into its JavaScript or installed beside it, the
