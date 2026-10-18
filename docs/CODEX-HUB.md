@@ -21,7 +21,8 @@ details of each route, header and variable are in
 - **`codex-hub-tray/build.sh` builds the tray with your addresses and public key,** the same bytes every time from the
   same commit.
 - **Open the tray once on each PC.** It installs itself, opens the pairing page, and you choose Connect.
-- **One token serves every PC.** If you change it, every PC must pair again.
+- **One token serves every PC, and it is the only lock.** Whoever has it can push and relay under any PC's name. If
+  you change it, every PC must pair again.
 
 <details>
 <summary>What has been tested, and what has not</summary>
@@ -32,8 +33,9 @@ Tested, by automated tests in this repository:
   in a scratch HOME on a loopback port and pairs two PCs through the pairing page as the tray does. Each PC pushes its
   own chat, and the hub lists each chat under its own PC. Each PC opens a relay. These are refused, and write
   nothing: a request with no token, with a wrong one, without `Bearer`, with a network `Host`, or with the old token
-  after the token was changed. A PC that pairs again then pushes with the new token. It has run on Linux; it is
-  skipped on Windows, where the daemon starts its tray host at boot.
+  after the token was changed. A PC that pairs again then pushes with the new token. With the token and no install
+  id, a request replaces a connected PC's copy and takes its relay, as [step 7](#7-the-security-model) says. It has
+  run on Linux; it is skipped on Windows, where the daemon starts its tray host at boot.
 - **The tray on Linux, end to end** (`codex-hub-tray/test-linux.sh`). It runs against a fake hub: installing,
   pairing, the pusher, self-update, refusing unsigned builds and builds signed with another key, moving to a new
   key, and a PC without a desktop taking a new token from `tray.json`. It runs on every change to the tray
@@ -356,7 +358,7 @@ it.
 
 The PC is listed under its computer name. On a Mac, that is its Local Hostname. Set `AGENTHYDRA_CODEX_HUB_PC` in the
 user's environment to use another name. Two PCs cannot share a name: while one holds it, the hub refuses the other's
-pushes.
+pushes. That keeps two of your own PCs apart, not someone who has the token ([step 7](#7-the-security-model)).
 
 ### Windows
 
@@ -474,12 +476,19 @@ out from the old hub first ([REFERENCE.md, Moving the hub](REFERENCE.md#codex-ch
 
 **What the token allows.** Anyone who has the hub token and can reach `/api/codex-hub/` can:
 
-- **Push chats under any PC name that no other PC holds right now.** That adds chats to the hub's list under that
-  name. Once a PC has been off long enough to let go of its name (10 minutes at the default interval), the token's
-  holder can also replace or remove the hub's copies of that PC's chats. The chats on the PC itself are untouched.
-- **Open the relay for a PC name that is free.** If Desk then continues a chat of that PC, what you type and approve
-  in Desk goes to whoever holds the relay.
+- **Push chats under any PC name, at any time.** That adds chats to the hub's list under that name, and replaces or
+  removes the hub's copies of the chats of a PC that already has that name, even one that is connected. The chats
+  on the PC itself are untouched.
+- **Open the relay for any PC name.** A relay opened for a connected PC's name takes that PC's place: its own relay
+  is closed, and when Desk continues a chat of that PC, what you type and approve in Desk goes to whoever opened the
+  new relay instead.
 - **Download the hub's pusher and tray builds.** They carry your addresses and public key, and nothing secret.
+
+The hub's hold on a PC's name ([step 5](#pairing-from-the-connect-button)) is not a check on any of this. It keeps
+two of your own PCs that send the same name from replacing each other's chats, and it works only because each
+pusher sends its install id. A request can leave the id out, and the hub then takes it as it took pushes from
+pushers older than install ids. So treat the token as the key to every PC's copy and relay: if it leaks, change it
+and pair every PC again ([Changing the hub token](#changing-the-hub-token)).
 
 It does not let them:
 

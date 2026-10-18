@@ -921,7 +921,9 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   connects again after five minutes, not five seconds. Once the install that held the name has stopped
   for that long (the PC set up again, with a new id), the next one takes it: after 10 minutes at the
   default interval, after a day at the longest. A pusher from before install ids sends none: it is taken
-  as before and holds its name against no one. Between two machines, a name of its own is the fix.
+  as before and holds its name against no one. Between two machines, a name of its own is the fix. So the
+  hold keeps your own PCs apart and is no check on whoever has the token, who can send no id and take a
+  name's copy and relay ([CODEX-HUB.md, the security model](CODEX-HUB.md#7-the-security-model)).
 - **Two pushers on one PC:** the daemon's pusher and a standalone one read the same Codex home and push the
   same chats, so run only one of them: stop the standalone pusher, or leave `AGENTHYDRA_CODEX_HUB_URL` out
   of the daemon's environment. Another name does not help here. Set where both read it (the user's
