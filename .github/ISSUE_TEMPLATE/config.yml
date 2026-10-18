@@ -1,3 +1,5 @@
-# New issues start blank. Questions, ideas and bug reports all go to this repository's issues; there is
-# no outside chat server to send people to.
 blank_issues_enabled: true
+contact_links:
+  - name: 🔒 Report a vulnerability
+    url: https://github.com/Jhacarreiro/AgentHydra-Community/security/advisories/new
+    about: Report a security problem privately, not in a public issue (see SECURITY.md).
