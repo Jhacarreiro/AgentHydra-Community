@@ -8,14 +8,18 @@
 #   codex-hub-tray-darwin-x64
 #
 # The addresses come from HUB_URL, PAIR_URL and INBOX_URL, the public key the hub's builds are signed with from
-# UPDATE_KEY (scripts/codex-hub-sign.ts prints it; without one the app takes builds only from an https hub), and the
-# bundle identifier, which also names the LaunchAgent, from BUNDLE_ID (default com.example.codex-hub-tray):
+# UPDATE_KEY (scripts/codex-hub-sign.ts prints it; two, comma-separated, while moving to a new key; without one the
+# app takes builds only from an https hub), the hubs earlier builds had from OLD_HUB_URLS, and the bundle identifier,
+# which also names the LaunchAgent, from BUNDLE_ID (default com.example.codex-hub-tray). build.sh runs this for its
+# "macos" target, after checking those values; the Go builds here take the same flags as its own, so that two builds
+# from one commit come out the same:
 #
-#   HUB_URL=http://hub:18788 PAIR_URL=https://inbox.example/codex-hub/pair INBOX_URL=https://inbox.example \
-#     UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey hub-update.key) ./build-macos.sh
+#   HUB_URL=https://hub.example.test PAIR_URL=https://inbox.example.test/codex-hub/pair \
+#     INBOX_URL=https://inbox.example.test UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key) \
+#     TARGETS=macos ./build.sh
 #
 # The hub's builds are signed after this, as codesign changes them: bun ../scripts/codex-hub-sign.ts sign
-# hub-update.key dist/codex-hub-tray-darwin-arm64 dist/codex-hub-tray-darwin-x64.
+# ~/codex-hub/update.key dist/codex-hub-tray-darwin-arm64 dist/codex-hub-tray-darwin-x64.
 #
 # Without a paid Apple Developer account the app is not notarized: the first open of the downloaded app needs
 # System Settings > Privacy & Security > Open Anyway. The copy it installs in ~/Applications does not.
@@ -37,7 +41,12 @@ BUNDLE_ID=${BUNDLE_ID:-com.example.codex-hub-tray}
 OUT=${OUT:-dist}
 # Go supports macOS 11 and later; without this the C side would require the macOS this build runs on.
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-11.0}
-LDFLAGS="-s -w -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-} -X main.inboxURL=${INBOX_URL:-} -X main.updateKey=${UPDATE_KEY:-} -X main.bundleID=$BUNDLE_ID"
+# The Go go.mod's toolchain line names, as build.sh uses it, and none of the environment's GOFLAGS.
+GOTOOLCHAIN=$(sed -n 's/^toolchain //p' go.mod)
+export GOTOOLCHAIN
+unset GOFLAGS GOAMD64 GOARM64 GOEXPERIMENT
+export GOFLAGS=-mod=readonly
+LDFLAGS="-s -w -buildid= -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-} -X main.inboxURL=${INBOX_URL:-} -X main.updateKey=${UPDATE_KEY:-} -X main.oldHubURLs=${OLD_HUB_URLS:-} -X main.bundleID=$BUNDLE_ID"
 [ -n "${HUB_URL:-}" ] || echo "warning: HUB_URL is empty; each Mac then needs the hub address in its tray.json" >&2
 case "${UPDATE_KEY:-}:${HUB_URL:-}" in
 :https://*) ;;
@@ -49,7 +58,7 @@ for arch in arm64 amd64; do
 	name=$arch
 	[ "$arch" = amd64 ] && name=x64
 	echo "building darwin/$arch"
-	CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "$LDFLAGS" -o "$OUT/codex-hub-tray-darwin-$name" .
+	CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -buildvcs=false -ldflags "$LDFLAGS" -o "$OUT/codex-hub-tray-darwin-$name" .
 done
 
 # The build prints its own Info.plist, the one it also writes when it installs the app. It is made outside the

@@ -5,36 +5,33 @@
 // nothing is typed or copied. What differs per system is in os_windows.go, os_unix.go (Linux and macOS),
 // os_linux.go and os_darwin.go.
 //
-// Build (the addresses are the operator's, given at build time, with the public key the hub's builds are signed with:
-// `bun scripts/codex-hub-sign.ts keygen` prints it, and `sign` signs each build the hub hands out):
+// Build with build.sh, which makes the Windows and Linux builds, and the macOS ones on a Mac (build-macos.sh), the
+// same bytes every time from the same commit: the addresses are the operator's, given at build time, with the public
+// key the hub's builds are signed with (`bun scripts/codex-hub-sign.ts keygen` prints it, and `sign` signs each build
+// the hub hands out), or two while moving to a new key:
 //
-//	FLAGS="-X main.hubURL=http://hub:18788 -X main.pairURL=https://inbox.example/codex-hub/pair \
-//	  -X main.inboxURL=https://inbox.example -X main.updateKey=$(bun ../scripts/codex-hub-sign.ts pubkey hub-update.key)"
+//	HUB_URL=https://hub.example.test PAIR_URL=https://inbox.example.test/codex-hub/pair \
+//	  INBOX_URL=https://inbox.example.test UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key) \
+//	  ./build.sh
 //
-// Without updateKey the tray takes builds only from an https hub (hub.go checkSigned). Each build below goes into
-// dist/, which git ignores, as a build holds the operator's addresses and must not be committed.
+// Without UPDATE_KEY the tray takes builds only from an https hub (hub.go checkSigned). The builds go into dist/,
+// which git ignores, as a build holds the operator's addresses and must not be committed; docs/CODEX-HUB.md is the
+// operator's guide. What each system gets:
 //
-// Windows: one exe; the Run key starts it.
-//
-//	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H=windowsgui $FLAGS" -o dist/codex-hub-tray.exe .
+// Windows: one exe, codex-hub-tray.exe, built with -H=windowsgui; the Run key starts it.
 //
 // Linux, x64 or arm64, needs no C compiler; an autostart entry starts it, and GNOME shows its icon only with the
 // AppIndicator extension. The hub serves it as codex-hub-tray-linux-x64 or codex-hub-tray-linux-arm64.
 //
-//	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w $FLAGS" -o dist/codex-hub-tray-linux-x64 .
-//
 // macOS needs cgo and the Xcode command line tools, so it is built on a Mac: build-macos.sh (the same flags, from
-// HUB_URL, PAIR_URL, INBOX_URL, UPDATE_KEY and BUNDLE_ID) makes, in dist/, "Codex Hub.app", which a LaunchAgent
-// starts, and the hub's codex-hub-tray-darwin-arm64 and codex-hub-tray-darwin-x64.
+// HUB_URL, PAIR_URL, INBOX_URL, UPDATE_KEY, OLD_HUB_URLS and BUNDLE_ID) makes, in dist/, "Codex Hub.app", which a
+// LaunchAgent starts, and the hub's codex-hub-tray-darwin-arm64 and codex-hub-tray-darwin-x64.
 //
 // test-linux.sh and test-macos.sh run the app end to end against a fake hub.
 //
-// A build for a hub at a new address names the earlier addresses too, comma-separated:
-//
-//	FLAGS="$FLAGS -X main.oldHubURLs=http://hub:18788"
-//
-// A tray built before tray.json kept only the hub the user set saved its build's hub there when it paired, and a PC
-// uses the hub in tray.json over the build's, unless it is one of these.
+// A build for a hub at a new address names the earlier addresses too, comma-separated, in OLD_HUB_URLS
+// (-X main.oldHubURLs). A tray built before tray.json kept only the hub the user set saved its build's hub there when
+// it paired, and a PC uses the hub in tray.json over the build's, unless it is one of these.
 package main
 
 import (
