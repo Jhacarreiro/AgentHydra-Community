@@ -13,7 +13,8 @@
 // The hash comes from the same address as the file, so over plain http it proves nothing. With an update key (the
 // operator's public key: AGENTHYDRA_CODEX_HUB_UPDATE_KEY, or compiled in with --define) a build is taken only with
 // the operator's signature for the pusher on this platform over that hash (codex-hub-signature.ts), checked before
-// the download; without one, only from an https hub.
+// the download; without one, only from an https hub. The builds are asked for with this PC's own token and install
+// id, as its pushes are: a PC the hub revoked gets no more of them.
 //
 // Only a compiled pusher updates itself: a checkout running under bun is updated with git.
 // AGENTHYDRA_CODEX_HUB_UPDATE=off keeps the installed build.
@@ -22,8 +23,8 @@ import { type SpawnSyncReturns, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, renameSync, rmSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { appEnv } from '../config'
-import { sha256File } from './codex-hub'
-import type { CodexHubPushConfig } from './codex-hub-push'
+import { hubInstallHeaders, sha256File } from './codex-hub'
+import { type CodexHubPushConfig, hubRefusal } from './codex-hub-push'
 import { buildSignatureValid, updateKeysFrom } from './codex-hub-signature'
 
 // The update key a build was compiled with: `bun build --compile --define AGENTHYDRA_CODEX_HUB_UPDATE_KEY='"<key>"'`,
@@ -210,14 +211,23 @@ export async function updateOnce(
     return 'failed'
   }
   const platform = deps.platform ?? buildPlatform()
-  const headers = { ...cfg.headers, authorization: `Bearer ${cfg.token}` }
+  const headers = {
+    ...cfg.headers,
+    ...hubInstallHeaders(cfg.install),
+    authorization: `Bearer ${cfg.token}`,
+  }
   const query = `?platform=${encodeURIComponent(platform)}`
   const meta = await doFetch(`${cfg.url}/api/codex-hub/pusher${query}`, {
     headers,
     signal: AbortSignal.timeout(ASK_TIMEOUT_MS),
   })
   if (meta.status === 404) return 'none'
-  if (!meta.ok) throw new Error(`the hub answered ${meta.status} for its pusher build`)
+  // A revoked PC's updates stop here: the builds are for a PC with a token the hub has.
+  if (!meta.ok)
+    throw new Error(
+      hubRefusal(meta.status, await meta.text(), cfg.token) ??
+        `the hub answered ${meta.status} for its pusher build`,
+    )
   const want = (await meta.json()) as { sha256?: string; size?: number; signature?: string }
   if (typeof want.sha256 !== 'string') throw new Error('the hub sent no hash for its pusher build')
   if (typeof want.size !== 'number' || !Number.isSafeInteger(want.size) || want.size < 0)

@@ -1,21 +1,23 @@
 // server/tests/codex-hub-update.test.ts — a PC's pusher keeps itself at the build its hub hands out.
 //
-// The hub serves the build under the hub's folder (codex-hub.ts PUSHER_EXE) behind its token, with the operator's
-// signature beside it; the pusher (core/codex-hub-update.ts) compares hashes, checks the signature, downloads, checks
-// that the new build starts, and swaps it in. Here the "exe" files are a few bytes and starting one is a stand-in.
+// The hub serves the build under the hub's folder (codex-hub.ts PUSHER_EXE) behind each PC's own token, with the
+// operator's signature beside it; the pusher (core/codex-hub-update.ts) compares hashes, checks the signature,
+// downloads, checks that the new build starts, and swaps it in. A PC the hub revoked gets no build, and says why.
+// Here the "exe" files are a few bytes and starting one is a stand-in.
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { createHash, generateKeyPairSync } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
-import { PUSHER_EXE } from '../src/core/codex-hub'
+import { CODEX_HUB_DIR, PUSHER_EXE } from '../src/core/codex-hub'
+import { revokePc } from '../src/core/codex-hub-pcs'
 import type { CodexHubPushConfig } from '../src/core/codex-hub-push'
 import { type HubBuildName, signBuild, updateKeyText } from '../src/core/codex-hub-signature'
 import { RESTART_EXIT_CODE, restartPlan, updateKey, updateOnce } from '../src/core/codex-hub-update'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
-import { testPc } from './codex-hub-test-pc'
+import { newPcToken, testPc } from './codex-hub-test-pc'
 
 const TOKEN = 'test-update-token'
 const previousToken = process.env.AGENTHYDRA_CODEX_HUB_TOKEN
@@ -249,6 +251,27 @@ test('a hub with no build to hand out, and a request without the token, change n
   const res = await http.fetch(new Request('http://127.0.0.1/api/codex-hub/pusher/download'))
   expect(res.status).toBe(401)
   expect(readFileSync(exe, 'utf8')).toBe('old build')
+})
+
+test('a PC the hub revoked, or whose token it does not know, is told so, and fetches nothing', async () => {
+  const revoked = testPc(`Update-Revoked-${crypto.randomUUID().slice(0, 6)}`)
+  expect(revokePc(revoked.key)).toMatchObject({ ok: true })
+  const asked: string[] = []
+  const counting: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    asked.push(new URL(String(input)).pathname)
+    return toHub(input, init)
+  }) as typeof fetch
+  await expect(
+    updateOnce(revoked.cfg('http://127.0.0.1'), deps({ fetch: counting })),
+  ).rejects.toThrow("the hub revoked this PC's token; pair it again")
+  const unknown = { ...cfg, token: newPcToken().token }
+  await expect(updateOnce(unknown, deps({ fetch: counting }))).rejects.toThrow(
+    "the hub does not know this PC's token (it was paired again elsewhere, or forgotten); pair it again",
+  )
+  expect(asked).toEqual(['/api/codex-hub/pusher', '/api/codex-hub/pusher'])
+  expect(readFileSync(exe, 'utf8')).toBe('old build')
+  expect(relaunched).toEqual([])
+  rmSync(join(CODEX_HUB_DIR, revoked.key), { recursive: true, force: true })
 })
 
 test('with an update key, only a build signed with it for the pusher on this platform is fetched', async () => {

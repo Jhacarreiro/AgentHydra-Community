@@ -20,13 +20,23 @@
 // While Desk holds an app-server here, the pusher lists chats through it (localRpc) rather than starting a second
 // one on the same home, whose refresh token rotates (codex-rpc.ts). A turn's end pushes at once, so the copy on
 // the hub catches up with what was just written.
+//
+// The socket is let in on this PC's own token and install id, which the hub checks before the upgrade: a refused
+// dial never opens, and the wait before the next one doubles, up to five minutes, with the first of a run of them
+// logged. A live socket the hub closes with RELAY_REFUSED (this PC was paired again, revoked, retired or moved to a
+// token of its own) waits the longest before it dials again, with the hub's reason logged.
 
 import { type ChildProcess, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { appEnv, CODEX_HOME, codexSpawnEnv, resolveCodexExe } from '../config'
 import { hubInstallHeaders, hubNameTaken } from './codex-hub'
 import type { CodexHubPushConfig } from './codex-hub-push'
-import { RELAY_NAME_TAKEN, type RelayFromPc, type RelayToPc } from './codex-hub-relay'
+import {
+  RELAY_NAME_TAKEN,
+  RELAY_REFUSED,
+  type RelayFromPc,
+  type RelayToPc,
+} from './codex-hub-relay'
 import { type CodexRpc, takeHomeTurn } from './codex-rpc'
 
 export type RelayMode = 'off' | 'ask' | 'full'
@@ -231,6 +241,8 @@ interface RelayDeps {
   onTurnDone?: () => void
   /** The first and the longest wait before connecting again; tests shorten them. */
   retryMs?: { min: number; max: number }
+  /** Dials again after `ms`; tests see each wait. */
+  later?: (dial: () => void, ms: number) => ReturnType<typeof setTimeout>
 }
 
 const LOCAL_ID = 'hub-pc-'
@@ -328,10 +340,13 @@ export function startCodexHubRelay(
     deps.connect ?? ((url, headers) => new WebSocket(url, { headers } as unknown as string[]))
   const sessions = new Map<string, Session>()
   const { min: retryMin, max: retryMax } = deps.retryMs ?? { min: RETRY_MIN_MS, max: RETRY_MAX_MS }
+  const later = deps.later ?? ((dial, ms) => setTimeout(dial, ms))
   let ws: WebSocket | null = null
   let stopped = false
   let retryMs = retryMin
   let retry: ReturnType<typeof setTimeout> | null = null
+  /** Whether the last dial failed before it opened: a run of them is logged once, at its first. */
+  let refusing = false
 
   const send = (msg: RelayFromPc) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
@@ -488,7 +503,10 @@ export function startCodexHubRelay(
       authorization: `Bearer ${cfg.token}`,
     })
     ws = socket
+    let opened = false
     socket.addEventListener('open', () => {
+      opened = true
+      refusing = false
       retryMs = retryMin
     })
     socket.addEventListener('message', (e) => onMessage(String((e as MessageEvent).data)))
@@ -497,12 +515,26 @@ export function startCodexHubRelay(
       ws = null
       for (const sid of [...sessions.keys()]) endSession(sid, 'The hub connection closed.', false)
       if (stopped) return
-      // Another PC holds this name on the hub: asking again in a few seconds would not change that.
-      if (e.code === RELAY_NAME_TAKEN) {
+      if (!opened) {
+        // The hub refused the upgrade, or did not answer: a socket never sees which, and the push's log says why
+        // the hub refuses this PC. The wait goes on doubling.
+        if (!refusing)
+          console.error(
+            `[codex-hub] relay to ${cfg.url}: the hub refused the relay, or is out of reach`,
+          )
+        refusing = true
+      } else if (e.code === RELAY_REFUSED) {
+        // This PC's credential changed on the hub: asking again in a few seconds would not change that.
+        console.error(
+          `[codex-hub] relay to ${cfg.url} closed: ${e.reason || "This PC's token is no longer valid on the hub."}`,
+        )
+        retryMs = retryMax
+      } else if (e.code === RELAY_NAME_TAKEN) {
+        // A hub from before PC tokens: another PC holds this name there.
         console.error(`[codex-hub] relay to ${cfg.url} refused: ${hubNameTaken(cfg.pc)}`)
         retryMs = retryMax
       }
-      retry = setTimeout(dial, retryMs)
+      retry = later(dial, retryMs)
       retryMs = Math.min(retryMs * 2, retryMax)
     })
   }

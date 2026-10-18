@@ -43,6 +43,12 @@ const HUB_HOME = join(scratch, 'hub-home')
 const HUB_DIR = join(HUB_HOME, '.agenthydra', 'codex-hub')
 // A daemon's boot and a pusher's app-server are real processes: a cold CI runner is far slower than a desktop.
 const SLOW_MS = 60_000
+/** What a pusher says when the hub refuses a token that is not a PC token, whatever it is (codex-hub-push.ts). */
+const SHARED_REFUSED =
+  /^the hub no longer takes the shared token: pair this PC with the Codex Hub app/
+/** What it says for a token the hub no longer has: replaced at a re-pair, or forgotten. */
+const UNKNOWN_TOKEN =
+  "the hub does not know this PC's token (it was paired again elsewhere, or forgotten); pair it again"
 
 const secret = () => randomBytes(24).toString('base64url')
 const savedRecording = process.env.AGENTHYDRA_MOCK_RECORDING
@@ -502,8 +508,8 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
         expect(await socketOpens('/api/codex-hub/relay?pc=Intruder', asHeaders)).toBe(false)
       }
       // Through the real push code too: refused, and nothing of it is kept.
-      await expect(push(intruder, 'not-a-token')).rejects.toThrow(/Codex hub answered 401/)
-      await expect(push(intruder, firstAdmin)).rejects.toThrow(/Codex hub answered 401/)
+      await expect(push(intruder, 'not-a-token')).rejects.toThrow(SHARED_REFUSED)
+      await expect(push(intruder, firstAdmin)).rejects.toThrow(SHARED_REFUSED)
       expect(existsSync(join(HUB_DIR, 'intruder'))).toBe(false)
       expect((await relayPcs()).map((p) => p.pc)).toEqual(['Laptop', 'Office-PC'])
       // With a PC token, a build request gets as far as the builds: none is handed out here.
@@ -610,7 +616,9 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
       expect(laptopRelay!.closes.find((c) => c.code === 4403)?.reason).toBe(
         'This PC was revoked on the hub.',
       )
-      await expect(push(laptop, laptopToken)).rejects.toThrow(/answered 401 .*"code":"revoked"/)
+      await expect(push(laptop, laptopToken)).rejects.toThrow(
+        "the hub revoked this PC's token; pair it again",
+      )
       expect(await buildCheck(laptopToken)).toEqual({ status: 401, code: 'revoked' })
       expect((await relayPcs()).find((p) => p.pc === 'Laptop')).toMatchObject({
         relay: false,
@@ -627,16 +635,12 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
       laptopToken = await pair(laptop)
       // Its copies stayed through the revoke: there is nothing new to send.
       expect(await push(laptop, laptopToken)).toEqual({ threads: 1, sent: 0, missing: 0 })
-      await expect(push(laptop, revokedToken)).rejects.toThrow(
-        /answered 401 .*"code":"unknown-token"/,
-      )
+      await expect(push(laptop, revokedToken)).rejects.toThrow(UNKNOWN_TOKEN)
       // In use, it is replaced only through the page's second step.
       const replacedToken = laptopToken
       laptopToken = await pair(laptop, { replace: true })
       expect(await push(laptop, laptopToken)).toEqual({ threads: 1, sent: 0, missing: 0 })
-      await expect(push(laptop, replacedToken)).rejects.toThrow(
-        /answered 401 .*"code":"unknown-token"/,
-      )
+      await expect(push(laptop, replacedToken)).rejects.toThrow(UNKNOWN_TOKEN)
 
       // A PC without a desktop gets its token from the command line, bound by its first use; forget removes it.
       const added = await cli(firstAdmin, 'add', 'Spare-PC', '--json')
@@ -692,7 +696,7 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
         true,
       )
       // The old admin token is what the PCs of before still hold: with …_LEGACY_TOKEN unset it is refused everywhere.
-      await expect(push(office, firstAdmin)).rejects.toThrow(/Codex hub answered 401/)
+      await expect(push(office, firstAdmin)).rejects.toThrow(SHARED_REFUSED)
       expect(await buildCheck(firstAdmin)).toEqual({ status: 401, code: 'unauthorized' })
       expect(
         await socketOpens('/api/codex-hub/relay?pc=Office-PC', bearer(firstAdmin, office.install)),
@@ -725,7 +729,7 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
 
       // An old pusher, with the shared token and the install id its manifest names: taken.
       expect(await push(old, legacy)).toEqual({ threads: 1, sent: 1, missing: 0 })
-      const refused = /Codex hub answered 401/
+      const refused = SHARED_REFUSED
       await expect(push(old, legacy, { install: 'install-another-0001' })).rejects.toThrow(refused)
       await expect(push(old, legacy, { install: null })).rejects.toThrow(refused)
       await expect(push(office, legacy)).rejects.toThrow(refused)

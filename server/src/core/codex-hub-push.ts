@@ -4,9 +4,26 @@
 // the Codex app shows) and pushes it to the hub, then sends each rollout the hub answers it lacks.
 // Runs inside the daemon when AGENTHYDRA_CODEX_HUB_URL is set, and on its own as
 // `bun server/src/codex-hub-push-main.ts` on a PC that does not run AgentHydra from source.
+//
+// It pushes with this PC's own token (AGENTHYDRA_CODEX_HUB_TOKEN: the Codex Hub app's, or one from
+// scripts/codex-hub-pcs.ts add on the hub). The hub takes the PC from the token, whatever name a push sends, and
+// takes the token only from the install id bound to it (codex-hub-pcs.ts): AGENTHYDRA_CODEX_HUB_INSTALL when the
+// tray passes one, else the pusher's own file. A pusher never trades the shared token of before for a token of its
+// own: it pushes with it while the hub's migration window lets it, and says what to do once the hub refuses it.
 
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs'
 import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import { appEnv, CODEX_HOME, CONFIG_DIR } from '../config'
@@ -16,6 +33,7 @@ import {
   hubInstallHeaders,
   hubInstallId,
   hubNameTaken,
+  isPcToken,
   relativeRolloutPath,
 } from './codex-hub'
 import { startCodexHubRelay } from './codex-hub-relay-pc'
@@ -34,10 +52,14 @@ interface AppServerThread {
 
 export interface CodexHubPushConfig {
   url: string
+  /** This PC's own token (chp_…), or the shared token of before while the hub's migration window lets it push. */
   token: string
-  /** The name this PC is listed under on the hub. */
+  /** The name this PC is listed under on the hub. A PC token's key is its own: this only sets how it is written. */
   pc: string
-  /** This pusher's install id (pusherInstallId), sent with each push and relay connect; none when absent or null. */
+  /**
+   * This pusher's install id (AGENTHYDRA_CODEX_HUB_INSTALL, else pusherInstallId), sent with each request to the hub;
+   * none when absent or null, which the hub refuses a PC token.
+   */
   install?: string | null
   /** Extra request headers, e.g. a Cloudflare Access service token in front of the hub. */
   headers: Record<string, string>
@@ -84,26 +106,112 @@ export const PUSHER_INSTALL_FILES = {
   standalone: join(CONFIG_DIR, 'codex-hub-push-install'),
 } as const
 
+/** How long a pusher waits for another one to write the install file it has just made, before it takes it as empty. */
+const INSTALL_WAIT_MS = 500
+
+/** Makes `file` 0600 where it is not (the first pushers wrote it 0644); a file it cannot change is left as it is. */
+function keepPrivate(file: string): void {
+  if (process.platform === 'win32') return
+  try {
+    if ((statSync(file).mode & 0o777) !== 0o600) chmodSync(file, 0o600)
+  } catch {
+    // another user's file, or gone: the id in it still serves
+  }
+}
+
 /**
- * This pusher's install id, made at random once and kept in `file`: the hub tells two PCs that send one name apart
- * by it (codex-hub.ts hubNameRefused). Null when the file can be neither read nor made: the pusher then sends none,
- * as the first pushers did, rather than a new one at each start that its own last push would hold the name against.
+ * This pusher's install id, made at random once and kept in `file`, one id and a newline at mode 0600: the hub binds
+ * this PC's token to it (codex-hub-pcs.ts), so the token alone opens nothing from another install. The file is
+ * created exclusively, so two pushers that start at once end with one id: the one that loses takes the winner's. An
+ * empty file is another pusher between its create and its write, and is waited for a moment; one that holds no id
+ * after that is replaced. Null when the file can be neither read nor made: the pusher then sends none, and the hub
+ * answers install-required, which hubRefusal words.
  */
 export function pusherInstallId(file: string): string | null {
-  try {
-    const kept = hubInstallId(readFileSync(file, 'utf8'))
-    if (kept) return kept
-  } catch {
-    // not made yet
+  const deadline = Date.now() + INSTALL_WAIT_MS
+  let raced = false
+  for (;;) {
+    let raw: string | null = null
+    try {
+      raw = readFileSync(file, 'utf8')
+    } catch {
+      // not made yet, or not readable: making it says which
+    }
+    const kept = hubInstallId(raw)
+    if (kept) {
+      keepPrivate(file)
+      return kept
+    }
+    if (raw === '' && Date.now() < deadline) {
+      Bun.sleepSync(20)
+      continue
+    }
+    const id = randomUUID()
+    if (raw !== null) {
+      // There, and no id in it: replaced whole, so no reader sees half of it.
+      const tmp = `${file}.${process.pid}.tmp`
+      try {
+        writeFileSync(tmp, `${id}\n`, { mode: 0o600 })
+        chmodSync(tmp, 0o600)
+        renameSync(tmp, file)
+        return id
+      } catch {
+        rmSync(tmp, { force: true })
+        return null
+      }
+    }
+    try {
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+      const fd = openSync(file, 'wx', 0o600)
+      try {
+        writeSync(fd, `${id}\n`)
+      } finally {
+        closeSync(fd)
+      }
+      return id
+    } catch (error) {
+      // Another pusher made it first: its id is the one to keep. Once only: a file there that cannot be read is
+      // no install id.
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || raced) return null
+      raced = true
+    }
   }
-  const id = randomUUID()
+}
+
+/** The install id AGENTHYDRA_CODEX_HUB_INSTALL sets, in place of the pusher's file; undefined when it is unset. */
+function installFromEnv(): string | undefined {
+  const raw = appEnv('CODEX_HUB_INSTALL')?.trim()
+  if (!raw) return undefined
+  const id = hubInstallId(raw)
+  if (!id)
+    throw new Error(
+      'AGENTHYDRA_CODEX_HUB_INSTALL must be 8 to 64 letters, digits, dashes or underscores.',
+    )
+  return id
+}
+
+/**
+ * What this PC's pusher says when the hub refused it, by the code in the hub's answer (routes/codex-hub.ts); null
+ * for an answer it has no words of its own for. The hub answers a bearer that is not a PC token with a bare 401
+ * whatever the reason, so a token of before that is refused is told the one fix there is: a token of its own.
+ */
+export function hubRefusal(status: number, body: string, token: string): string | null {
+  let code: unknown
   try {
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, `${id}\n`)
-    return id
+    code = (JSON.parse(body) as { code?: unknown } | null)?.code
   } catch {
-    return null
+    // not the hub's error body
   }
+  if (code === 'revoked') return "the hub revoked this PC's token; pair it again"
+  if (code === 'unknown-token')
+    return "the hub does not know this PC's token (it was paired again elsewhere, or forgotten); pair it again"
+  if (code === 'install-mismatch')
+    return 'this token belongs to another install of the pusher; pair this PC on its own'
+  if (code === 'install-required')
+    return `this pusher has no install id: ${CONFIG_DIR} cannot be written; fix that, or set AGENTHYDRA_CODEX_HUB_INSTALL`
+  if (status === 401 && !isPcToken(token))
+    return 'the hub no longer takes the shared token: pair this PC with the Codex Hub app, or put a token from `scripts/codex-hub-pcs.ts add` in AGENTHYDRA_CODEX_HUB_TOKEN'
+  return null
 }
 
 export function codexHubPushConfig(
@@ -128,7 +236,8 @@ export function codexHubPushConfig(
     url: url.replace(/\/+$/, ''),
     token,
     pc: appEnv('CODEX_HUB_PC')?.trim() || defaultPcName(),
-    install: pusherInstallId(PUSHER_INSTALL_FILES[pusher]),
+    // The file is not touched when the tray, or the owner, names the id.
+    install: installFromEnv() ?? pusherInstallId(PUSHER_INSTALL_FILES[pusher]),
     headers,
     // Eight hours at most: the hub holds this PC's name for three intervals after a push (codex-hub.ts
     // hubNameHoldMs), and for a day at most.
@@ -226,10 +335,15 @@ export async function pushCodexHubOnce(
       body: JSON.stringify({ pc: cfg.pc, intervalMs: cfg.intervalMs, threads, files }),
     })
     if (res.status === 413 && files.length) return 'too-large'
-    // Another PC holds this name on the hub; the next round asks again, and gets it once that PC has gone.
-    if (res.status === 409) throw new Error(hubNameTaken(cfg.pc))
-    if (!res.ok)
-      throw new Error(`Codex hub answered ${res.status} ${(await res.text()).slice(0, 200)}`)
+    if (!res.ok) {
+      const body = await res.text()
+      const refused = hubRefusal(res.status, body, cfg.token)
+      if (refused) throw new Error(refused)
+      // Another PC holds this name on the hub (the shared token of before only); the next round asks again, and
+      // gets it once that PC has gone.
+      if (res.status === 409) throw new Error(hubNameTaken(cfg.pc))
+      throw new Error(`Codex hub answered ${res.status} ${body.slice(0, 200)}`)
+    }
     return ((await res.json()) as { want?: string[] }).want ?? []
   }
 

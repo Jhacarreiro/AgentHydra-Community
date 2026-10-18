@@ -3,8 +3,9 @@
 // The hub keeps a PC by its name, and two can send one: WSL beside the Windows PC it runs on, two Linux boxes
 // called `ubuntu`, the daemon's pusher beside a standalone one. Each pusher sends an install id it made once. A PC
 // token is bound to the install id it was first used with, so a second install with the same token is refused with
-// 409 before its relay socket opens, instead of the two replacing each other's relay socket and rollouts. A PC still
-// on the shared token of before is held by the hub's hold on its name (hubNameRefused), as it was.
+// 409 before its relay socket opens, instead of the two replacing each other's relay socket and rollouts; its pusher
+// says so in words. A PC still on the shared token of before is held by the hub's hold on its name
+// (hubNameRefused), as it was.
 import { afterAll, beforeAll, expect, setSystemTime, spyOn, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -264,7 +265,10 @@ test('two installs with one PC token: the second is refused with 409 before its 
     relays.push(relay)
     return Object.assign(seen, { stop: () => relay.stop() })
   }
-  const logged = spyOn(console, 'error').mockImplementation(() => {})
+  const lines: string[] = []
+  const logged = spyOn(console, 'error').mockImplementation(
+    (...args: unknown[]) => void lines.push(args.join(' ')),
+  )
   try {
     const first = relayOf(A)
     await until(() => relayPcInstall(key) === A)
@@ -288,6 +292,11 @@ test('two installs with one PC token: the second is refused with 409 before its 
     expect(second.opened).toBe(0)
     expect([first.dials, first.opened, first.closes]).toEqual([1, 1, []])
     expect(relayPcInstall(key)).toBe(A)
+    // Its PC says so once for the run of refused dials; a socket never sees why, and its push says that.
+    const url = `http://127.0.0.1:${server.port}`
+    expect(lines).toEqual([
+      `[codex-hub] relay to ${url}: the hub refused the relay, or is out of reach`,
+    ])
 
     // Its push is refused too, before it has pushed at all, and the first PC's goes on.
     const rpc = async (): Promise<CodexRpc> => ({
@@ -298,7 +307,9 @@ test('two installs with one PC token: the second is refused with 409 before its 
       http.fetch(new Request(String(input), init))) as typeof fetch
     await expect(
       pushCodexHubOnce(cfg(B), { connect: rpc, fetch: toHub, codexHome: scratch }),
-    ).rejects.toThrow()
+    ).rejects.toThrow(
+      'this token belongs to another install of the pusher; pair this PC on its own',
+    )
     expect(existsSync(join(CODEX_HUB_DIR, key, 'manifest.json'))).toBe(false)
     expect(
       await pushCodexHubOnce(cfg(A), { connect: rpc, fetch: toHub, codexHome: scratch }),
