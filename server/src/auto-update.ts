@@ -46,6 +46,16 @@ export function clampAutoUpdateInterval(secs: number): number {
   )
 }
 
+/** The cadence a saved setting stands for. Nothing saved reads back as '' (db.ts seeds no interval),
+ *  and Number('') is 0, which clamped to the 15 min floor: a fresh install reported and ticked at
+ *  900 s while the documented default is 6 h. An empty or blank value is "never chosen", so it is
+ *  the default; anything else is clamped as a request would be. */
+export function savedAutoUpdateInterval(raw: string | null | undefined): number {
+  const text = String(raw ?? '').trim()
+  if (!text) return AUTO_UPDATE_INTERVAL_DEFAULT_S
+  return clampAutoUpdateInterval(Number(text))
+}
+
 // ── injectable side-effects (real impls by default; index.ts wires `relaunch`, tests swap all) ──
 export interface AutoUpdateHooks {
   check: typeof checkForUpdate
@@ -90,7 +100,7 @@ const SETTING_INTERVAL = 'auto_update_interval_secs'
  *  startAutoUpdate() (index.ts) so the loop starts with the persisted configuration. */
 export function loadAutoUpdateSettings(): void {
   enabled = getSetting(SETTING_ENABLED) === '1'
-  intervalSecs = clampAutoUpdateInterval(Number(getSetting(SETTING_INTERVAL)))
+  intervalSecs = savedAutoUpdateInterval(getSetting(SETTING_INTERVAL))
 }
 
 // ── runtime state ────────────────────────────────────────────────────────────────────────────

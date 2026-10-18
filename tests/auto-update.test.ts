@@ -19,6 +19,7 @@ import {
   recordUpdateCheck,
   runAutoUpdateOnce,
   runUpdateCheckOnce,
+  savedAutoUpdateInterval,
   setAutoUpdateEnabled,
   setAutoUpdateHooks,
   setAutoUpdateIntervalSecs,
@@ -229,17 +230,30 @@ test('clampAutoUpdateInterval bounds the cadence', () => {
   expect(clampAutoUpdateInterval(3600)).toBe(3600)
 })
 
-test('a database that never chose does not apply updates by itself', () => {
+test('a saved interval that was never chosen is the documented default, not the floor', () => {
+  // getSetting gives '' for a key nobody saved, and Number('') is 0.
+  expect(savedAutoUpdateInterval('')).toBe(AUTO_UPDATE_INTERVAL_DEFAULT_S)
+  expect(savedAutoUpdateInterval('  ')).toBe(AUTO_UPDATE_INTERVAL_DEFAULT_S)
+  expect(savedAutoUpdateInterval(null)).toBe(AUTO_UPDATE_INTERVAL_DEFAULT_S)
+  expect(savedAutoUpdateInterval('not a number')).toBe(AUTO_UPDATE_INTERVAL_DEFAULT_S)
+  expect(AUTO_UPDATE_INTERVAL_DEFAULT_S).toBe(21_600) // what docs/REFERENCE.md documents
+  // A saved choice is kept, and clamped as a request is.
+  expect(savedAutoUpdateInterval('3600')).toBe(3600)
+  expect(savedAutoUpdateInterval('0')).toBe(AUTO_UPDATE_INTERVAL_MIN_S)
+  expect(savedAutoUpdateInterval('9999999')).toBe(AUTO_UPDATE_INTERVAL_MAX_S)
+})
+
+test('a database that never chose does not apply updates by itself, and checks every six hours', () => {
   // A fresh database in its own process: this one's setting is rewritten after every case here.
   const root = mkdtempSync(join(tmpdir(), 'ah-autoupdate-'))
   try {
     const script =
-      "const a = await import('./server/src/auto-update.ts'); a.loadAutoUpdateSettings(); console.log(a.autoUpdateEnabled())"
+      "const a = await import('./server/src/auto-update.ts'); a.loadAutoUpdateSettings(); console.log(a.autoUpdateEnabled(), a.getAutoUpdateIntervalSecs())"
     const r = Bun.spawnSync([process.execPath, '-e', script], {
       cwd: join(import.meta.dir, '..'),
       env: { ...process.env, AGENTHYDRA_DB: join(root, 'fresh.db') },
     })
-    expect(r.stdout.toString().trim()).toBe('false')
+    expect(r.stdout.toString().trim()).toBe(`false ${AUTO_UPDATE_INTERVAL_DEFAULT_S}`)
   } finally {
     rmSync(root, { recursive: true, force: true, maxRetries: 10 })
   }
