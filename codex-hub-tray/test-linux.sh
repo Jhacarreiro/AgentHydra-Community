@@ -558,7 +558,7 @@ echo "== an old tray moving"
 # The tray of the commit before PC tokens, installed and paired the way it was: the legacy token in tray.json. It
 # fetches the pusher and this tray with the legacy token (the hub hands builds to it while a PC is pending), and this
 # tray then moves it.
-OLD=5e39fcdc
+OLD=24227516
 if git -C .. cat-file -e "$OLD^{commit}" 2>/dev/null && mkdir -p "$T/old" &&
 	git -C .. archive "$OLD" codex-hub-tray | tar -x -C "$T/old" &&
 	(cd "$T/old/codex-hub-tray" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $FLAGS" -o "$T/old-tray" .); then
