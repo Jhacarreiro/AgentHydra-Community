@@ -4,7 +4,7 @@
 // A copy, not an import: a release runs Desk's server from desk2/ as source, and the bundle holds nothing of the
 // repository outside desk2/ to import. tests/release-channel-drift.test.ts holds this to release-channel.json.
 
-/** What this project calls itself where it names its maker: the footer, the window's link to its repository. */
+/** What this project calls itself where it names its maker: the footer in hydra/src/shell (not mounted yet). */
 export const PROJECT_NAME = 'AgentHydra Community'
 
 export const PROJECT_REPO = 'Jhacarreiro/AgentHydra-Community'

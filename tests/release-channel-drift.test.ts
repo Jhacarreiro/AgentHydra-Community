@@ -95,7 +95,7 @@ describe('links', () => {
     expect(CHANGELOG_URL).toBe(changelogUrl())
   })
 
-  test("the orchestrator page's footer names and links what Desk's window does", () => {
+  test("the orchestrator page's footer names and links the project Desk's links file does", () => {
     expect(orchestratorLinks.PROJECT_REPO).toBe(RELEASE_CHANNEL.repo)
     expect(orchestratorLinks.PROJECT_HOMEPAGE).toBe(repoUrl())
     expect(orchestratorLinks.PROJECT_NAME).toBe(PROJECT_NAME)

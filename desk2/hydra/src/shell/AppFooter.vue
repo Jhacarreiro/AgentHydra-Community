@@ -8,7 +8,9 @@
  * prose check exempts. Width tracks the shared `--container-max`.
  *
  * orchestrator/web/src/shell/AppFooter.vue is its twin, with its own copy of the
- * links (orchestrator/web/src/lib/project-links.ts); change both together.
+ * links (orchestrator/web/src/lib/project-links.ts); change both together. Only
+ * the twin is shown today, under the orchestrator dashboard: no page of
+ * AgentHydra's mounts this copy yet.
  */
 import { PROJECT_HOMEPAGE, PROJECT_NAME } from "@desk/shared/release-links";
 
