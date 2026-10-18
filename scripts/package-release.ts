@@ -3,6 +3,7 @@
  * Stage and archive one AgentHydra release bundle (the same script in CI and on a PC).
  *
  *   bun scripts/package-release.ts --target <windows-x64|linux-x64|linux-arm64|darwin-x64|darwin-arm64> --out <dir> [--bun-version x.y.z]
+ *     [--third-party <list.json>]...
  *
  * Writes <out>/AgentHydra-<version>-<target>/ and its archive beside it (Windows also gets the lone
  * exe, which is the same launcher). No Bun and no Claude Code binary ship: the daemon is plain JS
@@ -12,6 +13,11 @@
  * and Desk fetches the version desk2/sdk-pin.json names the first time a chat needs it. Needs
  * desk2/web/dist and desk2/hydra/dist already built; it never builds them and never writes into the
  * checkout.
+ *
+ * Every bundle carries THIRD-PARTY-LICENSES (scripts/third-party-licenses.ts): the npm packages bun inlined, Desk's
+ * node_modules, what vite built into the dists, and the crates of the Rust programs it holds, read with `cargo
+ * metadata`. A machine without cargo passes --third-party instead: the list `scripts/third-party-licenses.ts --cargo
+ * <crate>=<where it ships> --target x86_64-pc-windows-msvc --json <list.json>` wrote where they were built.
  */
 import { spawnSync } from 'node:child_process'
 import {
@@ -19,12 +25,14 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { findRepoRoot } from '../tests/repo-root'
 import { buildLauncher } from './build-launcher'
@@ -43,6 +51,18 @@ import {
   stageLicenceFiles,
   unresolvedImports,
 } from './release-bundle'
+import {
+  BUILT_LIST,
+  cargoCrates,
+  type Metafile,
+  npmFromBuilt,
+  npmFromMetafile,
+  npmTree,
+  readPackageList,
+  renderThirdPartyLicenses,
+  settleLicences,
+  type ThirdPartyPackage,
+} from './third-party-licenses'
 
 const ROOT = findRepoRoot(import.meta.dir)
 const VERSION: string = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
@@ -61,6 +81,19 @@ const MISC_FILES = [
   'AgentHydra-Tray.ps1',
   'Tray-Launch.vbs',
 ]
+/**
+ * The Rust programs a bundle can carry, by crate, with every place each one lands: THIRD-PARTY-LICENSES lists the
+ * crates of each one the staged bundle holds. All three are Windows programs, whatever the bundle's target.
+ */
+const NATIVE_PROGRAMS = [
+  { crate: 'misc/climayte-runner-native', files: ['app/misc/climayte-runner.exe'] },
+  {
+    crate: 'misc/tray-host-native',
+    files: ['misc/AgentHydra-Tray.exe', 'app/misc/AgentHydra-Tray.exe'],
+  },
+  { crate: 'desk2/launcher/host', files: ['desk2/launcher/HydraDesk2.exe'] },
+]
+const NATIVE_TARGET = 'x86_64-pc-windows-msvc'
 const LAUNCHER_FILES = [
   'HydraDesk2.exe',
   'start.vbs',
@@ -73,6 +106,13 @@ const LAUNCHER_FILES = [
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name)
   return i >= 0 ? process.argv[i + 1] : undefined
+}
+
+/** Every value of a flag that may be given more than once. */
+function args(name: string): string[] {
+  return process.argv.flatMap((a, i) =>
+    a === name && process.argv[i + 1] ? [process.argv[i + 1]!] : [],
+  )
 }
 
 function fail(message: string): never {
@@ -244,6 +284,10 @@ console.log(`Packaging AgentHydra ${VERSION} for ${target} into ${stage} (Bun ${
 // What the MIT licence asks of every copy, at the top of every bundle: the licence itself, the notices for the code
 // AgentHydra adapts from other projects, and the licence texts those notices point to.
 stageLicenceFiles(ROOT, stage)
+// The build metafiles the licence list is read from live outside the bundle.
+const scratch = mkdtempSync(join(tmpdir(), 'package-release-'))
+process.on('exit', () => rmSync(scratch, { recursive: true, force: true }))
+const daemonMetafile = join(scratch, 'server.metafile.json')
 
 // The daemon as app/ (server.js, its misc assets, release.json and bun-version, the pin the launcher
 // downloads), then the launcher that runs it.
@@ -258,6 +302,8 @@ run(
     stage,
     '--bun-version',
     bunVersion,
+    '--metafile',
+    daemonMetafile,
   ],
   ROOT,
 )
@@ -326,7 +372,7 @@ console.log(
 // the staged tree: a plugin whose import fails is skipped at boot with only a log line, which is how a bundle once lost
 // its whole engine.
 const serverImports = aliasedImports(sourceFilesUnder(join(desk2, 'server', 'src')))
-await bundleServerModules(ROOT, desk2, serverImports)
+const serverModulesMeta = await bundleServerModules(ROOT, desk2, serverImports)
 pointAliasAtBundle(join(desk2, 'tsconfig.base.json'))
 console.log(
   `bundled ${serverImports.length} ${SERVER_ALIAS}* module(s) into desk2/${SERVER_MODULES_DIR}/: ${serverImports.join(', ')}`,
@@ -346,6 +392,61 @@ if (isWindows) {
   mkdirSync(join(stage, 'misc'))
   for (const f of MISC_FILES) copyFileSync(join(ROOT, 'misc', f), join(stage, 'misc', f))
 }
+
+// THIRD-PARTY-LICENSES: every third-party package whose code the bundle holds, with its licence and text. A package
+// with no licence, one off the allowlist or no text fails the build here, before anything is archived.
+const licences: ThirdPartyPackage[][] = [
+  npmFromMetafile(JSON.parse(readFileSync(daemonMetafile, 'utf8')) as Metafile, ROOT, [
+    'app/server.js',
+  ]),
+  npmFromMetafile(serverModulesMeta, ROOT, [`desk2/${SERVER_MODULES_DIR}`]),
+  npmTree(join(desk2, 'node_modules'), ['desk2/node_modules']),
+]
+for (const app of ['web', 'hydra']) {
+  const list = join(ROOT, 'desk2', app, 'dist', BUILT_LIST)
+  if (!existsSync(list))
+    fail(
+      `desk2/${app}/dist has no ${BUILT_LIST}, the list of the packages its build put in it: rebuild it (\`bun run build\` in desk2/)`,
+    )
+  licences.push(npmFromBuilt(list, join(ROOT, 'desk2', app), [`desk2/${app}/dist`]))
+  // The list is for this file; the window does not need it.
+  rmSync(join(desk2, app, 'dist', dirname(BUILT_LIST)), { recursive: true, force: true })
+}
+const natives = NATIVE_PROGRAMS.map((p) => ({
+  ...p,
+  shipped: p.files.filter((f) => existsSync(join(stage, f))),
+})).filter((p) => p.shipped.length)
+const givenLists = args('--third-party')
+if (givenLists.length) {
+  const given = givenLists.flatMap((f) => readPackageList(resolve(f)))
+  const unlisted = natives
+    .flatMap((p) => p.shipped)
+    .filter((f) => !given.some((g) => g.shippedIn.includes(f)))
+  if (unlisted.length) fail(`--third-party lists nothing shipped in ${unlisted.join(', ')}`)
+  licences.push(given)
+} else {
+  for (const p of natives) {
+    try {
+      licences.push(cargoCrates(join(ROOT, p.crate), p.shipped, NATIVE_TARGET))
+    } catch (err) {
+      fail(
+        `the licences of ${p.shipped.join(', ')} could not be read from ${p.crate}: ${err instanceof Error ? err.message : String(err)}\n` +
+          'packaging reads them with cargo; on a machine without it, pass --third-party <list.json> written by ' +
+          `scripts/third-party-licenses.ts --cargo <crate>=<where it ships> --target ${NATIVE_TARGET} --json <list.json>`,
+      )
+    }
+  }
+}
+const settled = await settleLicences(licences)
+if (settled.problems.length)
+  fail(
+    `${settled.problems.length} third-party package(s) cannot ship:\n  ${settled.problems.join('\n  ')}`,
+  )
+writeFileSync(
+  join(stage, 'THIRD-PARTY-LICENSES'),
+  renderThirdPartyLicenses(settled.packages, `AgentHydra ${VERSION} for ${target}`),
+)
+console.log(`THIRD-PARTY-LICENSES lists ${settled.packages.length} third-party package(s)`)
 
 const archive = join(out, isWindows ? `${name}.zip` : `${name}.tar.gz`)
 rmSync(archive, { force: true })

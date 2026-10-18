@@ -170,6 +170,7 @@ try {
     join(bundle, 'LICENSE'),
     join(bundle, 'THIRD-PARTY-NOTICES.md'),
     join(bundle, 'LICENSES/Apache-2.0.txt'),
+    join(bundle, 'THIRD-PARTY-LICENSES'),
     join(bundle, 'desk2/sdk-pin.json'),
   ]
   if (isWin) {
