@@ -174,6 +174,12 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   runs it and refuses a push it objects to, and CI runs it again on every push and pull request.
 - **The public audit fails when an allowlist entry no longer clears anything.** A full run lists each stale entry
   and exits with an error, so an exemption cannot linger after its value is gone.
+- **The public audit fails a commit message with a cherry-pick line, or with a trailer that credits no one.** The
+  line `git cherry-pick -x` adds names the commit a change was picked from, which may be one this repository does
+  not publish. A `Co-authored-by:`, `Signed-off-by:` or `Reviewed-by:` line with a GitHub noreply address still
+  passes, so a contribution a maintainer rewrites keeps its author, and so do the file lists a bundle commit ends
+  with; any other trailer, such as one a tool adds, is refused on push and in CI, and no allowlist entry clears
+  either.
 - **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged.** Its
   history no longer includes the original project's own commits, or the list of that project's contributors that
   came with them; that history stays in the original project's repository. Anyone can check the import against the

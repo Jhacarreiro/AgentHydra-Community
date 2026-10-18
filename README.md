@@ -399,14 +399,16 @@ refuses what it objects to; CI runs it again on every push and pull request, aft
   upstream service hosts and private repository names, links to upstream's releases, raw files and API, internal
   host names, account ids, build outputs and generated files (lockfiles aside), SVG and stylesheet files whose
   licence or copyright comment has no entry in `THIRD-PARTY-NOTICES.md`, binaries with no recorded provenance,
-  commit emails that are not noreply, and any commit that has upstream's relicensing commit `aee9dfc4`, or any
-  commit of upstream's up to `3a65ba8e`, in its history.
+  commit emails that are not noreply, commit messages with the line `git cherry-pick -x` adds or with a trailer
+  that is neither a credit (`Co-authored-by:`, `Signed-off-by:` or `Reviewed-by:` with a GitHub noreply address)
+  nor one of the `Mine:` and `Swept:` lists a `save:bundle` commit ends with, and any commit that has upstream's
+  relicensing commit `aee9dfc4`, or any commit of upstream's up to `3a65ba8e`, in its history.
 - Modes: `--tree REV`, `--history A..B` and `--push REMOTE`, plus `--json` and `--suggest-allow`. It exits 0 when
   clean, 1 on a finding and 2 when it could not run. A finding is printed as its rule, `file:line` and a short
   fingerprint of the value, never the value itself.
 - A finding that is genuinely fine goes in `scripts/audit-public.allow.json` as `{rule, path, fp, reason}`. Commit
-  emails, the licence boundary and upstream's history cannot be allowed. Every binary needs an entry in
-  `scripts/binary-provenance.json`.
+  emails, commit trailers and cherry-pick lines, the licence boundary and upstream's history cannot be allowed.
+  Every binary needs an entry in `scripts/binary-provenance.json`.
 - In the default run, a `--history` range from the import commit and `--push`, it first checks that commit: it must
   have no parent, have `3a65ba8e`'s tree and be the only root of the history read, so that every commit read descends
   from it; otherwise the audit cannot run (exit 2). It reads that commit's author, committer and message, and every

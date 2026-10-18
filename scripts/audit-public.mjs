@@ -16,9 +16,11 @@
 //                     path, the first lines of every text file (for a generated-file header), and
 //                     every binary blob against scripts/binary-provenance.json.
 //   --history A..B    Every commit in the range: author, committer and trailer emails must be noreply
-//                     addresses; the message and the lines each commit ADDS (git log -p -U0) go
-//                     through the content rules, so a secret added in one commit and removed in the
-//                     next is still caught; each binary a commit adds or changes needs provenance.
+//                     addresses; a trailer may only credit a person by a GitHub noreply address,
+//                     and the message may hold no cherry-pick line (rule commit.trailer, below);
+//                     the message and the lines each commit ADDS (git log -p -U0) go through the
+//                     content rules, so a secret added in one commit and removed in the next is
+//                     still caught; each binary a commit adds or changes needs provenance.
 //                     A message may name upstream's hosts, release links, private repositories and
 //                     denylisted folders (it says what a commit takes out, and each name is in the
 //                     base already); the other rules read it as they read a file.
@@ -38,6 +40,19 @@
 // is not. Anything else stops the audit (exit 2) and says what is wrong, and so does a clone that
 // cannot show it, such as a shallow one. A clone needs the whole history to reach it. A --tree run,
 // or a --history range that starts after the base, does not check it.
+// Rule commit.trailer: the trailers of a commit read, the base included, may only credit a person.
+// git's own parser finds them (git log's %(trailers), as git interpret-trailers reads a message):
+// the Key: value lines of the message's last paragraph. A Co-authored-by, Signed-off-by or
+// Reviewed-by (in any case) whose address is a GitHub noreply one (users.noreply.github.com)
+// passes: it is how a contribution a maintainer adapts or rewrites still credits its author
+// (CONTRIBUTING.md). So do the Mine: and Swept: lists that end a `wip: bundle` message
+// (scripts/save-bundle.ts writes them, and the commit-msg hook checks them against the commit).
+// Any other trailer is a finding, a tool's own (a session link, a Generated-by) included, and so is
+// a credit with any other address or with none: once, as commit.email, when that rule already
+// files its address. The "(cherry picked from commit <id>)" line git cherry-pick -x writes is a
+// finding wherever it sits in the message: it names the commit a change was picked from, which can
+// be one of a history this repository does not publish. A published commit says where its change
+// came from in its own words, or not at all.
 // Rule upstream.history: no commit read may share a commit with upstream's own history (the config's
 // upstreamBase, 3a65ba8e, built in like the relicensing commit). It needs 3a65ba8e in the clone, and a
 // clone of this repository does not have it; a clone can still hold upstream's older history without
@@ -52,9 +67,9 @@
 //
 // FINE ON PURPOSE. scripts/audit-public.allow.json holds the findings someone has looked at and found
 // harmless: {rule, path, fp, reason}, matched on all three, so an entry clears that one value in that
-// one file and nothing else. It never holds the value itself. commit.email, license.boundary and
-// upstream.history cannot be allowed at all: a published address cannot be unpublished, and neither the
-// licence line nor whose history this is is a matter of opinion. An entry that clears nothing is stale, and a stale entry would quietly clear its value
+// one file and nothing else. It never holds the value itself. commit.email, commit.trailer,
+// license.boundary and upstream.history cannot be allowed at all: a published address or commit id
+// cannot be unpublished, and neither the licence line nor whose history this is is a matter of opinion. An entry that clears nothing is stale, and a stale entry would quietly clear its value
 // again if it ever came back. A run that reads the tree at a commit, the base and every commit from it
 // up to that same commit (the default run, and CI's) has seen everything an entry can match, so there
 // a stale entry fails the run with exit 1 and a message of its own. A --tree or a --history run alone
@@ -138,11 +153,18 @@ export const RULES = {
   'asset.license':
     'an SVG or stylesheet whose comment states a licence or copyright, with no entry in THIRD-PARTY-NOTICES.md or binary-provenance.json',
   'commit.email': 'a commit author, committer or trailer email that is not a noreply address',
+  'commit.trailer':
+    "a trailer in a commit message, as git reads one, that is not a credit (Co-authored-by, Signed-off-by or Reviewed-by) with a GitHub noreply address or a bundle's Mine:/Swept: list, or the line git cherry-pick -x adds, which names the commit it was picked from",
   'license.boundary': 'history that contains the commit that took upstream off MIT',
   'upstream.history':
     "history that shares a commit with upstream's own (its last MIT commit or one before it), which this repository does not carry",
 }
-const NOT_ALLOWABLE = new Set(['commit.email', 'license.boundary', 'upstream.history'])
+const NOT_ALLOWABLE = new Set([
+  'commit.email',
+  'commit.trailer',
+  'license.boundary',
+  'upstream.history',
+])
 
 // The formats a repository scan needs on top of server/src/secrets.ts's. The PEM pattern is wider
 // than the server's (ENCRYPTED, DSA, PGP blocks); where both match, the finding is reported once.
@@ -1143,25 +1165,39 @@ function readHistory(cwd, revArgs) {
   return order.map((sha) => commits.get(sha))
 }
 
-/** Each commit's sha, author and committer emails and message, for git log arguments `revArgs`. */
+/**
+ * Each commit's sha, author and committer emails, message and trailer block (git's own reading of it,
+ * every line of the block, cherry-pick lines included), for git log arguments `revArgs`.
+ */
 function readCommitMeta(cwd, revArgs) {
   const meta = gitText(cwd, [
     'log',
     '-z',
-    '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B',
+    '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00%(trailers)',
     ...revArgs,
     '--',
   ]).split('\0')
   const commits = new Map()
   const order = []
-  for (let i = 0; i + 5 < meta.length; i += 6) {
-    const [sha, , authorEmail, , committerEmail, body] = meta.slice(i, i + 6)
+  for (let i = 0; i + 6 < meta.length; i += 7) {
+    const [sha, , authorEmail, , committerEmail, body, trailers] = meta.slice(i, i + 7)
     const id = sha.replace(/^\n/, '')
     if (!/^[0-9a-f]{40,64}$/.test(id)) continue
-    commits.set(id, { sha: id, authorEmail, committerEmail, body, files: new Map() })
+    commits.set(id, { sha: id, authorEmail, committerEmail, body, trailers, files: new Map() })
     order.push(id)
   }
   return { commits, order }
+}
+
+// A Key: Name <address> line, as rule commit.email reads one anywhere in a message.
+const EMAIL_TRAILER = /^([A-Za-z][\w-]*):[ \t]+.*<([^<>\s]+@[^<>\s]+)>\s*$/
+
+/** The address commit.email files a finding for on this line of a message, or null. */
+function commitEmailOf(line, globs) {
+  const m = EMAIL_TRAILER.exec(line)
+  if (!m) return null
+  const e = m[2].toLowerCase()
+  return globs.some((g) => g.test(e)) ? null : e
 }
 
 function commitEmailFindings(c, globs) {
@@ -1174,10 +1210,89 @@ function commitEmailFindings(c, globs) {
   check(c.authorEmail, 'author')
   check(c.committerEmail, 'committer')
   for (const line of c.body.split('\n')) {
-    const m = /^([A-Za-z][\w-]*):[ \t]+.*<([^<>\s]+@[^<>\s]+)>\s*$/.exec(line)
+    const m = EMAIL_TRAILER.exec(line)
     if (m) check(m[2], `trailer ${m[1]}`)
   }
   return out
+}
+
+// The line git cherry-pick -x writes, with the id of the commit it picked.
+const CHERRY_PICK = /\(cherry picked from commit [0-9a-f]{4,64}\b/i
+// A trailer's key as git reads one: letters, digits and dashes, then the separator, perhaps after
+// spaces or tabs. A line of the block that does not start so, or with whitespace, is no trailer.
+const TRAILER_KEY = /^([A-Za-z0-9-]+)[ \t]*:/
+// The trailers that credit a person, and the only address they may give: a GitHub noreply one.
+const CREDIT_KEYS = new Set(['co-authored-by', 'signed-off-by', 'reviewed-by'])
+const GITHUB_NOREPLY = /^[^@\s<>]+@users\.noreply\.github\.com$/i
+// What .githooks/check-bundle-message.mjs reads as a bundle and as the heading of one of its lists:
+// scripts/save-bundle.ts ends a bundle's message with them, and git reads them as trailers.
+const BUNDLE_SUBJECT = /^wip: bundle\b/i
+const BUNDLE_LIST = /^(Mine|Swept):\s*$/
+
+/**
+ * Rule commit.trailer. Every line of the message that holds the line git cherry-pick -x writes is a
+ * finding. In the trailer block git reads (%(trailers): its lines as they are in the message, a
+ * folded trailer's further lines indented), each trailer is a finding unless it credits a person
+ * with a GitHub noreply address (Co-authored-by, Signed-off-by or Reviewed-by, in any case) or is
+ * one of a bundle's Mine: and Swept: lists; so is a line of the block that is no trailer at all. A
+ * credit with any other address is one finding only: commit.email's, when that rule files the line
+ * (its address is not a noreply one), and this rule's otherwise. Filed under the message, at the
+ * line each starts on.
+ */
+function commitTrailerFindings(c, globs) {
+  const lines = String(c.body || '').split('\n')
+  const out = []
+  const add = (line, texts, note) => {
+    const fp = fingerprint(texts.map((t) => t.trim()).join('\n'))
+    out.push({ rule: 'commit.trailer', path: MESSAGE_PATH, commit: c.sha, line, fp, note })
+  }
+  lines.forEach((line, index) => {
+    if (CHERRY_PICK.test(line)) add(index + 1, [line], 'cherry-pick')
+  })
+
+  const block = String(c.trailers || '').split('\n')
+  while (block.length && !block[block.length - 1].trim()) block.pop()
+  // The block is the message's last paragraph: its lines are found from the end, last one first.
+  const numbers = []
+  let cursor = lines.length
+  for (let k = block.length - 1; k >= 0; k--) {
+    let i = cursor - 1
+    while (i >= 0 && lines[i].trim() !== block[k].trim()) i--
+    numbers[k] = i + 1 // 0: git read a line the message does not hold as it is
+    if (i >= 0) cursor = i
+  }
+  const entries = []
+  block.forEach((text, k) => {
+    const last = entries[entries.length - 1]
+    if (last && /^[ \t]/.test(text)) last.texts.push(text)
+    else entries.push({ line: numbers[k], texts: [text] })
+  })
+
+  const bundle = BUNDLE_SUBJECT.test((lines.find((l) => l.trim()) || '').trim())
+  for (const { line, texts } of entries) {
+    if (texts.some((t) => CHERRY_PICK.test(t))) continue // filed above, at its own line
+    const head = line > 0 ? lines[line - 1] : texts[0]
+    const key = TRAILER_KEY.exec(texts[0])
+    if (!key) {
+      add(line, texts, 'trailer block')
+      continue
+    }
+    if (bundle && BUNDLE_LIST.test(texts[0].trim())) continue
+    if (CREDIT_KEYS.has(key[1].toLowerCase())) {
+      const value = texts
+        .map((t) => t.trim())
+        .join(' ')
+        .slice(key[0].length)
+        .trim()
+      const credit = /^[^<>]*\S[^<>]*<([^<>\s]+)>$/.exec(value)
+      if (credit && GITHUB_NOREPLY.test(credit[1])) continue
+      if (commitEmailOf(head, globs)) continue // commit.email's finding already
+      add(line, texts, `trailer ${key[1]} with no GitHub noreply address`)
+      continue
+    }
+    add(line, texts, `trailer ${key[1]}`)
+  }
+  return out.sort((a, b) => a.line - b.line)
 }
 
 function commitGlobs(config) {
@@ -1192,7 +1307,8 @@ export function auditBaseCommit(cwd, base, ctx) {
   const { commits, order } = readCommitMeta(cwd, ['-1', base])
   const c = commits.get(order[0])
   if (!c) throw new AuditError(`the base ${String(base).slice(0, 8)} could not be read`)
-  const findings = commitEmailFindings(c, commitGlobs(ctx.config))
+  const globs = commitGlobs(ctx.config)
+  const findings = [...commitEmailFindings(c, globs), ...commitTrailerFindings(c, globs)]
   for (const f of scanText(c.body, MESSAGE_PATH, ctx.rules)) findings.push({ ...f, commit: c.sha })
   return findings
 }
@@ -1204,7 +1320,7 @@ export function auditHistory(cwd, revArgs, ctx) {
   const findings = []
   const binaries = []
   for (const c of commits) {
-    findings.push(...commitEmailFindings(c, globs))
+    findings.push(...commitEmailFindings(c, globs), ...commitTrailerFindings(c, globs))
     for (const f of scanText(c.body, MESSAGE_PATH, ctx.rules)) findings.push({ ...f, commit: c.sha })
     for (const file of c.files.values()) {
       if (file.status === 'D') continue

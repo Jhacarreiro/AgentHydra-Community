@@ -18,7 +18,9 @@
  *               else that is dirty is listed under Swept:. A --mine path that is not dirty is an
  *               error, because a wrong claim of ownership is worse than none.
  *   --subject   text after "wip: bundle "; default names the date and the owner instruction.
- *   --trailer   appended as-is at the end of the message (e.g. Co-Authored-By), repeatable.
+ *   --trailer   appended as-is at the end of the message (e.g. Co-Authored-By), repeatable. audit:public
+ *               passes only a credit (Co-authored-by, Signed-off-by, Reviewed-by) with a GitHub noreply
+ *               address; the Mine: and Swept: lists, which git reads as trailers too, pass in a bundle.
  *   --dry-run   print the message and the partition; stage nothing, commit nothing.
  *
  * It does not push. The pre-push gate decides that, with its own announcement.

@@ -15,7 +15,15 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -49,6 +57,7 @@ import { REPO_ROOT } from './repo-root'
 // here). A loaded Windows CI box has run git-backed tests ~9x slower than a desk.
 const GIT_TEST_TIMEOUT = 60_000
 const SCRIPT = join(REPO_ROOT, 'scripts', 'audit-public.mjs')
+const SAVE_BUNDLE = join(REPO_ROOT, 'scripts', 'save-bundle.ts')
 
 const ROOT = mkdtempSync(join(tmpdir(), 'ah-audit-'))
 const FILE_ROOT = realpathSync.native(ROOT)
@@ -592,6 +601,7 @@ describe('the allowlist and the config files', () => {
     expect(write([{ ...ok, fp: MAILBOX }])).toThrow('16-hex fp')
     expect(write([{ ...ok, reason: '' }])).toThrow('no reason')
     expect(write([{ ...ok, rule: 'commit.email' }])).toThrow('cannot be allowed')
+    expect(write([{ ...ok, rule: 'commit.trailer' }])).toThrow('cannot be allowed')
     expect(write([{ ...ok, rule: 'license.boundary' }])).toThrow('cannot be allowed')
     expect(write([{ ...ok, rule: 'upstream.history' }])).toThrow('cannot be allowed')
   })
@@ -805,6 +815,185 @@ describe('--history', () => {
       })
     },
     GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    "a trailer passes only as a credit with a GitHub noreply address; git cherry-pick -x's line never does",
+    () => {
+      const dir = repo('trailers')
+      const base = commit(dir, { 'a.md': 'a\n' }, 'base')
+      // The line cherry-pick -x writes, from git itself: it names a commit of another branch.
+      git(dir, NOREPLY, 'checkout', '-q', '-b', 'elsewhere')
+      const source = commit(dir, { 'b.md': 'b\n' }, 'Picked: a change\n\nIts body.')
+      git(dir, NOREPLY, 'checkout', '-q', 'main')
+      git(dir, NOREPLY, 'cherry-pick', '-x', source)
+      const picked = git(dir, NOREPLY, 'rev-parse', 'HEAD')
+      // A contribution a maintainer rewrote credits its author, in any case, folded or not.
+      const credited = commit(
+        dir,
+        {},
+        [
+          'Credited',
+          '',
+          'A body.',
+          '',
+          `Co-authored-by: Example Owner <${NOREPLY}>`,
+          `signed-off-by: Fixture <${NOREPLY}>`,
+          'REVIEWED-BY: Example Reviewer',
+          `  <${NOREPLY}>`,
+        ].join('\n'),
+      )
+      // A tool's own trailers: a noreply address that is not GitHub's passes commit.email, not this.
+      const tooled = commit(
+        dir,
+        {},
+        [
+          'Tooled',
+          '',
+          'A body.',
+          '',
+          'Co-Authored-By: Some Tool <noreply@example.invalid>',
+          'Tool-Session: https://example.invalid/session/1',
+          'Generated-by: Some Tool',
+        ].join('\n'),
+      )
+      // A credit with no address, and a line in the block that is no trailer at all.
+      const loose = commit(
+        dir,
+        {},
+        `Loose\n\nA body.\n\nReported by a user\nSigned-off-by: Fixture\nSigned-off-by: Fixture <${NOREPLY}>`,
+      )
+      // A credit whose address is no noreply one is commit.email's finding, and only that.
+      const personal = commit(
+        dir,
+        {},
+        'Personal\n\nA body.\n\nCo-authored-by: Someone <someone@example.invalid>',
+      )
+      // Mine: and Swept: lists pass in a bundle's message only.
+      const listed = commit(dir, {}, 'Listed\n\nA body.\n\nMine:\n  a.md\nSwept:\n  b.md')
+      // Quoted in the middle of a message, the line still names the commit.
+      const quoted = commit(
+        dir,
+        {},
+        `Quoted\n\nIt said\n(cherry picked from commit ${source})\nonce.\n\nThe end.`,
+      )
+      // Prose with colons is no trailer: a colon after a phrase, or in a paragraph before the last.
+      const prose = commit(
+        dir,
+        {},
+        'Prose: a subject\n\nNote: not the last paragraph.\n\nThe fix: a test.',
+      )
+
+      const { findings } = auditHistory(dir, [`${base}..HEAD`], ctxWith())
+      const trailers = findings.filter((f) => f.rule === 'commit.trailer')
+      expect(trailers.map((f) => [f.commit, f.path, f.line, f.note])).toEqual([
+        [quoted, MESSAGE_PATH, 4, 'cherry-pick'],
+        [listed, MESSAGE_PATH, 5, 'trailer Mine'],
+        [listed, MESSAGE_PATH, 7, 'trailer Swept'],
+        [loose, MESSAGE_PATH, 5, 'trailer block'],
+        [loose, MESSAGE_PATH, 6, 'trailer Signed-off-by with no GitHub noreply address'],
+        [tooled, MESSAGE_PATH, 5, 'trailer Co-Authored-By with no GitHub noreply address'],
+        [tooled, MESSAGE_PATH, 6, 'trailer Tool-Session'],
+        [tooled, MESSAGE_PATH, 7, 'trailer Generated-by'],
+        [picked, MESSAGE_PATH, 5, 'cherry-pick'],
+      ])
+      expect(trailers.map((f) => f.fp)).toEqual([
+        fingerprint(`(cherry picked from commit ${source})`),
+        fingerprint('Mine:\na.md'),
+        fingerprint('Swept:\nb.md'),
+        fingerprint('Reported by a user'),
+        fingerprint('Signed-off-by: Fixture'),
+        fingerprint('Co-Authored-By: Some Tool <noreply@example.invalid>'),
+        fingerprint('Tool-Session: https://example.invalid/session/1'),
+        fingerprint('Generated-by: Some Tool'),
+        fingerprint(`(cherry picked from commit ${source})`),
+      ])
+      expect(findings.filter((f) => f.commit === credited)).toEqual([])
+      expect(findings.filter((f) => f.commit === prose)).toEqual([])
+      expect(findings.filter((f) => f.commit === personal)).toMatchObject([
+        {
+          rule: 'commit.email',
+          note: 'trailer Co-authored-by',
+          fp: fingerprint('someone@example.invalid'),
+        },
+      ])
+      expect(findings.filter((f) => !['commit.trailer', 'commit.email'].includes(f.rule))).toEqual(
+        [],
+      )
+
+      // Not allowable: an entry for it clears nothing.
+      const entry = {
+        rule: 'commit.trailer',
+        path: MESSAGE_PATH,
+        fp: trailers[0]?.fp ?? '',
+        reason: 'tried',
+      }
+      applyAllow(trailers, [entry])
+      expect(trailers.some((f) => f.allowed)).toBe(false)
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
+    'a commit save:bundle makes is publishable: git reads its Mine: and Swept: lists as trailers, and they pass',
+    () => {
+      // scripts/save-bundle.ts itself, through the real commit-msg hook, as on a contributor's PC.
+      const dir = repo('bundle')
+      mkdirSync(join(dir, '.githooks'))
+      for (const name of ['commit-msg', 'check-bundle-message.mjs']) {
+        copyFileSync(join(REPO_ROOT, '.githooks', name), join(dir, '.githooks', name))
+      }
+      chmodSync(join(dir, '.githooks', 'commit-msg'), 0o755)
+      for (const [key, value] of [
+        ['core.hooksPath', '.githooks'],
+        ['user.email', NOREPLY],
+        ['user.name', 'Fixture'],
+        ['commit.gpgsign', 'false'],
+      ]) {
+        git(dir, NOREPLY, 'config', key, value)
+      }
+      const base = commit(dir, {}, 'base')
+      const saveBundle = (files: Record<string, string>, ...args: string[]) => {
+        for (const [path, body] of Object.entries(files)) writeFileSync(join(dir, path), body)
+        const r = spawnSync(process.execPath, [SAVE_BUNDLE, ...args], {
+          cwd: dir,
+          encoding: 'utf8',
+          timeout: GIT_TEST_TIMEOUT,
+        })
+        expect(r.stderr).toContain('swept from other sessions')
+        expect(r.status).toBe(0)
+        return git(dir, NOREPLY, 'rev-parse', 'HEAD')
+      }
+      const lists = saveBundle({ 'mine.md': 'm\n', 'other.md': 'o\n' }, '--mine', 'mine.md')
+      expect(git(dir, NOREPLY, 'log', '-1', '--format=%(trailers)')).toBe(
+        'Mine:\n  mine.md\nSwept:\n  other.md',
+      )
+      const credit = `Co-authored-by: Example Owner <${NOREPLY}>`
+      const credited = saveBundle(
+        { 'more.md': 'm\n', 'peer.md': 'p\n' },
+        '--mine',
+        'more.md',
+        '--trailer',
+        credit,
+      )
+      expect(git(dir, NOREPLY, 'log', '-1', '--format=%(trailers)')).toBe(credit)
+      const history = auditHistory(dir, [`${base}..HEAD`], ctxWith())
+      expect(history.commits.map((c) => c.sha)).toEqual([credited, lists])
+      expect(history.findings).toEqual([])
+
+      // A trailer of a tool's own, passed through --trailer, is still a finding.
+      const tooled = saveBundle(
+        { 'last.md': 'l\n', 'theirs.md': 't\n' },
+        '--mine',
+        'last.md',
+        '--trailer',
+        'Generated-by: Some Tool',
+      )
+      expect(
+        auditHistory(dir, [`${base}..HEAD`], ctxWith()).findings.map((f) => [f.commit, f.note]),
+      ).toEqual([[tooled, 'trailer Generated-by']])
+    },
+    GIT_TEST_TIMEOUT * 2,
   )
 
   test(
@@ -1047,6 +1236,24 @@ describe('the base', () => {
       // The tree it imports is not read as added lines, even with a value in it.
       const tree = imported('base-meta-tree', NOREPLY, { 'docs/hosts.md': `${IP.ten}\n` })
       expect(auditBaseCommit(tree.dir, tree.base, ctxWith({ config: tree.config }))).toEqual([])
+
+      // Its trailers are read as any commit's: a credit passes, a tool's own does not.
+      const trailed = imported('base-meta-trailer')
+      git(trailed.dir, NOREPLY, 'checkout', '-q', '--orphan', 'retold')
+      git(
+        trailed.dir,
+        NOREPLY,
+        'commit',
+        '-q',
+        '-m',
+        `the import\n\nCo-authored-by: Fixture <${NOREPLY}>\nGenerated-by: Some Tool`,
+      )
+      const retold = git(trailed.dir, NOREPLY, 'rev-parse', 'HEAD')
+      expect(
+        auditBaseCommit(trailed.dir, retold, ctxWith({ config: trailed.config })),
+      ).toMatchObject([
+        { rule: 'commit.trailer', commit: retold, line: 4, note: 'trailer Generated-by' },
+      ])
     },
     GIT_TEST_TIMEOUT,
   )

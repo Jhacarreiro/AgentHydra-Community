@@ -37,8 +37,11 @@
  *  5. scripts/audit-public.mjs runs over what the push carries (its --push mode: the commits the
  *     remote does not have yet, after the import commit, which it checks first): tokens and keys,
  *     credential files, private addresses, email addresses, home paths, upstream's hosts and private
- *     repositories, binaries with no provenance, and commit emails that are not noreply. It runs for
- *     every remote, private ones too: this repository is public by design, a private repository can
+ *     repositories, binaries with no provenance, commit emails that are not noreply, and commit
+ *     messages with the line git cherry-pick -x adds (which names the commit a change was picked
+ *     from, perhaps one of a history this repository does not publish) or with a trailer other than a
+ *     credit by GitHub noreply address or a bundle's Mine:/Swept: list. It runs for every
+ *     remote, private ones too: this repository is public by design, a private repository can
  *     be made public later, and "private" here can also mean "does not exist yet". A finding that is
  *     fine goes in scripts/audit-public.allow.json; there is no override. An audit that gives no
  *     verdict (it cannot load, start or finish, or the import commit is missing, as in a shallow

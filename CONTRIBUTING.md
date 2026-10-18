@@ -65,14 +65,23 @@ history after the import commit (of which it reads the author and message, not t
 keys, credential files, private addresses, email addresses other than noreply and documentation ones, home-folder
 paths, upstream hosts, release links and private repository names, build outputs and generated files, SVG and
 stylesheet files whose licence comment has no notice, binaries with no provenance, commit emails that are not
-noreply, and any commit that has upstream's relicensing commit, or any of upstream's own commits, in its history. A
-finding prints its rule, `file:line` and a fingerprint, never the value.
+noreply, commit messages with the line `git cherry-pick -x` adds or with a trailer that is not a credit, and any
+commit that has upstream's relicensing commit, or any of upstream's own commits, in its history. A finding prints
+its rule, `file:line` and a fingerprint, never the value.
 
 - Use invented data in tests and docs: `example.com`, `example.test` or `example.invalid` addresses, the
   documentation IP ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), names such as "Example Owner", and
   paths such as `C:/Users/me/...`.
 - Commit with your GitHub noreply address
   ([how](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/setting-your-commit-email-address)).
+- The only trailers a commit message may end with are credits: `Co-authored-by:`, `Signed-off-by:` or
+  `Reviewed-by:` (in any case) with a GitHub noreply address, as in the credit a rewritten contribution carries
+  (see how contributions are credited, below). The `Mine:` and `Swept:` lists `bun run save:bundle` writes pass
+  too. Any other trailer is refused, a tool's own (a session link, a `Generated-by:` line) included, and so is a
+  credit with any other address or with none.
+- Cherry-pick without `-x`: its line names the commit a change was picked from, which can be one this repository
+  does not have. The audit refuses it wherever it sits in the message, and no allowlist entry clears it or a
+  refused trailer.
 - A finding that is genuinely fine goes in `scripts/audit-public.allow.json` as `{rule, path, fp, reason}`, with a
   reason that says what the value is. Never paste the value. A new binary needs an entry in
   `scripts/binary-provenance.json` saying where it comes from and how it was built.
@@ -113,8 +122,8 @@ finding prints its rule, `file:line` and a fingerprint, never the value.
 
 - A pull request is merged with its author's own commits, so the history names who wrote them.
 - If a maintainer adapts or rewrites a contribution instead (to fit other work, to split it, or to fix it up), the
-  resulting commits carry a `Co-authored-by: Name <address>` trailer for its author, and its CHANGELOG entry names
-  them.
+  resulting commits carry a `Co-authored-by: Name <address>` trailer for its author, with the GitHub noreply
+  address their own commits carry (`ID+username@users.noreply.github.com`), and its CHANGELOG entry names them.
 - An idea or report that shaped a change is thanked in that change's commit message.
 - Contributions are licensed under the [MIT licence](LICENSE), the same as the rest of the repository: by opening
   a pull request you agree that your contribution may be distributed under it. You keep your copyright; the

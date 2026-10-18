@@ -991,4 +991,68 @@ describe('.githooks/pre-push: rules 4 to 7, end to end', () => {
     },
     HOOK_TEST_TIMEOUT * 2,
   )
+
+  test(
+    'a commit git cherry-pick -x made is refused without naming the commit it was picked from',
+    () => {
+      git(repo, 'checkout', '-q', '-b', 'side')
+      const source = commit(repo, { 'side.md': 'side work\n' }, 'side work')
+      git(repo, 'checkout', '-q', 'main')
+      git(repo, 'cherry-pick', '-x', source)
+      const picked = git(repo, 'rev-parse', 'HEAD')
+      const refused = push(repo, PRIVATE, 'main')
+      expect(refused.status).not.toBe(0)
+      expect(refused.output).toContain('commit.trailer')
+      expect(refused.output).toContain('(cherry-pick)')
+      expect(refused.output).toContain('audit:public found something this push would publish')
+      expect(refused.output).not.toContain(source.slice(0, 7))
+      expect(originHas(origin, picked)).toBe(false)
+
+      // The same change picked without -x carries no line naming its source, and goes out.
+      git(repo, 'reset', '-q', '--hard', 'HEAD~1')
+      git(repo, 'cherry-pick', source)
+      const plain = git(repo, 'rev-parse', 'HEAD')
+      const pushed = push(repo, PRIVATE, 'main')
+      expect(pushed.output).not.toContain('commit.trailer')
+      expect(pushed.status).toBe(0)
+      expect(originHas(origin, plain)).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT * 2,
+  )
+
+  test(
+    "a credited co-author with a noreply address goes out; a tool's own trailer does not",
+    () => {
+      const tooled = commit(
+        repo,
+        { 'rewritten.md': 'a contribution, rewritten\n' },
+        'Rewritten\n\nCo-authored-by: Example Owner <owner@users.noreply.github.com>\nGenerated-by: Some Tool',
+      )
+      const refused = push(repo, PRIVATE, 'main')
+      expect(refused.status).not.toBe(0)
+      expect(refused.output).toContain('commit.trailer')
+      expect(refused.output).toContain('(trailer Generated-by)')
+      expect(refused.output).toContain('✗ 1 finding(s)') // the credit beside it is none
+      expect(originHas(origin, tooled)).toBe(false)
+
+      // The same change with only its author's credit is publishable.
+      git(
+        repo,
+        'commit',
+        '-q',
+        '--amend',
+        '-m',
+        'Rewritten\n\nCo-authored-by: Example Owner <owner@users.noreply.github.com>',
+      )
+      const credited = git(repo, 'rev-parse', 'HEAD')
+      expect(git(repo, 'log', '-1', '--format=%(trailers)')).toBe(
+        'Co-authored-by: Example Owner <owner@users.noreply.github.com>',
+      )
+      const pushed = push(repo, PRIVATE, 'main')
+      expect(pushed.output).not.toContain('commit.trailer')
+      expect(pushed.status).toBe(0)
+      expect(originHas(origin, credited)).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT * 2,
+  )
 })
