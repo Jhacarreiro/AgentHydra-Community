@@ -7,6 +7,7 @@
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import type { ServerWebSocket } from 'bun'
 import { Hono } from 'hono'
 import { acceptCodexHubPush, CODEX_HUB_DIR, hubPcKey } from '../src/core/codex-hub'
 import type { CodexHubPushConfig } from '../src/core/codex-hub-push'
@@ -228,6 +229,33 @@ test('a push whose updatedAt is no time is refused with 400, and the stored copy
 
 const BIG = 24 * 1024 * 1024
 
+/**
+ * `websocket` whose sockets act as if their peer stopped reading, on any OS. Bun drops a frame (send gives 0, and the
+ * socket stays open) while more than backpressureLimit waits to go out, and what waits is what the OS has not taken
+ * yet. How much the OS takes differs: Linux takes a few MiB of a 24 MiB frame and the rest waits in Bun, so the line
+ * behind it is dropped; Windows copies a whole send into its own buffer while the socket is within its quota, so
+ * nothing waits in Bun and the line behind it goes out too. Here every frame counts as waiting from the moment it is
+ * sent, as if the OS had taken none of it, and one sent while more than the limit waits is dropped as Bun drops it.
+ * The frames that wait still go out, as they would once the peer read again.
+ */
+function stalled(websocket: typeof relayWebSocket): typeof relayWebSocket {
+  return {
+    ...websocket,
+    open(ws) {
+      const raw = ws as unknown as ServerWebSocket<unknown>
+      const send = raw.send.bind(raw)
+      let waiting = 0
+      raw.send = (data, compress) => {
+        if (waiting > websocket.backpressureLimit) return 0
+        if (typeof data === 'string') waiting += Buffer.byteLength(data)
+        else waiting += data instanceof Blob ? data.size : data.byteLength
+        return send(data, compress)
+      }
+      websocket.open(ws)
+    },
+  }
+}
+
 /** The hub's routes on a port of their own, with one PC's relay connected to them. */
 async function relayRig(websocket: typeof relayWebSocket) {
   const relayPc = `Big-PC-${crypto.randomUUID().slice(0, 6)}`
@@ -360,8 +388,9 @@ test('the relay carries frames past 16 MiB both ways, and the line sent right af
 
 test('a line the relay cannot queue ends the session it was for, not just that line', async () => {
   // Past backpressureLimit Bun drops a frame and keeps the socket open. The relay's own limit is
-  // more than a test should fill, so it is lowered here.
-  const rig = await relayRig({ ...relayWebSocket, backpressureLimit: 64 * 1024 })
+  // more than a test should fill, so it is lowered here, and the sockets are stalled so the big
+  // frame waits whatever the OS would take of it.
+  const rig = await relayRig(stalled({ ...relayWebSocket, backpressureLimit: 64 * 1024 }))
   try {
     // To Desk: the answer waits to be sent and the notification cannot. Desk's socket closes, so
     // Desk stops waiting, and the PC ends that app-server.
@@ -387,4 +416,6 @@ test('a line the relay cannot queue ends the session it was for, not just that l
   } finally {
     rig.stop()
   }
-})
+  // Longer than until's own 5 s: a wait that never ends fails at the line that waited, not as
+  // bun's bare 5 s timeout.
+}, 20_000)
