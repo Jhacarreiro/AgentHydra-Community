@@ -118,8 +118,9 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   move, and points any tray shortcut whose program is missing at the PowerShell tray.
 - **Releases carry the licences of everything inside them.** Every download now includes AgentHydra's licence, the
   notices for the code it adapts from other projects, and a list of every third-party package it contains, each
-  with its licence text, and an in-app update brings the new release's copies. A release with a package that has no
-  licence, no licence text, or a licence outside the permissive list is not built.
+  with its licence text. The Windows installer puts them beside the app, and an in-app update brings the new
+  release's copies. A release with a package that has no licence, no licence text, or a licence outside the
+  permissive list is not built.
 - **A release no longer includes the Claude Agent SDK.** The first time a chat needs it, AgentHydra downloads the
   exact version the release pins, checks it against the pin and keeps it, across updates too. While it waits the
   chat says it is getting the SDK, and if the download fails it says whether the network, the download or the disk
