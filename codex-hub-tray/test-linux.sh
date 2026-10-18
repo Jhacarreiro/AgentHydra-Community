@@ -341,6 +341,22 @@ PUSH5=$(pusher_pid)
 sleep 2
 check "  ...and keeps running" alive "$PID5"
 check "nothing panicked" bash -c "! grep -q panic '$T/headless.out' '$LOG'"
+# Without a desktop there is no menu, so no Connect this PC: a new hub token goes into tray.json by hand, and SIGUSR1
+# (or the next check) has the pusher start again with it.
+printf '{\n  "token": "%s"\n}\n' "$TOKEN-next" >"$APP/tray.json"
+kill -USR1 "$PID5"
+check "a token written into tray.json by hand restarts the pusher with it" \
+	wait_for 20 grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN-next" "$APP/pusher-env"
+check "  ...and the hub's refusal of that one is in the log" \
+	wait_for 10 log_has "status: The hub refused the token: choose Connect this PC"
+check "  ...with the config still private (600)" test "$(mode "$APP/tray.json")" = 600
+printf '{\n  "token": "%s"\n}\n' "$TOKEN" >"$APP/tray.json"
+kill -USR1 "$PID5"
+check "the hub's token, put back the same way, is taken" \
+	wait_for 20 grep -qx "AGENTHYDRA_CODEX_HUB_TOKEN=$TOKEN" "$APP/pusher-env"
+check "  ...and the pusher runs with it" wait_for 20 has_pusher
+check "  ...and the tray is pushing again" wait_for 10 bash -c "tail -1 <(grep 'status:' '$LOG') | grep -q 'Pushing this PC'"
+PUSH5=$(pusher_pid)
 kill -TERM "$PID5"
 check "SIGTERM stops the headless tray" wait_for 10 dead "$PID5"
 check "  ...and its pusher" wait_for 10 dead "$PUSH5"
