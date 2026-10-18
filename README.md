@@ -67,7 +67,8 @@ notices ([LICENSE](LICENSE)).
 - **For agents too:** the whole thing over MCP, including "which account am I, and how much is left"
 - **Nothing phones home:** updates are off until this project publishes releases, no install id is sent, and
   nothing talks to a LunarWerx service
-- **A public audit** checks every commit for secrets, personal data and upstream code past the MIT base
+- **A public audit** checks every file, and every commit since the MIT base, for secrets, personal data and
+  anything from upstream's relicensing on
 
 <details>
 <summary><b>Read more: what each part does</b></summary>
