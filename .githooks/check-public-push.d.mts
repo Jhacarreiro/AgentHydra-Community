@@ -71,6 +71,22 @@ export function upstreamHistoryRefusals(
   cwd?: string,
 ): Array<{ ref: string; why: string }>
 
+/** Rule 7: the import commit, the one root of this repository's history; the audit config's base
+ *  names it, and this is the value for a checkout without that config. */
+export const IMPORT_COMMIT: string
+
+/** Rule 7's root: the audit config's base when it names a full commit id, else IMPORT_COMMIT. */
+export function importCommit(cwd?: string): string
+
+/** Rule 7: the pushed refs whose history has a root commit other than `root` (a shallow clone's
+ *  cut-off commits count as such). Fail-closed on an unclear answer; none when this clone does not
+ *  have `root`. */
+export function foreignRootRefusals(
+  refs: PushRef[],
+  root: string,
+  cwd?: string,
+): Array<{ ref: string; why: string }>
+
 /** Rule 5: audit-public.mjs --push over the hook's ref lines: 0 clean, 1 a finding, 2 no verdict (it
  *  could not run, start or finish); 0 when there is no script. */
 export function runPushAudit(refText: string, remote: string, cwd?: string): number

@@ -276,7 +276,8 @@ release tag, the hook checks CI:
    can add a commit to this check, never take that one away.
 5. **The public audit runs on what the push carries.** `scripts/audit-public.mjs --push` first
    checks the import commit at the root of this history (the config's `base`): it must be in the
-   clone, have no parent and have `3a65ba8e`'s tree, and every pushed commit must be built on it.
+   clone, have no parent, have `3a65ba8e`'s tree and be the only root of each pushed commit's
+   history, so that every pushed commit is built on it.
    Then it reads the commits the remote does not have yet, after the import commit, on every
    remote, private ones too. A finding refuses the push until it is fixed or allowed in
    `scripts/audit-public.allow.json`, and an audit that gives no verdict (it cannot load, start or
@@ -291,12 +292,15 @@ release tag, the hook checks CI:
    `baseTree` can add a commit and a tree, never take these away; its `base` is not read here. A
    clone without `3a65ba8e` has none of upstream's tags, so only the tree is checked there. Tag a
    release on this repository's own commits, and push branches by name. No override.
-7. **No ref may carry upstream's history.** This history starts at the import commit, which has
-   no parent; upstream's history up to `3a65ba8e` stays in upstream's repository. On every push to
-   any remote, a ref whose history shares a commit with `3a65ba8e` (`3a65ba8e` itself or any
-   commit before it) is refused, and so is a merge that brings that history in. The audit
-   config's `upstreamBase` can add a commit to this check, never take that one away. A clone
-   without `3a65ba8e` holds none of that history and passes. No override.
+7. **No ref may carry upstream's history, or any history but this repository's.** This history
+   starts at the import commit, which has no parent; upstream's history up to `3a65ba8e` stays in
+   upstream's repository. On every push to any remote, a ref is refused when its history shares a
+   commit with `3a65ba8e` (`3a65ba8e` itself or any commit before it), and when it has any root
+   commit other than the import commit. The second check needs none of upstream's objects: one of
+   upstream's older tags fetched into a clone without `3a65ba8e` brings a root of its own, and so
+   does a merge of unrelated history. The audit config's `upstreamBase` can add a commit to the
+   first check, never take that one away. A shallow clone's cut-off commits count as other roots.
+   No override.
 
 **A release tag then needs green CI on its commit.** With a `v*.*.*` tag in the push, the hook asks
 `gh` for a `ci.yml` run on the exact commit the tag points to whose conclusion is success. If there

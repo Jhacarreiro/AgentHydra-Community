@@ -1,9 +1,9 @@
 // tests/githooks/check-public-push-audit.test.ts - rules 4 to 7 of the pre-push gate. A pushed ref
 // whose history holds upstream's relicensing commit is refused on every remote, override or not, and
-// so is a ref that shares any of upstream's history and a tag on upstream's history or on its tree
-// (the import commit); scripts/audit-public.mjs runs over what each push carries, so a push that
-// would publish a mailbox never lands, lands once that one finding is in the allowlist, and is
-// refused when the audit cannot run at all.
+// so is a ref that shares any of upstream's history or has a root other than the import commit, and
+// a tag on upstream's history or on its tree (the import commit); scripts/audit-public.mjs runs over
+// what each push carries, so a push that would publish a mailbox never lands, lands once that one
+// finding is in the allowlist, and is refused when the audit cannot run at all.
 //
 // None of upstream's commits is in a throwaway repo, and CI's clones of this repository do not have
 // them either, so upstream's history is built in miniature: an "upstream base" with a commit before
@@ -37,6 +37,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
+  foreignRootRefusals,
+  IMPORT_COMMIT,
+  importCommit,
   LICENSE_BOUNDARY,
   licenseBoundaries,
   licenseRefusals,
@@ -360,10 +363,10 @@ describe("rules 6 and 7: upstream's base and its tree", () => {
   )
 
   test(
-    "rule 7 in a clone without upstream's commits: there is nothing to refuse, and every ref passes",
+    "rule 7 in a clone without upstream's commits: there is nothing to share, and this repository's own history passes",
     () => {
       const dir = scratch('upstream-history-src')
-      const { upstreamBase, own } = upstreamInMiniature(dir)
+      const { upstreamBase, imported, own } = upstreamInMiniature(dir)
       const clone = cloneOf(dir, 'main')
       expect(
         spawnSync('git', ['cat-file', '-e', `${upstreamBase}^{commit}`], { cwd: clone }).status,
@@ -372,6 +375,106 @@ describe("rules 6 and 7: upstream's base and its tree", () => {
       expect(upstreamHistoryRefusals(refs, [upstreamBase], clone)).toEqual([])
       // The real one is in no throwaway repo either.
       expect(upstreamHistoryRefusals(refs, upstreamBases(clone), clone)).toEqual([])
+      expect(foreignRootRefusals(refs, imported, clone)).toEqual([])
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test("rule 7's root is the audit config's base, and the import commit without a config", () => {
+    expect(IMPORT_COMMIT).toMatch(/^[0-9a-f]{40}$/)
+    expect(loadAuditFiles().config.base).toBe(IMPORT_COMMIT)
+    expect(importCommit(REPO_ROOT)).toBe(IMPORT_COMMIT)
+    const dir = scratch('import-config')
+    expect(importCommit(dir)).toBe(IMPORT_COMMIT)
+    mkdirSync(join(dir, 'scripts'))
+    const cfg = join(dir, 'scripts', 'audit-public.config.json')
+    const other = 'ef'.repeat(20)
+    writeFileSync(cfg, JSON.stringify({ base: other.toUpperCase() }))
+    expect(importCommit(dir)).toBe(other)
+    writeFileSync(cfg, JSON.stringify({ base: 'not a sha' }))
+    expect(importCommit(dir)).toBe(IMPORT_COMMIT)
+    writeFileSync(cfg, '{ not json')
+    expect(importCommit(dir)).toBe(IMPORT_COMMIT)
+  })
+
+  test(
+    "rule 7 without upstream's commits: a ref with a root other than the import commit is refused, an older upstream tag included",
+    () => {
+      const dir = scratch('foreign-roots-src')
+      const { before, upstreamBase, imported, own } = upstreamInMiniature(dir)
+      git(dir, 'tag', 'older', before)
+      // A clone of this repository's branch alone, then one of upstream's older tags fetched on its
+      // own, as `git fetch upstream tag <older>` does: its history, without upstreamBase.
+      const clone = cloneOf(dir, 'main')
+      git(clone, 'fetch', '-q', '--no-tags', 'origin', 'refs/tags/older:refs/tags/older')
+      expect(
+        spawnSync('git', ['cat-file', '-e', `${upstreamBase}^{commit}`], { cwd: clone }).status,
+      ).not.toBe(0)
+      git(clone, 'checkout', '-q', '-b', 'merged', own)
+      git(clone, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'older')
+      const merged = git(clone, 'rev-parse', 'HEAD')
+      git(clone, 'checkout', '-q', '--orphan', 'stray')
+      git(clone, 'rm', '-rq', '--cached', '.')
+      const stray = commit(clone, { 'stray.txt': 'x\n' }, 'a root of its own')
+      git(clone, 'tag', '-a', '-m', 'annotated', 'own-tag', own)
+      const tagObject = git(clone, 'rev-parse', 'own-tag')
+
+      const refs = parseRefLines(
+        [
+          `refs/tags/older ${before} refs/tags/older ${ZERO}`,
+          `refs/heads/merged ${merged} refs/heads/merged ${own}`,
+          `refs/heads/stray ${stray} refs/heads/stray ${ZERO}`,
+          `refs/heads/main ${own} refs/heads/main ${ZERO}`,
+          `refs/tags/own-tag ${tagObject} refs/tags/own-tag ${ZERO}`,
+          `(delete) ${ZERO} refs/heads/gone ${before}`,
+        ].join('\n'),
+      )
+      // The merge-base half has nothing to look for here; the roots half needs no upstream object.
+      expect(upstreamHistoryRefusals(refs, [upstreamBase], clone)).toEqual([])
+      expect(upstreamTagRefusals(refs, { bases: [upstreamBase] }, clone)).toEqual([])
+      const refused = foreignRootRefusals(refs, imported, clone)
+      expect(refused.map((r) => r.ref)).toEqual([
+        'refs/tags/older',
+        'refs/heads/merged',
+        'refs/heads/stray',
+      ])
+      const at = imported.slice(0, 8)
+      expect(refused[0]?.why).toBe(
+        `its history has the root commit ${before.slice(0, 8)}, not only the import commit ${at}`,
+      )
+      expect(refused[1]?.why).toBe(
+        `its history has the root commit ${before.slice(0, 8)}, not only the import commit ${at}`,
+      )
+      expect(refused[2]?.why).toBe(
+        `its history has the root commit ${stray.slice(0, 8)}, not only the import commit ${at}`,
+      )
+      // A root this clone does not have: none of this repository's history is here to check.
+      expect(foreignRootRefusals(refs, 'cd'.repeat(20), clone)).toEqual([])
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    'rule 7 in a shallow clone: a commit cut off from its parents is refused as history that cannot be told',
+    () => {
+      const dir = scratch('foreign-roots-shallow-src')
+      const { imported, own } = upstreamInMiniature(dir)
+      git(dir, 'checkout', '-q', '-b', 'side', own)
+      commit(dir, { 'd.txt': 'd\n' }, 'side, one')
+      const tip = commit(dir, { 'd.txt': 'e\n' }, 'side, two')
+      const clone = cloneOf(dir, 'main')
+      git(clone, 'fetch', '-q', '--depth', '1', 'origin', 'side')
+      const refs = parseRefLines(
+        [
+          `refs/heads/main ${own} refs/heads/main ${ZERO}`,
+          `refs/heads/side ${tip} refs/heads/side ${ZERO}`,
+        ].join('\n'),
+      )
+      const refused = foreignRootRefusals(refs, imported, clone)
+      expect(refused.map((r) => r.ref)).toEqual(['refs/heads/side'])
+      expect(refused[0]?.why).toBe(
+        `this shallow clone cuts its history off at ${tip.slice(0, 8)}, so whether it starts at the import commit ${imported.slice(0, 8)} cannot be told (git fetch --unshallow)`,
+      )
     },
     HOOK_TEST_TIMEOUT,
   )
@@ -617,15 +720,70 @@ describe('.githooks/pre-push: rules 4 to 7, end to end', () => {
   )
 
   test(
-    'a branch on a root of its own is refused: the audit has no base to read it from',
+    'a branch on a root of its own is refused before the audit runs, and so is a merge of one, override or not',
     () => {
+      const base = git(repo, 'rev-parse', 'main')
       git(repo, 'checkout', '-q', '--orphan', 'stray')
       const stray = commit(repo, { 'notes.md': 'nothing to see\n' }, 'another root')
       const r = push(repo, PRIVATE, 'stray')
       expect(r.status).not.toBe(0)
-      expect(r.output).toContain(`${stray.slice(0, 8)} is not built on the base`)
-      expect(r.output).toContain('audit:public could not run')
+      expect(r.output).toContain(
+        "a pushed ref carries upstream's history, or history from another root",
+      )
+      expect(r.output).toContain(
+        `refs/heads/stray: its history has the root commit ${stray.slice(0, 8)}, not only the import commit ${base.slice(0, 8)}`,
+      )
+      expect(r.output).not.toContain('audit:public')
       expect(originHas(origin, stray)).toBe(false)
+
+      // Merged into main, the stray root is under a commit that is built on the base. The checkout
+      // writes the hook back as it was committed, before it was made executable.
+      git(repo, 'checkout', '-q', '-f', 'main')
+      chmodSync(join(repo, '.githooks', 'pre-push'), 0o755)
+      git(repo, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'stray')
+      const merged = push(
+        repo,
+        { AGENTHYDRA_VISIBILITY_STUB: 'public', AGENTHYDRA_PUSH_PUBLIC: '1' },
+        'main',
+      )
+      expect(merged.status).not.toBe(0)
+      expect(merged.output).toContain(
+        `refs/heads/main: its history has the root commit ${stray.slice(0, 8)}, not only the import commit ${base.slice(0, 8)}`,
+      )
+      expect(git(origin, 'rev-list', '--count', 'main')).toBe('1')
+      expect(originHas(origin, stray)).toBe(false)
+    },
+    HOOK_TEST_TIMEOUT * 2,
+  )
+
+  test(
+    "a tag on upstream's older history that shares nothing with its last MIT commit is refused by its root",
+    () => {
+      // As in a clone that fetched one of upstream's older tags without 3a65ba8e: a commit on a root
+      // of its own, not in upstreamBase's history, with another tree.
+      const base = git(repo, 'rev-parse', 'main')
+      const older = execFileSync(
+        'git',
+        ['commit-tree', `${upstreamBefore}^{tree}`, '-m', 'older'],
+        {
+          cwd: repo,
+          encoding: 'utf8',
+          env: envFor({
+            GIT_AUTHOR_NAME: 'Fixture',
+            GIT_AUTHOR_EMAIL: NOREPLY,
+            GIT_COMMITTER_NAME: 'Fixture',
+            GIT_COMMITTER_EMAIL: NOREPLY,
+          }),
+        },
+      ).trim()
+      git(repo, 'tag', 'v2.0.3', older)
+      const r = push(repo, PRIVATE, 'refs/tags/v2.0.3')
+      expect(r.status).not.toBe(0)
+      expect(r.output).not.toContain("a pushed tag is one of upstream's")
+      expect(r.output).toContain(
+        `refs/tags/v2.0.3: its history has the root commit ${older.slice(0, 8)}, not only the import commit ${base.slice(0, 8)}`,
+      )
+      expect(originHas(origin, older)).toBe(false)
     },
     HOOK_TEST_TIMEOUT,
   )

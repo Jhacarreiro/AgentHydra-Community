@@ -13,7 +13,8 @@
 # 6. Refuse a tag on upstream's work: on upstream's history up to 3a65ba8e (upstream's own tags), or
 #    on a commit with 3a65ba8e's tree (the import commit at the root of this history). No override.
 # 7. Refuse, on every remote, any ref whose history shares a commit with upstream's history up to
-#    3a65ba8e, which this repository does not carry. A clone without 3a65ba8e passes. No override.
+#    3a65ba8e, which this repository does not carry, or has a root commit other than the import
+#    commit, which needs none of upstream's commits to tell. No override.
 #
 # Then a release tag in the push also needs CI to have passed on the exact commit the tag points
 # to: `gh` is asked for a ci.yml run on that sha whose conclusion is success. When there is one,
