@@ -14,9 +14,10 @@
 //	  INBOX_URL=https://inbox.example.test UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key) \
 //	  ./build.sh
 //
-// Without UPDATE_KEY the tray takes builds only from an https hub (hub.go checkSigned). The builds go into dist/,
-// which git ignores, as a build holds the operator's addresses and must not be committed; docs/CODEX-HUB.md is the
-// operator's guide. What each system gets:
+// A tray without a key checks no signatures and takes builds only from an https hub (hub.go checkSigned), so build.sh
+// stops on an empty UPDATE_KEY unless ALLOW_NO_KEY=1. The builds go into dist/, which git ignores, as a build holds
+// the operator's addresses and must not be committed; docs/CODEX-HUB.md is the operator's guide. What each system
+// gets:
 //
 // Windows: one exe, codex-hub-tray.exe, built with -H=windowsgui; the Run key starts it.
 //

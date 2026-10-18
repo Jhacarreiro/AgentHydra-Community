@@ -8,11 +8,11 @@
 #   codex-hub-tray-darwin-x64
 #
 # The addresses come from HUB_URL, PAIR_URL and INBOX_URL, the public key the hub's builds are signed with from
-# UPDATE_KEY (scripts/codex-hub-sign.ts prints it; two, comma-separated, while moving to a new key; without one the
-# app takes builds only from an https hub), the hubs earlier builds had from OLD_HUB_URLS, and the bundle identifier,
-# which also names the LaunchAgent, from BUNDLE_ID (default com.example.codex-hub-tray). build.sh runs this for its
-# "macos" target, after checking those values; the Go builds here take the same flags as its own, so that two builds
-# from one commit come out the same:
+# UPDATE_KEY (scripts/codex-hub-sign.ts prints it; two, comma-separated, while moving to a new key; required, as in
+# build.sh, unless ALLOW_NO_KEY=1 asks for an app that takes unsigned builds from an https hub), the hubs earlier
+# builds had from OLD_HUB_URLS, and the bundle identifier, which also names the LaunchAgent, from BUNDLE_ID (default
+# com.example.codex-hub-tray). build.sh runs this for its "macos" target, after checking those values; the Go builds
+# here take the same flags as its own, so that two builds from one commit come out the same:
 #
 #   HUB_URL=https://hub.example.test PAIR_URL=https://inbox.example.test/codex-hub/pair \
 #     INBOX_URL=https://inbox.example.test UPDATE_KEY=$(bun ../scripts/codex-hub-sign.ts pubkey ~/codex-hub/update.key) \
@@ -48,10 +48,14 @@ unset GOFLAGS GOAMD64 GOARM64 GOEXPERIMENT
 export GOFLAGS=-mod=readonly
 LDFLAGS="-s -w -buildid= -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-} -X main.inboxURL=${INBOX_URL:-} -X main.updateKey=${UPDATE_KEY:-} -X main.oldHubURLs=${OLD_HUB_URLS:-} -X main.bundleID=$BUNDLE_ID"
 [ -n "${HUB_URL:-}" ] || echo "warning: HUB_URL is empty; each Mac then needs the hub address in its tray.json" >&2
-case "${UPDATE_KEY:-}:${HUB_URL:-}" in
-:https://*) ;;
-:*) echo "warning: UPDATE_KEY is empty; the app then takes no builds from a hub that is not https" >&2 ;;
-esac
+# As in build.sh: an app with no key takes unsigned builds from an https hub, so one is made only when asked for.
+if [ -z "${UPDATE_KEY:-}" ]; then
+	if [ "${ALLOW_NO_KEY:-}" != 1 ]; then
+		echo "UPDATE_KEY is empty: give the public key the hub's builds are signed with, or set ALLOW_NO_KEY=1 for an app that takes unsigned builds from an https hub." >&2
+		exit 1
+	fi
+	echo "warning: UPDATE_KEY is empty (ALLOW_NO_KEY=1); the app takes unsigned builds from an https hub and none from one that is not" >&2
+fi
 
 mkdir -p "$OUT"
 for arch in arm64 amd64; do

@@ -8,8 +8,8 @@
 #                 (https://inbox.example.test/codex-hub/pair); without it a PC takes its token from its tray.json
 #   INBOX_URL     the page the menu's "Open the inbox" opens; without it the item is hidden
 #   UPDATE_KEY    the public key the hub's builds are signed with (bun ../scripts/codex-hub-sign.ts pubkey <key file>),
-#                 or two, comma-separated, while moving to a new key; without one the tray takes builds only from an
-#                 https hub
+#                 or two, comma-separated, while moving to a new key. Required: a tray without one takes unsigned builds
+#                 from an https hub, so this stops without it unless ALLOW_NO_KEY=1 asks for such a tray
 #   OLD_HUB_URLS  the hubs earlier builds were made with, comma-separated, once the hub has moved
 #   BUNDLE_ID     macOS only: the app's identifier, which also names its LaunchAgent (com.example.codex-hub-tray)
 #   TARGETS       what to build: windows-x64 linux-x64 linux-arm64 (the default), and macos on a Mac
@@ -73,14 +73,21 @@ if [ -n "${UPDATE_KEY:-}" ]; then
 			fail "UPDATE_KEY: \"$key\" is not a public key (base64 of 32 bytes, as codex-hub-sign.ts pubkey prints it)"
 	done
 fi
+# A tray with no key takes whatever an https hub hands it, unsigned (hub.go checkSigned): an empty UPDATE_KEY, such
+# as a variable that was set in the shell but not exported, would quietly turn signing off on every PC that updates
+# to the build. So a tray without one is made only when asked for.
+if [ -z "${UPDATE_KEY:-}" ]; then
+	[ "${ALLOW_NO_KEY:-}" = 1 ] ||
+		fail "UPDATE_KEY is empty: give the public key the hub's builds are signed with (export UPDATE_KEY=\$(bun ../scripts/codex-hub-sign.ts pubkey <key file>)), or set ALLOW_NO_KEY=1 for a tray that takes unsigned builds from an https hub"
+	case "${HUB_URL:-}" in
+	https://*) echo "warning: UPDATE_KEY is empty (ALLOW_NO_KEY=1); the tray takes unsigned builds from the hub, on HTTPS alone" >&2 ;;
+	*) echo "warning: UPDATE_KEY is empty (ALLOW_NO_KEY=1); the tray takes no builds from a hub that is not https" >&2 ;;
+	esac
+fi
 [ -n "${HUB_URL:-}" ] || echo "warning: HUB_URL is empty; each PC then needs the hub's address in its tray.json" >&2
 [ -n "${PAIR_URL:-}" ] || echo "warning: PAIR_URL is empty; Connect this PC then has no page to open" >&2
 case "${PAIR_URL:-}" in
 http://*) echo "warning: PAIR_URL is not https; the pairing page hands out the hub token" >&2 ;;
-esac
-case "${UPDATE_KEY:-}:${HUB_URL:-}" in
-:https://*) ;;
-:*) echo "warning: UPDATE_KEY is empty; the tray then takes no builds from a hub that is not https" >&2 ;;
 esac
 
 FLAGS="-s -w -buildid= -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-} -X main.inboxURL=${INBOX_URL:-}"
