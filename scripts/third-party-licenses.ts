@@ -363,13 +363,16 @@ export function npmTree(nodeModules: string, shippedIn: string[]): ThirdPartyPac
     out.push(npmPackage(dir, shippedIn))
     if (existsSync(join(dir, 'node_modules'))) walk(join(dir, 'node_modules'))
   }
+  // By name, so the list and its problems come out in the same order on every filesystem (ext4 lists a folder in
+  // hash order, NTFS by name).
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)
   const walk = (folder: string) => {
-    for (const e of readdirSync(folder, { withFileTypes: true })) {
+    for (const e of readdirSync(folder, { withFileTypes: true }).sort(byName)) {
       if (e.name.startsWith('.') || !e.isDirectory()) continue
       const path = join(folder, e.name)
       if (!e.name.startsWith('@')) visit(path)
       else
-        for (const s of readdirSync(path, { withFileTypes: true }))
+        for (const s of readdirSync(path, { withFileTypes: true }).sort(byName))
           if (s.isDirectory()) visit(join(path, s.name))
     }
   }
