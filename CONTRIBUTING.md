@@ -61,8 +61,9 @@ first. A behaviour change comes with a test that fails without it.
 
 This repository is public, so everything committed is published. `bun run audit:public` reads the tree at `HEAD`
 and every commit since `3a65ba8e`, the MIT base, and reports tokens and keys, credential files, private addresses,
-email addresses other than noreply and documentation ones, home-folder paths, upstream hosts and private repository
-names, binaries with no provenance, commit emails that are not noreply, and any commit that has upstream's
+email addresses other than noreply and documentation ones, home-folder paths, upstream hosts, release links and
+private repository names, build outputs and generated files, SVG and stylesheet files whose licence comment has no
+notice, binaries with no provenance, commit emails that are not noreply, and any commit that has upstream's
 relicensing commit in its history. A finding prints its rule, `file:line` and a fingerprint, never the value.
 
 - Use invented data in tests and docs: `example.com`, `example.test` or `example.invalid` addresses, the

@@ -394,9 +394,11 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
 
 - It looks for tokens and private keys, credential and state files, private, link-local and Tailscale addresses,
   email addresses other than noreply and documentation ones, home-folder paths and the name of whoever runs it,
-  upstream service hosts and private repository names, internal host names, account ids, binaries with no recorded
-  provenance, commit emails that are not noreply, and any commit that has upstream's relicensing commit
-  `aee9dfc4` in its history.
+  upstream service hosts and private repository names, links to upstream's releases, raw files and API, internal
+  host names, account ids, build outputs and generated files (lockfiles aside), SVG and stylesheet files whose
+  licence or copyright comment has no entry in `THIRD-PARTY-NOTICES.md`, binaries with no recorded provenance,
+  commit emails that are not noreply, and any commit that has upstream's relicensing commit `aee9dfc4` in its
+  history.
 - Modes: `--tree REV`, `--history A..B` and `--push REMOTE`, plus `--json` and `--suggest-allow`. It exits 0 when
   clean, 1 on a finding and 2 when it could not run. A finding is printed as its rule, `file:line` and a short
   fingerprint of the value, never the value itself.

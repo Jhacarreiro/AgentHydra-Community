@@ -167,8 +167,9 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   built in. The owner tier is now any person your catalog marks as owner (the creator family by default), and with
   no such person, a question stops as asked.
 - **A public audit checks everything this repository publishes.** One command reads every file, and every commit
-  since the fork began, for secrets, personal data, private addresses and the original project's hosts, and fails
-  any commit built on the original project's relicensing. CI runs it on every push and pull request, and a push it
+  since the fork began, for secrets, personal data, private addresses, the original project's hosts and release
+  links, committed build output, and icons or stylesheets whose licence has no notice, and fails any commit built
+  on the original project's relicensing. CI runs it on every push and pull request, and a push it
   objects to is refused.
 - **The public audit fails when an allowlist entry no longer clears anything.** A full run lists each stale entry
   and exits with an error, so an exemption cannot linger after its value is gone.

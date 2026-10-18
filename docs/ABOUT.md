@@ -286,8 +286,9 @@ Each path is where the feature is defined.
   the channel says updates are off it refuses before downloading anything; `-FromZip` installs a local zip. -
   `install.ps1`
 - **The public audit** - One command reads the tree and every commit since the MIT base for secrets, personal data,
-  private addresses, upstream hosts and private repository names, unrecorded binaries, non-noreply commit emails and
-  any commit with the relicensing commit in its history; CI and the pre-push hook run it. - `scripts/audit-public.mjs`,
+  private addresses, upstream hosts, release links and private repository names, build outputs and generated files,
+  SVG and stylesheet files whose licence has no notice, unrecorded binaries, non-noreply commit emails and any commit
+  with the relicensing commit in its history; CI and the pre-push hook run it. - `scripts/audit-public.mjs`,
   `.githooks/check-public-push.mjs`, `.github/workflows/audit-public.yml`
 
 **Partial - exists but incomplete, gated off, or known broken**
