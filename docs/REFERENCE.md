@@ -10,7 +10,7 @@ this file is for running, configuring and hacking on it.
 - [Keeping the daemon alive](#keeping-the-daemon-alive)
 - [Auto-update](#auto-update)
 - [Instance appearance](#instance-appearance)
-- [Codex chats from other PCs (Codex hub)](#codex-chats-from-other-pcs-codex-hub)
+- [Codex chats from other PCs (Codex hub)](#codex-chats-from-other-pcs-codex-hub); setting one up: [CODEX-HUB.md](CODEX-HUB.md)
 - [Stack](#stack)
 - [Layout](#layout)
 - [Checks](#checks)
@@ -559,7 +559,7 @@ stable interface and must not be assumed by product logic.
 | `AGENTHYDRA_CODEX_HUB_INTERVAL_MIN` | `2` | minutes between pushes, at most 480 (eight hours); the [Codex hub](#codex-chats-from-other-pcs-codex-hub) holds this PC's name for three of them after each push |
 | `AGENTHYDRA_CODEX_HUB_RELAY` | `ask` | on a pushing PC: `ask` lets the hub continue this PC's chats with approvals and the sandbox on, and only when each resume and turn says so; `full` also without them (Desk's bypass mode); `off` keeps the relay closed |
 | `AGENTHYDRA_CODEX_HUB_UPDATE` | on | on a PC running the compiled pusher: `off` keeps the installed build instead of following the hub's |
-| `AGENTHYDRA_CODEX_HUB_UPDATE_KEY` | the key the build was compiled with, if any | on a PC running the compiled pusher: the operator's public key (base64), which each hub build must be signed with (`scripts/codex-hub-sign.ts`); without one the pusher takes builds only from an `https://` hub |
+| `AGENTHYDRA_CODEX_HUB_UPDATE_KEY` | the key the build was compiled with, if any | on a PC running the compiled pusher: the operator's public key (base64), which each hub build must be signed with (`scripts/codex-hub-sign.ts`), or two, comma-separated, while the operator moves to a new key (a build signed with either is taken; a list with one entry that is not a key takes none); without one the pusher takes builds only from an `https://` hub |
 | `AGENTHYDRA_CODEX_HUB_RESTART` | `exit` under systemd or launchd, else `spawn` | on a Mac or Linux PC, how the compiled pusher hands over to a build it updated to: `exit` ends it with code 75 for the service manager to start the new file (a unit with `Restart=on-failure` or `always`, a LaunchAgent with `KeepAlive`), `spawn` starts the new file itself; set `spawn` under a unit or job that is not started again |
 | `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
 | `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
@@ -842,6 +842,9 @@ the Codex app shows) and pushes it to one hub daemon, which keeps a Codex home p
 PC's chats, each marked with the PC it came from. Its usage analytics does not: a chat's usage belongs to
 the PC that ran it, and [kit sync](#usage-across-pcs-post-apikitsync) would count a hub copy as the hub's too.
 
+Setting a hub up, from the server and the proxy in front of it to the tray builds, the signing key and the
+security model, is in [CODEX-HUB.md](CODEX-HUB.md); this section is the reference for what it describes.
+
 A chat from another PC can be continued in Desk while that PC is on. Its pusher keeps a WebSocket open to the
 hub (`/api/codex-hub/relay`); when Desk continues one of its chats, the hub asks the PC to start its own
 `codex app-server` and carries the JSON-RPC lines between it and Desk unread, so the turn runs on the PC, with
@@ -893,10 +896,12 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   the browser reaches it behind the sign-in (without one the tray cannot pair, and takes the token from
   `tray.json`); `main.inboxURL`, the page its menu's Open the inbox opens (without one the item is hidden);
   `main.updateKey` (see **Signed builds**); and, once the hub has moved, `main.oldHubURLs` (see **Moving
-  the hub**). The build notes at the top of `codex-hub-tray/main.go` give the Windows and Linux commands,
-  and `codex-hub-tray/build-macos.sh` builds the Mac app on a Mac from `HUB_URL`, `PAIR_URL`, `INBOX_URL`,
-  `UPDATE_KEY` and `BUNDLE_ID`; all of them write to `codex-hub-tray/dist/`. Opened once, the tray installs
-  itself for the user and starts at each log in (the Run key on Windows, a LaunchAgent on a Mac, an XDG
+  the hub**). `codex-hub-tray/build.sh` builds the Windows and Linux trays, and on a Mac the app and the hub's
+  darwin builds (through `build-macos.sh`), from `HUB_URL`, `PAIR_URL`, `INBOX_URL`, `UPDATE_KEY`, `OLD_HUB_URLS`
+  and `BUNDLE_ID`, into `codex-hub-tray/dist/` with their `SHA256SUMS`: the same bytes each time from one commit,
+  with the Go that `go.mod`'s `toolchain` line names (-trimpath, -buildvcs=false, an empty build id, no cgo off a
+  Mac). `.github/workflows/codex-hub-tray.yml` builds it twice on each change and compares. Opened once, the tray
+  installs itself for the user and starts at each log in (the Run key on Windows, a LaunchAgent on a Mac, an XDG
   autostart entry on Linux, or a systemd `--user` unit where there is no desktop). It runs the compiled
   pusher with the hub and token from its config and `AGENTHYDRA_CODEX_HUB_UPDATE=off`, and keeps both
   builds itself: it fetches the hub's pusher and tray builds for its platform, the first pusher included,
@@ -962,7 +967,8 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   `AGENTHYDRA_CODEX_HUB_UPDATE=off` keeps the installed one.
 - **Signed builds:** each build is signed with the operator's ed25519 key, away from the hub.
   `bun scripts/codex-hub-sign.ts keygen <key file>` makes the key (PKCS#8, mode 0600, never written
-  over) and prints its public key, base64 of its 32 bytes (`pubkey <key file>` prints it again).
+  over) and prints its public key, base64 of its 32 bytes (`pubkey <key file>...` prints it again, or several
+  comma-separated). Keep the key outside the checkout (`.gitignore` ignores `*.key` in it anyway).
   `sign <key file> <build>...` writes `<build>.sig` beside each build, to go into `.pusher/` with it or
   before it; sign a macOS build after `codesign`, which changes the file. The signature is over the
   text `codex-hub-build v1\n<pusher|tray>\n<platform>\n<sha256 in lowercase hex>\n`, so it holds
@@ -976,11 +982,14 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   signed for the tray or another platform is refused before it is downloaded, logged, and not tried
   again until the hub hands out another build or signature. Without a key it takes builds only from an
   `https://` hub: over `http://` it keeps its build and logs that it has no update key. The tray app
-  (`codex-hub-tray/`) has the key from its build (`-X main.updateKey=<key>`; `build-macos.sh` takes
+  (`codex-hub-tray/`) has the key from its build (`-X main.updateKey=<key>`; `build.sh` takes
   `UPDATE_KEY`) and checks each pusher and tray build the same way for its own name and platform, the
-  first pusher it fetches included. A tray built without a key takes builds only from an `https://`
-  hub: over `http://` it keeps what it has, logs once that its build has no update key, and says so in
-  amber in its menu.
+  first pusher it fetches included. Tray and pusher alike take a comma-separated list, and a build that any
+  key in it signed: to move to a new key, build with `pubkey <old> <new>` and sign with the old key, then,
+  once every PC runs that build, sign with the new one and build with it alone
+  ([CODEX-HUB.md](CODEX-HUB.md#moving-to-a-new-signing-key)). A tray built without a key takes builds only
+  from an `https://` hub: over `http://` it keeps what it has, logs once that its build has no update key,
+  and says so in amber in its menu.
 
 ## Known noise in an instance's own log
 
