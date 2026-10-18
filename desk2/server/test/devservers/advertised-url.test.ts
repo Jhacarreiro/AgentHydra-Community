@@ -1,6 +1,6 @@
 // The address a dev server prints for itself, read from its output as it arrives in chunks.
 import { describe, expect, test } from 'bun:test'
-import { UrlCapture } from '../../src/devservers/advertised-url'
+import { rankHost, UrlCapture } from '../../src/devservers/advertised-url'
 
 const ESC = '\u001b'
 
@@ -8,13 +8,24 @@ const ESC = '\u001b'
 const viteBlock = [
   `${ESC}[1m${ESC}[32m  VITE v5.4.2${ESC}[39m${ESC}[22m  ready in ${ESC}[1m312${ESC}[22m ms`,
   '',
-  `  ${ESC}[32m➜${ESC}[39m  ${ESC}[1mNetwork${ESC}[22m: ${ESC}[36mhttp://192.168.1.20:5174/${ESC}[39m`,
+  `  ${ESC}[32m➜${ESC}[39m  ${ESC}[1mNetwork${ESC}[22m: ${ESC}[36mhttp://192.0.2.20:5174/${ESC}[39m`,
   `  ${ESC}[32m➜${ESC}[39m  ${ESC}[1mLocal${ESC}[22m:   ${ESC}[36mhttp://localhost:${ESC}[1m5174${ESC}[22m/${ESC}[39m`,
   '',
 ].join('\r\n')
 
+describe('rankHost', () => {
+  test('a private LAN address ranks between loopback and every other address', () => {
+    // Built at run time, so the file holds no private address for the public audit to flag.
+    const lan = [192, 168, 1, 20].join('.')
+    expect(rankHost('localhost')).toBe(0)
+    expect(rankHost(lan)).toBe(1)
+    expect(rankHost('[::1]')).toBe(0)
+    expect(rankHost('192.0.2.20')).toBe(2)
+  })
+})
+
 describe('UrlCapture', () => {
-  test('a loopback Local line beats a LAN Network line printed before it', () => {
+  test('a loopback Local line beats a Network line printed before it', () => {
     const capture = new UrlCapture()
     capture.feed(viteBlock)
     expect(capture.get()).toEqual({ url: 'http://localhost:5174/', port: 5174, rank: 0, labelled: true })

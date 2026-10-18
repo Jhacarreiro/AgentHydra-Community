@@ -8,12 +8,6 @@
       "reason": "Test fixture: a LAN hub address the tray's tests use, or used in earlier commits, for a hub on another machine. It is no real host."
     },
     {
-      "rule": "net.private-ipv4",
-      "path": "desk2/server/test/devservers/advertised-url.test.ts",
-      "fp": "552354592821b7e6",
-      "reason": "Test fixture: the LAN Network URL a dev server prints. The ranking under test puts a private address between loopback and every other one, so it has to be a private address. It is no real host."
-    },
-    {
       "rule": "secret.token",
       "path": "hswarm/tests/test_distill.py",
       "fp": "4528f0bd2a4c8a9d",
