@@ -70,6 +70,9 @@ docs/HANDOFF_MICHAEL.md
 /codex-hub-tray/codex-hub-tray-*
 /codex-hub-push*
 /server/codex-hub-push*
+# The private key the hub's builds are signed with (scripts/codex-hub-sign.ts keygen) is kept outside the checkout
+# (docs/CODEX-HUB.md); this catches one made inside it anyway. No .key file is part of the repository.
+*.key
 
 # Local investigation write-ups: internal working notes, same convention as
 # docs/HANDOFF_MICHAEL.md and /docs/todo/* above. Findings get upstreamed as a fix plus its
