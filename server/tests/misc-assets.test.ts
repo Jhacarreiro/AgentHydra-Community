@@ -12,14 +12,18 @@
 // file lands, that misc\ still wins when it is there, and that the BUILD is still wired to embed it.
 
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { NATIVE_PROGRAMS } from '../../scripts/build-natives'
 import {
+  CLIMAYTE_RUNNER_FILE,
   DELIVERY_ACTUATOR_FILE,
   EMBEDDED_MISC_GLOBAL,
   type MiscAssetDeps,
   RUNTIME_MISC_FILES,
   resolveMiscAsset,
+  runtimeMiscFilesFor,
+  WINDOWS_ONLY_MISC_FILES,
 } from '../src/misc-assets'
 
 const APP_ROOT = join('D:', 'Downloads')
@@ -135,8 +139,16 @@ describe('the build is still wired to embed it', () => {
   const build = readFileSync(join(import.meta.dir, '..', '..', 'scripts', 'build.ts'), 'utf8')
 
   test('build.ts embeds the shared file list under the global the runtime reads', () => {
-    expect(build).toContain('RUNTIME_MISC_FILES')
+    expect(build).toContain('runtimeMiscFilesFor(windows)')
     expect(build).toContain(EMBEDDED_MISC_GLOBAL)
+  })
+
+  test('a Windows build embeds every file, a build for elsewhere all but the Windows-only ones', () => {
+    expect(runtimeMiscFilesFor(true)).toEqual([...RUNTIME_MISC_FILES])
+    expect(runtimeMiscFilesFor(false)).toEqual(
+      RUNTIME_MISC_FILES.filter((name) => name !== CLIMAYTE_RUNNER_FILE),
+    )
+    expect(WINDOWS_ONLY_MISC_FILES).toEqual([CLIMAYTE_RUNNER_FILE])
   })
 
   test('build.ts fails the build when a runtime misc file is missing', () => {
@@ -145,10 +157,15 @@ describe('the build is still wired to embed it', () => {
     expect(build).toContain('never')
   })
 
-  test('every file it promises to embed is actually in misc\\ and non-empty', () => {
+  // A native program is not in git: what the build embeds is then the crate scripts/build-natives.ts
+  // builds it from, and a promise with neither is a build that can only fail.
+  test('every file it promises to embed is in misc\\ and non-empty, or a program built from source here', () => {
+    const root = join(import.meta.dir, '..', '..')
     for (const name of RUNTIME_MISC_FILES) {
-      const path = join(import.meta.dir, '..', '..', 'misc', name)
-      expect(readFileSync(path).byteLength).toBeGreaterThan(0)
+      const native = NATIVE_PROGRAMS.find((p) => p.dest === `misc/${name}`)
+      if (native) expect(existsSync(join(root, native.crate, 'Cargo.toml'))).toBe(true)
+      else expect(readFileSync(join(root, 'misc', name)).byteLength).toBeGreaterThan(0)
     }
+    expect(NATIVE_PROGRAMS.some((p) => p.dest === `misc/${CLIMAYTE_RUNNER_FILE}`)).toBe(true)
   })
 })

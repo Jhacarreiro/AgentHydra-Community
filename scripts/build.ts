@@ -13,15 +13,17 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
  *   --bundle                  required: the only mode there is
  *   --outdir <dir>            where app/ goes (default dist/; a default dist/ is emptied first)
  *   --bun-version x.y.z       the bun this build pins (default: the running Bun.version)
- *   --target windows-x64 | ... only decides whether the Windows tray toolkit is included
+ *   --target windows-x64 | ... only decides whether the Windows tray toolkit and the Windows-only
+ *                             misc files (CliMayte's runner) are included
  */
 import { $ } from 'bun'
 import pkg from '../package.json'
 // ONE list, shared with the runtime that writes these files out again (server/src/tray-toolkit.ts).
 // Two copies of a filename list is how an app ends up embedding a file nothing reads.
-import { RUNTIME_MISC_FILES } from '../server/src/misc-assets.ts'
+import { runtimeMiscFilesFor } from '../server/src/misc-assets.ts'
 import { RELEASE_CHANNEL } from '../server/src/release-channel.ts'
 import { TRAY_TOOLKIT_FILES } from '../server/src/tray-toolkit.ts'
+import { NATIVE_PROGRAMS } from './build-natives.ts'
 
 const ROOT = join(import.meta.dir, '..')
 const TMP = join(ROOT, 'tmp', 'release-build')
@@ -81,7 +83,7 @@ function trayToolkitPaths(embedTray: boolean): string[] {
     if (!existsSync(path))
       throw new Error(
         `cannot build: ${path} is missing. A build without the tray toolkit ships an app that can ` +
-          'never show its icon - restore the file in misc\\ or say so here.',
+          `never show its icon - ${missingMiscHint(name)} or say so here.`,
       )
     return path
   })
@@ -95,39 +97,47 @@ function trayToolkitPaths(embedTray: boolean): string[] {
  * route IS that script, and the peer route is refused by the same endpoint first) - which is
  * exactly how it shipped, and how a migrated chat was left dormant on 2026-09-12.
  */
-function runtimeMiscPaths(): string[] {
-  return RUNTIME_MISC_FILES.map((name) => {
+function runtimeMiscPaths(windows: boolean): string[] {
+  return runtimeMiscFilesFor(windows).map((name) => {
     const path = join(ROOT, 'misc', name)
     if (!existsSync(path))
       throw new Error(
         `cannot build: ${path} is missing. A build without it ships a daemon that can never ` +
-          'run it (server/src/misc-assets.ts says what each one is for) - restore the file in ' +
-          'misc\\ (the CliMayte runner is built by misc/climayte-runner-native/build.ps1) or take ' +
-          'it out of RUNTIME_MISC_FILES.',
+          `run it (server/src/misc-assets.ts says what each one is for) - ${missingMiscHint(name)} ` +
+          'or take it out of RUNTIME_MISC_FILES.',
       )
     return path
   })
 }
 
+/** How a missing misc\ file comes back: a native program is built, anything else is in git. */
+function missingMiscHint(name: string): string {
+  const native = NATIVE_PROGRAMS.find((p) => p.dest === `misc/${name}`)
+  return native
+    ? `build it with \`bun scripts/build-natives.ts ${native.name}\` (on Windows, with Rust)`
+    : 'restore the file in misc\\ (it is tracked in git)'
+}
+
 /**
  * The generated entry: it tells the daemon where the assets beside server.js are, then loads
  * server/src/main.ts. The lookups the daemon already has (tray, misc) are filled with real paths
- * under `import.meta.dir`, which in a bundle is the folder server.js sits in.
+ * under `import.meta.dir`, which in a bundle is the folder server.js sits in. A Windows build also
+ * carries the tray toolkit and the Windows-only misc files.
  */
 function writeReleaseEntrypoint(
   outApp: string,
-  embedTray: boolean,
+  windows: boolean,
   stamp: { version: string; commit?: string; builtAt?: string },
 ): string {
   rmSync(TMP, { recursive: true, force: true })
   mkdirSync(TMP, { recursive: true })
   const entry = join(TMP, 'entry.ts')
-  const miscNames = [...trayToolkitPaths(embedTray), ...runtimeMiscPaths()].map((file) => {
+  const miscNames = [...trayToolkitPaths(windows), ...runtimeMiscPaths(windows)].map((file) => {
     mkdirSync(join(outApp, 'misc'), { recursive: true })
     copyFileSync(file, join(outApp, 'misc', basename(file)))
     return basename(file)
   })
-  const trayNames = new Set(trayToolkitPaths(embedTray).map((file) => basename(file)))
+  const trayNames = new Set(trayToolkitPaths(windows).map((file) => basename(file)))
   const names = (keep: (name: string) => boolean) => miscNames.filter(keep)
   const table = (dir: string, list: string[]) =>
     `Object.freeze({

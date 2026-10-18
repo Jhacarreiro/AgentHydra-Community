@@ -36,15 +36,16 @@ export const DELIVERY_ACTUATOR_FILE = 'Deliver-DesktopChat.ps1'
 export const CHAT_MANAGER_FILE = 'Manage-DesktopChat.ps1'
 
 /** CliMayte's Windows runner: every worker's CLI runs under it (climayte-runner.ts), which starts
- *  a copy of it by path. */
+ *  a copy of it by path. Not in git: scripts/build-natives.ts builds it from
+ *  misc/climayte-runner-native, and release.yml before every Windows bundle. */
 export const CLIMAYTE_RUNNER_FILE = 'climayte-runner.exe'
 
 /**
  * Every file under misc\ that the RUNNING daemon opens by path.
  *
- * The build embeds exactly this list and fails when one is missing (scripts/build.ts), so adding a
- * runtime dependency on a misc\ file without adding it here cannot ship quietly - it is the same
- * contract the tray toolkit has, for the same reason.
+ * The build embeds exactly this list (less WINDOWS_ONLY_MISC_FILES off Windows) and fails when one
+ * is missing (scripts/build.ts), so adding a runtime dependency on a misc\ file without adding it
+ * here cannot ship quietly - it is the same contract the tray toolkit has, for the same reason.
  *
  * ⛔ misc\Instance-Launch.vbs is deliberately NOT here: instance-mode-shortcut.ts reads it only on
  * the `!IS_RELEASE` branch, so a release never wants it. Embedding it would be weight with
@@ -55,6 +56,16 @@ export const RUNTIME_MISC_FILES = [
   CHAT_MANAGER_FILE,
   CLIMAYTE_RUNNER_FILE,
 ] as const
+
+/** The ones only a Windows build runs, so only a Windows build embeds them: macOS and Linux run
+ *  CliMayte's workers under this app in runner mode (climayte-runner.ts runnerArgv), and the runner
+ *  exe is built on Windows, so a checkout elsewhere has none to embed. */
+export const WINDOWS_ONLY_MISC_FILES: readonly string[] = [CLIMAYTE_RUNNER_FILE]
+
+/** What a build for that platform embeds (scripts/build.ts). */
+export function runtimeMiscFilesFor(windows: boolean): string[] {
+  return RUNTIME_MISC_FILES.filter((name) => windows || !WINDOWS_ONLY_MISC_FILES.includes(name))
+}
 
 /** Set by the generated release entrypoint (scripts/build.ts): filename -> embedded file path,
  *  readable with Bun.file(). Absent in every dev and test run, which is why this is a lookup and
