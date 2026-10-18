@@ -751,7 +751,7 @@ Desktop and in the Start Menu. Clicking it starts the server in the background i
 waits for it to answer, then opens Hydra Desk in its own window (`launcher\HydraDesk2.exe`, which needs
 the WebView2 runtime that ships with Windows 11), with its own taskbar entry. The window host is built from
 `launcher\host`, never committed: a release carries it, and a source checkout builds it with
-`bun scripts/build-natives.ts window` (it needs Rust); until then `install-shortcuts.ps1` takes the shortcut's
+`bun scripts/build-natives.ts window` (it needs Rust and Visual Studio's C++ build tools); until then `install-shortcuts.ps1` takes the shortcut's
 icon from `misc\AgentHydra.ico`, and the shortcut opens the page in the default browser and says how to build
 the host. Clicking it again just brings the window forward; it
 never starts a second server. No console window appears: the shortcut runs `launcher\start.vbs`, which

@@ -70,7 +70,8 @@ shared/protocol.ts is the contract between server/ and web/.
   frame, where `app-region` does not reach, so their top bar asks Desk to move the window (`ah:window`,
   `hydra/src/lib/desk-embed.ts`). `launcher/HydraDesk2.exe` is built, never committed: after changing
   `launcher/host`, rebuild it from the repository root with `bun scripts/build-natives.ts window --test` (it runs
-  the host's tests first, on Windows, and needs Rust), which puts it in `launcher/`.
+  the host's tests first, on Windows, and needs Rust and Visual Studio's C++ build tools), which puts it in
+  `launcher/`.
 - The parity page (`web` dev server, `#/parity/<scene>`) freezes `Date.now`, and Vue drops a click stamped no later
   than its listener was attached; inside the transcript (whose capture listener stamps the click first) a probe's
   click then does nothing (2026-10-08, the working line's ">"). Move the clock before clicking:

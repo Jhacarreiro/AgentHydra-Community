@@ -48,11 +48,11 @@ Tests never touch your real agent homes: the root suite's preload refuses a writ
 | The root lanes in one go (Biome, typecheck, tests and the orchestrator toolbox) | `bun run check:deep` |
 
 `check:deep` does not cover the window, HSwarm, the Free instances harness, the tray app, the Node suites or the
-Windows programs; run their rows on their own. Run at least the lanes your change belongs to. Some tests need Windows or a real Chrome
-or Edge; CI runs those on `windows-latest`, so a few failures on Linux or macOS for those reasons are expected. On
-Windows, the tests that start the tray host or CliMayte's runner skip until you build them
-(`bun scripts/build-natives.ts tray runner`, which needs Rust); CI builds both first. A behaviour change comes
-with a test that fails without it.
+Windows programs; run their rows on their own. Run at least the lanes your change belongs to. Some tests need
+Windows or a real Chrome or Edge; CI runs those on `windows-latest`, so a few failures on Linux or macOS for those
+reasons are expected. On Windows, the tests that start the tray host or CliMayte's runner skip until you build them
+(`bun scripts/build-natives.ts tray runner`, which needs Rust and Visual Studio's C++ build tools); CI builds both
+first. A behaviour change comes with a test that fails without it.
 
 </details>
 

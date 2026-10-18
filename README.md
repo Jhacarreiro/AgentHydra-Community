@@ -233,8 +233,8 @@ bun run build && bun run start
 ```
 
 On Windows, `bun scripts/build-natives.ts` also builds the tray icon, the window and CliMayte's worker runner from
-their Rust source (it needs Rust). Without them AgentHydra still runs: the tray is the PowerShell one, and
-AgentHydra opens in your browser.
+their Rust source (it needs Rust and Visual Studio's C++ build tools). Without them AgentHydra still runs: the tray
+is the PowerShell one, and AgentHydra opens in your browser.
 
 **Windows, one line**, once releases exist (no Administrator; the download's SHA-256 is checked before anything
 unpacks):
