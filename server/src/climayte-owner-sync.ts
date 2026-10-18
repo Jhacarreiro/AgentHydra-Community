@@ -30,8 +30,8 @@
 // THE OWNER'S MCP SERVERS (2026-10-02, ownerMcpServers): a worker is given them on its command
 // line, read from the owner's own user scope, never from the account's `.claude.json`. That copy
 // was seeded once, when the account was made (core/cli-instances.ts), and drifts: measured
-// 2026-10-02, one of 33 accounts listed no MCP server at all, so its workers had no zswarm and no
-// connections-local, and a server the owner adds later never reaches an account made before it.
+// 2026-10-02, one of 33 accounts listed no MCP server at all, so its workers had none of the
+// owner's servers, and a server the owner adds later never reaches an account made before it.
 
 import {
   copyFileSync,
@@ -274,7 +274,7 @@ export interface McpStdioEntry {
 export type McpEntry = McpUrlEntry | McpStdioEntry
 
 /** A word shaped like a key or token: 24 or more characters of a token's alphabet with letters and
- *  digits both. Path segments, flags and file names (`connections-local`, `loader.mjs`) are not. */
+ *  digits both. Path segments, flags and file names (`my-local-server`, `loader.mjs`) are not. */
 const TOKEN_LIKE = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_\-+.~]{24,}$/
 
 /** The prefixes well-known keys are issued with, at any length: OpenAI/Anthropic `sk-`, GitHub
@@ -359,8 +359,8 @@ type Carry = { entry: McpEntry } | { credential: string } | 'other'
 
 /** An entry is carried only when it holds no credential. A stdio server goes to carryStdio. A URL
  *  server is a URL, and at most a `headersHelper`, the
- *  command the CLI runs at connect time to sign in through this machine's session (the owner's
- *  connections-local is `node <loader.mjs> --connect`, hswarm `python -m hswarm connect`), which
+ *  command the CLI runs at connect time to sign in through this machine's session (hswarm's is
+ *  `python -m hswarm connect`; a local server's may be `node <loader.mjs> --connect`), which
  *  holds no secret itself. Static `headers`, `oauth` and `env` can each hold one, and so can the URL
  *  or a helper that echoes a literal header (holdsCredential); what is carried is written to a
  *  file. */
@@ -399,11 +399,11 @@ const saidLeftOut = new Set<string>()
  *  owner's user scope, the `.claude.json` beside `ownerDir` (`~/.claude` -> `~/.claude.json`), less
  *  the `deny.names` and any server whose URL path is one of `deny.paths`, whatever its name (a
  *  second PC's AgentHydra is the same server under another name). Only an entry that holds no
- *  credential is carried (carryEntry): the owner's local servers (connections-local, hswarm) sign
- *  in through this machine's own session, and no credential is ever copied into a worker's file;
- *  one left out for that is said by its name and where the secret would be (an env key's name),
- *  never a value. A stdio server is carried too (2026-10-04: the owner's `connections` is stdio,
- *  and a worker whose account's `.claude.json` had no copy of it had no Connections at all). Any other entry is left to the account's own
+ *  credential is carried (carryEntry): the owner's local servers (hswarm, for one) sign in through
+ *  this machine's own session, and no credential is ever copied into a worker's file; one left out
+ *  for that is said by its name and where the secret would be (an env key's name), never a value.
+ *  A stdio server is carried too (2026-10-04: a worker whose account's `.claude.json` had no copy
+ *  of the owner's stdio server had none of its tools). Any other entry is left to the account's own
  *  `.claude.json`, which still loads beside these. No owner config is no servers; one that cannot
  *  be read is said, never with the parser's message (it quotes the text, which can be a token), and
  *  also no servers: the launch goes on with the account's own. */

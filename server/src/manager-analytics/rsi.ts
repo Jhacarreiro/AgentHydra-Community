@@ -326,7 +326,7 @@ function buildPrompt(
     '',
     'Rules:',
     '- Read SPEC.md in the managers folder first. Keep every section it names and the sizes check_persona.py enforces.',
-    '- Every new or changed rule names its source (a Connections memory slug, a repo path with line, a skill, or a dated ruling of the owner\'s) or says "no ruling yet" and gives the default you would follow.',
+    '- Every new or changed rule names its source (a memory entry, a repo path with line, a skill, or a dated ruling of the owner\'s) or says "no ruling yet" and gives the default you would follow.',
     "- Never invent a ruling of the owner's.",
     '- Report what changed: each file, the rules you changed or added, and the source of each.',
   ].join('\n')

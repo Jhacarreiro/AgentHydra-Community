@@ -1,6 +1,8 @@
-// POST /api/browser/secret: the value-blind page ops Connections uses to fill and read a form: where (the page the caller
-// has open), type (a vault value into one field on an allowed https host) and capture (field values). The values arrive in
-// the request from Connections, which holds the vault; they are never logged, echoed in a reply, or put in an error.
+// POST /api/browser/secret: the value-blind page ops a password vault on this machine can use to fill and read a form in
+// a saved browser: where (the page the caller has open), type (a value the vault holds into one field on an allowed https
+// host) and capture (field values). AgentHydra keeps no vault of its own: the value arrives in the request from the local
+// process that holds it, and is never logged, echoed in a reply, or put in an error. The ops and the host rule were ported
+// from the Connections MCP, which called this route; no part of AgentHydra calls it.
 
 import type { ToolCaller } from './contract'
 import { ToolInputError } from './errors'
@@ -42,7 +44,8 @@ function patternHost(pattern: string): string {
   return parseUrl(p)?.hostname ?? ''
 }
 
-/** Connections' rule (hostMatchesSecretDomain): 'example.com' is that host only, '*.example.com' it and its subdomains. */
+/** The host rule (ported from Connections' hostMatchesSecretDomain): 'example.com' is that host only, '*.example.com' it
+ *  and its subdomains. */
 function hostMatches(host: string, pattern: string): boolean {
   const h = host.toLowerCase().replace(/\.$/, '')
   const p = patternHost(pattern)
@@ -55,8 +58,8 @@ function hostMatches(host: string, pattern: string): boolean {
 }
 
 /**
- * The page is https (or http on this machine) and on one of the allowed hosts, by the same rule Connections checks
- * before it leases the value; a lookalike host is refused.
+ * The page is https (or http on this machine) and on one of the allowed hosts, by the same rule the vault checks
+ * before it hands the value over; a lookalike host is refused.
  */
 export function hostCheck(
   url: string,

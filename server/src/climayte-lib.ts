@@ -2058,8 +2058,8 @@ export function copySessionTranscript(
     const dir = join(root, d.name, sessionId)
     if (existsSync(dir))
       cpSync(dir, join(dest, sessionId), { recursive: true, preserveTimestamps: true })
-    // No memory folder comes along: workers run with the CLI's auto-memory off, and memory lives in
-    // the Connections store, which every account reads (2026-10-03).
+    // No memory folder comes along: workers run with the CLI's auto-memory off, so a session's
+    // memory folder is nothing a worker reads (2026-10-03).
     return true
   }
   return false

@@ -3,7 +3,7 @@
 Reads Claude Code session transcripts (transcripts.py: found, flattened, REDACTED), and asks a
 deepseek-flash worker for the few durable facts each session taught (schema-enforced). The
 candidates go straight to triage (triage.py) in the same run: nothing is written to disk, a kept
-fact is saved to the Connections memory store as `tentative`, and a dropped one never reaches it.
+fact is saved as `tentative` to the memory store triage.py opens, and a dropped one never reaches it.
 
 By default it only plans: it lists what WOULD be sent (size, estimated cost, redaction counts)
 and sends nothing. Sending transcript text to DeepSeek is a data-exposure decision; make it on

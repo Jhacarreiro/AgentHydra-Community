@@ -6,7 +6,7 @@ shared system prompt, so it is a cache hit after the pilot): duplicate (already 
 slug), trivial (session-specific, derivable from code/git, or about the transcript itself), or keep
 (durable, new, actionable), with a 0-1 score and a topic key so near-duplicate candidates cluster.
 
-Only `keep` reaches the Connections memory store (claude-memory's memstore.py, the kit's one door):
+Only `keep` reaches the memory store (claude-memory's memstore.py, when it is installed; its one door):
 a `memory_save` with `tentative: true` (shown at once, kept once a search uses it, dropped after 30
 days unused), `keep`, the score and the run id in `origin`, and the repo the worker scoped it to in
 `repo` (none for a global fact). A slug already in the store is left alone (write-once: someone may
@@ -214,8 +214,8 @@ def memory_params(r: dict, run_id: str) -> dict:
 
 
 def open_store():
-    """The Connections memory store through claude-memory's memstore.py (the kit installs it into
-    ~/.claude/tools; the shared checkout is the fallback). Opened only when a kept fact is saved."""
+    """The memory store through claude-memory's memstore.py (its kit installs it into ~/.claude/tools; a
+    claude-memory checkout is the fallback). Opened only when a kept fact is saved; without either, saving says so."""
     for d in (Path.home() / ".claude" / "tools", MEMSTORE_CHECKOUT):
         if (d / "memstore.py").is_file():
             spec = importlib.util.spec_from_file_location("memstore", d / "memstore.py")

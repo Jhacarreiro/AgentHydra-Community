@@ -406,9 +406,8 @@ function launchText(
  *  AgentHydra's (measured), with which a worker could start more workers, fan out, or move the
  *  owner's desktop chats; a worker does its task, orchestration stays with the chat that asked.
  *  And magnific, which only prints a sign-in notice a headless worker can never answer.
- *  connections-local is NOT here (2026-10-02): workers are given tasks that use connections_execute
- *  (the memory tools, the fourman board), and a worker without it reported "the Connections MCP
- *  tools were not exposed in this session" and drove the local MCP by hand through a script.
+ *  Every other server the account lists stays (2026-10-02): a task may need its tools, and a
+ *  worker whose tools were denied drove that server by hand through a script instead.
  *  hswarm stays too: a worker hands wide, cheap work to it. */
 const WORKER_DENIED_MCP: readonly string[] = [MCP_SERVER_KEY, 'magnific']
 
