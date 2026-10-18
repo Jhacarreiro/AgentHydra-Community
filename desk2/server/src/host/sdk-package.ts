@@ -101,7 +101,8 @@ const ensuring = new Map<string, Promise<string>>()
 /**
  * What to import the SDK by: its name in a checkout; in a release, the file URL of the pinned copy, fetched first when
  * it is not here. Callers in this process share one download; a failed one is not remembered, so the next call tries
- * again. It fails with the reason when the computer is offline or the download is not the pinned tarball.
+ * again. It fails with the reason: the computer is offline, the download is not the pinned tarball, or
+ * desk2/node_modules cannot take it (each says which).
  */
 export function ensureSdk(o: SdkOptions = {}): Promise<string> {
   const root = o.deskRoot ?? DESK_ROOT
@@ -124,13 +125,23 @@ export function ensureSdk(o: SdkOptions = {}): Promise<string> {
 
 const reason = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
+/** The download could not be written into desk2/node_modules (the disk, its permissions, a lock): not the network. */
+class SaveFailed extends Error {}
+/** The registry sent far more than the SDK's tarball: not the package, whatever the network does. */
+class TooLarge extends Error {}
+
 async function fetchSdk(pin: SdkPin, dir: string, o: SdkOptions): Promise<string> {
   const env = o.env ?? process.env
   const registry = (env.npm_config_registry || env.NPM_CONFIG_REGISTRY || DEFAULT_REGISTRY).replace(/\/+$/, '')
   const url = `${registry}/${pin.name}/-/${pin.name.split('/').pop()}-${pin.version}.tgz`
   const what = `the Claude Agent SDK ${pin.version}`
   const parent = dirname(dir)
-  mkdirSync(parent, { recursive: true })
+  const unsaved = (why: string) => new Error(`could not save ${what} in ${parent}: ${why}`)
+  try {
+    mkdirSync(parent, { recursive: true })
+  } catch (err) {
+    throw unsaved(reason(err))
+  }
   sweepTemps(parent)
   const tag = `${process.pid}.${randomBytes(4).toString('hex')}`
   const tgz = join(parent, `${TEMP_PREFIX}${tag}.tgz`)
@@ -141,6 +152,8 @@ async function fetchSdk(pin: SdkPin, dir: string, o: SdkOptions): Promise<string
     try {
       digest = await download(url, tgz, o.fetch ?? fetch)
     } catch (err) {
+      if (err instanceof SaveFailed) throw unsaved(err.message)
+      if (err instanceof TooLarge) throw new Error(`the download of ${what} from ${registry} is not the package this release pins (${err.message}), so it was not installed`)
       throw new Error(`could not download ${what} from ${registry}: ${reason(err)}. AgentHydra fetches it once, the first time a chat needs it; try again once this computer is online.`)
     }
     if (`sha512-${digest}` !== pin.integrity) throw new Error(`the download of ${what} from ${registry} is not the package this release pins (its sha512 differs), so it was not installed`)
@@ -177,30 +190,35 @@ async function fetchSdk(pin: SdkPin, dir: string, o: SdkOptions): Promise<string
   }
 }
 
-/** Streams the tarball to `file`, hashing as it goes; returns the base64 sha512. */
+/**
+ * Streams the tarball to `file`, hashing as it goes; returns the base64 sha512. What goes wrong writing the file is a
+ * SaveFailed, and the file is opened first, so a folder that cannot take it fails before anything is fetched.
+ */
 async function download(url: string, file: string, fetchImpl: typeof fetch): Promise<string> {
+  const saving = <T>(step: Promise<T>) =>
+    step.catch((err: unknown) => {
+      throw new SaveFailed(reason(err))
+    })
+  const fh = await saving(open(file, 'w'))
   const idle = new AbortController()
   let timer = setTimeout(() => idle.abort(new Error('the download stalled')), IDLE_TIMEOUT_MS)
   try {
     const res = await fetchImpl(url, { signal: idle.signal })
     if (!res.ok || !res.body) throw new Error(`the registry answered ${res.status}`)
     const hash = createHash('sha512')
-    const fh = await open(file, 'w')
     let received = 0
-    try {
-      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-        clearTimeout(timer)
-        timer = setTimeout(() => idle.abort(new Error('the download stalled')), IDLE_TIMEOUT_MS)
-        received += chunk.length
-        if (received > MAX_TARBALL_BYTES) throw new Error(`the download is over ${MAX_TARBALL_BYTES / 1024 / 1024} MB`)
-        hash.update(chunk)
-        await fh.write(chunk)
-      }
-    } finally {
-      await fh.close()
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      clearTimeout(timer)
+      timer = setTimeout(() => idle.abort(new Error('the download stalled')), IDLE_TIMEOUT_MS)
+      received += chunk.length
+      if (received > MAX_TARBALL_BYTES) throw new TooLarge(`it is over ${MAX_TARBALL_BYTES / 1024 / 1024} MB`)
+      hash.update(chunk)
+      await saving(fh.write(chunk))
     }
+    await saving(fh.close())
     return hash.digest('base64')
   } catch (err) {
+    await fh.close().catch(() => {})
     throw idle.signal.aborted && idle.signal.reason instanceof Error ? idle.signal.reason : err
   } finally {
     clearTimeout(timer)

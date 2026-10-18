@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -94,6 +94,22 @@ const noFetch = (() => {
   throw new Error('fetched')
 }) as unknown as typeof fetch
 
+/** True when a read-only folder refuses a new file here: not for root, and not on Windows. */
+function readOnlyRefuses(): boolean {
+  if (process.platform === 'win32') return false
+  const dir = mkdtempSync(join(tmpdir(), 'desk-sdk-ro-'))
+  try {
+    chmodSync(dir, 0o555)
+    writeFileSync(join(dir, 'probe'), '')
+    return false
+  } catch {
+    return true
+  } finally {
+    chmodSync(dir, 0o755)
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 /** What the unpack leaves beside the package: nothing but the package itself. */
 const leftovers = () => readdirSync(join(desk, 'node_modules', '@anthropic-ai')).filter((n) => n !== 'claude-agent-sdk')
 
@@ -180,6 +196,69 @@ describe('the Agent SDK in a release', () => {
     expect(err).toBeInstanceOf(Error)
     expect((err as Error).message).toStartWith(`could not download the Claude Agent SDK ${VERSION} from ${url}: `)
     expect((err as Error).message).toEndWith('try again once this computer is online.')
+    expect(existsSync(sdkDir(desk))).toBe(false)
+    expect(leftovers()).toEqual([])
+  })
+
+  /** A registry stand-in that counts its calls: a folder that cannot take the download is found before any. */
+  const counting = (tgz: Buffer) => {
+    const calls = { n: 0 }
+    const impl = (async () => {
+      calls.n++
+      return new Response(new Uint8Array(tgz))
+    }) as unknown as typeof fetch
+    return { calls, impl }
+  }
+  const unsaved = (parent: string) => `could not save the Claude Agent SDK ${VERSION} in ${parent}: `
+
+  test('a folder that cannot be made fails saying so, not as if offline, and nothing is fetched', async () => {
+    const tgz = sdkTarball()
+    pin(tgz)
+    // desk2/node_modules/@anthropic-ai is a file: the download has nowhere to go.
+    const parent = join(desk, 'node_modules', '@anthropic-ai')
+    mkdirSync(join(desk, 'node_modules'))
+    writeFileSync(parent, '')
+    const reg = counting(tgz)
+    const err = await ensureSdk({ deskRoot: desk, env: {}, fetch: reg.impl }).catch((e: Error) => e)
+    expect((err as Error).message).toStartWith(unsaved(parent))
+    expect((err as Error).message).not.toContain('online')
+    expect(reg.calls.n).toBe(0)
+  })
+
+  // Root writes into a read-only folder, and Windows does not read these mode bits: there the next one is skipped.
+  test.skipIf(!readOnlyRefuses())('a folder the download cannot be written in fails saying so, and nothing is fetched', async () => {
+    const tgz = sdkTarball()
+    pin(tgz)
+    const parent = join(desk, 'node_modules', '@anthropic-ai')
+    mkdirSync(parent, { recursive: true })
+    chmodSync(parent, 0o555)
+    stops.push(() => chmodSync(parent, 0o755))
+    const reg = counting(tgz)
+    const err = await ensureSdk({ deskRoot: desk, env: {}, fetch: reg.impl }).catch((e: Error) => e)
+    expect((err as Error).message).toStartWith(unsaved(parent))
+    expect((err as Error).message).not.toContain('online')
+    expect(reg.calls.n).toBe(0)
+    expect(existsSync(sdkDir(desk))).toBe(false)
+  })
+
+  test('a download far larger than the SDK is refused as not the package, not as offline', async () => {
+    const tgz = sdkTarball()
+    pin(tgz)
+    // A body that never ends, in 1 MB chunks: past the cap the download stops reading it.
+    const chunk = new Uint8Array(1024 * 1024)
+    let sent = 0
+    const huge = (async () =>
+      new Response(
+        new ReadableStream({
+          pull(c) {
+            sent++
+            c.enqueue(chunk)
+          },
+        }),
+      )) as unknown as typeof fetch
+    const err = await ensureSdk({ deskRoot: desk, env: { NPM_CONFIG_REGISTRY: 'https://registry.example.test' }, fetch: huge }).catch((e: Error) => e)
+    expect((err as Error).message).toBe(`the download of the Claude Agent SDK ${VERSION} from https://registry.example.test is not the package this release pins (it is over 64 MB), so it was not installed`)
+    expect(sent).toBeLessThan(70)
     expect(existsSync(sdkDir(desk))).toBe(false)
     expect(leftovers()).toEqual([])
   })
