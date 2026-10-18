@@ -55,7 +55,20 @@ describe('release notes', () => {
     expect(body).not.toContain('**Everything in 2.0.0**')
     expect(body).not.toContain('Old.')
     expect(body.indexOf('## Downloads')).toBeGreaterThan(body.indexOf('</details>'))
-    expect(body).toContain('The `.exe` is a small launcher')
+  })
+
+  test('the Windows download names the lone .exe only once updates are on', () => {
+    const page = (updates: 'off' | 'notify' | 'auto') =>
+      formatReleaseBody(changelog(LONG), '2.0.0', { updates })
+    for (const on of ['notify', 'auto'] as const) {
+      expect(page(on)).toContain('The `.exe` is a small launcher: it downloads the rest')
+    }
+    // A build with updates off downloads no part of itself, so that release publishes no lone .exe.
+    expect(page('off')).not.toContain('downloads the rest')
+    expect(page('off')).toContain('so it has no separate `.exe` download')
+    expect(page('off')).toContain('AgentHydra-2.0.0-windows-x64.zip')
+    // The page follows release-channel.json when nothing says otherwise.
+    expect(formatReleaseBody(changelog(LONG), '2.0.0')).toBe(page(RELEASE_CHANNEL.updates))
   })
 
   test('refused: a 1.x version, a long section with no TL;DR (also [Unreleased]), a version with no section', () => {

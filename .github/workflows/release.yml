@@ -22,8 +22,9 @@
 # - The launcher is AgentHydra.exe on Windows (C#, built with the .NET Framework csc.exe every
 #   Windows ships, so that leg runs on windows-latest) and a sh script, agenthydra, elsewhere (built on
 #   a Linux runner). The lone Windows .exe is the same launcher: run on its own it installs the rest
-#   from its own version's zip. The zip also holds misc/ (the tray toolkit) and orchestrator/. The
-#   packager fails a Windows zip over 30 MB.
+#   from its own version's zip, so it is published only once release-channel.json says updates are
+#   notify or auto; a launcher built while they are off downloads no part of AgentHydra. The zip also
+#   holds misc/ (the tray toolkit) and orchestrator/. The packager fails a Windows zip over 30 MB.
 # - The Windows programs the Windows zip carries (misc/AgentHydra-Tray.exe, desk2/launcher/HydraDesk2.exe
 #   and CliMayte's runner in app/misc) are built by the `natives` job from this commit's Rust source with
 #   the pinned toolchain (scripts/build-natives.ts); none is committed. The packaging leg checks each copy
@@ -401,9 +402,16 @@ jobs:
             > "out/AgentHydra-${GITHUB_REF_NAME#v}-windows-x64-natives.sha256"
           cat "out/AgentHydra-${GITHUB_REF_NAME#v}-windows-x64-natives.sha256"
 
+      # The lone .exe installs the rest from this release the first time it runs, and a launcher built while
+      # updates are off downloads no part of AgentHydra, so on its own it could only stop and say so. package-release.ts makes
+      # none then; one left in out/ anyway is neither listed nor published, and the zip is the Windows download.
       - name: Build checksums
         shell: bash
-        run: sha256sum out/* > out/SHA256SUMS.txt
+        env:
+          UPDATES: ${{ needs.channel.outputs.updates }}
+        run: |
+          if [ "$UPDATES" = "off" ]; then rm -f out/*.exe; fi
+          sha256sum out/* > out/SHA256SUMS.txt
 
       # Idempotent: a retry updates the existing release in place and replaces its platform assets
       # instead of deleting the release or creating an orphaned draft.
@@ -418,6 +426,10 @@ jobs:
           if [ "$UPDATES" = "off" ]; then
             PRERELEASE=true
           fi
+          # Archives go first so pre-transition updaters, which selected the first matching target asset, receive
+          # a bundle rather than the direct executable. nullglob: a release with no lone .exe (updates off) has none.
+          shopt -s nullglob
+          assets=(out/*.zip out/*.tar.gz out/*.exe out/*-natives.sha256 out/SHA256SUMS.txt)
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # A release made ahead of its tag as a draft pre-release stays a pre-release: the tag push
             # that builds it carries no input, and publishing it as a full release would hand it to
@@ -425,9 +437,7 @@ jobs:
             if [ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = "true" ]; then
               PRERELEASE=true
             fi
-            # Archives go first so pre-transition updaters, which selected the first matching
-            # target asset, receive a bundle rather than the new human-facing direct executable.
-            gh release upload "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/*-natives.sha256 out/SHA256SUMS.txt \
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release edit "$GITHUB_REF_NAME" \
@@ -437,7 +447,7 @@ jobs:
               --prerelease="$PRERELEASE" \
               --draft=false
           else
-            gh release create "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/*-natives.sha256 out/SHA256SUMS.txt \
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "AgentHydra ${GITHUB_REF_NAME#v}" \
               --notes-file RELEASE_NOTES.md \

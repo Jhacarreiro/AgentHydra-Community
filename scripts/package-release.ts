@@ -6,7 +6,7 @@
  *     [--third-party <list.json>]...
  *
  * Writes <out>/AgentHydra-<version>-<target>/ and its archive beside it (Windows also gets the lone
- * exe, which is the same launcher). No Bun and no Claude Code binary ship: the daemon is plain JS
+ * exe, which is the same launcher, unless release-channel.json says updates are off). No Bun and no Claude Code binary ship: the daemon is plain JS
  * (scripts/build.ts --bundle, whose app/bun-version is the pin, the running Bun.version unless
  * --bun-version says otherwise) beside a small launcher that downloads that Bun on first run. Desk 2
  * ships as source plus production node_modules and runs on the launcher's Bun; the Agent SDK is left out of those
@@ -34,6 +34,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { RELEASE_CHANNEL } from '../server/src/release-channel'
 import { findRepoRoot } from '../tests/repo-root'
 import { buildLauncher } from './build-launcher'
 import { writePosixLauncher } from './launcher-posix'
@@ -312,7 +313,10 @@ if (readFileSync(join(stage, 'app/bun-version'), 'utf8').trim() !== bunVersion)
 const launcher = join(stage, isWindows ? 'AgentHydra.exe' : 'agenthydra')
 if (isWindows) {
   await buildLauncher({ outfile: launcher, version: VERSION })
-  copyFileSync(launcher, join(out, `${name}.exe`))
+  // The lone .exe installs the rest from its own version's archive the first time it runs. A launcher whose channel
+  // says updates are off downloads no part of AgentHydra, not even that, so on its own it could only stop and say so: while the
+  // channel is off the zip is the Windows download, and no lone .exe is made.
+  if (RELEASE_CHANNEL.updates !== 'off') copyFileSync(launcher, join(out, `${name}.exe`))
 } else {
   writePosixLauncher({ outfile: launcher, version: VERSION })
 }

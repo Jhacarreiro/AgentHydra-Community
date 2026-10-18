@@ -42,7 +42,8 @@ import { readReleaseChannel } from './release-channel.mjs'
 export const MIN_RELEASE = '2.0.0'
 
 // The page's icon is this repository's own copy at the release's tag: the release channel names the repository.
-const REPO = readReleaseChannel().repo
+const CHANNEL = readReleaseChannel()
+const REPO = CHANNEL.repo
 // Where a reader takes a question or a bug: that same repository's issues.
 const ISSUES = `https://github.com/${REPO}/issues`
 const HEADING_EMOJI = {
@@ -199,7 +200,7 @@ function synthesizeTldr(section) {
  *  from headlines when missing). Details holds each version's section under its own `#### x.y.z`
  *  heading, oldest first. */
 export function formatLineBody(changelog, keptVersion, patchVersions, options = {}) {
-  const { history = false } = options
+  const { history = false, updates = CHANNEL.updates } = options
   // Collect TL;DR and details for each version
   const sections = [keptVersion, ...patchVersions].map((v) => {
     const section = changelogSection(changelog, v)
@@ -264,7 +265,7 @@ export function formatLineBody(changelog, keptVersion, patchVersions, options = 
     '',
     '## Downloads',
     '',
-    ...downloadLines(keptVersion),
+    ...downloadLines(keptVersion, updates),
     '',
     '---',
     '',
@@ -274,8 +275,10 @@ export function formatLineBody(changelog, keptVersion, patchVersions, options = 
   return out.join('\n')
 }
 
-/** The Downloads bullets. From 2.0.0 the .exe is a small launcher; older pages keep the text they shipped with. */
-function downloadLines(version) {
+/** The Downloads bullets. From 2.0.0 the .exe is a small launcher; older pages keep the text they shipped with. A
+ *  release built while the channel says updates are off has no lone .exe (scripts/package-release.ts): that launcher
+ *  would have to download the rest, and a build with updates off downloads no part of AgentHydra. */
+function downloadLines(version, updates = CHANNEL.updates) {
   const checksums = '- `SHA256SUMS.txt` lets you check that a download is the one published here.'
   if (compareVersions(version, '2.0.0') < 0) {
     return [
@@ -284,8 +287,12 @@ function downloadLines(version) {
       checksums,
     ]
   }
+  const windows =
+    updates === 'off'
+      ? `- **Windows:** \`AgentHydra-${version}-windows-x64.zip\` is the app with its tray icon and the orchestrator tools. Unpack it and run \`AgentHydra.exe\` in its folder, which downloads Bun the first time it runs. Updates are off in this release, so it has no separate \`.exe\` download: that launcher would have to fetch the rest of the app, which a build with updates off never does.`
+      : `- **Windows:** \`AgentHydra-${version}-windows-x64.zip\` is the app with its tray icon and the orchestrator tools. The \`.exe\` is a small launcher: it downloads the rest (Bun and the app) the first time you run it.`
   return [
-    `- **Windows:** \`AgentHydra-${version}-windows-x64.zip\` is the app with its tray icon and the orchestrator tools. The \`.exe\` is a small launcher: it downloads the rest (Bun and the app) the first time you run it.`,
+    windows,
     '- **Linux and macOS:** the `.tar.gz` for your system. Its `agenthydra` launcher downloads Bun the first time you run it.',
     checksums,
   ]
@@ -293,7 +300,7 @@ function downloadLines(version) {
 
 /** The release page: the icon, the TL;DR, every line of the section under "Read more", the downloads. */
 export function formatReleaseBody(changelog, version, options = {}) {
-  const { history = false } = options
+  const { history = false, updates = CHANNEL.updates } = options
   const why = history ? null : refusal(changelog, version)
   if (why) throw new Error(why)
   const section = changelogSection(changelog, version)
@@ -320,7 +327,7 @@ export function formatReleaseBody(changelog, version, options = {}) {
     '',
     '## Downloads',
     '',
-    ...downloadLines(version),
+    ...downloadLines(version, updates),
     '',
     '---',
     '',

@@ -209,12 +209,37 @@ describe('.github/workflows/release.yml', () => {
   })
 
   test('while updates are off, a release is published as a pre-release', () => {
-    const publish = wf.jobs.release?.steps?.find((s) => s.env?.UPDATES)
+    const publish = wf.jobs.release?.steps?.find(
+      (s) => s.env?.UPDATES && (s.run ?? '').includes('gh release create'),
+    )
     // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, checked as text
     expect(publish?.env?.UPDATES).toBe('${{ needs.channel.outputs.updates }}')
     const run = publish?.run ?? ''
     expect(run).toMatch(/if \[ "\$UPDATES" = "off" \]; then\s+PRERELEASE=true/)
     // The override comes before the first gh call that publishes.
     expect(run.indexOf('PRERELEASE=true')).toBeLessThan(run.indexOf('gh release'))
+  })
+
+  test('while updates are off, no lone .exe is made, listed or published', () => {
+    // On its own that launcher installs the rest from its release, and a build with updates off downloads no part of AgentHydra.
+    expect(read('scripts/package-release.ts')).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: TypeScript source, checked as text
+      "if (RELEASE_CHANNEL.updates !== 'off') copyFileSync(launcher, join(out, `${name}.exe`))",
+    )
+    const steps = wf.jobs.release?.steps ?? []
+    const sums = steps.find((s) => (s.run ?? '').includes('> out/SHA256SUMS.txt'))
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, checked as text
+    expect(sums?.env?.UPDATES).toBe('${{ needs.channel.outputs.updates }}')
+    const run = sums?.run ?? ''
+    expect(run).toContain('if [ "$UPDATES" = "off" ]; then rm -f out/*.exe; fi')
+    expect(run.indexOf('rm -f out/*.exe')).toBeLessThan(run.indexOf('sha256sum'))
+    // The publish step takes whatever is left, and an absent .exe is no error (nullglob).
+    const publish = steps.find((s) => (s.run ?? '').includes('gh release create'))?.run ?? ''
+    expect(publish).toContain('shopt -s nullglob')
+    expect(publish.indexOf('shopt -s nullglob')).toBeLessThan(publish.indexOf('assets=('))
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a bash array, checked as text
+    expect(publish).toContain('gh release create "$GITHUB_REF_NAME" "${assets[@]}"')
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a bash array, checked as text
+    expect(publish).toContain('gh release upload "$GITHUB_REF_NAME" "${assets[@]}"')
   })
 })
