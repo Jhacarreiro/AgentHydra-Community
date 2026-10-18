@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { asksQuestion, handle } from "../hook.mjs";
+import { asksQuestion, blockReason, handle } from "../hook.mjs";
 import { defaultHookPath, install, uninstall } from "../install.mjs";
 
 const CLEARED = ["HYDRA_DESK_CHAT_ID", "AGENTHYDRA_CLIMAYTE_WORKER", "AGENTHYDRA_CLIMAYTE_CHAT"];
@@ -49,7 +49,7 @@ function turnOn(dir, catalog) {
 }
 
 const OWNERS = [
-  { kind: "person", id: "person:creaitor", tier: "owner" },
+  { kind: "person", id: "person:example-owner", tier: "owner" },
   { kind: "person", id: "person:someone", tier: "employee" },
 ];
 
@@ -57,12 +57,13 @@ const fire = async (input, env) => (await handle(JSON.stringify(input), env)) ??
 
 test("blocks a trailing question with no owner consult and logs the block", () =>
   withCore(async (dir) => {
-    turnOn(dir);
+    turnOn(dir, OWNERS);
     const input = stop(dir, [prompt("fix it"), says("Should I delete the old folder?")]);
     const out = await fire(input, envFor(dir));
     assert.equal(out.decision, "block");
     assert.match(out.reason, /ask the owner tier/);
-    assert.match(out.reason, /person:creaitor/);
+    assert.match(out.reason, /id: "person:example-owner"/);
+    assert.doesNotMatch(out.reason, /person:someone/);
     const [line] = readFileSync(path.join(dir, "log.jsonl"), "utf8").trim().split("\n");
     const logged = JSON.parse(line);
     assert.equal(logged.event, "president-block");
@@ -74,7 +75,7 @@ test("allows after a core_use consult of an owner-tier person", () =>
     turnOn(dir, OWNERS);
     const input = stop(dir, [
       prompt("fix it"),
-      uses("mcp__agenthydra__core_use", { mode: "consult", id: "person:creaitor", question: "delete?" }),
+      uses("mcp__agenthydra__core_use", { mode: "consult", id: "person:example-owner", question: "delete?" }),
       result(),
       says("Should I delete the old folder?"),
     ]);
@@ -93,49 +94,67 @@ test("a consult of a non-owner person does not count", () =>
     assert.equal((await fire(input, envFor(dir))).decision, "block");
   }));
 
-test("allows after a Bash creaitor.py ask", () =>
+test("with no owner-tier person in the catalog there is nobody to ask first, so a question stops as asked", () =>
   withCore(async (dir) => {
-    turnOn(dir);
-    const input = stop(dir, [
-      prompt("fix it"),
-      uses("Bash", { command: "python ~/.claude/tools/creaitor.py ask 'delete the folder?'" }),
-      result(),
-      says("Should I delete the old folder?"),
-    ]);
+    turnOn(dir, [{ kind: "person", id: "person:someone", tier: "employee" }]);
+    const input = stop(dir, [prompt("fix it"), says("Should I delete the old folder?")]);
     assert.equal(await fire(input, envFor(dir)), null);
+    turnOn(dir);
+    rmSync(path.join(dir, "catalog"), { recursive: true, force: true });
+    assert.equal(await fire(input, envFor(dir)), null);
+    assert.throws(() => readFileSync(path.join(dir, "log.jsonl"), "utf8"));
   }));
+
+test("no person is an owner by name alone: a consult or a command naming one is not an owner consult", () =>
+  withCore(async (dir) => {
+    turnOn(dir, OWNERS);
+    for (const turn of [
+      uses("mcp__agenthydra__core_use", { mode: "consult", id: "person:example-president", question: "delete?" }),
+      uses("mcp__agenthydra__core_use", { mode: "consult", id: "person:seat-1", question: "delete?" }),
+      uses("Bash", { command: "python ~/.claude/tools/example-owner.py ask 'delete the folder?'" }),
+    ]) {
+      const input = stop(dir, [prompt("fix it"), turn, result(), says("Should I delete the old folder?")]);
+      assert.equal((await fire(input, envFor(dir))).decision, "block");
+    }
+  }));
+
+test("the block names every owner-tier person, up to five, in a fixed order", () => {
+  assert.match(blockReason(new Set(["person:b-owner", "person:a-owner"])), /id: "person:a-owner" or "person:b-owner",/);
+  const many = new Set(["a", "b", "c", "d", "e", "f"].map((x) => `person:${x}`));
+  assert.doesNotMatch(blockReason(many), /person:f/);
+});
 
 test("never blocks twice in a row", () =>
   withCore(async (dir) => {
-    turnOn(dir);
+    turnOn(dir, OWNERS);
     const input = stop(dir, [prompt("fix it"), says("Should I delete the old folder?")], { stop_hook_active: true });
     assert.equal(await fire(input, envFor(dir)), null);
   }));
 
 test("allows for a CliMayte worker", () =>
   withCore(async (dir) => {
-    turnOn(dir);
+    turnOn(dir, OWNERS);
     const input = stop(dir, [prompt("fix it"), says("Should I delete the old folder?")]);
     assert.equal(await fire(input, envFor(dir, { AGENTHYDRA_CLIMAYTE_WORKER: "1" })), null);
   }));
 
 test("allows when the final message has no question", () =>
   withCore(async (dir) => {
-    turnOn(dir);
+    turnOn(dir, OWNERS);
     const input = stop(dir, [prompt("fix it"), says("Deleted the old folder.")]);
     assert.equal(await fire(input, envFor(dir)), null);
   }));
 
 test("allows when the only question mark is inside a code block", () =>
   withCore(async (dir) => {
-    turnOn(dir);
+    turnOn(dir, OWNERS);
     const input = stop(dir, [prompt("fix it"), says("Done.\n\n```js\nconst ok = x ? 1 : 2;\n```")]);
     assert.equal(await fire(input, envFor(dir)), null);
   }));
 
 test("allows on a broken transcript (fail open)", () =>
   withCore(async (dir) => {
-    turnOn(dir);
+    turnOn(dir, OWNERS);
     const transcript = path.join(dir, "broken.jsonl");
     writeFileSync(transcript, "{not json\n");
     const input = { hook_event_name: "Stop", session_id: "sess-stop", stop_hook_active: false, transcript_path: transcript };
@@ -144,7 +163,7 @@ test("allows on a broken transcript (fail open)", () =>
 
 test("decides from the last turn alone: a broken line before it changes nothing, and a turn over a chunk parses whole", () =>
   withCore(async (dir) => {
-    turnOn(dir);
+    turnOn(dir, OWNERS);
     const transcript = path.join(dir, "long.jsonl");
     const big = { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "é".repeat(600_000) }] } };
     const lines = [

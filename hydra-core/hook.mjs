@@ -19,10 +19,7 @@ export const EVENTS = new Set(["UserPromptSubmit", "SessionStart", "Stop"]);
 const LEAD_CAP = 20000;
 const TAIL_CHUNK = 1 << 20;
 export const PACK_TIMEOUT_MS = 1500;
-const OWNER_FALLBACK = /^person:(creaitor|seat-)/;
-const ASK_CREAITOR = /creaitor(?:\.py)?\s+ask\b/;
-const BLOCK_REASON =
-  'Before you ask the person, ask the owner tier (core_use { mode: "consult", id: "person:creaitor", question } or the creaitor.py ask command); ask the person only if that answer says it needs them (a credential, money, a physical step); otherwise act on the answer.';
+const REASON_IDS = 5;
 
 export function coreDir(env = process.env) {
   return env.AGENTHYDRA_CORE_DIR || path.join(os.homedir(), ".agenthydra", "core");
@@ -366,6 +363,7 @@ export function asksQuestion(text) {
   return /\?(?=\s|$)/.test(paragraphs.at(-1) ?? "");
 }
 
+// The owner tier is whoever the catalog says it is (`tier: "owner"`, in a hand-*.json of your own): no person is built in.
 function ownerIds(dir) {
   const ids = new Set();
   const catalog = path.join(dir, "catalog");
@@ -381,18 +379,15 @@ function ownerIds(dir) {
   return ids;
 }
 
-function isOwner(id, dir) {
-  const owners = ownerIds(dir);
-  return owners.size ? owners.has(id) : OWNER_FALLBACK.test(id);
+function consults(tool, owners) {
+  const input = tool.input ?? {};
+  if (typeof tool.name !== "string" || !tool.name.endsWith("core_use")) return false;
+  return input.mode === "consult" && typeof input.id === "string" && owners.has(input.id);
 }
 
-function consults(tool, dir) {
-  const input = tool.input ?? {};
-  if (typeof tool.name === "string" && tool.name.endsWith("core_use")) {
-    return input.mode === "consult" && typeof input.id === "string" && isOwner(input.id, dir);
-  }
-  if (tool.name === "Bash" || tool.name === "PowerShell") return ASK_CREAITOR.test(String(input.command ?? ""));
-  return false;
+export function blockReason(owners) {
+  const ids = [...owners].sort().slice(0, REASON_IDS).map((id) => `"${id}"`).join(" or ");
+  return `Before you ask the person, ask the owner tier (core_use { mode: "consult", id: ${ids}, question }); ask the person only if that answer says it needs them (a credential, money, a physical step); otherwise act on the answer.`;
 }
 
 function logBlock(input, env, dir) {
@@ -405,15 +400,19 @@ function logBlock(input, env, dir) {
 
 function stopCheck(input, env, dir) {
   if (input.stop_hook_active === true) return null;
+  let owners;
   try {
     const { text, tools } = lastTurn(input);
     if (!asksQuestion(text)) return null;
-    if (tools.some((tool) => consults(tool, dir))) return null;
+    // A catalog with no owner-tier person leaves nobody to consult first, so the question stands as asked.
+    owners = ownerIds(dir);
+    if (owners.size === 0) return null;
+    if (tools.some((tool) => consults(tool, owners))) return null;
   } catch {
     return null;
   }
   logBlock(input, env, dir);
-  return { decision: "block", reason: BLOCK_REASON };
+  return { decision: "block", reason: blockReason(owners) };
 }
 
 export async function run(input, env = process.env) {
