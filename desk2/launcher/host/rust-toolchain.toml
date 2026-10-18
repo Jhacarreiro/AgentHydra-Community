@@ -1,0 +1,7 @@
+# The Rust release this program is built with, on every PC and runner (scripts/build-natives.ts, which
+# installs it through rustup when it is missing). The three native programs pin the same one; change
+# them together.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+targets = ["x86_64-pc-windows-msvc"]
