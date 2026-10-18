@@ -11,6 +11,7 @@
 // the window alive after the CLI exits.
 
 import { describe, expect, test } from 'bun:test'
+import { randomBytes } from 'node:crypto'
 import { containsHighConfidenceSecret, redactSecrets, scanSecrets } from '../src/secrets'
 import { buildResumePlan } from '../src/session-resume'
 
@@ -52,6 +53,16 @@ describe('redaction keeps the shape and loses the value', () => {
     expect(hit?.redacted.startsWith('sk-')).toBe(true)
     expect(hit?.redacted).not.toContain('abcdefghij')
     expect(hit?.redacted.length).toBeLessThan(TOKEN.length)
+  })
+
+  test('a Codex hub PC token keeps only its prefix: made here, since none is ever committed', () => {
+    const pc = `chp_${randomBytes(8).toString('hex')}_${randomBytes(32).toString('hex')}`
+    const [hit] = scanSecrets(`token ${pc} for the hub`)
+    expect(hit?.kind).toBe('codex-hub-pc-token')
+    expect(hit?.redacted.startsWith('chp_')).toBe(true)
+    expect(hit?.redacted).not.toContain(pc.slice(4, 20))
+    expect(hit?.redacted).not.toContain(pc.slice(21))
+    expect(containsHighConfidenceSecret(pc)).toBe(true)
   })
 
   test('a private key header keeps nothing at all', () => {

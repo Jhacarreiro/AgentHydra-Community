@@ -97,6 +97,7 @@ const TOKENS: Array<[kind: string, value: string]> = [
   ['stripe-key', j('sk', '_live_', rand(24))],
   ['huggingface-token', j('h', 'f_', rand(34))],
   ['jwt', [j('ey', 'J', rand(20)), j('ey', 'J', rand(24)), rand(30)].join('.')],
+  ['codex-hub-pc-token', j('ch', 'p_', rand(16, HEX), '_', rand(64, HEX))],
 ]
 const PEM_HEAD = j('-----BEGIN ', 'PRIVATE KEY-----')
 const PEM_FOOT = j('-----END ', 'PRIVATE KEY-----')

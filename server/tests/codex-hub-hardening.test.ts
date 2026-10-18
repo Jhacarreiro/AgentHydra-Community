@@ -1,8 +1,8 @@
 // server/tests/codex-hub-hardening.test.ts — what the Codex hub refuses, and the frames its relay carries.
 //
-// The pairing page hands out the hub token, so a page that is not the hub's own must not read it. A push comes
-// from any PC holding the token: a rollout that unpacks to too much, or a time no Date can print, is refused
-// before anything is written. A relay frame carries one JSON-RPC line, and a whole chat runs past 16 MiB; the
+// The pairing page hands out a one-time pairing code, so a page that is not the hub's own must not read it. A push
+// comes from a PC with a token of its own, which can still send anything: a rollout that unpacks to too much, or a
+// time no Date can print, is refused before anything is written. A relay frame carries one JSON-RPC line, and a whole chat runs past 16 MiB; the
 // line behind such a frame arrives too, or the session it was for ends.
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
@@ -15,6 +15,7 @@ import { relayPcs } from '../src/core/codex-hub-relay'
 import { type AppServerProcess, startCodexHubRelay } from '../src/core/codex-hub-relay-pc'
 import { app } from '../src/http-app'
 import { relayWebSocket } from '../src/routes/codex-hub'
+import { testPc } from './codex-hub-test-pc'
 
 // A copy with its own router: a request through the shared app would build its matcher and stop
 // every later test file from registering routes.
@@ -25,6 +26,7 @@ const previousToken = process.env.AGENTHYDRA_CODEX_HUB_TOKEN
 process.env.AGENTHYDRA_CODEX_HUB_TOKEN = TOKEN
 const PC = `Hard-PC-${crypto.randomUUID().slice(0, 6)}`
 const PC_DIR = join(CODEX_HUB_DIR, hubPcKey(PC)!)
+const HARD_PC = testPc(PC)
 const roots: string[] = []
 
 afterAll(() => {
@@ -48,10 +50,11 @@ const gz = (data: string | Uint8Array<ArrayBuffer>) =>
 
 // --- the pairing page -------------------------------------------------------------------------
 
-const PAIR = `http://127.0.0.1/codex-hub/pair?port=49152&state=${'a'.repeat(32)}`
+const PAIR = `http://127.0.0.1/codex-hub/pair?port=49152&state=${'a'.repeat(32)}&pc=Hard-PC`
 const pair = (headers: Record<string, string>) => http.fetch(new Request(PAIR, { headers }))
+const CODE = /name="code" value="[0-9a-f]{64}"/
 
-test('the pairing page refuses a DNS-rebinding Host, and a cross-site fetch, without the token', async () => {
+test('the pairing page refuses a DNS-rebinding Host, and a cross-site fetch, without a code', async () => {
   const refused: Record<string, string>[] = [
     // rebind.example.test resolved to 127.0.0.1: the browser still names it in Host.
     { host: 'rebind.example.test:7787' },
@@ -67,7 +70,9 @@ test('the pairing page refuses a DNS-rebinding Host, and a cross-site fetch, wit
   for (const headers of refused) {
     const res = await pair(headers)
     expect({ headers, status: res.status }).toEqual({ headers, status: 403 })
-    expect(await res.text()).not.toContain(TOKEN)
+    const page = await res.text()
+    expect(page).not.toContain(TOKEN)
+    expect(page).not.toMatch(CODE)
   }
 })
 
@@ -99,7 +104,10 @@ test('the pairing page answers a loopback Host and the sign-in proxy, never with
     const res = await pair(headers)
     expect({ headers, status: res.status }).toEqual({ headers, status: 200 })
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
-    expect(await res.text()).toContain(`value="${TOKEN}"`)
+    const page = await res.text()
+    expect(page).not.toContain(TOKEN)
+    expect(page).not.toContain('chp_')
+    expect(page).toMatch(CODE)
   }
 })
 
@@ -183,7 +191,11 @@ const pushRaw = (body: string) =>
   http.fetch(
     new Request('http://127.0.0.1/api/codex-hub/push', {
       method: 'POST',
-      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      headers: {
+        authorization: `Bearer ${HARD_PC.token}`,
+        'x-codex-hub-install': HARD_PC.install!,
+        'content-type': 'application/json',
+      },
       body,
     }),
   )
@@ -298,13 +310,7 @@ async function relayRig(websocket: typeof relayWebSocket) {
       },
     }
   }
-  const cfg: CodexHubPushConfig = {
-    url: `http://127.0.0.1:${server.port}`,
-    token: TOKEN,
-    pc: relayPc,
-    headers: {},
-    intervalMs: 60_000,
-  }
+  const cfg: CodexHubPushConfig = testPc(relayPc).cfg(`http://127.0.0.1:${server.port}`)
   const relay = startCodexHubRelay(cfg, {
     spawnAppServer: fakeAppServer,
     codexHome: '/nowhere',

@@ -1,9 +1,10 @@
 // server/tests/codex-hub-names.test.ts — two PCs that send the Codex hub one name.
 //
-// The hub keeps a PC by the name it sends, and two can send one: WSL beside the Windows PC it runs on, two Linux
-// boxes called `ubuntu`, the daemon's pusher beside a standalone one. Each pusher sends an install id it made once,
-// and the hub keeps the name for the install that holds it: another one's push is refused with 409 and its relay
-// socket closed with 4409, instead of the two replacing each other's relay socket and rollouts.
+// The hub keeps a PC by its name, and two can send one: WSL beside the Windows PC it runs on, two Linux boxes
+// called `ubuntu`, the daemon's pusher beside a standalone one. Each pusher sends an install id it made once. A PC
+// token is bound to the install id it was first used with, so a second install with the same token is refused with
+// 409 before its relay socket opens, instead of the two replacing each other's relay socket and rollouts. A PC still
+// on the shared token of before is held by the hub's hold on its name (hubNameRefused), as it was.
 import { afterAll, beforeAll, expect, setSystemTime, spyOn, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -21,11 +22,12 @@ import {
   pushCodexHubOnce,
   pusherInstallId,
 } from '../src/core/codex-hub-push'
-import { relayPcInstall, relayPcs } from '../src/core/codex-hub-relay'
+import { relayPcInstall, relayPcs, relayPcToken } from '../src/core/codex-hub-relay'
 import { type CodexHubRelay, startCodexHubRelay } from '../src/core/codex-hub-relay-pc'
 import type { CodexRpc } from '../src/core/codex-rpc'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
+import { testPc } from './codex-hub-test-pc'
 
 // A copy with its own router: a request through the shared app would build its matcher and stop
 // every later test file from registering routes.
@@ -233,20 +235,17 @@ test('a pusher that sends no id is taken as before, and holds its name against n
   })
 })
 
-test('the relay keeps the PC that holds a name; the other is closed with 4409, says why and waits', async () => {
+test('two installs with one PC token: the second is refused with 409 before its relay opens, and the first is kept', async () => {
   const pc = `Twin-PC-${crypto.randomUUID().slice(0, 6)}`
-  const key = hubPcKey(pc)!
-  const cfg = (install: string | null): CodexHubPushConfig => ({
-    url: `http://127.0.0.1:${server.port}`,
-    token: TOKEN,
-    pc,
+  const twin = testPc(pc, { install: A })
+  const key = twin.key
+  const cfg = (install: string): CodexHubPushConfig => ({
+    ...twin.cfg(`http://127.0.0.1:${server.port}`),
     install,
-    headers: {},
-    intervalMs: 60_000,
   })
-  /** One PC's relay, counting its connects and how each closed. */
-  const relayOf = (install: string | null) => {
-    const seen = { dials: 0, closes: [] as number[] }
+  /** One install's relay, counting its connects, the ones that opened, and how each closed. */
+  const relayOf = (install: string) => {
+    const seen = { dials: 0, opened: 0, closes: [] as number[] }
     const relay = startCodexHubRelay(cfg(install), {
       spawnAppServer: async () => {
         throw new Error('no app-server in this test')
@@ -257,6 +256,7 @@ test('the relay keeps the PC that holds a name; the other is closed with 4409, s
       connect: (url, headers) => {
         seen.dials++
         const ws = new WebSocket(url, { headers } as unknown as string[])
+        ws.addEventListener('open', () => seen.opened++)
         ws.addEventListener('close', (e) => seen.closes.push(e.code))
         return ws
       },
@@ -264,24 +264,32 @@ test('the relay keeps the PC that holds a name; the other is closed with 4409, s
     relays.push(relay)
     return Object.assign(seen, { stop: () => relay.stop() })
   }
-  const errors = spyOn(console, 'error').mockImplementation(() => {})
+  const logged = spyOn(console, 'error').mockImplementation(() => {})
   try {
     const first = relayOf(A)
     await until(() => relayPcInstall(key) === A)
+    expect(relayPcToken(key)).toBe(twin.id)
 
+    // The token's install is A: B is answered 409 before the upgrade, and never opens.
+    const upgrade = await fetch(`http://127.0.0.1:${server.port}/api/codex-hub/relay?pc=${pc}`, {
+      headers: {
+        authorization: `Bearer ${twin.token}`,
+        'x-codex-hub-install': B,
+        upgrade: 'websocket',
+        connection: 'Upgrade',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'sec-websocket-version': '13',
+      },
+    })
+    expect(upgrade.status).toBe(409)
+    expect(((await upgrade.json()) as { code: string }).code).toBe('install-mismatch')
     const second = relayOf(B)
-    await until(() => second.closes.length === 1)
-    expect(second.closes).toEqual([4409])
-    expect(errors.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(
-      `another PC already pushes as ${pc}; set AGENTHYDRA_CODEX_HUB_PC`,
-    )
-    // It tries again only after the longest wait, not 20 ms on, when it would replace the first again.
-    await Bun.sleep(300)
-    expect(second.dials).toBe(1)
-    expect([first.dials, first.closes]).toEqual([1, []])
+    await until(() => second.closes.length >= 2)
+    expect(second.opened).toBe(0)
+    expect([first.dials, first.opened, first.closes]).toEqual([1, 1, []])
     expect(relayPcInstall(key)).toBe(A)
 
-    // Its push is refused too, while the first PC's relay is open, before it has pushed at all.
+    // Its push is refused too, before it has pushed at all, and the first PC's goes on.
     const rpc = async (): Promise<CodexRpc> => ({
       call: async <T>() => ({ data: [], nextCursor: null }) as T,
       close: () => undefined,
@@ -290,7 +298,8 @@ test('the relay keeps the PC that holds a name; the other is closed with 4409, s
       http.fetch(new Request(String(input), init))) as typeof fetch
     await expect(
       pushCodexHubOnce(cfg(B), { connect: rpc, fetch: toHub, codexHome: scratch }),
-    ).rejects.toThrow(`another PC already pushes as ${pc}; set AGENTHYDRA_CODEX_HUB_PC`)
+    ).rejects.toThrow()
+    expect(existsSync(join(CODEX_HUB_DIR, key, 'manifest.json'))).toBe(false)
     expect(
       await pushCodexHubOnce(cfg(A), { connect: rpc, fetch: toHub, codexHome: scratch }),
     ).toEqual({ threads: 0, sent: 0, missing: 0 })
@@ -299,15 +308,40 @@ test('the relay keeps the PC that holds a name; the other is closed with 4409, s
       install: A,
       intervalMs: 60_000,
     })
-
-    // A pusher from before install ids is let in as before, though the first PC's push holds the name.
-    first.stop()
-    await until(() => !relayPcs().has(key))
-    const older = relayOf(null)
-    await until(() => relayPcs().has(key) && relayPcInstall(key) === null)
-    expect(older.closes).toEqual([])
   } finally {
-    errors.mockRestore()
+    logged.mockRestore()
+    rmSync(join(CODEX_HUB_DIR, key), { recursive: true, force: true })
+  }
+})
+
+test('a legacy-token relay for a manifest without an install id is refused before it opens', async () => {
+  const pc = `Old-PC-${crypto.randomUUID().slice(0, 6)}`
+  const key = hubPcKey(pc)!
+  const legacy = 'test-names-legacy-token'
+  const saved = process.env.AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN
+  process.env.AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN = legacy
+  try {
+    // A pusher from before install ids pushed here: its manifest names none, so it can never be pending.
+    expect(acceptCodexHubPush(pushOf(pc, 'old'), CODEX_HUB_DIR)).toMatchObject({ ok: true })
+    expect(readCodexHubManifest(join(CODEX_HUB_DIR, key))?.install).toBeUndefined()
+    let opened = 0
+    const closed = Promise.withResolvers<number>()
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/codex-hub/relay?pc=${pc}`, {
+      headers: { authorization: `Bearer ${legacy}`, 'x-codex-hub-install': A },
+    } as unknown as string[])
+    ws.addEventListener('open', () => opened++)
+    ws.addEventListener('close', (e) => closed.resolve(e.code))
+    await closed.promise
+    expect(opened).toBe(0)
+    expect(relayPcs().has(key)).toBe(false)
+    // Without an install id it is refused the same way: an HTTP answer, before the upgrade.
+    const bare = await fetch(`http://127.0.0.1:${server.port}/api/codex-hub/relay?pc=${pc}`, {
+      headers: { authorization: `Bearer ${legacy}` },
+    })
+    expect(bare.status).toBe(401)
+  } finally {
+    if (saved === undefined) delete process.env.AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN
+    else process.env.AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN = saved
     rmSync(join(CODEX_HUB_DIR, key), { recursive: true, force: true })
   }
 })

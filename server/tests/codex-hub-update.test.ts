@@ -15,6 +15,7 @@ import { type HubBuildName, signBuild, updateKeyText } from '../src/core/codex-h
 import { RESTART_EXIT_CODE, restartPlan, updateKey, updateOnce } from '../src/core/codex-hub-update'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
+import { testPc } from './codex-hub-test-pc'
 
 const TOKEN = 'test-update-token'
 const previousToken = process.env.AGENTHYDRA_CODEX_HUB_TOKEN
@@ -24,13 +25,10 @@ process.env.AGENTHYDRA_CODEX_HUB_TOKEN = TOKEN
 const http = new Hono().route('/', app)
 const toHub: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   http.fetch(new Request(String(input), init))) as typeof fetch
-const cfg: CodexHubPushConfig = {
-  url: 'http://127.0.0.1',
-  token: TOKEN,
-  pc: 'pc',
-  headers: {},
-  intervalMs: 60_000,
-}
+// The builds are a PC's: its own token gets them.
+const cfg: CodexHubPushConfig = testPc(`Update-PC-${crypto.randomUUID().slice(0, 6)}`).cfg(
+  'http://127.0.0.1',
+)
 
 // The operator's key, and another that is not it.
 const operator = generateKeyPairSync('ed25519').privateKey
@@ -223,8 +221,8 @@ test.skipIf(process.platform === 'win32')(
       'CCMANAGERUI_CODEX_HUB_URL',
       'CCMANAGERUI_CODEX_HUB_TOKEN',
     ]
-    // The pusher has the hub settings in its environment (AGENTHYDRA_CODEX_HUB_TOKEN is already set: the hub's token
-    // here), and in a .env in the folder it was started from.
+    // The pusher has the hub settings in its environment (AGENTHYDRA_CODEX_HUB_TOKEN is already set: the hub's admin
+    // token here), and in a .env in the folder it was started from.
     const cwd = mkdtempSync(join(tmpdir(), 'ah-pusher-cwd-'))
     writeFileSync(join(cwd, '.env'), names.map((name) => `${name}=from-the-env-file\n`).join(''))
     const started = process.cwd()

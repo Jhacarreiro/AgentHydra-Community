@@ -15,6 +15,7 @@ import { signBuild, updateKeyText } from '../src/core/codex-hub-signature'
 import { buildPlatform, isCompiledPusher, updateOnce } from '../src/core/codex-hub-update'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
+import { testPc } from './codex-hub-test-pc'
 
 const TOKEN = 'test-platforms-token'
 const previousToken = process.env.AGENTHYDRA_CODEX_HUB_TOKEN
@@ -23,10 +24,12 @@ process.env.AGENTHYDRA_CODEX_HUB_TOKEN = TOKEN
 const http = new Hono().route('/', app)
 const dir = dirname(PUSHER_EXE)
 const sha = (s: string) => new Bun.CryptoHasher('sha256').update(s).digest('hex')
+// The builds are a PC's: its own token gets them.
+const PC = testPc(`Platforms-PC-${crypto.randomUUID().slice(0, 6)}`)
 
 async function get(path: string): Promise<{ status: number; body: unknown }> {
   const res = await http.fetch(
-    new Request(`http://127.0.0.1${path}`, { headers: { authorization: `Bearer ${TOKEN}` } }),
+    new Request(`http://127.0.0.1${path}`, { headers: { authorization: `Bearer ${PC.token}` } }),
   )
   const json = res.headers.get('content-type')?.includes('application/json')
   return { status: res.status, body: json ? await res.json() : await res.text() }
@@ -164,13 +167,7 @@ test('the pusher names its own platform the way the hub does', () => {
 })
 
 test('the update check asks for this build, by its platform, on both requests', async () => {
-  const cfg: CodexHubPushConfig = {
-    url: 'http://127.0.0.1',
-    token: TOKEN,
-    pc: 'pc',
-    headers: {},
-    intervalMs: 60_000,
-  }
+  const cfg: CodexHubPushConfig = PC.cfg('http://127.0.0.1')
   const asked: string[] = []
   const toHub: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     asked.push(String(input))

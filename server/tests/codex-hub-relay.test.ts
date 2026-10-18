@@ -17,12 +17,14 @@ import {
 } from '../src/core/codex-hub-relay-pc'
 import { app } from '../src/http-app'
 import '../src/routes/codex-hub'
+import { testPc } from './codex-hub-test-pc'
 
 const TOKEN = 'test-relay-token'
 const previousToken = process.env.AGENTHYDRA_CODEX_HUB_TOKEN
 process.env.AGENTHYDRA_CODEX_HUB_TOKEN = TOKEN
 const PC = `Relay-PC-${crypto.randomUUID().slice(0, 6)}`
 const KEY = PC.toLowerCase()
+const RELAY_PC = testPc(PC)
 
 // A copy with its own router: a request through the shared app would build its matcher and stop every later test
 // file from registering routes.
@@ -79,13 +81,7 @@ beforeAll(async () => {
     fetch: (req, srv) => http.fetch(req, srv),
     websocket,
   })
-  const cfg: CodexHubPushConfig = {
-    url: `http://127.0.0.1:${server.port}`,
-    token: TOKEN,
-    pc: PC,
-    headers: {},
-    intervalMs: 60_000,
-  }
+  const cfg: CodexHubPushConfig = RELAY_PC.cfg(`http://127.0.0.1:${server.port}`)
   relay = startCodexHubRelay(cfg, {
     spawnAppServer: fakeAppServer,
     codexHome: '/nowhere',
@@ -484,16 +480,28 @@ test('Codex is written only rebuilt requests, and only answers to what it asked 
   d.ws.close()
 })
 
-test('Desk needs the hub token, and a PC that is not connected closes the socket with why', async () => {
-  const refused = await fetch(`http://127.0.0.1:${server.port}/api/codex-relay/${KEY}/app-server`, {
-    headers: {
-      upgrade: 'websocket',
-      connection: 'Upgrade',
-      'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
-      'sec-websocket-version': '13',
-    },
-  })
-  expect(refused.status).toBe(401)
+test('Desk needs the hub token and refuses a PC token, and a PC that is not connected closes the socket with why', async () => {
+  const upgrade = (extra: Record<string, string>) =>
+    fetch(`http://127.0.0.1:${server.port}/api/codex-relay/${KEY}/app-server`, {
+      headers: {
+        upgrade: 'websocket',
+        connection: 'Upgrade',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'sec-websocket-version': '13',
+        ...extra,
+      },
+    })
+  expect((await upgrade({})).status).toBe(401)
+  // The PC's own token drives nothing from here, sent with its install id or without.
+  const pcHeaders: Record<string, string>[] = [
+    { authorization: `Bearer ${RELAY_PC.token}` },
+    { authorization: `Bearer ${RELAY_PC.token}`, 'x-codex-hub-install': RELAY_PC.install! },
+  ]
+  for (const extra of pcHeaders) {
+    const refused = await upgrade(extra)
+    expect(refused.status).toBe(401)
+    expect(await refused.json()).toEqual({ error: 'unauthorized', code: 'unauthorized' })
+  }
 
   const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/codex-relay/nobody/app-server`, {
     headers: { authorization: `Bearer ${TOKEN}` },

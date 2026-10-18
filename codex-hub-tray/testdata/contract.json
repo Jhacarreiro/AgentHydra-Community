@@ -1,0 +1,451 @@
+[
+  {
+    "name": "whoami: a PC token with its install id",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "pc",
+    "install": "bound",
+    "want": {
+      "status": 200
+    }
+  },
+  {
+    "name": "whoami: a PC token without an install id",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "pc",
+    "install": "none",
+    "want": {
+      "status": 200
+    }
+  },
+  {
+    "name": "whoami: a PC token from another install",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "pc",
+    "install": "other",
+    "want": {
+      "status": 409,
+      "code": "install-mismatch"
+    }
+  },
+  {
+    "name": "whoami: a revoked token",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "pc-revoked",
+    "install": "bound",
+    "want": {
+      "status": 401,
+      "code": "revoked"
+    }
+  },
+  {
+    "name": "whoami: a token the hub does not know",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "pc-unknown",
+    "install": "bound",
+    "want": {
+      "status": 401,
+      "code": "unknown-token"
+    }
+  },
+  {
+    "name": "whoami: the admin token",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "admin",
+    "install": "none",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "whoami: the legacy token",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "legacy",
+    "install": "bound",
+    "setup": "pending",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "whoami: no bearer",
+    "method": "GET",
+    "path": "/api/codex-hub/whoami",
+    "bearer": "none",
+    "install": "none",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "builds: a PC token",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "pc",
+    "install": "none",
+    "want": {
+      "status": 404,
+      "code": "not-found"
+    }
+  },
+  {
+    "name": "builds: a PC token with its install id",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "pc",
+    "install": "bound",
+    "want": {
+      "status": 404,
+      "code": "not-found"
+    }
+  },
+  {
+    "name": "builds: a PC token from another install",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "pc",
+    "install": "other",
+    "want": {
+      "status": 409,
+      "code": "install-mismatch"
+    }
+  },
+  {
+    "name": "builds: a revoked token",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "pc-revoked",
+    "install": "none",
+    "want": {
+      "status": 401,
+      "code": "revoked"
+    }
+  },
+  {
+    "name": "builds: a token the hub does not know",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "pc-unknown",
+    "install": "none",
+    "want": {
+      "status": 401,
+      "code": "unknown-token"
+    }
+  },
+  {
+    "name": "builds: the admin token",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "admin",
+    "install": "none",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "builds: the legacy token while a PC is pending",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "legacy",
+    "install": "none",
+    "setup": "pending",
+    "want": {
+      "status": 404,
+      "code": "not-found"
+    }
+  },
+  {
+    "name": "builds: the legacy token with nothing pending",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "legacy",
+    "install": "none",
+    "setup": "nothing-pending",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "builds: no bearer",
+    "method": "GET",
+    "path": "/api/codex-hub/tray?platform=linux-arm64",
+    "bearer": "none",
+    "install": "none",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "redeem: the page's code",
+    "method": "POST",
+    "path": "/api/codex-hub/redeem",
+    "bearer": "none",
+    "install": "bound",
+    "body": "valid",
+    "setup": "code",
+    "want": {
+      "status": 200
+    }
+  },
+  {
+    "name": "redeem: without an install id",
+    "method": "POST",
+    "path": "/api/codex-hub/redeem",
+    "bearer": "none",
+    "install": "none",
+    "body": "valid",
+    "setup": "code",
+    "want": {
+      "status": 400,
+      "code": "install-required"
+    }
+  },
+  {
+    "name": "redeem: a body of the wrong shape",
+    "method": "POST",
+    "path": "/api/codex-hub/redeem",
+    "bearer": "none",
+    "install": "bound",
+    "body": "bad",
+    "setup": "code",
+    "want": {
+      "status": 400,
+      "code": "bad-request"
+    }
+  },
+  {
+    "name": "redeem: a code another token redeemed",
+    "method": "POST",
+    "path": "/api/codex-hub/redeem",
+    "bearer": "none",
+    "install": "bound",
+    "body": "valid",
+    "setup": "code-used",
+    "want": {
+      "status": 401,
+      "code": "pair-code"
+    }
+  },
+  {
+    "name": "redeem: a code the hub never made",
+    "method": "POST",
+    "path": "/api/codex-hub/redeem",
+    "bearer": "none",
+    "install": "bound",
+    "body": "valid",
+    "want": {
+      "status": 401,
+      "code": "pair-code"
+    }
+  },
+  {
+    "name": "exchange: the legacy token for a pending PC",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "legacy",
+    "install": "bound",
+    "body": "valid",
+    "setup": "pending",
+    "want": {
+      "status": 200
+    }
+  },
+  {
+    "name": "exchange: from another install",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "legacy",
+    "install": "other",
+    "body": "valid",
+    "setup": "pending",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "exchange: without an install id",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "legacy",
+    "install": "none",
+    "body": "valid",
+    "setup": "pending",
+    "want": {
+      "status": 400,
+      "code": "install-required"
+    }
+  },
+  {
+    "name": "exchange: a body of the wrong shape",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "legacy",
+    "install": "bound",
+    "body": "bad",
+    "setup": "pending",
+    "want": {
+      "status": 400,
+      "code": "bad-request"
+    }
+  },
+  {
+    "name": "exchange: nothing pending",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "legacy",
+    "install": "bound",
+    "body": "valid",
+    "setup": "nothing-pending",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "exchange: a PC token",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "pc",
+    "install": "bound",
+    "body": "valid",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "exchange: the admin token",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "admin",
+    "install": "bound",
+    "body": "valid",
+    "setup": "pending",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "exchange: no bearer",
+    "method": "POST",
+    "path": "/api/codex-hub/exchange",
+    "bearer": "none",
+    "install": "bound",
+    "body": "valid",
+    "setup": "pending",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "retire: a PC token with its install id",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "pc",
+    "install": "bound",
+    "body": "valid",
+    "want": {
+      "status": 200
+    }
+  },
+  {
+    "name": "retire: from another install",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "pc",
+    "install": "other",
+    "body": "valid",
+    "want": {
+      "status": 409,
+      "code": "install-mismatch"
+    }
+  },
+  {
+    "name": "retire: without an install id",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "pc",
+    "install": "none",
+    "body": "valid",
+    "want": {
+      "status": 400,
+      "code": "install-required"
+    }
+  },
+  {
+    "name": "retire: a body of the wrong shape",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "pc",
+    "install": "bound",
+    "body": "bad",
+    "want": {
+      "status": 400,
+      "code": "bad-request"
+    }
+  },
+  {
+    "name": "retire: a revoked token",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "pc-revoked",
+    "install": "bound",
+    "body": "valid",
+    "want": {
+      "status": 401,
+      "code": "revoked"
+    }
+  },
+  {
+    "name": "retire: a token the hub does not know",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "pc-unknown",
+    "install": "bound",
+    "body": "valid",
+    "want": {
+      "status": 401,
+      "code": "unknown-token"
+    }
+  },
+  {
+    "name": "retire: the admin token",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "admin",
+    "install": "bound",
+    "body": "valid",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  },
+  {
+    "name": "retire: the legacy token",
+    "method": "POST",
+    "path": "/api/codex-hub/retire",
+    "bearer": "legacy",
+    "install": "bound",
+    "body": "valid",
+    "setup": "pending",
+    "want": {
+      "status": 401,
+      "code": "unauthorized"
+    }
+  }
+]

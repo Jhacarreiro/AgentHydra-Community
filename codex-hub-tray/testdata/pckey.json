@@ -1,0 +1,86 @@
+[
+  {
+    "pc": "Office-PC",
+    "key": "office-pc"
+  },
+  {
+    "pc": "  Office PC  ",
+    "key": "office-pc"
+  },
+  {
+    "pc": "Example-Mac.local",
+    "key": "example-mac-local"
+  },
+  {
+    "pc": "DESKTOP-EXAMPLE1",
+    "key": "desktop-example1"
+  },
+  {
+    "pc": "build_box_2",
+    "key": "build_box_2"
+  },
+  {
+    "pc": "--dashes--",
+    "key": "dashes"
+  },
+  {
+    "pc": "a  b\tc",
+    "key": "a-b-c"
+  },
+  {
+    "pc": "a/b\\c",
+    "key": "a-b-c"
+  },
+  {
+    "pc": "Name.With.Dots",
+    "key": "name-with-dots"
+  },
+  {
+    "pc": "_under_",
+    "key": "_under_"
+  },
+  {
+    "pc": "Ünïcödé",
+    "key": "n-c-d"
+  },
+  {
+    "pc": "PC 🚀",
+    "key": "pc"
+  },
+  {
+    "pc": "Kelvin",
+    "key": "kelvin"
+  },
+  {
+    "pc": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+    "pc": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-b",
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"
+  },
+  {
+    "pc": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -b",
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--"
+  },
+  {
+    "pc": "-",
+    "key": null
+  },
+  {
+    "pc": "...",
+    "key": null
+  },
+  {
+    "pc": "",
+    "key": null
+  },
+  {
+    "pc": "   ",
+    "key": null
+  },
+  {
+    "pc": "éè",
+    "key": null
+  }
+]

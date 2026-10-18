@@ -21,6 +21,7 @@ import type { CodexRpc } from '../src/core/codex-rpc'
 import { app } from '../src/http-app'
 import { discoverForeignSources } from '../src/kit/ingest-foreign'
 import '../src/routes/codex-hub'
+import { testPc } from './codex-hub-test-pc'
 
 // A copy with its own router: a request through the shared app would build its matcher and stop
 // every later test file from registering routes.
@@ -29,6 +30,7 @@ const http = new Hono().route('/', app)
 const TOKEN = 'test-hub-token'
 process.env.AGENTHYDRA_CODEX_HUB_TOKEN = TOKEN
 const PC = `Desk-PC-${crypto.randomUUID().slice(0, 6)}`
+const DESK_PC = testPc(PC)
 const PC_DIR = join(CODEX_HUB_DIR, hubPcKey(PC)!)
 const PC_HOME = join(process.env.AGENTHYDRA_HOME!, `pc-codex-${crypto.randomUUID().slice(0, 6)}`)
 
@@ -88,13 +90,7 @@ const fakeRpc = async (): Promise<CodexRpc> => ({
 })
 const toHub: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   http.fetch(new Request(String(input), init))) as typeof fetch
-const cfg: CodexHubPushConfig = {
-  url: 'http://127.0.0.1',
-  token: TOKEN,
-  pc: PC,
-  headers: {},
-  intervalMs: 60_000,
-}
+const cfg: CodexHubPushConfig = DESK_PC.cfg('http://127.0.0.1')
 const push = () => pushCodexHubOnce(cfg, { connect: fakeRpc, fetch: toHub, codexHome: PC_HOME })
 const hubChats = () => listCodexChats().filter((c) => c.fromPc === PC)
 
@@ -178,15 +174,36 @@ test("a PC's chats on the hub are listed, but never ingested as the hub's own Co
   }
 })
 
-test('a push without the hub token is refused', async () => {
-  const res = await http.fetch(
+const pushAs = (authorization: string) =>
+  http.fetch(
     new Request('http://127.0.0.1/api/codex-hub/push', {
       method: 'POST',
-      headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' },
+      headers: {
+        authorization,
+        'content-type': 'application/json',
+        'x-codex-hub-install': DESK_PC.install!,
+      },
       body: JSON.stringify({ pc: PC, threads: [] }),
     }),
   )
+
+test('a push without a PC token is refused, and its copy stays', async () => {
+  const before = readFileSync(join(PC_DIR, 'manifest.json'), 'utf8')
+  const res = await pushAs('Bearer wrong')
   expect(res.status).toBe(401)
+  expect(await res.json()).toEqual({ error: 'unauthorized', code: 'unauthorized' })
+  expect(readFileSync(join(PC_DIR, 'manifest.json'), 'utf8')).toBe(before)
+})
+
+test('the admin token is refused from a PC: it opens nothing under /api/codex-hub/', async () => {
+  const before = readFileSync(join(PC_DIR, 'manifest.json'), 'utf8')
+  const res = await pushAs(`Bearer ${TOKEN}`)
+  expect(res.status).toBe(401)
+  // The same answer as for a token the hub does not know: nothing says which value this was.
+  expect(await res.json()).toEqual({ error: 'unauthorized', code: 'unauthorized' })
+  expect(readFileSync(join(PC_DIR, 'manifest.json'), 'utf8')).toBe(before)
+  // Its own token pushes.
+  expect((await pushAs(`Bearer ${DESK_PC.token}`)).status).toBe(200)
 })
 
 test("a Mac's default name is the same on every network, so it stays one PC", () => {
@@ -261,20 +278,31 @@ test('a file path that leaves sessions/ is never written', () => {
   rmSync(root, { recursive: true, force: true })
 })
 
-test("the pairing page posts the hub token only to the tray's own loopback port", async () => {
+test("the pairing page posts a one-time code, never a token, only to the tray's own loopback port", async () => {
   const state = 'a'.repeat(32)
+  const name = `<b>Page-PC-${crypto.randomUUID().slice(0, 6)}</b>`
   const res = await http.fetch(
-    new Request(`http://127.0.0.1/codex-hub/pair?port=49152&state=${state}&pc=<b>PC</b>`),
+    new Request(`http://127.0.0.1/codex-hub/pair?port=49152&state=${state}&pc=${name}`),
   )
   expect(res.status).toBe(200)
   const page = await res.text()
   expect(page).toContain('action="http://127.0.0.1:49152/paired"')
-  expect(page).toContain(`value="${TOKEN}"`)
-  expect(page).not.toContain('<b>PC</b>')
+  expect(page).not.toContain(TOKEN)
+  expect(page).not.toContain('chp_')
+  expect(page).toMatch(/<input type="hidden" name="code" value="[0-9a-f]{64}">/)
+  expect(page).not.toContain(name)
   expect(res.headers.get('content-security-policy')).toContain(
-    'form-action http://127.0.0.1:49152/paired',
+    "form-action 'self' http://127.0.0.1:49152/paired",
   )
-  for (const bad of ['port=80', 'port=example.test', `port=49152&state=xyz`])
+  for (const bad of [
+    'port=80&pc=pc',
+    'port=example.test&pc=pc',
+    `port=49152&state=xyz&pc=pc`,
+    // The name the tray pairs as is required.
+    `port=49152&state=${state}`,
+    `port=49152&state=${state}&pc=${'x'.repeat(65)}`,
+    `port=49152&state=${state}&pc=...`,
+  ])
     expect((await http.fetch(new Request(`http://127.0.0.1/codex-hub/pair?${bad}`))).status).toBe(
       400,
     )
