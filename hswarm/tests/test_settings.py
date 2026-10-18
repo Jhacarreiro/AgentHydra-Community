@@ -89,7 +89,7 @@ def test_remove_drops_every_managed_duplicate_and_its_stale_priority(user_toml):
 
 
 def test_explicit_add_clears_old_dead_and_unfunded_classifications():
-    key = "sk-new-proof-alive-0001"
+    key = "groq-fixture-new-0001"
     config.SECRETS_DIR.mkdir(parents=True)
     for suffix in (".dead", ".unfunded"):
         (config.SECRETS_DIR / ("groq_api_keys" + suffix)).write_text(key + "\n", encoding="utf-8")
@@ -104,7 +104,7 @@ def test_invalid_legacy_provider_file_refuses_a_key_edit_before_writing():
     path.parent.mkdir(parents=True)
     path.write_text('keys = ["unfinished"\n', encoding="utf-8")
     with pytest.raises(settings.SettingsError, match="not valid TOML"):
-        settings.add_key("groq", "sk-valid-but-unsaved-0001")
+        settings.add_key("groq", "groq-fixture-valid-0001")
     assert not (config.SECRETS_DIR / "groq_api_keys").exists()
     assert path.read_text(encoding="utf-8") == 'keys = ["unfinished"\n'
 

@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 from hswarm import config, console, vault
 
-FAKE_KEY = "sk-fake-console-key-0001"
+FAKE_KEY = "fake-vault-key-fixture-0001"
 
 
 class Machines:

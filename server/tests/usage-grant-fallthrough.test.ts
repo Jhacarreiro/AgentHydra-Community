@@ -11,7 +11,7 @@ import { resetUsageApiBackoff } from '../src/usage'
 import { checkUsageWithGrants } from '../src/usage-service'
 
 const SESSION = {
-  token: 'sk-ant-oat-test-session',
+  token: 'sk-ant-oat-test-sess',
   scopes: 'user:inference user:sessions:claude_code',
 }
 const YEAR = {

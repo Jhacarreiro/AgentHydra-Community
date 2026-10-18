@@ -15,18 +15,6 @@
     },
     {
       "rule": "secret.token",
-      "path": "hswarm/tests/test_config.py",
-      "fp": "22513d47a92229e3",
-      "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "secret.token",
-      "path": "hswarm/tests/test_config.py",
-      "fp": "27e652186f86b79f",
-      "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "secret.token",
       "path": "hswarm/tests/test_distill.py",
       "fp": "4528f0bd2a4c8a9d",
       "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
@@ -45,32 +33,8 @@
     },
     {
       "rule": "secret.token",
-      "path": "hswarm/tests/test_keys.py",
-      "fp": "cd85adae5268dd1e",
-      "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "secret.token",
-      "path": "hswarm/tests/test_settings.py",
-      "fp": "bd3071e71ff9d09d",
-      "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "secret.token",
-      "path": "hswarm/tests/test_settings.py",
-      "fp": "fbef6e346b0d64d3",
-      "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "secret.token",
       "path": "hswarm/tests/test_triage.py",
       "fp": "922000e9bdfb3a96",
-      "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
-    },
-    {
-      "rule": "secret.token",
-      "path": "hswarm/tests/test_vault_console.py",
-      "fp": "42784ef4a8e10d51",
       "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
     },
     {
@@ -150,12 +114,6 @@
       "path": "server/tests/secrets-export.test.ts",
       "fp": "d67ee745ad52ec11",
       "reason": "Test fixture for the secret scanner itself: the alphabet-run tokens, AWS's documented example access key id, and bare PEM header strings with no key body."
-    },
-    {
-      "rule": "secret.token",
-      "path": "server/tests/usage-grant-fallthrough.test.ts",
-      "fp": "bfe99151cf91158e",
-      "reason": "Test fixture: a made-up key of the right shape (an alphabet run, a counter or a name like not-a-real-key) that the key handling is tested with; it was never issued by any provider."
     },
     {
       "rule": "secret.token",

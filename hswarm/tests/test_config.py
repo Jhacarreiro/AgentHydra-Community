@@ -73,14 +73,14 @@ def test_chat_body_keeps_only_given_options():
 
 
 def test_key_status_never_leaks(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-unit-test-secret-value")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "unit-test-secret-value")
     st = config.key_status()
-    assert st["present"] and st["length"] == len("sk-unit-test-secret-value")
+    assert st["present"] and st["length"] == len("unit-test-secret-value")
     assert "unit-test-secret-value" not in json.dumps(st)  # fingerprints, counts and source names only, never the value
 
 
 def test_the_home_key_file_is_the_last_source(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SECRETS_DIR", tmp_path)
-    (tmp_path / "deepseek_api_key").write_text("sk-test-not-a-real-key-0000000000\n", encoding="utf-8")
+    (tmp_path / "deepseek_api_key").write_text("home-file-key-fixture-0001\n", encoding="utf-8")
     assert config.key_sources("deepseek")[-1][0] == "<home>/secrets/deepseek_api_key"
-    assert config.all_keys("deepseek") == ["sk-test-not-a-real-key-0000000000"]
+    assert config.all_keys("deepseek") == ["home-file-key-fixture-0001"]

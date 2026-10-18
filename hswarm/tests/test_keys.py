@@ -639,7 +639,7 @@ def test_a_service_endpoint_permission_denial_does_not_classify_the_key_as_dead(
 def test_paid_native_key_addition_checks_an_authenticated_get_without_generating(monkeypatch):
     from hswarm import cli
 
-    key = "sk-native-free-check-0001"
+    key = "sk-ant-native-fixture"
     requests = []
     def handler(request):
         requests.append(request)
