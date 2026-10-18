@@ -172,7 +172,11 @@ The AgentHydra daemon starts HydraSwarm by default (`python -m hswarm mcp --http
 
 ## Free accounts first
 
-A tool-free task (`tools: none`, no images, no `zdr`, `model` auto, profile `routine`, `general`, `research` or
+Off by default. The Free accounts are third-party web logins (claude.ai, chatgpt.com), so HSwarm sends them nothing
+until you set `route_via_free = true` in `settings.toml`; until then every task takes its CliMayte or API route, and
+none of the settings below does anything.
+
+Once it is on, a tool-free task (`tools: none`, no images, no `zdr`, `model` auto, profile `routine`, `general`, `research` or
 `decision`, purpose not `evaluation`, at most 100,000 characters) may run on the owner's signed-in Free claude.ai and
 ChatGPT accounts through AgentHydra (`free_status`, `free_chat`, `free_results` on `POST /api/mcp`) before any paid API
 leg, at no cost; `routine` and `general` ask for Haiku 5.5 (the lightest on a free account's limit), the others for the account's usual model. A schema's JSON is parsed and checked as on the API route. The daemon being down, no idle account, a
@@ -185,7 +189,7 @@ before it had turned away about 2,800 eligible tasks in a day. `free_status` can
 a task subtracts from the idle count every still-running task this process sent from 2 s before it asked for its
 snapshot onward, however long that read took: counted from the answer instead, a slow read (up to 5 s) let two tasks
 take one idle account (2026-10-09). `selection.route` shows the route a task took (`via: free`), the
-ledger line says provider `free`. Order: free accounts first, then CliMayte, then the paid API (docs/CLIMAYTE.md, "Which route first"). Settings: `route_via_free` (default on), `route_via_free_max` (default: as many as are idle), `route_via_free_profiles`.
+ledger line says provider `free`. Order: free accounts first, then CliMayte, then the paid API (docs/CLIMAYTE.md, "Which route first"). Settings: `route_via_free` (default off), `route_via_free_max` (default: as many as are idle), `route_via_free_profiles`.
 
 A task with tools goes to a Free thread too when every tool it is offered only reads (`route_via_free_tools`; the web
 tools only for a profile in `route_via_free_web_profiles`, default research) and its profile is in

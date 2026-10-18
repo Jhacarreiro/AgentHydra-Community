@@ -293,13 +293,16 @@ ROUTE_VIA_CLIMAYTE = True
 ROUTE_VIA_CLIMAYTE_MAX: int | None = None
 ROUTE_VIA_CLIMAYTE_START_S = 90.0
 # `route_via_free` in settings.toml: a TOOL-FREE task of an ordinary profile is first sent to the owner's signed-in Free
-# claude.ai and chatgpt.com accounts through AgentHydra (free_route.py), at no cost, before any paid API leg. On by default.
+# claude.ai and chatgpt.com accounts through AgentHydra (free_route.py), at no cost, before any paid API leg. Off by
+# default: those are third-party web logins, so no task goes to one until the person sets `route_via_free = true`.
+# Every other route_via_free_* setting only shapes what happens once it is on.
 # `route_via_free_max`: the most tasks on free accounts at once across the server process; unset, as many as are idle.
 # A fixed 6 (from when there were 6 accounts) held one server to 6 of 11 accounts while thousands of eligible tasks a
 # day took their API route (owner, 2026-10-08: "we're sending a very low stream to them"). `route_via_free_profiles`:
 # the profiles whose TOOL-FREE tasks may go (never critical by default); an unlisted profile takes its API route without
 # asking. A tool task goes by `route_via_free_tool_profiles` instead.
-ROUTE_VIA_FREE = True
+_ROUTE_VIA_FREE_DEFAULT = False
+ROUTE_VIA_FREE = _ROUTE_VIA_FREE_DEFAULT
 ROUTE_VIA_FREE_MAX: int | None = None
 _ROUTE_VIA_FREE_PROFILES_DEFAULT = ("routine", "general", "research", "decision")
 ROUTE_VIA_FREE_PROFILES = _ROUTE_VIA_FREE_PROFILES_DEFAULT
@@ -607,7 +610,7 @@ def _reset() -> None:
     # `routing = false` from a PREVIOUS read standing (it did until 2026-09-17).
     PRICE_ROUTING, LOAD_BIAS, DAILY_CAP_USD = _PRICE_ROUTING_DEFAULT, _LOAD_BIAS_DEFAULT, None
     ROUTE_VIA_CLIMAYTE, ROUTE_VIA_CLIMAYTE_MAX, ROUTE_VIA_CLIMAYTE_START_S = True, None, 90.0
-    ROUTE_VIA_FREE, ROUTE_VIA_FREE_MAX, ROUTE_VIA_FREE_PROFILES = True, None, _ROUTE_VIA_FREE_PROFILES_DEFAULT
+    ROUTE_VIA_FREE, ROUTE_VIA_FREE_MAX, ROUTE_VIA_FREE_PROFILES = _ROUTE_VIA_FREE_DEFAULT, None, _ROUTE_VIA_FREE_PROFILES_DEFAULT
     ROUTE_VIA_FREE_TOOLS, ROUTE_VIA_FREE_TOOL_PROFILES = _ROUTE_VIA_FREE_TOOLS_DEFAULT, _ROUTE_VIA_FREE_TOOL_PROFILES_DEFAULT
     ROUTE_VIA_FREE_TOOL_ASKS = dict(_ROUTE_VIA_FREE_TOOL_ASKS_DEFAULT)
     ROUTE_VIA_FREE_WEB_PROFILES = _ROUTE_VIA_FREE_WEB_PROFILES_DEFAULT

@@ -9,5 +9,5 @@ Delegate wide, repetitive work (checking many files, per-item summaries, classif
 - Workers are cheap, not infallible: before relying on a finding, open the `file:line` it cites or re-run the command it quotes, and drop anything whose quote is not there.
 - Leave `model` on `auto` (the cheapest model that meets the task's bar); `profile` (`code`, `decision`, `research`, `critical`) raises the bar.
 - Keys are the user's, set in `hswarm ui`; `hswarm_doctor` shows what is ready. Never ask the user to paste a key.
-- On `auto`, a task with tools and an absolute `cwd` may run on the owner's Claude subscription (CliMayte), and a tool-free one on the owner's Free accounts at no cost; `selection.route` shows which.
+- On `auto`, a task with tools and an absolute `cwd` may run on the owner's Claude subscription (CliMayte), and, when the owner has turned `route_via_free` on, a tool-free one on the owner's Free accounts at no cost; `selection.route` shows which.
 - **Model watch:** when `hswarm models --watch` or `hswarm doctor` reports benchmarked-but-unrouted or unbenchmarked models, register each route with its sourced price, or source its published scores into `data/published-models.json`, before other HSwarm work. Never guess a score or price.

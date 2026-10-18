@@ -1,5 +1,7 @@
-"""Offline: a tool-free task goes to the owner's Free web accounts first (free_route.py), against a fake AgentHydra on a
-free local port. Nothing here reaches the real daemon on 7787: conftest blanks AGENTHYDRA_URL for every test."""
+"""Offline: a tool-free task goes to the owner's Free web accounts first (free_route.py) once `route_via_free` is on,
+against a fake AgentHydra on a free local port. Nothing here reaches the real daemon on 7787: conftest blanks
+AGENTHYDRA_URL for every test. The setting is off by default; the `fake` fixture turns it on, since every test that
+uses it is about what Free routing does once someone has."""
 from __future__ import annotations
 
 import asyncio
@@ -124,6 +126,7 @@ class _Fake:
 def fake(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(config, "LEDGER", tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(config, "ROUTE_VIA_FREE", True)  # opted in, as `route_via_free = true` in settings.toml does
     made: list[_Fake] = []
 
     def make(**kw):
@@ -264,7 +267,27 @@ def test_a_schema_reply_that_is_not_json_falls_back(fake):
     assert res is None
 
 
+def test_free_routing_is_off_until_settings_turn_it_on(fake, monkeypatch):
+    # The fixture opted in; a settings file that says nothing is what a fresh install has.
+    config.reload()
+    assert config.ROUTE_VIA_FREE is False
+    f = fake()
+    assert free_route.eligible(_task()) is False
+    assert _consult(_task()) == (None, None)
+    assert f.names == [] and f.chats == []  # not even free_status is asked
+    config.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.SETTINGS_FILE.write_text("route_via_free = true\n", encoding="utf-8")
+    config.reload()
+    assert config.ROUTE_VIA_FREE is True
+    res, _ = _consult(_task())
+    assert res is not None and res.answer == "free answer"
+    config.SETTINGS_FILE.unlink()
+    config.reload()
+    assert config.ROUTE_VIA_FREE is False
+
+
 def test_an_unreachable_daemon_falls_back_without_an_error(monkeypatch):
+    monkeypatch.setattr(config, "ROUTE_VIA_FREE", True)
     monkeypatch.setenv("AGENTHYDRA_URL", "http://127.0.0.1:9")
     assert _consult(_task()) == (None, None)
 

@@ -42,7 +42,8 @@ Free first, then the cheapest key quite certain to finish the job, paid keys las
 are actually free"; 2026-10-13: the CliMayte accounts are free too, so they go first when available, and Claude or GPT
 keys only when nothing cheaper can do the job).
 
-1. **Free accounts** take tool-free work at no cost. HSwarm tries them first when `route_via_free` is on and the
+1. **Free accounts** take tool-free work at no cost. HSwarm tries them first when `route_via_free` is on (it is off
+   until you set it in HSwarm's `settings.toml`, since they are third-party web logins) and the
    task's profile is in `route_via_free_profiles`; no idle account or a bad reply moves on to the next step. A task
    whose tools only read goes to CliMayte first (step 2) and then to a Free thread before any key
    (`route_via_free_tool_profiles`, `route_via_free_tool_asks`; hswarm/README.md, "Free accounts first").
