@@ -3,7 +3,7 @@
 ' WHY THIS EXISTS: a shortcut pointing straight at powershell.exe -WindowStyle Hidden still
 ' CREATES a console and then hides it, so every launch (and every login, with the Startup
 ' shortcut) flashes a black box on screen. Windows Script Host's Run with intWindowStyle 0
-' never creates one, which is the same trick the LunarWerx tray apps use. Owner, 2026-09-02:
+' never creates one, which is the same trick AgentHydra's misc\Tray-Launch.vbs uses. Owner, 2026-09-02:
 ' "I wouldn't want this open in like a console."
 '
 ' Nothing app-specific lives here: it resolves its own folder and runs the sibling tray.ps1.

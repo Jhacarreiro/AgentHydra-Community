@@ -1,8 +1,8 @@
-# AgentHydra system-tray host (Windows). THIN ADAPTER over the shared LunarWerx
+# AgentHydra system-tray host (Windows). THIN ADAPTER over the generic
 # tray-host engine (misc\Tray-Host.ps1, maintained in this repository; keep it app-agnostic
 # and put AgentHydra's specifics here). This file's only job
-# is to declare what makes AgentHydra different from its siblings (ReDesign/RepoYeti/
-# DevWebUI) — mutex name, daemon start command, shutdown protocol, icon, etc. — as a
+# is to declare what is AgentHydra's own, as opposed to any other app the engine could host
+# — mutex name, daemon start command, shutdown protocol, icon, etc. — as a
 # $TrayConfig hashtable, then hand off to the engine. See Tray-Host.ps1's header comment
 # for the full $TrayConfig contract (every key below is documented there).
 #

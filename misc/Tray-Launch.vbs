@@ -39,13 +39,13 @@ Next
 If matchCount = 0 Then
   MsgBox "Tray launcher: no '*-Tray.ps1' adapter found in " & scriptDir & vbCrLf & _
          "Restore the app's *-Tray.ps1 adapter script.", _
-         vbCritical, "LunarWerx tray launcher"
+         vbCritical, "AgentHydra tray launcher"
   WScript.Quit 1
 End If
 If matchCount > 1 Then
   MsgBox "Tray launcher: more than one '*-Tray.ps1' adapter found in " & scriptDir & _
          vbCrLf & "Exactly one is expected. Leave only the app's <App>-Tray.ps1.", _
-         vbCritical, "LunarWerx tray launcher"
+         vbCritical, "AgentHydra tray launcher"
   WScript.Quit 1
 End If
 adapter = matchName

@@ -1,5 +1,5 @@
 # Creates / refreshes the "AgentHydra" shortcut in the project root. THIN ADAPTER over the
-# shared LunarWerx shortcut engine (misc\New-TrayShortcut.ps1, maintained in this repository;
+# generic shortcut engine (misc\New-TrayShortcut.ps1, maintained in this repository;
 # keep it app-agnostic and put AgentHydra's specifics here).
 # The shortcut launches the native tray host and carries the icon, so the root has one nice
 # clickable entry. Re-run this if you move or rename the folder.

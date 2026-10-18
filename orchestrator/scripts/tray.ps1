@@ -199,7 +199,7 @@ if ($InstallShortcut -or $Startup) {
         # a console and hides it a beat later, so a shortcut to powershell flashes a black box on
         # every launch and again at every login (owner, 2026-09-02: "I wouldn't want this open in
         # like a console"). Windows Script Host with mode 0 never creates one at all - the same
-        # pattern the LunarWerx tray apps use.
+        # pattern AgentHydra's own tray launcher (misc\Tray-Launch.vbs) uses.
         $s.TargetPath = "wscript.exe"
         $s.Arguments = "`"$(Join-Path $PSScriptRoot 'tray-launch.vbs')`""
         $s.WorkingDirectory = $Repo
@@ -217,7 +217,7 @@ if ($InstallShortcut -or $Startup) {
 # belong in a check that a script parses. (It mattered more than that once: an audit agent told
 # only "do not launch the tray for real" launched it anyway, back when launching armed every lane
 # - see the shared memory note on briefing agents against a live machine.)
-# Same idea as the LunarWerx tray engine's own self-test.
+# Same idea as the self-test of AgentHydra's tray engine (misc\Tray-Host.ps1).
 if ($SelfTest) {
     $fail = 0
     function Check([string]$what, [bool]$ok, [string]$detail = "") {
