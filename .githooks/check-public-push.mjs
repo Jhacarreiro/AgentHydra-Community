@@ -68,7 +68,7 @@ const LOOKUP_TIMEOUT_MS = 5000;
 const ZERO_SHA = /^0+$/;
 const RELEASE_TAG = /^refs\/tags\/v\d+\.\d+\.\d+/;
 const TODO_FILE = "docs/todo/TODO.md";
-// Rule 4: upstream's commit "AgentHydra is now under the PolyForm Noncommercial License".
+// Rule 4: upstream's relicensing commit, the one that moved AgentHydra from MIT to PolyForm Noncommercial 1.0.0.
 export const LICENSE_BOUNDARY = "aee9dfc4f7dd0228d8e1740be90b646b30204f37";
 const AUDIT_SCRIPT = "scripts/audit-public.mjs";
 const AUDIT_CONFIG = "scripts/audit-public.config.json";

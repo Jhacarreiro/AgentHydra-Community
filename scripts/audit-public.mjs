@@ -76,9 +76,9 @@ export const PROVENANCE_FILE = 'scripts/binary-provenance.json'
 export const MESSAGE_PATH = '(commit message)'
 const COMMIT_PATH = '(commit)'
 /**
- * Upstream's commit "AgentHydra is now under the PolyForm Noncommercial License". It is built in, as
- * in .githooks/check-public-push.mjs, so no config edit can turn license.boundary off: the config's
- * licenseBoundary may name a further commit, never take this one away.
+ * Upstream's relicensing commit, the one that moved AgentHydra from MIT to PolyForm Noncommercial 1.0.0.
+ * It is built in, as in .githooks/check-public-push.mjs, so no config edit can turn license.boundary
+ * off: the config's licenseBoundary may name a further commit, never take this one away.
  */
 export const LICENSE_BOUNDARY = 'aee9dfc4f7dd0228d8e1740be90b646b30204f37'
 const COMMIT_ID = /^[0-9a-f]{40}$/
