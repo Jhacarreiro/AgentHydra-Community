@@ -3,12 +3,12 @@
  * Pre-push guard: rules that used to live only in people's memory, and the public-safety audit.
  *
  *  1. A push to a PUBLIC remote is refused unless this one command was told to proceed.
- *     LunarWerxs/AgentHydra is public, and a push to `main` is a release for every source install
- *     (docs/RELEASING.md). The standing rule is "check visibility, announce it with an unmissable
- *     heading, then let the owner decide". On 2026-09-11 (590bec8) a session that had not read the
- *     rule pushed a peer's half-finished work straight to origin/main with no announcement. Nothing
- *     secret went out that day; the rule that stops the day something does had no teeth. Now the
- *     heading is printed by the machine, every time, and the push stops there unless
+ *     Jhacarreiro/AgentHydra-Community is public, and a push to `main` is a release for every source
+ *     install that follows it (docs/RELEASING.md). The standing rule is "check visibility, announce
+ *     it with an unmissable heading, then let the owner decide". On 2026-09-11 (590bec8) a session
+ *     that had not read the rule pushed a peer's half-finished work straight to origin/main with no
+ *     announcement. Nothing secret went out that day; the rule that stops the day something does had
+ *     no teeth. Now the heading is printed by the machine, every time, and the push stops there unless
  *     AGENTHYDRA_PUSH_PUBLIC=1 is set for that command - which announces AND proceeds, because the
  *     rule was always announce-then-do, never announce-instead-of-do.
  *
