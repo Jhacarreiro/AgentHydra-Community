@@ -165,7 +165,11 @@ describe('the workflows build what they use', () => {
     const named = `"out/AgentHydra-${'$'}{GITHUB_REF_NAME#v}-windows-x64-natives.sha256"`
     expect(job).toContain(named)
     expect(job.indexOf(named)).toBeLessThan(job.indexOf('sha256sum out/* > out/SHA256SUMS.txt'))
-    expect(job.match(/out\/\*-natives\.sha256 out\/SHA256SUMS\.txt/g)?.length).toBe(2)
+    // One list of assets, which both the upload (a retry) and the create publish.
+    expect(job.match(/out\/\*-natives\.sha256 out\/SHA256SUMS\.txt/g)?.length).toBe(1)
+    expect(
+      job.match(/gh release (?:upload|create) "\$GITHUB_REF_NAME" "\$\{assets\[@\]\}"/g)?.length,
+    ).toBe(2)
   })
 })
 
