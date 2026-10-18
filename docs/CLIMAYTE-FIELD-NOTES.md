@@ -5,7 +5,7 @@ why it matters, and where it stands. Newest run first; a note is updated in plac
 
 ## Run 1, 2026-09-30: Connections mobile fixes (the owner's first real climayte task)
 
-Task: fix the phone layout of events.connections.icu (the Events list rows, the Guests tab's
+Task: fix the phone layout of the Connections events site (the Events list rows, the Guests tab's
 "3 ahead" chip, its "Person" header and its tall "Check in" buttons), then sweep the rest of the
 Connections site on a phone. Orchestrator: a desktop Opus 5.5 chat in the Connections repo.
 Accounts signed in at start: #83, #84, #88, #90, #91, #94 (and #68, #69, which report signed in but

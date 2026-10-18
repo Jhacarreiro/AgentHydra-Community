@@ -19,7 +19,7 @@ refusal now names the operation holding it instead of leaving `taskkill` as the 
 ## Why the rewrite
 
 This is the third attempt. Both previous ones are kept in full in the archived standalone
-repository (`Lunarwerx/orchestrator`, private, under `old/`), because the failures are the useful
+repository (private, under `old/`), because the failures are the useful
 part - and the useful part is written down here, so the code did not need to follow into a public
 tree.
 

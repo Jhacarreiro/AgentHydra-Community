@@ -1,6 +1,6 @@
 # HydraSwarm (hswarm)
 
-HydraSwarm is AgentHydra's swarm. It began as a copy of ZSwarm and replaced it when ZSwarm was retired (2026-10-03); `hswarm import-zswarm` brings a ZSwarm home's history across. The public ZergSwarm site and repository were retired on 2026-10-11: zergswarm.lunarwerx.com now redirects to the HSwarm section of AgentHydra's site (https://agenthydra.lunarwerx.com/#hswarm).
+HydraSwarm is AgentHydra's swarm. It began as a copy of ZSwarm and replaced it when ZSwarm was retired (2026-10-03); `hswarm import-zswarm` brings a ZSwarm home's history across. The public ZergSwarm site and repository were retired on 2026-10-11; HSwarm lives on here, in this repository.
 
 **TL;DR**
 
