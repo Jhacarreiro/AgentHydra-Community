@@ -247,13 +247,13 @@ Until this project publishes its first release, the installer stops with a messa
 anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
 
 <details>
-<summary><b>Read more: downloads, Windows programs, versions, updates, requirements, network</b></summary>
+<summary><b>Read more: downloads, Windows programs, licences, versions, updates, requirements, network</b></summary>
 
 - **Downloads,** once published: the Windows `.zip` holds the whole app: the window, the tray icon and the
   orchestrator tools. The single `.exe` is a small launcher that fetches the rest of the app from the same release
-  the first time you run it. Linux and macOS get a `.tar.gz`. No download packs Bun or Claude Code: the launcher
-  fetches the Bun the release was built with on first run (checked against Bun's published checksums), and the
-  window fetches Claude Code when a chat first needs it.
+  the first time you run it. Linux and macOS get a `.tar.gz`. No download packs Bun, Claude Code or the Claude Agent
+  SDK: the launcher fetches the Bun the release was built with on first run (checked against Bun's published
+  checksums), and the window fetches Claude Code, and the Agent SDK the release pins, when a chat first needs them.
 - **Windows programs:** the tray icon (`misc\AgentHydra-Tray.exe`), the window (`desk2\launcher\HydraDesk2.exe`) and
   CliMayte's worker runner (`misc\climayte-runner.exe`) are built from the Rust source in this repository and are
   never committed. Every Windows release builds its own copies and publishes their checksums beside the download
@@ -267,6 +267,18 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
 
   A checkout from before these programs left the tree loses its copies when it updates. Build them, or run
   `misc\Create-Shortcut.ps1` again, so the AgentHydra shortcut opens again.
+- **Licences in a release:** every bundle carries `LICENSE` (MIT), `THIRD-PARTY-NOTICES.md` for the code AgentHydra
+  adapts from other projects, `LICENSES/`, and `THIRD-PARTY-LICENSES`. That last file gives the name, version,
+  licence and licence text of every third-party package whose code is in the bundle: its npm packages and, in the
+  Windows bundle, the Rust crates of its programs and Rust's own licences. A release is not built if any of them has
+  no licence, no licence text, or a licence outside a permissive allowlist (MIT, MIT-0, ISC, BSD, Apache-2.0, 0BSD,
+  BlueOak, CC0, OFL, Unlicense, Zlib, Unicode, BSL-1.0 and MPL-2.0). An in-app update brings the new release's
+  licence files.
+- **The Claude Agent SDK** is not in any bundle: its licence reserves all rights. The first time a chat needs it,
+  AgentHydra downloads the exact version the release pins, checks its sha512 against the pin, and unpacks it into
+  `desk2/node_modules`, where it stays across in-app updates. Meanwhile the chat shows "Getting the Claude Agent SDK"
+  and the version; if the download fails, it says why (offline, not the pinned package, or a folder it cannot write)
+  and offers a Retry. A source checkout uses what `bun install` put in `node_modules` and never downloads it.
 - **Versions** are numbered by date, `YYYY.M.PATCH`, starting at `2026.10.0`, so they never collide with the
   `0.x`, `1.x` and `2.0.x` releases of the project this one was forked from.
 - **Updates** come only from this repository, the one named in `release-channel.json`, and auto-update is off
@@ -294,8 +306,9 @@ anything; `install.ps1 -FromZip <zip>` installs a zip you built yourself ([docs/
   - **A launcher repair:** a release launcher that finds part of its install missing downloads its own version's
     archive from this repository's releases, when the channel says `notify` or `auto`. While it says `off`, the
     launcher names the missing parts and downloads nothing, unless `AGENTHYDRA_RELEASE_BASE` names a base.
-  - **Bun** from Bun's GitHub releases on a release build's first run, and **Claude Code** from the npm registry
-    when a chat first needs it.
+  - **Bun** from Bun's GitHub releases on a release build's first run. **Claude Code**, and in a release the
+    **Claude Agent SDK** at the version the release pins, from the npm registry (or the mirror
+    `npm_config_registry` names) when a chat first needs them.
   - **Claude upkeep:** on Windows with Claude Desktop's classic install, about once an hour AgentHydra asks Claude
     Desktop's own update feed at `api.anthropic.com` for its newest build, with the device id, version and OS
     version the app itself sends there. When the install is behind, it runs the install's own updater, which
@@ -389,7 +402,8 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
 - **Security:** report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes.
 - **Code of conduct:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 - **Licence:** [MIT](LICENSE). Third-party material and its licences are listed in
-  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and each release also carries `THIRD-PARTY-LICENSES` for every
+  third-party package inside it.
 
 ## FAQ
 
