@@ -19,8 +19,9 @@
  *   --merge <list.json>              a list an earlier run wrote with --json
  *
  * It fails, and writes nothing, when a package declares no licence, declares one outside ALLOWED_LICENCES, or carries
- * no licence text. scripts/third-party-licenses.json settles a package whose own files fall short, one version at a
- * time: the licence its project states, and the text fetched from a fixed address and checked against its SHA-256.
+ * no licence text (a NOTICE, PATENTS or COPYRIGHT file that states no licence is not one).
+ * scripts/third-party-licenses.json settles a package whose own files fall short, one version at a time: the licence
+ * its project states, and the text fetched from a fixed address and checked against its SHA-256.
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -725,8 +726,15 @@ async function fetchText(url: string, sha256: string, fetchImpl: typeof fetch): 
   return new TextDecoder().decode(bytes).replace(/\r\n?/g, '\n').trim()
 }
 
-/** Every reason the list cannot ship, one line per package; empty when it can. */
-export function licenceProblems(packages: ThirdPartyPackage[]): string[] {
+/**
+ * Every reason the list cannot ship, one line per package; empty when it can. A package's licence text is one
+ * identifyLicence() names, or one scripts/third-party-licenses.json supplied (`clarified`, by package key): a package
+ * whose only files are a NOTICE or a PATENTS grant has none, whatever licence its metadata declares.
+ */
+export function licenceProblems(
+  packages: ThirdPartyPackage[],
+  clarified: ReadonlySet<string> = new Set(),
+): string[] {
   const problems: string[] = []
   for (const p of packages) {
     const id = `${key(p)} (in ${p.shippedIn.join(', ')})`
@@ -745,6 +753,12 @@ export function licenceProblems(packages: ThirdPartyPackage[]): string[] {
         )
     }
     if (!p.texts.length) problems.push(`${id} carries no licence text`)
+    else if (!clarified.has(key(p)) && !p.texts.some((t) => identifyLicence(t.text)))
+      problems.push(
+        `${id} carries no licence text: it has only ${p.texts.map((t) => t.file).join(', ')}, which ` +
+          `${p.texts.length === 1 ? 'states' : 'state'} no licence this script knows; ` +
+          'scripts/third-party-licenses.json can supply the text its project publishes',
+      )
   }
   return problems
 }
@@ -760,6 +774,7 @@ export async function settleLicences(
   const clarifications = (options.clarifications ?? loadClarifications()).clarifications
   const packages = mergePackages(lists)
   const problems: string[] = []
+  const clarified = new Set<string>()
   for (const p of packages) {
     const c = clarifications[key(p)]
     if (!c) continue
@@ -772,11 +787,12 @@ export async function settleLicences(
         const text = await fetchText(c.text.url, c.text.sha256, options.fetch ?? fetch)
         if (!p.texts.some((t) => t.text === text))
           p.texts.push({ file: c.text.file ?? c.text.url, text })
+        clarified.add(key(p))
       } catch (err) {
         problems.push(`${key(p)}: ${err instanceof Error ? err.message : String(err)}`)
       }
   }
-  return { packages, problems: [...problems, ...licenceProblems(packages)] }
+  return { packages, problems: [...problems, ...licenceProblems(packages, clarified)] }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

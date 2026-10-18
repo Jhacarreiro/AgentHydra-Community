@@ -273,6 +273,47 @@ describe('what fails the build', () => {
     ])
   })
 
+  const NOTICE =
+    'Copyright 2024 Example Owner\n\nThis product includes software developed at Example (https://example.com/).\n'
+
+  test('a NOTICE, PATENTS or COPYRIGHT file is not the licence text; beside a licence file it ships too', () => {
+    const root = tree({
+      'node_modules/onlynotice/package.json': pkgJson({
+        name: 'onlynotice',
+        version: '1.0.0',
+        license: 'Apache-2.0',
+      }),
+      'node_modules/onlynotice/NOTICE': NOTICE,
+      'node_modules/grants/package.json': pkgJson({
+        name: 'grants',
+        version: '1.0.0',
+        license: 'MIT',
+      }),
+      'node_modules/grants/PATENTS': 'Example Owner grants a licence to its patents.\n',
+      'node_modules/grants/COPYRIGHT': 'Copyright 2024 Example Owner\n',
+      'node_modules/both/package.json': pkgJson({
+        name: 'both',
+        version: '1.0.0',
+        license: 'Apache-2.0',
+      }),
+      'node_modules/both/LICENSE': APACHE,
+      'node_modules/both/NOTICE': NOTICE,
+    })
+    const found = npmTree(join(root, 'node_modules'), ['desk2/node_modules'])
+    expect(found.map((p) => `${p.name} ${p.texts.map((t) => t.file).join(',')}`).sort()).toEqual([
+      'both LICENSE,NOTICE',
+      'grants COPYRIGHT,PATENTS',
+      'onlynotice NOTICE',
+    ])
+    expect(licenceProblems(found)).toEqual([
+      'npm:grants@1.0.0 (in desk2/node_modules) carries no licence text: it has only COPYRIGHT, PATENTS, ' +
+        'which state no licence this script knows; scripts/third-party-licenses.json can supply the text its ' +
+        'project publishes',
+      'npm:onlynotice@1.0.0 (in desk2/node_modules) carries no licence text: it has only NOTICE, which states ' +
+        'no licence this script knows; scripts/third-party-licenses.json can supply the text its project publishes',
+    ])
+  })
+
   const text = 'MIT License\n\nCopyright (c) 2024 Example Owner\n'
   const sha256 = createHash('sha256').update(text).digest('hex')
   const clarified = (sha: string): Clarifications => ({
@@ -304,6 +345,29 @@ describe('what fails the build', () => {
     const renamed = packages.find((p) => p.name === 'renamed')!
     expect(renamed.license).toBe('MIT')
     expect(renamed.licenseFrom).toContain('its project states MIT')
+  })
+
+  test('a package with only a NOTICE ships once a clarification gives the text its project publishes', async () => {
+    const notice = { file: 'NOTICE', text: NOTICE.trim() }
+    const { packages, problems } = await settleLicences(
+      [[pkg({ name: 'textless', texts: [notice] })]],
+      { clarifications: clarified(sha256), fetch: serve },
+    )
+    expect(problems).toEqual([])
+    expect(packages[0]!.texts).toEqual([
+      notice,
+      { file: 'LICENSE (example repository)', text: text.trim() },
+    ])
+    // A licence-only clarification states the licence; it is not a text, so the NOTICE alone still cannot ship.
+    const { problems: still } = await settleLicences(
+      [[pkg({ name: 'renamed', license: 'Custom', texts: [notice] })]],
+      { clarifications: clarified(sha256), fetch: serve },
+    )
+    expect(still).toEqual([
+      expect.stringContaining(
+        'npm:renamed@1.0.0 (in desk2/node_modules) carries no licence text: it has only NOTICE',
+      ),
+    ])
   })
 
   test('a text that changed since it was checked fails the build', async () => {
