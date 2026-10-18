@@ -8,8 +8,8 @@
  * The version defaults to package.json's. It is baked in through a generated source file in a temp
  * folder, so the checked-in source never changes between releases. The same file carries where the
  * launcher downloads a missing part from, the release channel's downloads, and the channel's updates
- * policy (release-channel.json): under "off" the channel has no release, and the launcher names a
- * missing part instead of downloading it.
+ * policy (release-channel.json): under "off" a build downloads no part of AgentHydra, its own release
+ * included, and the launcher names a missing part instead of downloading it.
  */
 import {
   copyFileSync,

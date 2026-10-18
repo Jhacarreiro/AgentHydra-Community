@@ -141,7 +141,7 @@ if ($FromZip) {
   Write-Note (Resolve-Path $FromZip).Path
 } else {
   if ($Updates -eq 'off') {
-    throw "No AgentHydra release is published from $Repo yet (release-channel.json says updates are off), so there is nothing to download. Build one from source (docs/RELEASING.md) and install it with -FromZip <zip>."
+    throw "This installer's release channel ($Repo) has updates off, so it downloads nothing. Download a release's windows-x64 zip from https://github.com/$Repo/releases yourself, or build one from source (docs/RELEASING.md), and install it with -FromZip <zip> (and -Sha256 <its hash from SHA256SUMS.txt>)."
   }
   Write-Step 'Finding the release'
   $headers = @{ 'User-Agent' = 'agenthydra-install' }

@@ -11,8 +11,8 @@ import {
  * The Linux and macOS launcher (`agenthydra` at the top of a release bundle). Its source is
  * launcher/posix/agenthydra, with the release version, the download base its repair uses and the
  * channel's updates policy left as placeholders the packager fills. The base and the policy are the
- * release channel's (release-channel.json): under "off" the channel has no release, and the launcher
- * names a missing part instead of downloading it.
+ * release channel's (release-channel.json): under "off" a build downloads no part of AgentHydra, its own
+ * release included, and the launcher names a missing part instead of downloading it.
  */
 const SOURCE = join(import.meta.dir, '..', 'launcher', 'posix', 'agenthydra')
 const PLACEHOLDER = '@VERSION@'

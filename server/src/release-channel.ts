@@ -13,9 +13,10 @@
 // since a release runs Desk's server from desk2/ as source) and the release workflow.
 // tests/release-channel-drift.test.ts holds every copy to the file.
 //
-// `updates` is what a RELEASE build does: "off" makes no update check and downloads nothing (the state while the
-// repository has published no releases), "notify" checks and tells but never installs, "auto" installs when Settings
-// lets it. A source checkout updates through git and is held to the repository instead (server/src/updater.ts).
+// `updates` is what a RELEASE build does: "off" makes no update check and downloads no part of AgentHydra
+// (the state until the first release is installed by hand; a release built with it is a pre-release), "notify" checks
+// and tells but never installs, "auto" installs when Settings lets it. A source checkout updates through git and is
+// held to the repository instead (server/src/updater.ts).
 import channelFile from '../../release-channel.json'
 
 export type UpdatePolicy = 'off' | 'notify' | 'auto'
@@ -128,7 +129,7 @@ export function sameRepo(a: string | null | undefined, b: string | null | undefi
 /** Why a release build will not ask whether a newer release exists, or null when it may ask. */
 export function checkRefusal(channel: ReleaseChannel = RELEASE_CHANNEL): string | null {
   if (channel.updates !== 'off') return null
-  return `Updates are off in this build: release-channel.json says "off" for ${channel.repo}, which publishes no releases yet, so nothing was checked or downloaded.`
+  return `Updates are off in this build: release-channel.json says "off" for ${channel.repo}, so nothing was checked or downloaded.`
 }
 
 /** Why a release build will not install a newer release, or null when it may. */

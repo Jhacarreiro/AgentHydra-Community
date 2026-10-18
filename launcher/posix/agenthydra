@@ -11,8 +11,8 @@ AH_VERSION='@VERSION@'
 # Where this version's release archive is: the release channel's downloads (release-channel.json), filled in by
 # the packager like the version. AGENTHYDRA_RELEASE_BASE overrides it (the tests' local server, a mirror).
 RELEASE_BASE=${AGENTHYDRA_RELEASE_BASE:-@RELEASE_BASE@}
-# The channel's "updates" policy (off, notify or auto), filled in the same way. "off" is a channel that has
-# published no release, so the repair below has nothing to download and says what to do instead of asking.
+# The channel's "updates" policy (off, notify or auto), filled in the same way. Under "off" a build downloads
+# nothing, not even its own version's archive, so the repair below says what to do instead of asking.
 # Setting AGENTHYDRA_RELEASE_BASE is the explicit way to repair from somewhere anyway.
 AH_UPDATES='@UPDATES@'
 BUN_BASE=${AGENTHYDRA_BUN_BASE:-https://github.com/oven-sh/bun/releases/download}
@@ -211,13 +211,13 @@ parts_missing() {
   [ -n "$MISSING" ]
 }
 
-# Updates off: the channel has no release, so a download could only fail. This says what is missing and how
-# to get it back instead. The archive holds one AgentHydra-<version>-<target> folder, so unpacking it into the
-# install would nest that folder inside it; the parts are copied out of it instead.
+# Updates off: a build downloads no part of AgentHydra, so this says what is missing and how to get it back instead. The
+# archive holds one AgentHydra-<version>-<target> folder, so unpacking it into the install would nest that
+# folder inside it; the parts are copied out of it instead.
 no_release_to_repair_from() {
   target_name
   bundle=AgentHydra-$AH_VERSION-$OS-$ARCH
-  die "this install is missing $MISSING. Updates are off in this build, so there is no release to download them from. Unpack $bundle.tar.gz anywhere and copy them from its $bundle folder into $INSTALL, or run AgentHydra from a source checkout (its README says how). To download them from a release base you name, set AGENTHYDRA_RELEASE_BASE."
+  die "this install is missing $MISSING. Updates are off in this build, so it does not download them from its release. Unpack $bundle.tar.gz anywhere and copy them from its $bundle folder into $INSTALL, or run AgentHydra from a source checkout (its README says how). To download them from a release base you name, set AGENTHYDRA_RELEASE_BASE."
 }
 
 target_name() {

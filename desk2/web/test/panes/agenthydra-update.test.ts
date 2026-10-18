@@ -23,7 +23,7 @@ async function versionRow(answer: Record<string, unknown>) {
 // Regression (2026-10-17): a release build whose release channel says "off" answers remote: null with the reason,
 // and the row said "This install is not linked to a Git remote", which is not why, and never showed the reason.
 test("a release build with updates off says the daemon's reason, not that a Git remote is missing", async () => {
-  const off = 'Updates are off in this build: release-channel.json says "off" for Owner/Repo, which publishes no releases yet, so nothing was checked or downloaded.'
+  const off = 'Updates are off in this build: release-channel.json says "off" for Owner/Repo, so nothing was checked or downloaded.'
   expect(await versionRow({ reason: off })).toEqual({ state: 'no-source', notes: [off] })
 })
 
