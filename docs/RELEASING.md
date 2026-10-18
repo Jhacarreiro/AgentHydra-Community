@@ -328,6 +328,12 @@ A commit whose subject starts with `wip: bundle` must also list every file in it
 `Swept:` (`.githooks/commit-msg`); `bun run save:bundle -- --mine <paths>` writes that message
 from the dirty tree. Both hooks have suites under `tests/githooks/`.
 
+`prepare` sets `core.hooksPath` to `.githooks`, a relative path, so each worktree of a clone runs its
+own hooks; `bun install --ignore-scripts` skips it. An absolute path there, set once in a clone that
+has several worktrees, makes every one of them run the hooks of the checkout it names, which may be an
+older copy than the worktree's own. Before a push to the public repository, check that
+`git config --show-origin core.hooksPath` shows `.githooks`.
+
 ## What GitHub itself must refuse
 
 The pre-push hook is the only check that reads a push before it lands, and `--no-verify`, or a push from a clone
