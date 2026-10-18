@@ -170,6 +170,7 @@ try {
     join(bundle, 'LICENSE'),
     join(bundle, 'THIRD-PARTY-NOTICES.md'),
     join(bundle, 'LICENSES/Apache-2.0.txt'),
+    join(bundle, 'desk2/sdk-pin.json'),
   ]
   if (isWin) {
     required.push(
@@ -203,6 +204,15 @@ try {
     `no bun or claude binary in the bundle${strays.length ? `; found ${strays.join(', ')}` : ''}`,
   )
   check(!existsSync(join(bundle, 'desk2/runtime')), 'no desk2/runtime')
+  // Nor the Agent SDK, whose licence reserves all rights: Desk fetches the version desk2/sdk-pin.json names.
+  const anthropic = join(bundle, 'desk2/node_modules/@anthropic-ai')
+  const sdkCopies = existsSync(anthropic)
+    ? readdirSync(anthropic).filter((n) => n.startsWith('claude-agent-sdk'))
+    : []
+  check(
+    sdkCopies.length === 0,
+    `no Agent SDK in desk2/node_modules${sdkCopies.length ? `; found ${sdkCopies.join(', ')}` : ''}`,
+  )
 
   const orch = join(bundle, 'orchestrator')
   const pyTools =
@@ -341,6 +351,17 @@ try {
     const ahApi = await get(`${deskUrl}/ah/api/health`)
     const ahBody = (ahApi.ok ? await ahApi.json() : {}) as { service?: string }
     check(ahBody.service === 'agenthydra', 'Desk 2 /ah/api/health reaches the daemon')
+    // Claude Code is known from the pin before the SDK is fetched: a chat can show and start its download.
+    const sdkPin = JSON.parse(readFileSync(join(bundle, 'desk2/sdk-pin.json'), 'utf8')) as {
+      claudeCodeVersion?: string
+      version?: string
+    }
+    const cc = await get(`${deskUrl}/api/claude-code`)
+    const ccBody = (cc.ok ? await cc.json() : {}) as { version?: string; source?: string }
+    check(
+      cc.ok && ccBody.version === (sdkPin.claudeCodeVersion ?? sdkPin.version) && !!ccBody.source,
+      `Desk 2 /api/claude-code answers from the SDK pin (${ccBody.source ?? cc.status} ${ccBody.version ?? ''})`,
+    )
   }
 
   if (daemonUp) {

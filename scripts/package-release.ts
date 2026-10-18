@@ -8,7 +8,8 @@
  * exe, which is the same launcher). No Bun and no Claude Code binary ship: the daemon is plain JS
  * (scripts/build.ts --bundle, whose app/bun-version is the pin, the running Bun.version unless
  * --bun-version says otherwise) beside a small launcher that downloads that Bun on first run. Desk 2
- * ships as source plus production node_modules and runs on the launcher's Bun. Needs
+ * ships as source plus production node_modules and runs on the launcher's Bun; the Agent SDK is left out of those
+ * and Desk fetches the version desk2/sdk-pin.json names the first time a chat needs it. Needs
  * desk2/web/dist and desk2/hydra/dist already built; it never builds them and never writes into the
  * checkout.
  */
@@ -24,7 +25,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { findRepoRoot } from '../tests/repo-root'
 import { buildLauncher } from './build-launcher'
 import { writePosixLauncher } from './launcher-posix'
@@ -32,8 +33,12 @@ import {
   aliasedImports,
   bundleServerModules,
   pointAliasAtBundle,
+  pruneNodeModules,
+  SDK_PACKAGE,
+  SDK_PIN_FILE,
   SERVER_ALIAS,
   SERVER_MODULES_DIR,
+  sdkPinFromLock,
   sourceFilesUnder,
   stageLicenceFiles,
   unresolvedImports,
@@ -208,40 +213,6 @@ function installServerOnly(dir: string, target: string, hostTarget: string): voi
   run(process.execPath, installArgs(target, hostTarget, false), dir)
 }
 
-// What a runtime never loads from node_modules: type declarations, source maps, human docs and the
-// folders packages keep their own tests and samples in, at the package's root only (a dist/examples
-// or lib/test deeper down can be code a package imports), and test files by name at any depth.
-// License files stay.
-const PRUNE_DIRS = new Set(['test', 'tests', '__tests__', 'docs', 'example', 'examples'])
-const PRUNE_FILE =
-  /(\.map|\.d\.[cm]?ts|\.(test|spec)\.[cm]?[jt]sx?)$|^(readme|changelog)(\.[^.]*)?\.md$/i
-
-/** True when `name` inside `parent` is a package's root: node_modules/<pkg> or node_modules/@scope/<pkg>. */
-function isPackageRoot(parent: string, name: string): boolean {
-  const base = basename(parent)
-  if (base === 'node_modules') return !name.startsWith('@') && !name.startsWith('.')
-  return base.startsWith('@') && basename(dirname(parent)) === 'node_modules'
-}
-
-/**
- * Trims a production node_modules in place. Every Claude Code platform package of the Agent SDK goes:
- * each carries a 200 MB binary, and Desk 2 resolves or downloads Claude Code itself.
- */
-function pruneNodeModules(dir: string, packageRoot = false): void {
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name)
-    if (e.isDirectory()) {
-      if ((packageRoot && PRUNE_DIRS.has(e.name)) || /^claude-agent-sdk-/.test(e.name)) {
-        rmSync(p, { recursive: true, force: true })
-      } else {
-        pruneNodeModules(p, isPackageRoot(dir, e.name))
-      }
-    } else if (PRUNE_FILE.test(e.name)) {
-      rmSync(p, { force: true })
-    }
-  }
-}
-
 const target = arg('--target')
 const outArg = arg('--out')
 const bunVersion = (arg('--bun-version') ?? Bun.version).trim()
@@ -327,7 +298,27 @@ for (const dist of ['web/dist', 'hydra/dist']) {
 }
 installServerOnly(desk2, target, hostTarget)
 
+// The Agent SDK's licence reserves all rights, so the bundle does not carry it: it carries the pin of the version
+// desk2/bun.lock resolved instead, and Desk downloads exactly that tarball, checked against its sha512, the first time
+// a chat needs it (desk2/server/src/host/sdk-package.ts).
+const sdkInstalled = join(desk2, 'node_modules', ...SDK_PACKAGE.split('/'), 'package.json')
+if (!existsSync(sdkInstalled)) fail(`the install put no ${SDK_PACKAGE} in desk2/node_modules`)
+let sdkPin: ReturnType<typeof sdkPinFromLock>
+try {
+  sdkPin = sdkPinFromLock(
+    readFileSync(join(ROOT, 'desk2', 'bun.lock'), 'utf8'),
+    JSON.parse(readFileSync(sdkInstalled, 'utf8')),
+  )
+} catch (err) {
+  fail(err instanceof Error ? err.message : String(err))
+}
 pruneNodeModules(join(desk2, 'node_modules'))
+if (existsSync(dirname(sdkInstalled)))
+  fail(`${SDK_PACKAGE} is still in desk2/node_modules after pruning`)
+writeFileSync(join(desk2, SDK_PIN_FILE), `${JSON.stringify(sdkPin, null, 2)}\n`)
+console.log(
+  `left ${SDK_PACKAGE} out; desk2/${SDK_PIN_FILE} pins ${sdkPin.version} for Desk to fetch`,
+)
 
 // Desk's server runs some of the daemon's own modules, imported as @agenthydra/server/<path> (desk2/tsconfig.base.json
 // maps that to the checkout's server/src). A bundle has no server/src, so those modules are bundled into
@@ -340,7 +331,7 @@ pointAliasAtBundle(join(desk2, 'tsconfig.base.json'))
 console.log(
   `bundled ${serverImports.length} ${SERVER_ALIAS}* module(s) into desk2/${SERVER_MODULES_DIR}/: ${serverImports.join(', ')}`,
 )
-const unresolved = unresolvedImports(join(desk2, 'server', 'src'))
+const unresolved = unresolvedImports(join(desk2, 'server', 'src'), [SDK_PACKAGE])
 if (unresolved.length)
   fail(`desk2/server/src has imports the bundle cannot resolve:\n  ${unresolved.join('\n  ')}`)
 

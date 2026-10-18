@@ -9,7 +9,10 @@ import {
   bundleServerModules,
   LICENCE_FILES,
   pointAliasAtBundle,
+  pruneNodeModules,
+  SDK_PACKAGE,
   SERVER_MODULES_DIR,
+  sdkPinFromLock,
   sourceFilesUnder,
   stageLicenceFiles,
   unresolvedImports,
@@ -117,5 +120,69 @@ describe('the licence files', () => {
     expect(() => stageLicenceFiles(root, tree({ x: '' }))).toThrow(
       'THIRD-PARTY-NOTICES.md is missing',
     )
+  })
+})
+
+describe('the Agent SDK', () => {
+  test('pruning drops the SDK and its platform packages, and what no runtime loads; licences stay', () => {
+    const root = tree({
+      'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs': '',
+      'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude': '',
+      'node_modules/@anthropic-ai/sdk/index.js': '',
+      'node_modules/@anthropic-ai/sdk/LICENSE': 'MIT',
+      'node_modules/@example/claude-agent-sdk-tools/index.js': '',
+      'node_modules/zod/index.d.ts': '',
+      'node_modules/zod/index.js': '',
+      'node_modules/zod/README.md': '',
+      'node_modules/zod/tests/a.js': '',
+      'node_modules/zod/lib/tests/kept.js': '',
+    })
+    pruneNodeModules(join(root, 'node_modules'))
+    const left = (rel: string) => existsSync(join(root, 'node_modules', rel))
+    expect(left('@anthropic-ai/claude-agent-sdk')).toBe(false)
+    expect(left('@anthropic-ai/claude-agent-sdk-linux-x64')).toBe(false)
+    expect(left('@anthropic-ai/sdk/index.js')).toBe(true)
+    expect(left('@anthropic-ai/sdk/LICENSE')).toBe(true)
+    expect(left('@example/claude-agent-sdk-tools/index.js')).toBe(true)
+    expect(left('zod/index.js')).toBe(true)
+    expect(left('zod/index.d.ts') || left('zod/README.md') || left('zod/tests')).toBe(false)
+    expect(left('zod/lib/tests/kept.js')).toBe(true)
+  })
+
+  const integrity = `sha512-${'A'.repeat(86)}==`
+  const lock = [
+    '{',
+    '  "workspaces": { "server": { "dependencies": { "@anthropic-ai/claude-agent-sdk": "1.2.3" } } },',
+    '  "packages": {',
+    `    "${SDK_PACKAGE}": ["${SDK_PACKAGE}@1.2.3", "", { "optionalDependencies": { "${SDK_PACKAGE}-linux-x64": "1.2.3" }, "peerDependencies": { "zod": "^4.0.0" } }, "${integrity}"],`,
+    '  }',
+    '}',
+  ].join('\n')
+
+  test('the pin is the version and sha512 bun.lock resolved, with what Desk needs before it has the SDK', () => {
+    expect(sdkPinFromLock(lock, { version: '1.2.3', claudeCodeVersion: '9.0.0' })).toEqual({
+      name: SDK_PACKAGE,
+      version: '1.2.3',
+      integrity,
+      claudeCodeVersion: '9.0.0',
+      optionalDependencies: { [`${SDK_PACKAGE}-linux-x64`]: '1.2.3' },
+    })
+  })
+
+  test('an install that is not the locked version, or a lock without a checksum, gives no pin', () => {
+    expect(() => sdkPinFromLock(lock, { version: '1.2.4' })).toThrow('not the 1.2.3 bun.lock pins')
+    expect(() => sdkPinFromLock(lock.replace(integrity, 'sha1-abc'), { version: '1.2.3' })).toThrow(
+      'no sha512 checksum',
+    )
+    expect(() => sdkPinFromLock('{}', { version: '1.2.3' })).toThrow('no entry')
+  })
+
+  test("the real desk2/bun.lock pins the SDK Desk's server depends on", () => {
+    const root = findRepoRoot(import.meta.dir)
+    const server = JSON.parse(readFileSync(join(root, 'desk2/server/package.json'), 'utf8'))
+    const version = server.dependencies[SDK_PACKAGE]
+    const pin = sdkPinFromLock(readFileSync(join(root, 'desk2/bun.lock'), 'utf8'), { version })
+    expect(pin.version).toBe(version)
+    expect(Object.keys(pin.optionalDependencies).length).toBeGreaterThan(0)
   })
 })

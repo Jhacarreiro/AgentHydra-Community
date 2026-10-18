@@ -3,7 +3,7 @@
  * tests/package-release.test.ts can run them on a small tree.
  */
 import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 
 /** The files every bundle carries at its root: the licence, the notices for adapted code, the licence texts. */
 export const LICENCE_FILES = ['LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES'] as const
@@ -119,6 +119,97 @@ export function pointAliasAtBundle(tsconfigPath: string): void {
     tsconfigPath,
     text.replace(ALIAS_IN_CHECKOUT, `"@agenthydra/server/*": ["./${SERVER_MODULES_DIR}/*"]`),
   )
+}
+
+// What a runtime never loads from node_modules: type declarations, source maps, human docs and the
+// folders packages keep their own tests and samples in, at the package's root only (a dist/examples
+// or lib/test deeper down can be code a package imports), and test files by name at any depth.
+// License files stay.
+const PRUNE_DIRS = new Set(['test', 'tests', '__tests__', 'docs', 'example', 'examples'])
+const PRUNE_FILE =
+  /(\.map|\.d\.[cm]?ts|\.(test|spec)\.[cm]?[jt]sx?)$|^(readme|changelog)(\.[^.]*)?\.md$/i
+
+/** The package a release does not ship: Desk fetches it on first need (desk2/server/src/host/sdk-package.ts). */
+export const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
+/** desk2/<this> names the SDK version a bundle fetches and the checksum it must match. */
+export const SDK_PIN_FILE = 'sdk-pin.json'
+/** The SDK and its Claude Code platform packages (claude-agent-sdk-win32-x64 and the rest), inside @anthropic-ai/. */
+const SDK_DIR = /^claude-agent-sdk(?:-.+)?$/
+
+/** True when `name` inside `parent` is a package's root: node_modules/<pkg> or node_modules/@scope/<pkg>. */
+function isPackageRoot(parent: string, name: string): boolean {
+  const base = basename(parent)
+  if (base === 'node_modules') return !name.startsWith('@') && !name.startsWith('.')
+  return base.startsWith('@') && basename(dirname(parent)) === 'node_modules'
+}
+
+/**
+ * Trims a production node_modules in place. The Agent SDK goes, with every Claude Code platform package: the SDK's
+ * licence reserves all rights, so a bundle carries its pin and Desk downloads exactly that copy on first need, and
+ * each platform package carries a 200 MB binary Desk resolves or downloads itself.
+ */
+export function pruneNodeModules(dir: string, packageRoot = false): void {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) {
+      const sdk = basename(dir) === '@anthropic-ai' && SDK_DIR.test(e.name)
+      if ((packageRoot && PRUNE_DIRS.has(e.name)) || sdk) {
+        rmSync(p, { recursive: true, force: true })
+      } else {
+        pruneNodeModules(p, isPackageRoot(dir, e.name))
+      }
+    } else if (PRUNE_FILE.test(e.name)) {
+      rmSync(p, { force: true })
+    }
+  }
+}
+
+/** desk2/sdk-pin.json: exactly what Desk downloads, and what it needs to know before it has. */
+export interface SdkPin {
+  name: string
+  version: string
+  /** The npm tarball's checksum, as bun.lock records it (sha512-<base64>). */
+  integrity: string
+  /** The Claude Code release the SDK runs, from its package.json, when it says. */
+  claudeCodeVersion?: string
+  /** The SDK's platform packages and the versions it pins: which Claude Code binary Desk downloads. */
+  optionalDependencies: Record<string, string>
+}
+
+/**
+ * The pin for the SDK that `lock` (desk2/bun.lock's text) resolved. `installed` is the package.json the bundle's install
+ * put in node_modules, which must be that same version.
+ */
+export function sdkPinFromLock(
+  lock: string,
+  installed: { version?: string; claudeCodeVersion?: string },
+): SdkPin {
+  const esc = SDK_PACKAGE.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+  const line = lock.match(new RegExp(`^\\s*"${esc}": (\\[.*\\]),?\\s*$`, 'm'))?.[1]
+  if (!line) throw new Error(`bun.lock has no entry for ${SDK_PACKAGE}`)
+  let entry: unknown[]
+  try {
+    entry = JSON.parse(line) as unknown[]
+  } catch {
+    throw new Error(`bun.lock's entry for ${SDK_PACKAGE} is not one line of JSON`)
+  }
+  const [spec, , meta, integrity] = entry as [string, string, Record<string, unknown>, string]
+  const version = spec?.startsWith(`${SDK_PACKAGE}@`) ? spec.slice(SDK_PACKAGE.length + 1) : ''
+  if (!/^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(version))
+    throw new Error(`bun.lock's ${SDK_PACKAGE} version is "${version}"`)
+  if (typeof integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(integrity))
+    throw new Error(`bun.lock has no sha512 checksum for ${SDK_PACKAGE}@${version}`)
+  if (installed.version !== version)
+    throw new Error(
+      `the bundle's install put ${SDK_PACKAGE}@${installed.version} in node_modules, not the ${version} bun.lock pins`,
+    )
+  return {
+    name: SDK_PACKAGE,
+    version,
+    integrity,
+    ...(installed.claudeCodeVersion ? { claudeCodeVersion: installed.claudeCodeVersion } : {}),
+    optionalDependencies: (meta?.optionalDependencies ?? {}) as Record<string, string>,
+  }
 }
 
 async function unresolvedHere(dir: string, external: string[]): Promise<string[]> {
