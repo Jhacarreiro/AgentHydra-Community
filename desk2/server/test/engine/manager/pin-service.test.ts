@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AccountInfo, ExternalSession, ServerEvent, TranscriptItem } from '@shared/protocol'
 import type { FreeInstance, FreeJob, FreeResult } from '@shared/free-instances'
-import type { AhCodexInstance } from '../../../src/bridge/client'
+import type { AhCodexInstance, AhCodexRelayPc } from '../../../src/bridge/client'
 import type { FreeChats } from '../../../src/engine/chatgpt/runtime'
 import { ChatManager, type ManagerBridge } from '../../../src/engine/chat-manager'
 import { type CodexDirectory, codexDirectory } from '../../../src/engine/codex/accounts'
@@ -250,16 +250,21 @@ const OTHER_PC = 'hub:other-pc'
 
 /**
  * The Codex hub's directory: this machine's accounts (alpha), then another PC behind the hub, its relay open while
- * `online()`. While `answering()` is false AgentHydra itself does not answer.
+ * `online()` and its state on the hub `state()`. While `answering()` is false AgentHydra itself does not answer.
  */
-const hubDirectory = (online: () => boolean, own: AhCodexInstance[] = [ALPHA], answering = () => true): CodexDirectory =>
+const hubDirectory = (
+  online: () => boolean,
+  own: AhCodexInstance[] = [ALPHA],
+  answering = () => true,
+  state = (): AhCodexRelayPc['state'] => 'token',
+): CodexDirectory =>
   codexDirectory({
     codexInstances: async () => {
       if (!answering()) throw new Error('fetch failed')
       return own
     },
     codexUsage: async () => ({ snapshot: { session: { pct: 10 }, weekAll: { pct: 5 } } }),
-    codexRelayPcs: async () => [{ id: OTHER_PC, pc: 'OTHER-PC', pushedAt: '', chats: 1, relay: online() }],
+    codexRelayPcs: async () => [{ id: OTHER_PC, pc: 'OTHER-PC', pushedAt: '', chats: 1, relay: online(), state: state() }],
   })
 
 /** A Codex chat the other PC pushed to the hub, in its own folder, as AgentHydra lists it. */
@@ -298,14 +303,16 @@ test("Pin service counts only this machine's Codex accounts: another PC's Codex 
 
 /**
  * A hub chat imported while its PC's relay was open, on a hub whose own Codex accounts are `own` (alpha); `offline()`
- * closes that relay before the test sends, `down()` stops AgentHydra answering.
+ * closes that relay before the test sends, `revoke()` revokes the PC on the hub (which closes it too), `down()` stops
+ * AgentHydra answering.
  */
 async function hubImport(o: { resumeError?: string; own?: AhCodexInstance[] } = {}) {
   const threadId = '0f0f0f0f-1111-4222-8333-777777777777'
   const cwd = 'C:\\Users\\me\\work\\ledger'
   let online = true
   let answering = true
-  const codex = hubDirectory(() => online, o.own, () => answering)
+  let state: AhCodexRelayPc['state'] = 'token'
+  const codex = hubDirectory(() => online, o.own, () => answering, () => state)
   const { m, fake } = await setup({ external: [hubChat(threadId, cwd)], items: { [threadId]: [] }, codex, resumeError: o.resumeError })
   const chat = await m.importSession({ sessionId: threadId, cwd })
   const bound = { accountId: OTHER_PC, label: 'OTHER-PC', threadId }
@@ -317,7 +324,11 @@ async function hubImport(o: { resumeError?: string; own?: AhCodexInstance[] } = 
     expect(fake.turnStarts().every((t) => t.home === relayHome(OTHER_PC))).toBe(true)
     expect(m.get(chat.id).serviceThreads?.codex).toEqual(bound)
   }
-  return { m, fake, chat, stayed, offline: () => (online = false), down: () => (answering = false) }
+  const revoke = () => {
+    online = false
+    state = 'revoked'
+  }
+  return { m, fake, chat, stayed, offline: () => (online = false), revoke, down: () => (answering = false) }
 }
 
 const resultOf = (m: ChatManager, chatId: string) => m.listItems(chatId).find((i) => i.kind === 'result')
@@ -344,6 +355,16 @@ test("another PC's Codex chat whose PC went off says so on the next send, and ne
   await m.send(chat.id, 'Carry on')
   await waitFor(() => !!resultOf(m, chat.id))
   expect(resultOf(m, chat.id)).toMatchObject({ ok: false, error: 'OTHER-PC is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.' })
+  expect(fake.opening()).toBe(0)
+  stayed()
+})
+
+test("another PC's Codex chat whose PC was revoked on the hub says so on the next send, not that the PC is off", async () => {
+  const { m, fake, chat, stayed, revoke } = await hubImport()
+  revoke()
+  await m.send(chat.id, 'Carry on')
+  await waitFor(() => !!resultOf(m, chat.id))
+  expect(resultOf(m, chat.id)).toMatchObject({ ok: false, error: 'OTHER-PC was revoked on the Codex hub, so this chat cannot continue here. Pair that PC again to go on.' })
   expect(fake.opening()).toBe(0)
   stayed()
 })

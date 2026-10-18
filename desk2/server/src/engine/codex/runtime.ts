@@ -13,7 +13,7 @@ import type { ImageRef, PermissionDecision, PermissionMode, QuestionAnswer, Serv
 import { mediaCache } from '../../media/cache'
 import { ANSWER_NOW } from '../handoff'
 import { type Sent, ServiceRuntime, type ServiceRuntimeDeps } from '../service-runtime'
-import { type CodexAccount, type CodexPick, isRelayAccount, notConnected } from './accounts'
+import { type CodexAccount, type CodexPick, isRelayAccount, notConnected, revokedOnHub } from './accounts'
 import { type AppServer, isRelayHome, type OpenAppServer, openAppServer, type ThreadListener } from './app-server'
 import { activityOf, type CodexItem, codexItems, planTodos, shownCommand } from './items'
 
@@ -24,7 +24,8 @@ export interface CodexRuntimeDeps extends ServiceRuntimeDeps {
   pickAccount(avoid: ReadonlySet<string>): Promise<CodexPick>
   /**
    * The account the chat's thread is on, as AgentHydra lists it now; null when it is gone or signed out (another
-   * PC's: its relay is not open). Throws when AgentHydra does not answer, so that is never taken for either.
+   * PC's: its relay is not open, unless the hub revoked that PC: it comes back with `hubState: 'revoked'`). Throws
+   * when AgentHydra does not answer, so that is never taken for either.
    */
   findAccount(id: string): Promise<CodexAccount | null>
   /**
@@ -244,6 +245,8 @@ export class CodexRuntime extends ServiceRuntime {
     const relay = !!bound && isRelayAccount(bound.accountId)
     if (bound && !this.avoid.has(bound.accountId)) {
       const account = await this.deps.findAccount(bound.accountId)
+      // A PC revoked on the hub does not come back by itself: said as such, not as a PC that is off.
+      if (relay && account?.hubState === 'revoked') throw new Error(revokedOnHub(bound.label))
       if (!account && relay) throw new Error(notConnected(bound.label))
       if (account) {
         await this.attach(account)

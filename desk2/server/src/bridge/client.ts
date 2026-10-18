@@ -107,6 +107,8 @@ export interface AhCodexInstance {
   isDesktopRunning?: boolean
   /** Another PC's Codex, reached through the Codex hub's relay (GET /api/codex-relay/pcs): it only continues that PC's own chats. */
   relay?: boolean
+  /** That PC's `state` on the hub (AhCodexRelayPc), relay ones only: `revoked` once the owner revoked it there. */
+  hubState?: AhCodexRelayPc['state']
 }
 
 /** GET /api/codex-relay/pcs: a PC that pushes its Codex chats to this AgentHydra, and whether its relay is open now. */
@@ -116,6 +118,8 @@ export interface AhCodexRelayPc {
   pushedAt: string
   chats: number
   relay: boolean
+  /** The PC's standing on the hub: a token of its own, `pending` (still on the old shared token), `revoked` or `unpaired`; absent on an older hub. */
+  state?: 'token' | 'pending' | 'revoked' | 'unpaired'
 }
 
 /** GET /api/codex-instances/:id/usage, AgentHydra's cached reading: each window's use in percent and its reset (ISO). */

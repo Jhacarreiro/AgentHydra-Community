@@ -14,6 +14,8 @@ export interface CodexAccount {
   label: string
   home: string
   relay?: boolean
+  /** A relay account's state on the hub (AhCodexRelayPc `state`), when the hub says it. */
+  hubState?: AhCodexInstance['hubState']
 }
 
 /** What Desk reads of AgentHydra's Codex accounts. */
@@ -34,6 +36,9 @@ export const NOT_ANSWERING = 'AgentHydra is not answering, so Desk cannot see th
 export const notConnected = (pc: string): string =>
   `${pc} is not connected to the Codex hub now (it is off, or its pusher is not running), so this chat cannot continue here.`
 
+/** Why a chat on another PC's Codex cannot go on: the owner revoked that PC on the hub, so its relay never opens again until it is paired. */
+export const revokedOnHub = (pc: string): string => `${pc} was revoked on the Codex hub, so this chat cannot continue here. Pair that PC again to go on.`
+
 /** Why a chat on another PC's Codex stays there: another service would run it here, and its folder is that PC's. */
 export const onlyOnPc = (pc: string): string => `${pc}'s chat goes on only on that PC's Codex: its folder is there.`
 
@@ -42,7 +47,7 @@ export function codexDirectory(client: Pick<HydraClient, 'codexInstances' | 'cod
   return {
     instances: async () => {
       const [own, pcs] = await Promise.all([client.codexInstances(), client.codexRelayPcs()])
-      return [...own, ...pcs.map((p) => ({ id: p.id, name: p.pc, codexHome: relayHome(p.id), loggedIn: p.relay, relay: true }))]
+      return [...own, ...pcs.map((p) => ({ id: p.id, name: p.pc, codexHome: relayHome(p.id), loggedIn: p.relay, relay: true, ...(p.state ? { hubState: p.state } : {}) }))]
     },
     usage: (id) => (isRelayAccount(id) ? Promise.resolve(null) : client.codexUsage(id).catch(() => null)),
   }
@@ -55,6 +60,7 @@ export function codexAccount(i: AhCodexInstance): CodexAccount {
     label: typeof i.num === 'number' ? `#${i.num}${name ? ` ${name}` : ''}` : (name ?? i.id),
     home: i.codexHome,
     ...(i.relay ? { relay: true } : {}),
+    ...(i.relay && i.hubState ? { hubState: i.hubState } : {}),
   }
 }
 

@@ -2411,7 +2411,8 @@ export class ChatManager {
       findAccount: async (id) => {
         // AgentHydra not answering is said as such, never taken for an account gone or another PC off.
         const list = dir ? await dir.instances().catch(() => Promise.reject(new Error(NOT_ANSWERING))) : []
-        const found = list.find((i) => i.id === id && i.loggedIn)
+        // Another PC the hub revoked is found too, so its chat says that rather than that the PC is off.
+        const found = list.find((i) => i.id === id && (i.loggedIn || (i.relay && i.hubState === 'revoked')))
         return found ? codexAccount(found) : null
       },
       handoff: (fresh, sentId, movedFrom) => this.turnOn(e, 'codex', fresh, sentId, movedFrom),
