@@ -3,6 +3,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import {
+  pauseCliMayteTickForTests,
+  resumeCliMayteTickForTests,
+  startCliMayte,
+} from '../src/climayte'
 import { workers } from '../src/climayte-core'
 import { chatPromptText, leadPickPending } from '../src/climayte-launch'
 import type { CliMayteAccount, CliMayteWorker } from '../src/climayte-lib'
@@ -707,7 +712,55 @@ describe('the model call never blocks an event loop (B2 review 1)', () => {
     expect(existsSync(log) ? readFileSync(log, 'utf8') : '').not.toContain('lead-pick')
   })
 
+  test("the daemon's own tick, which an earlier file leaves running, places due work from workers; held off, it places none", async () => {
+    // `bun test` runs every file in one process, and nothing stops a daemon a file started: the
+    // climayte files sort before this one, so its tick runs on through this file and places every due
+    // worker it finds in `workers`, the next test's too. Started here as well, so a run of this file
+    // alone meets the same daemon.
+    startCliMayte()
+    const ids: string[] = []
+    const due = (id: string) => {
+      const w = {
+        ...{ id, group: `g-${id}`, title: id, cwd: CWD, prompt: 'p', pending: [], model: null },
+        // Only an account that is never signed in: placed, it waits, and nothing is ever launched.
+        ...{ effort: null, accounts: ['acct-never'], status: 'queued', accountId: null },
+        ...{ attempts: [], result: null, error: null, lastActivity: null, costUsd: 0, turns: 0 },
+        ...{ moves: 0, retries: 0, notBefore: null, createdAt: T, updatedAt: T },
+      } as unknown as CliMayteWorker
+      workers.set(id, w)
+      ids.push(id)
+      return w
+    }
+    const settled = async (w: CliMayteWorker) => {
+      const deadline = Date.now() + 3_000
+      while (w.status === 'queued' && Date.now() < deadline) await Bun.sleep(10)
+      return w.status
+    }
+    try {
+      const seen = due('tick-seen')
+      resumeCliMayteTickForTests() // the next tick at once
+      // What one such tick did to person-hold on windows-latest, in the 250 ms the next test waits.
+      expect(await settled(seen)).toBe('waiting')
+      await pauseCliMayteTickForTests()
+      const held = due('tick-held')
+      // A tick asked for at once, then held off before it runs: none places the worker meanwhile.
+      resumeCliMayteTickForTests()
+      await pauseCliMayteTickForTests()
+      await Bun.sleep(100)
+      expect(held.status).toBe('queued')
+      resumeCliMayteTickForTests()
+      expect(await settled(held)).toBe('waiting')
+    } finally {
+      for (const id of ids) workers.delete(id)
+      resumeCliMayteTickForTests()
+    }
+  })
+
   test("a person's chat waiting on its lead pick keeps its launch slot: background resumes do not start in its place", async () => {
+    // The daemon's tick (the test above) would place these workers against its own accounts, none,
+    // during the wait below: person-hold then waits for an account and the second tickAt, which takes
+    // queued work only, never launches it. Held off, tickAt is the scheduler's only tick here.
+    await pauseCliMayteTickForTests()
     writeFileSync(join(dir, 'ON'), '')
     writeFileSync(join(dir, 'PLACEMENT'), 'slot\n')
     mockModel(() => 'ivy-ui', 100)
@@ -766,6 +819,7 @@ describe('the model call never blocks an event loop (B2 review 1)', () => {
       setLaunchPacing(false)
       setLauncher(null)
       for (const id of mine) workers.delete(id)
+      resumeCliMayteTickForTests()
     }
   })
 })

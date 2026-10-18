@@ -608,8 +608,36 @@ export function setCliMayteQuietTickForTests(ms?: number): void {
   quietTickMs = ms ?? null
 }
 
+/** Tests: the tick is held off (pauseCliMayteTickForTests). */
+let tickHeld = false
+
+/** Tests: hold the daemon's tick off, once a tick already running has ended. `bun test` runs every
+ *  file in one process and nothing stops a daemon a file started, so its tick goes on through every
+ *  file after it, placing every due worker in `workers` against its own account pool. A test that
+ *  puts workers there and drives scheduleDue itself across an await holds the tick off meanwhile: on
+ *  windows-latest one such tick landed in hydra-core-leadpick.test.ts's 250 ms wait, found no
+ *  signed-in account and moved its chat to waiting, so the test's next tick (queued work only) never
+ *  launched it. Before startCliMayte this only marks the tick held. */
+export async function pauseCliMayteTickForTests(): Promise<void> {
+  tickHeld = true
+  if (timer) clearTimeout(timer)
+  timer = null
+  while (ticking) await new Promise((r) => setTimeout(r, 10))
+}
+
+/** Tests: let the tick run again, the next one at once (once startCliMayte has run). */
+export function resumeCliMayteTickForTests(): void {
+  tickHeld = false
+  if (started) schedule(0)
+}
+
 function schedule(delay?: number): void {
   if (timer) clearTimeout(timer)
+  // Held off by a test (pauseCliMayteTickForTests); resumeCliMayteTickForTests arms the next one.
+  if (tickHeld) {
+    timer = null
+    return
+  }
   // poll() runs every tick, so the overage stop is only as fast as the tick, and each second of
   // overage bills the owner: 1 s while a worker runs, 3 s while one is queued or waiting.
   const all = [...workers.values()]
