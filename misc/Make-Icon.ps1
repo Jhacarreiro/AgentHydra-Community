@@ -6,7 +6,8 @@
 # this script needs NO SVG renderer at runtime — it just loads the PNG and downscales.
 #
 # The brand vector is misc\brand\icon.svg, and it is the ONLY place the mark is authored;
-# the window's favicons and .github\og-image.png are derived from it. To change the logo:
+# the window's favicons and .github\og-image.png are derived from it (the card is rendered by
+# scripts\og-image\render.mjs: re-run `bun run og-image` after a change). To change the logo:
 #     magick -background none misc\brand\icon.svg -resize 1024x1024 -depth 8 PNG32:misc\AgentHydra-icon.png
 #     powershell -File misc\Make-Icon.ps1
 #     copy misc\brand\icon.svg and misc\AgentHydra.ico to desk2\web\public and desk2\hydra\public as

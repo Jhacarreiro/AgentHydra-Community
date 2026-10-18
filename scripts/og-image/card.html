@@ -1,0 +1,185 @@
+<!doctype html>
+<!--
+  The social preview card (.github/og-image.png, 1280x640): what GitHub and chat apps show beside a
+  link to this repository. scripts/og-image/render.mjs (bun run og-image) shoots this page with a
+  local Chrome or Chromium and writes the PNG; it inlines the two files below as data: URLs first,
+  because Chrome loads no font from a file:// page.
+
+  Everything here is this repository's own: the logo is misc/brand/icon.svg, the face is the Inter
+  the window already ships (desk2/hydra/public/fonts, OFL), and the words describe this fork. Opened
+  straight in a browser it shows the same card, in a fallback face.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AgentHydra Community social card</title>
+    <style>
+      @font-face {
+        font-family: 'Inter';
+        font-weight: 100 900;
+        src: url('../../desk2/hydra/public/fonts/inter-latin.woff2') format('woff2');
+      }
+      :root {
+        --bg: #0f1315;
+        --panel: #151b1e;
+        --ink: #f2eee8;
+        --muted: #a3afab;
+        --line: rgba(255, 255, 255, 0.1);
+        --teal: #70a597;
+        --clay: #c15f3c;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        width: 1280px;
+        height: 640px;
+        overflow: hidden;
+      }
+      body {
+        position: relative;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      /* The tile's two halves, as one band along the top. */
+      .band {
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 8px;
+        background: linear-gradient(to right, var(--clay) 0 50%, var(--teal) 50% 100%);
+      }
+      /* The logo's own panel on the left, lit from behind in both of its colours. */
+      .mark {
+        position: absolute;
+        top: 8px;
+        bottom: 0;
+        left: 0;
+        width: 420px;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 38% 46%, rgba(193, 95, 60, 0.28), transparent 46%),
+          radial-gradient(circle at 64% 56%, rgba(112, 165, 151, 0.26), transparent 48%),
+          var(--panel);
+        border-right: 1px solid var(--line);
+      }
+      .mark img {
+        width: 248px;
+        height: 248px;
+        filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.45));
+      }
+      /* A faint dot grid behind the words, fading in from the panel's edge. */
+      .grid {
+        position: absolute;
+        top: 8px;
+        bottom: 0;
+        left: 420px;
+        right: 0;
+        background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1.2px, transparent 1.2px);
+        background-size: 26px 26px;
+        -webkit-mask-image: linear-gradient(to right, transparent, #000 70%);
+        mask-image: linear-gradient(to right, transparent, #000 70%);
+      }
+      .words {
+        position: absolute;
+        top: 8px;
+        bottom: 0;
+        left: 420px;
+        right: 0;
+        padding: 68px 72px 60px 76px;
+        display: flex;
+        flex-direction: column;
+      }
+      .eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--teal);
+      }
+      .eyebrow i {
+        width: 26px;
+        height: 2px;
+        background: var(--teal);
+      }
+      h1 {
+        margin-top: 26px;
+        font-size: 92px;
+        font-weight: 800;
+        line-height: 0.98;
+        letter-spacing: -0.035em;
+      }
+      h1 span {
+        display: block;
+        color: var(--clay);
+        font-weight: 700;
+      }
+      p {
+        margin-top: 28px;
+        max-width: 690px;
+        font-size: 25px;
+        line-height: 1.42;
+        color: var(--muted);
+      }
+      p b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .foot {
+        margin-top: auto;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 22px;
+      }
+      .chips {
+        display: flex;
+        gap: 10px;
+      }
+      .chips span {
+        padding: 9px 15px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 16px;
+        font-weight: 500;
+        color: var(--ink);
+      }
+      .repo {
+        font-size: 19px;
+        font-weight: 600;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .repo b {
+        color: var(--teal);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="band"></div>
+    <div class="mark"><img src="../../misc/brand/icon.svg" alt="" /></div>
+    <div class="grid"></div>
+    <main class="words">
+      <div class="eyebrow"><i></i>Community fork · MIT</div>
+      <h1>AgentHydra<span>Community</span></h1>
+      <p><b>Claude Code, Codex and OpenCode</b> on your own machine, in one window and one dashboard.</p>
+      <div class="foot">
+        <div class="chips">
+          <span>Runs on your machine</span>
+          <span>Open source, MIT</span>
+          <span>Accounts kept apart</span>
+        </div>
+        <div class="repo">github.com/<b>Jhacarreiro/AgentHydra-Community</b></div>
+      </div>
+    </main>
+  </body>
+</html>

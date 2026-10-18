@@ -31,6 +31,7 @@
     "eval:mcp": "bun scripts/mcp-eval/run.ts",
     "mcp:api-level": "bun scripts/mcp-api-level.ts",
     "screenshots": "bun scripts/screenshots/capture.mjs",
+    "og-image": "bun scripts/og-image/render.mjs",
     "check": "biome check .",
     "//check:deep": "The everything lane, run before a release and by nobody in a hurry: check, every package typecheck, then test:full (25+ minutes of Python unittest included). .githooks/pre-push runs it for a release tag (v*.*.*) only when gh cannot confirm a green ci.yml run on the tagged commit, since every lane here is a ci.yml step; with that confirmation it runs nothing more. It exists so the orchestrator suites are reachable from a gate lane by name, which is how the Architect decides a test script verifies anything.",
     "check:deep": "bun run check && bun run typecheck && bun run test:full",

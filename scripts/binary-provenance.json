@@ -3,11 +3,11 @@
   "binaries": [
     {
       "path": ".github/og-image.png",
-      "blob": "eb10e1041a84440425eb1f71d9315fec78933c3e",
-      "sha256": "386e6f582e02e20137eabc13461e11f9cdbdc35ff03178572528cd17b3fa5a96",
-      "source": "The social preview card, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit 83b0c52a, last changed in 366e292c). It shows upstream's name, site and logo.",
-      "build": "Committed as an image; misc/Make-Icon.ps1 says it is derived from the brand vector misc/brand/icon.svg, and no script in this repository generates it.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "22c963b20349898a81197d48dc1c92a38e4399fb",
+      "sha256": "131930ff00f5019d9000db951eb7a9a4003c7a7d24f917b9c49241a3e8839f5b",
+      "source": "The social preview card of this fork, made for it: the AgentHydra logo (misc/brand/icon.svg), the words \"AgentHydra Community\", one line on what it does and the repository's address, set in the Inter the window already ships (desk2/hydra/public/fonts, SIL OFL 1.1). Its source is scripts/og-image/card.html. It replaced the card inherited from LunarWerxs/AgentHydra at 3a65ba8e, which showed upstream's name and site.",
+      "build": "scripts/og-image/render.mjs (bun run og-image) shoots scripts/og-image/card.html at 1280x640 with a local headless Chrome or Chromium over the DevTools protocol, then writes this entry's blob and sha256.",
+      "license": "MIT, as part of this repository."
     },
     {
       "path": ".github/screenshots/analytics.png",
