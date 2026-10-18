@@ -109,33 +109,41 @@ var (
 
 // The hash the hub sends comes from the same address as the build, so over plain http anyone on the way can send
 // both. A build is therefore taken only with the operator's ed25519 signature over its name, this platform and its
-// hash, checked against the public key this tray was built with (-X main.updateKey: base64 of its 32 bytes, as
-// scripts/codex-hub-sign.ts prints it); server/src/core/codex-hub-signature.ts says what is signed. A tray built
-// without a key takes builds only from an https hub.
+// hash, checked against the public keys this tray was built with (-X main.updateKey: base64 of each key's 32 bytes,
+// as scripts/codex-hub-sign.ts prints it, comma-separated); server/src/core/codex-hub-signature.ts says what is
+// signed. A tray built without a key takes builds only from an https hub.
+//
+// More than one key is for moving to a new one: a build that trusts the old key and the new one, signed with the
+// old, reaches every PC, and the builds after it can be signed with the new key alone (docs/CODEX-HUB.md).
 var (
 	errNoKey  = errors.New("this build has no update key (-X main.updateKey), so it takes no builds from a hub that is not https")
-	errBadKey = errors.New("this build's update key (-X main.updateKey) is not a public key (base64 of 32 bytes), so it takes no builds")
+	errBadKey = errors.New("this build's update key (-X main.updateKey) is not a public key, or a comma-separated list of them (base64 of 32 bytes each), so it takes no builds")
 )
 
-// buildKey is this build's update key; nil without one.
-func buildKey() (ed25519.PublicKey, error) {
+// buildKeys are the keys this build takes a build signed with; none without a key. One entry in the list that is not
+// a key makes the whole list errBadKey: a key left out by mistake must not leave the PC trusting fewer than meant.
+func buildKeys() ([]ed25519.PublicKey, error) {
 	if updateKey == "" {
 		return nil, nil
 	}
-	raw, err := base64.StdEncoding.DecodeString(updateKey)
-	if err != nil || len(raw) != ed25519.PublicKeySize {
-		return nil, errBadKey
+	var keys []ed25519.PublicKey
+	for _, text := range strings.Split(updateKey, ",") {
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(text))
+		if err != nil || len(raw) != ed25519.PublicKeySize {
+			return nil, errBadKey
+		}
+		keys = append(keys, ed25519.PublicKey(raw))
 	}
-	return ed25519.PublicKey(raw), nil
+	return keys, nil
 }
 
 // updatesAllowed is why this build takes no builds from hub (errNoKey, errBadKey), or nil.
 func updatesAllowed(hub string) error {
-	key, err := buildKey()
+	keys, err := buildKeys()
 	if err != nil {
 		return err
 	}
-	if key == nil && !overHTTPS(hub) {
+	if keys == nil && !overHTTPS(hub) {
 		return errNoKey
 	}
 	return nil
@@ -150,23 +158,27 @@ func buildSignedText(name, plat, sum string) []byte {
 }
 
 // checkSigned says whether the hub's build of name may be fetched: with a key, only when it carries the operator's
-// signature for name on this platform over its hash, which the download must then match.
+// signature for name on this platform over its hash, with one of this build's keys, which the download must then
+// match.
 func checkSigned(c config, name string, rel *release) error {
 	if err := updatesAllowed(c.Hub); err != nil {
 		return err
 	}
-	key, _ := buildKey()
-	if key == nil {
+	keys, _ := buildKeys()
+	if keys == nil {
 		return nil
 	}
 	if rel.Signature == "" {
 		return badBuild{fmt.Errorf("the hub's %s build is not signed", name)}
 	}
-	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rel.Signature))
-	if err != nil || !ed25519.Verify(key, buildSignedText(name, platform, rel.SHA256), sig) {
-		return badBuild{fmt.Errorf("the hub's %s build is not signed with this build's update key for %s", name, platform)}
+	if sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rel.Signature)); err == nil {
+		for _, key := range keys {
+			if ed25519.Verify(key, buildSignedText(name, platform, rel.SHA256), sig) {
+				return nil
+			}
+		}
 	}
-	return nil
+	return badBuild{fmt.Errorf("the hub's %s build is not signed with this build's update key for %s", name, platform)}
 }
 
 // platform names this system the way the hub names its builds (Bun's targets: windows-x64, linux-x64, linux-arm64,

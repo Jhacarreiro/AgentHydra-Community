@@ -5,12 +5,17 @@
 // platform and SHA-256 (server/src/core/codex-hub-signature.ts). The private key stays with whoever makes the builds;
 // the hub only serves the `<build>.sig` written here, put beside the build in its .pusher folder. Each PC has the
 // public key from its own build: the tray's `-X main.updateKey=<key>`, the pusher's
-// `--define AGENTHYDRA_CODEX_HUB_UPDATE_KEY='"<key>"'` or its AGENTHYDRA_CODEX_HUB_UPDATE_KEY.
+// `--define AGENTHYDRA_CODEX_HUB_UPDATE_KEY='"<key>"'` or its AGENTHYDRA_CODEX_HUB_UPDATE_KEY. Keep the private key
+// outside the checkout, where no commit can take it.
 //
 //   bun scripts/codex-hub-sign.ts keygen <private-key-file>           a new key, never over an existing file;
 //                                                                     prints its public key (base64, 32 bytes)
-//   bun scripts/codex-hub-sign.ts pubkey <private-key-file>           prints the public key again
+//   bun scripts/codex-hub-sign.ts pubkey <private-key-file>...        prints the public keys again, comma-separated
 //   bun scripts/codex-hub-sign.ts sign <private-key-file> <build>...  writes <build>.sig beside each build
+//
+// A build may trust more than one key, which is how the operator moves to a new one (docs/CODEX-HUB.md): build the
+// tray and the pusher with `pubkey <old-key-file> <new-key-file>` and sign them with the old key; once every PC runs
+// such a build, sign with the new key, and build with it alone.
 //
 // A build must have the name the hub serves it under, which says what it is: codex-hub-push.exe and
 // codex-hub-tray.exe for Windows, codex-hub-push-<platform> and codex-hub-tray-<platform> for linux-x64,
@@ -23,7 +28,7 @@ import { basename } from 'node:path'
 import { hubBuildOf, signBuild, updateKeyText } from '../server/src/core/codex-hub-signature'
 
 const USAGE = `usage: bun scripts/codex-hub-sign.ts keygen <private-key-file>
-       bun scripts/codex-hub-sign.ts pubkey <private-key-file>
+       bun scripts/codex-hub-sign.ts pubkey <private-key-file>...
        bun scripts/codex-hub-sign.ts sign <private-key-file> <build>...`
 
 function fail(text: string): never {
@@ -70,8 +75,9 @@ if (command === 'keygen' && rest.length === 0) {
     )
   }
   console.log(updateKeyText(privateKey))
-} else if (command === 'pubkey' && rest.length === 0) {
-  console.log(updateKeyText(readKey(keyFile)))
+} else if (command === 'pubkey') {
+  // In the order given; a build trusts each one, whatever the order.
+  console.log([keyFile, ...rest].map((file) => updateKeyText(readKey(file))).join(','))
 } else if (command === 'sign' && rest.length > 0) {
   const key = readKey(keyFile)
   // Every name is checked before anything is written.

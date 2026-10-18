@@ -4,7 +4,8 @@
 // against comes from the same address. Over plain http anyone on the way can answer both, so the hash proves nothing.
 // Each build is signed instead, away from the hub, with the operator's ed25519 key: scripts/codex-hub-sign.ts writes
 // `<build>.sig` beside the build in the hub's .pusher folder, the hub serves it with the hash (`signature`, base64)
-// and never holds the private key, and each PC has the public key from its own build or configuration.
+// and never holds the private key, and each PC has the public key from its own build or configuration (two, comma-
+// separated, while the operator moves to a new key: updateKeysFrom).
 //
 // The signed text names the build and its platform beside its SHA-256 (lowercase hex), so a signature holds for one
 // use only: a tray build is never taken as the pusher, nor one platform's build on another.
@@ -29,6 +30,16 @@ export type HubBuildName = 'pusher' | 'tray'
 /** The text a build's signature signs. */
 export function buildSignedText(name: HubBuildName, platform: string, sha256: string): string {
   return `codex-hub-build v1\n${name}\n${platform}\n${sha256}\n`
+}
+
+/**
+ * The public keys of a comma-separated list, each in its base64 form: a build trusts each one, which lets the operator
+ * move to a new key (docs/CODEX-HUB.md). Null when any entry is not a key, so a key left out by mistake never leaves a
+ * PC trusting fewer than meant, and for an empty list.
+ */
+export function updateKeysFrom(text: string): KeyObject[] | null {
+  const keys = text.split(',').map(updateKeyFrom)
+  return keys.every((k): k is KeyObject => k !== null) ? keys : null
 }
 
 /** The public key in its base64 form (the raw 32 bytes, as a build is given it); null for anything else. */

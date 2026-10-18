@@ -24,9 +24,10 @@ import { open } from 'node:fs/promises'
 import { appEnv } from '../config'
 import { sha256File } from './codex-hub'
 import type { CodexHubPushConfig } from './codex-hub-push'
-import { buildSignatureValid, updateKeyFrom } from './codex-hub-signature'
+import { buildSignatureValid, updateKeysFrom } from './codex-hub-signature'
 
-// The update key a build was compiled with: `bun build --compile --define AGENTHYDRA_CODEX_HUB_UPDATE_KEY='"<key>"'`.
+// The update key a build was compiled with: `bun build --compile --define AGENTHYDRA_CODEX_HUB_UPDATE_KEY='"<key>"'`,
+// or two, comma-separated, while the operator moves to a new key.
 declare const AGENTHYDRA_CODEX_HUB_UPDATE_KEY: string | undefined
 
 const CHECK_EVERY_MS = 6 * 60 * 60_000
@@ -61,8 +62,9 @@ export interface UpdateDeps {
 }
 
 /**
- * The public key (base64, codex-hub-signature.ts) the hub's builds must be signed with:
- * AGENTHYDRA_CODEX_HUB_UPDATE_KEY, else the one this build was compiled with; '' when there is none.
+ * The public key (base64, codex-hub-signature.ts) the hub's builds must be signed with, or a comma-separated list of
+ * keys any one of which may have signed them: AGENTHYDRA_CODEX_HUB_UPDATE_KEY, else the one this build was compiled
+ * with; '' when there is none.
  */
 export function updateKey(): string {
   const compiled =
@@ -194,12 +196,14 @@ export async function updateOnce(
   const exe = deps.exePath ?? process.execPath
   const log = deps.log ?? ((line: string) => console.log(`[codex-hub] ${line}`))
   const keyText = deps.updateKey ?? updateKey()
-  const key = keyText ? updateKeyFrom(keyText) : null
-  if (keyText && !key) {
-    log('kept this build: its update key is not a public key (base64 of 32 bytes)')
+  const keys = keyText ? updateKeysFrom(keyText) : null
+  if (keyText && !keys) {
+    log(
+      'kept this build: its update key is not a public key, or a comma-separated list of them (base64 of 32 bytes each)',
+    )
     return 'failed'
   }
-  if (!key && !/^https:\/\//i.test(cfg.url)) {
+  if (!keys && !/^https:\/\//i.test(cfg.url)) {
     log(
       'kept this build: it has no update key (AGENTHYDRA_CODEX_HUB_UPDATE_KEY) and the hub is not https',
     )
@@ -239,7 +243,7 @@ export async function updateOnce(
     return drop(`${why} (not fetched again until the hub has another build)`)
   }
   // The signature covers the hash the download must match, so a build that is not signed is never fetched.
-  if (key && !buildSignatureValid(key, 'pusher', platform, sha256, signature))
+  if (keys && !keys.some((key) => buildSignatureValid(key, 'pusher', platform, sha256, signature)))
     return refuse(
       signature
         ? `the hub build is not signed with this build's update key for the pusher on ${platform}`

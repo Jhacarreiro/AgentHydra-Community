@@ -12,6 +12,7 @@ import {
   buildSignatureValid,
   hubBuildOf,
   updateKeyFrom,
+  updateKeysFrom,
 } from '../server/src/core/codex-hub-signature'
 
 const script = join(import.meta.dir, '..', 'scripts', 'codex-hub-sign.ts')
@@ -93,6 +94,27 @@ test('sign refuses a file the hub would not serve under that name, and then writ
     1,
   )
   expect(sign('verify', keyFile).status).toBe(1)
+}, 20_000)
+
+test('pubkey prints several keys as the list a build trusts, and a list with a bad entry is no list', () => {
+  const oldKey = join(dir, 'old.key')
+  const newKey = join(dir, 'new.key')
+  const oldPub = sign('keygen', oldKey).out
+  const newPub = sign('keygen', newKey).out
+  const both = sign('pubkey', oldKey, newKey)
+  expect(both).toMatchObject({ status: 0, out: `${oldPub},${newPub}` })
+  expect(updateKeysFrom(both.out)?.map((k) => k.export({ format: 'jwk' }).x)).toEqual(
+    [oldPub, newPub].map((k) => Buffer.from(k, 'base64').toString('base64url')),
+  )
+  expect(updateKeysFrom(` ${oldPub} , ${newPub} `)).toHaveLength(2)
+  expect(updateKeysFrom(oldPub)).toHaveLength(1)
+  for (const bad of [`${oldPub},`, `,${newPub}`, `${oldPub},not a key`, '', ' '])
+    expect(updateKeysFrom(bad), bad).toBeNull()
+  // One file that holds no key prints nothing: half a list would leave a build trusting less than meant.
+  writeFileSync(join(dir, 'not-a-key'), 'no key here')
+  const half = sign('pubkey', oldKey, join(dir, 'not-a-key'))
+  expect(half.status).toBe(1)
+  expect(half.out).toBe('')
 }, 20_000)
 
 test('a fixed key and build sign to the text the tray checks', () => {

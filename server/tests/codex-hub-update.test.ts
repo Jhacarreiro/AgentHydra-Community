@@ -287,6 +287,38 @@ test('with an update key, only a build signed with it for the pusher on this pla
   expect(readFileSync(exe, 'utf8')).toBe('new build')
 })
 
+test('moving to a new key: a pusher with both keys takes either, one with one key only its own', async () => {
+  const next = generateKeyPairSync('ed25519').privateKey
+  const both = `${KEY}, ${updateKeyText(next)}`
+  const lines: string[] = []
+  const check = (keys: string) =>
+    updateOnce(cfg, deps({ updateKey: keys, log: (l) => lines.push(l) }))
+  for (const [keys, signedWith, taken] of [
+    [KEY, operator, true],
+    [KEY, next, false],
+    [both, operator, true],
+    [both, next, true],
+    [both, stranger, false],
+    [updateKeyText(next), next, true],
+    [updateKeyText(next), operator, false],
+  ] as const) {
+    writeFileSync(exe, 'old build')
+    hubBuild('new build', { key: signedWith })
+    const what = `${keys === both ? 'both keys' : keys === KEY ? 'the old key' : 'the new key'}, signed with ${
+      signedWith === operator ? 'the old' : signedWith === next ? 'the new' : 'another'
+    }`
+    expect(await check(keys), what).toBe(taken ? 'updated' : 'failed')
+    expect(readFileSync(exe, 'utf8'), what).toBe(taken ? 'new build' : 'old build')
+  }
+  // A list with an entry that is not a key takes nothing: a key left out by mistake does not narrow it.
+  for (const keys of [`${KEY},`, `${KEY},not a key`, `,${KEY}`]) {
+    writeFileSync(exe, 'old build')
+    hubBuild('new build')
+    expect(await check(keys), keys).toBe('failed')
+    expect(lines.at(-1)).toContain('not a public key, or a comma-separated list of them')
+  }
+})
+
 test('without an update key the pusher takes a build only from an https hub', async () => {
   let asked = 0
   const viaHttps: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {

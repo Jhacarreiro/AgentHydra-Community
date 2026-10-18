@@ -49,7 +49,8 @@ var (
 	hubURL   = ""
 	pairURL  = ""
 	inboxURL = ""
-	// The operator's ed25519 public key, base64: every build the tray takes from the hub is signed with it.
+	// The operator's ed25519 public key, base64: every build the tray takes from the hub is signed with it. While the
+	// operator moves to a new key, the old one and the new one, comma-separated (hub.go buildKeys).
 	updateKey = ""
 	// macOS: the app bundle's identifier, which also names its LaunchAgent.
 	bundleID = "com.example.codex-hub-tray"

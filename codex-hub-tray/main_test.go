@@ -192,6 +192,64 @@ func TestCheckSigned(t *testing.T) {
 	}
 }
 
+// Moving to a new key: a tray built with the old key and the new one takes a build signed with either, so the
+// operator can sign with the new key once every PC runs such a build; a tray with the old key alone refuses the new
+// key's builds, and one with the new key alone the old key's. One entry that is not a key refuses everything.
+func TestKeyRotation(t *testing.T) {
+	saved := updateKey
+	t.Cleanup(func() { updateKey = saved })
+	oldKey := testKey
+	newKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
+	stranger := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{8}, ed25519.SeedSize))
+	pub := func(k ed25519.PrivateKey) string {
+		return base64.StdEncoding.EncodeToString(k.Public().(ed25519.PublicKey))
+	}
+	sum := sumOf([]byte("a build"))
+	plain := config{Hub: "http://hub.example.test:18788"}
+	takes := func(key ed25519.PrivateKey) error {
+		return checkSigned(plain, "tray", &release{SHA256: sum, Signature: signedBy(key, "tray", sum)})
+	}
+	for _, c := range []struct {
+		what, keys         string
+		takesOld, takesNew bool
+	}{
+		{"the old key alone", pub(oldKey), true, false},
+		{"the old key and the new one", pub(oldKey) + "," + pub(newKey), true, true},
+		{"both, with spaces", " " + pub(oldKey) + " , " + pub(newKey) + " ", true, true},
+		{"the new key alone", pub(newKey), false, true},
+	} {
+		updateKey = c.keys
+		if err := updatesAllowed(plain.Hub); err != nil {
+			t.Errorf("%s: %v", c.what, err)
+		}
+		for _, k := range []struct {
+			name string
+			key  ed25519.PrivateKey
+			want bool
+		}{{"old", oldKey, c.takesOld}, {"new", newKey, c.takesNew}, {"stranger", stranger, false}} {
+			err := takes(k.key)
+			if k.want != (err == nil) || (err != nil && !errors.As(err, new(badBuild))) {
+				t.Errorf("%s, a build signed with the %s key: %v", c.what, k.name, err)
+			}
+		}
+	}
+	for _, keys := range []string{
+		pub(oldKey) + ",",
+		"," + pub(newKey),
+		pub(oldKey) + ",not a key",
+		pub(oldKey) + "," + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 31)),
+		" ",
+	} {
+		updateKey = keys
+		if err := updatesAllowed("https://hub.example.test"); err != errBadKey {
+			t.Errorf("keys %q: %v, want errBadKey", keys, err)
+		}
+		if err := takes(oldKey); err != errBadKey {
+			t.Errorf("keys %q: a build signed with the old key: %v, want errBadKey", keys, err)
+		}
+	}
+}
+
 // A tray built without a key, whose hub is http, takes nothing: it says so once in the log and in amber, and never
 // asks the hub for a build file.
 func TestNoKeyOverHTTPTakesNothing(t *testing.T) {
