@@ -11,7 +11,7 @@
 //
 // Chats count for the project they work in (owner, 2026-10-08: "ones with active chats would also show up on the top
 // with a little badge ... how many unarchived chats exist for each"): this app's and the ones run elsewhere on this PC
-// (Claude Desktop, the CLI). One started in a folder that holds projects (D:\NEWProjects) is placed by what it did
+// (Claude Desktop, the CLI). One started in a folder that holds projects (D:\Projects) is placed by what it did
 // (attribute.ts) and filed once into that project's sidebar group; a group the user picks is never changed.
 
 import { createHash } from 'node:crypto'

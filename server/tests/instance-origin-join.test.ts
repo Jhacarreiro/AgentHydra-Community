@@ -55,7 +55,7 @@ const CREATED = Date.parse('2026-08-18T21:25:52.000Z')
 
 meta('work', 'local_a.json', {
   cliSessionId: 'known-by-id',
-  cwd: 'D:\\PublicProjects',
+  cwd: 'D:\\Projects',
   createdAt: CREATED,
   isArchived: false,
 })
@@ -105,7 +105,7 @@ function resolve(cwd: string, createdAt: number | null): unknown {
 test(
   'a unique origin resolves to its account',
   () => {
-    expect(resolve('D:\\PublicProjects', CREATED)).toMatchObject({
+    expect(resolve('D:\\Projects', CREATED)).toMatchObject({
       instance: 'work',
       archived: false,
     })
@@ -116,9 +116,9 @@ test(
 test(
   'the match is case-insensitive on the path, because Windows is',
   () => {
-    // Desktop writes "D:\\PublicProjects" and a transcript can carry "d:\\publicprojects" for the
+    // Desktop writes "D:\\Projects" and a transcript can carry "d:\\projects" for the
     // same folder; a case-sensitive compare would silently drop the match on half the store.
-    expect(resolve('d:\\publicprojects', CREATED)).toMatchObject({
+    expect(resolve('d:\\projects', CREATED)).toMatchObject({
       instance: 'work',
       archived: false,
     })
@@ -130,7 +130,7 @@ test(
   'a small clock gap between the two records still counts as one birth',
   () => {
     // Desktop stamps createdAt as it opens the chat; the CLI stamps its first turn a moment later.
-    expect(resolve('D:\\PublicProjects', CREATED + 1500)).toMatchObject({
+    expect(resolve('D:\\Projects', CREATED + 1500)).toMatchObject({
       instance: 'work',
       archived: false,
     })
@@ -141,8 +141,8 @@ test(
 test(
   'a large gap does not — that is a different conversation in the same folder',
   () => {
-    expect(resolve('D:\\PublicProjects', CREATED + 90_000)).toBeNull()
-    expect(resolve('D:\\PublicProjects', CREATED + 10 * 60_000)).toBeNull()
+    expect(resolve('D:\\Projects', CREATED + 90_000)).toBeNull()
+    expect(resolve('D:\\Projects', CREATED + 10 * 60_000)).toBeNull()
   },
   SPAWNS_A_CHILD_BUN,
 )
@@ -154,11 +154,11 @@ test(
     // sessions with zero wrong answers, with the first ambiguity at 120s and the first WRONG answer
     // at 240s. Pinned in both directions so widening it has to be a decision someone makes on
     // purpose, with the cross-check re-run, rather than a number that drifts.
-    expect(resolve('D:\\PublicProjects', CREATED + 59_000)).toMatchObject({
+    expect(resolve('D:\\Projects', CREATED + 59_000)).toMatchObject({
       instance: 'work',
       archived: false,
     })
-    expect(resolve('D:\\PublicProjects', CREATED + 61_000)).toBeNull()
+    expect(resolve('D:\\Projects', CREATED + 61_000)).toBeNull()
   },
   SPAWNS_A_CHILD_BUN,
 )
@@ -186,7 +186,7 @@ test(
   () => {
     // created_at is null on transcripts whose turns carry no parseable timestamp. Without a time
     // there is only the folder, which is nowhere near enough.
-    expect(resolve('D:\\PublicProjects', null)).toBeNull()
+    expect(resolve('D:\\Projects', null)).toBeNull()
     expect(resolve('', CREATED)).toBeNull()
   },
   SPAWNS_A_CHILD_BUN,
@@ -207,7 +207,7 @@ test(
     // the row that narrowing can wrongly drop: only the parse supplies the cwd and start time the
     // join needs. A Codex-scoped list must not parse these at all (68 s for 0 rows on a real
     // store), and a scope the join CAN name must still get them.
-    const projects = join(home, '.claude', 'projects', 'D--PublicProjects')
+    const projects = join(home, '.claude', 'projects', 'D--Projects')
     mkdirSync(projects, { recursive: true })
     const at = new Date(CREATED).toISOString()
     const line = (role: 'user' | 'assistant', text: string) =>
@@ -215,7 +215,7 @@ test(
         type: role,
         uuid: crypto.randomUUID(),
         message: { role, content: text },
-        cwd: 'D:\\PublicProjects',
+        cwd: 'D:\\Projects',
         timestamp: at,
       })
     writeFileSync(

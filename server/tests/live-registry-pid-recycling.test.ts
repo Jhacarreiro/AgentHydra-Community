@@ -35,7 +35,7 @@ function record(patch: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     pid: process.pid,
     sessionId: '11111111-1111-4111-8111-111111111111',
-    cwd: 'D:\\NEWProjects',
+    cwd: 'C:\\Users\\me\\Projects',
     startedAt: 1789319298925,
     ...patch,
   }

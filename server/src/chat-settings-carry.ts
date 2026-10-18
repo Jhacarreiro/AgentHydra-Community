@@ -43,7 +43,7 @@ export const CARRIED_KEYS = [
   'alwaysAllowedReasons',
   'sessionPermissionUpdates',
   // The chat's FOLDER. Measured 2026-09-16 ("Launchpad v0.2.0 development", #56 -> #7): the source
-  // record said `D:\NEWProjects\shared\launchpad`, and the landed record on the running target came
+  // record said `D:\...\shared\launchpad`, and the landed record on the running target came
   // back pointing at a scratch workspace inside the SOURCE profile - the folder the chat opened in
   // hours earlier, before it was given a project. The app derives a resumed chat's folder from the
   // transcript itself, and that transcript's first `cwd` is the scratch one (its last 545 records

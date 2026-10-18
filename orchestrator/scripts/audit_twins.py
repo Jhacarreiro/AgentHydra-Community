@@ -541,7 +541,7 @@ def find_title_collisions() -> list[dict]:
         if len({c["sessionId"] for c in chats}) < 2:
             continue
         # THE HINT that makes each name unique: the chat's folder, unless the colliding
-        # chats share it (four 'Codebase review' chats all launched from D:\NEWProjects) -
+        # chats share it (four 'Codebase review' chats all launched from D:\Projects) -
         # then the repo named INSIDE the first prompt (the last path-shaped word), which is
         # how those four actually differ. No hint, no rename.
         repos = [c["repo"] for c in chats]

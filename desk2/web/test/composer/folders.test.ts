@@ -6,8 +6,8 @@ describe('folder menu rows', () => {
     const rows = folderRows(
       [
         'C:\\Users\\me\\Desktop\\Project\\Agent Hydra\\desk\\web',
-        'D:\\NEWProjects\\Connections',
-        'D:\\NEWProjects\\web',
+        'D:\\Projects\\Inventory',
+        'D:\\Projects\\web',
         'C:\\a\\x\\api',
         'D:\\b\\x\\api'
       ],
@@ -15,15 +15,15 @@ describe('folder menu rows', () => {
     )
     expect(rows.map((r) => [r.name, r.hint])).toEqual([
       ['web', 'desk'],
-      ['Connections', null],
-      ['web', 'NEWProjects'],
+      ['Inventory', null],
+      ['web', 'Projects'],
       ['api', 'a\\x'],
       ['api', 'b\\x']
     ])
   })
 
   it('check the current folder however its path is spelled', () => {
-    const rows = folderRows(['D:\\NEWProjects\\Connections', 'D:\\NEWProjects\\IronWerx'], 'd:/newprojects/connections/')
+    const rows = folderRows(['D:\\Projects\\Inventory', 'D:\\Projects\\Shop'], 'd:/projects/inventory/')
     expect(rows.map((r) => r.current)).toEqual([true, false])
   })
 })

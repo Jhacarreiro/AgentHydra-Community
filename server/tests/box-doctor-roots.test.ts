@@ -29,15 +29,15 @@ describe('rootFindings', () => {
     const r = rootFindings([
       { role: 'drive of recent agent work', path: 'Z:\\', state: 'unreadable', error: 'EPERM' },
       { role: 'drive of recent agent work', path: 'Y:\\', state: 'timeout' },
-      { role: 'search root', path: 'D:\\NEWProjects', state: 'empty' },
-      { role: 'search root', path: 'D:\\PublicProjects', state: 'listed' },
+      { role: 'search root', path: 'D:\\Projects', state: 'empty' },
+      { role: 'search root', path: 'D:\\Work', state: 'listed' },
     ])
     expect(r?.findings.map((f) => `${f.level}:${f.key}`)).toEqual([
       'problem:root:z:\\',
       'note:root-slow:y:\\',
-      'note:root-empty:d:\\newprojects',
+      'note:root-empty:d:\\projects',
     ])
-    expect(r?.checked).toEqual(['root:z:\\', 'root:d:\\newprojects', 'root:d:\\publicprojects'])
+    expect(r?.checked).toEqual(['root:z:\\', 'root:d:\\projects', 'root:d:\\work'])
     expect(rootFindings(null)).toBeNull()
   })
 })

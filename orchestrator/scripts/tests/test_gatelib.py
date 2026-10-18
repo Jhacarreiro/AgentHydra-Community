@@ -607,7 +607,7 @@ class TaskDedupTest(unittest.TestCase):
 
     def test_same_task_path_suffix_variant_matches(self):
         a = "Review this whole codebase for correctness issues, save to a file."
-        b = "Review this whole codebase for correctness issues, save to a file. d:\\newprojects\\x"
+        b = "Review this whole codebase for correctness issues, save to a file. d:\\projects\\x"
         self.assertTrue(gatelib.same_task(a, b))
 
     def test_same_task_extra_words_are_not_the_same_task(self):

@@ -179,7 +179,7 @@ a dry loop says `not-visible-here` and names the unit test that covers it. Repor
 
 ## Moving a machine off the standalone checkout (once, per machine)
 
-A machine that ran the orchestrator from its own repo (`D:\PublicProjects\orchestrator` or
+A machine that ran the orchestrator from its own repo (`C:\Users\me\orchestrator` or
 wherever it was cloned) still has three things pointing THERE, none of which a `git pull` of
 AgentHydra touches: the Windows scheduled tasks (`Orchestrator-*`, registered by absolute path to
 that folder's wrappers), the Desktop shortcut for the tray icon, and `state/` (the ledgers, the

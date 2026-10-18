@@ -1,7 +1,7 @@
 // Which project a chat works in when it was started outside every project (owner, 2026-10-08: "right now I'm lazy and
 // I just open everything in NEWProjects, so I don't have to pick the subfolder, but I wouldn't mind if Agent Hydra
 // automatically applies the right folders"). A chat whose folder is a project, or inside one, belongs to it. One
-// started in a folder that holds projects (D:\NEWProjects) or anywhere else is placed by what it did, strongest first:
+// started in a folder that holds projects (D:\Projects) or anywhere else is placed by what it did, strongest first:
 //   1. paths: the project its transcript's file paths name (its reads, edits and commands): the deepest one holding at
 //      least 60% of them, a nested project's paths counting for the one holding it too;
 //   2. moved: when its transcript names too few project paths to say, the folder Claude Code says it is in now (the

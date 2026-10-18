@@ -287,7 +287,7 @@ describe('waveStateText', () => {
       id: 'wv-test',
       group: 'g-test',
       managerId: 'w-mgr',
-      plan: '/home/plan.md',
+      plan: '/home/user/plan.md',
       cwd: '/home/repo',
       branch: 'main',
       verify: null,
@@ -408,7 +408,7 @@ describe('waveStateText', () => {
     // Check that the text contains the required information.
     expect(text).toContain('# Wave wv-test')
     expect(text).toContain('Group: g-test')
-    expect(text).toContain('Plan: /home/plan.md')
+    expect(text).toContain('Plan: /home/user/plan.md')
     expect(text).toContain('Branch: main')
 
     // Check task states are named.

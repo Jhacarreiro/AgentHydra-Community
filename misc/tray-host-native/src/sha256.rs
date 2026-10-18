@@ -102,11 +102,12 @@ mod tests {
 
     #[test]
     fn matches_the_mutex_name_powershell_computes() {
-        // The real value, cross-checked against PowerShell on this machine:
-        //   [BitConverter]::ToString(sha.ComputeHash(UTF8("d:\publicprojects\redesign")))
-        //     .Replace('-','').Substring(0,16)  ->  D5628C8F540E1934
+        // A lowercased app root, and the prefix PowerShell's SHA-256 gives for it (any SHA-256
+        // does, sha256sum included):
+        //   [BitConverter]::ToString(sha.ComputeHash(UTF8("c:\users\me\projects\redesign")))
+        //     .Replace('-','').Substring(0,16)  ->  6D05034F4919B346
         // If this ever disagrees, two tray hosts stop seeing each other and both can run at once.
-        let prefix = hex(br"d:\publicprojects\redesign")[..16].to_uppercase();
-        assert_eq!(prefix, "D5628C8F540E1934");
+        let prefix = hex(br"c:\users\me\projects\redesign")[..16].to_uppercase();
+        assert_eq!(prefix, "6D05034F4919B346");
     }
 }

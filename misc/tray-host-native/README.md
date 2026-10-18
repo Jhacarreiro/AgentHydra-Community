@@ -63,7 +63,7 @@ one-engine-plus-thin-per-app-adapter shape survives the port:
   "serviceName": "agenthydra",
   "mutexName": "AgentHydraTrayHost",
   "iconFile": "misc\\AgentHydra.ico",
-  "appRoot": "D:\\PublicProjects\\agenthydra",
+  "appRoot": "C:\\Users\\you\\AgentHydra",
   "startCommand": "\"C:\\...\\bun.exe\" server/src/index.ts",
   "port": 7787,
   "infoFile": "C:\\Users\\you\\.agenthydra\\runtime.json"

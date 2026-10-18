@@ -3,7 +3,7 @@
 // that is not a container of projects. A container is a drive root, the home folder or a folder above it, a folder
 // named like one (`*Projects`, tmp, active, shared, 1offs, `*Retired`, ...), or a folder with no project file of its
 // own that holds a dozen folders or more. A folder with a project file (.git, package.json, CLAUDE.md, ...) is never one.
-// So D:/PublicProjects/AgentHydra/desk2-p11 is AgentHydra's, D:/Work/active/Shop is Shop's, and
+// So D:/Projects/AgentHydra/desk2-p11 is AgentHydra's, D:/Work/active/Shop is Shop's, and
 // D:/Code/Example Social/website is Example Social's (a folder holding a few projects and no project file of its own).
 
 import { existsSync, readdirSync, statSync } from 'node:fs'

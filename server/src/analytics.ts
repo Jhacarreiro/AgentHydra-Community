@@ -1356,7 +1356,7 @@ function storedModelSpend(json: string | null): Record<string, ModelSpend> {
  * Group projects case-insensitively, and remember the first spelling for display.
  *
  * Windows paths are case-insensitive, and the two sources these come from disagree about the drive
- * letter: `D:\NEWProjects\...` from a session's own cwd, `d:\NEWProjects\...` from the decoded store
+ * letter: `D:\Projects\...` from a session's own cwd, `d:\Projects\...` from the decoded store
  * folder. Grouping on the raw string put one project on the chart twice, which is exactly the kind
  * of mistake a chart makes look authoritative. Caught on real data, not in review.
  */

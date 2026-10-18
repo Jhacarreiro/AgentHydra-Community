@@ -263,7 +263,7 @@ def test_glob_lists_what_grep_searches(tmp_path, monkeypatch, engine):
 
 
 def test_glob_takes_an_absolute_pattern_and_never_kills_the_task(tmp_path):
-    # A worker globbed "D:/PublicProjects/QuickDictate/app/src/**/*.rs" (2026-09-24): pathlib raised
+    # A worker globbed an absolute pattern ("D:/.../app/src/**/*.rs", 2026-09-24): pathlib raised
     # NotImplementedError("Non-relative patterns are unsupported"), which no except clause named, so the
     # whole task died instead of the worker reading an ERROR line.
     work = tmp_path / "work"

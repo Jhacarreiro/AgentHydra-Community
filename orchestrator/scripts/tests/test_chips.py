@@ -40,7 +40,7 @@ class ChipsTest(unittest.TestCase):
         self.stub.routes["/api/sessions/live"] = {"count": 0, "sessions": []}
         self.sessions = [{"session_id": "parent-1", "title": "Parent chat", "instance": "hot",
                           "archived": False, "transcript_path": "", "last_activity_at": 1,
-                          "cwd": "D:\\NEWProjects"}]
+                          "cwd": "D:\\Projects"}]
         self.stub.routes["/api/sessions"] = lambda m, p, q, b: self.sessions
         armlib.arm(600)
         self.calls = []
@@ -111,7 +111,7 @@ class ChipsTest(unittest.TestCase):
             results = chips.execute(chips.plan(hydralib.fleet()))
         self.assertTrue(results[0]["ok"], results[0]["outcome"])
         folder, prompt, inst = spawn.call_args.args
-        self.assertEqual(folder, "D:\\NEWProjects")
+        self.assertEqual(folder, "D:\\Projects")
         self.assertTrue(prompt.startswith("Fix the leak"))
         self.assertIn("cleans up", prompt)
         self.assertEqual(inst, "hot")
