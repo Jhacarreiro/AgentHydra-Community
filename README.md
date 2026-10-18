@@ -67,8 +67,8 @@ notices ([LICENSE](LICENSE)).
 - **For agents too:** the whole thing over MCP, including "which account am I, and how much is left"
 - **Nothing goes to the original project:** no LunarWerx service, and no install id except to a Codex hub you run
   yourself; what does reach the network is listed under [Install](#install)
-- **A public audit** checks every file, and every commit since the MIT base, for secrets, personal data and
-  anything from upstream's relicensing on
+- **A public audit** checks every file, and every commit since the MIT base, for secrets and personal data, and
+  refuses any commit that has upstream's relicensing commit in its history
 
 <details>
 <summary><b>Read more: what each part does</b></summary>
@@ -334,16 +334,18 @@ Some parts reach outside your PC or depend on someone else's terms, so each one 
 - It looks for tokens and private keys, credential and state files, private, link-local and Tailscale addresses,
   email addresses other than noreply and documentation ones, home-folder paths and the name of whoever runs it,
   upstream service hosts and private repository names, internal host names, account ids, binaries with no recorded
-  provenance, commit emails that are not noreply, and any commit at or past upstream's relicensing commit
-  `aee9dfc4`.
+  provenance, commit emails that are not noreply, and any commit that has upstream's relicensing commit
+  `aee9dfc4` in its history.
 - Modes: `--tree REV`, `--history A..B` and `--push REMOTE`, plus `--json` and `--suggest-allow`. It exits 0 when
   clean, 1 on a finding and 2 when it could not run. A finding is printed as its rule, `file:line` and a short
   fingerprint of the value, never the value itself.
 - A finding that is genuinely fine goes in `scripts/audit-public.allow.json` as `{rule, path, fp, reason}`. Commit
   emails and the licence boundary cannot be allowed. Every binary needs an entry in
   `scripts/binary-provenance.json`.
-- The pre-push hook refuses any ref whose history contains `aee9dfc4`, with no override, so nothing upstream wrote
-  under its new licence can be pushed from a clone of this repository.
+- The pre-push hook refuses any ref whose history contains `aee9dfc4`, with no override. Both it and the audit look
+  at commit ancestry only: code copied or cherry-picked from upstream's later work makes new commits without
+  `aee9dfc4` in their history, and nothing flags them. That is kept out by the clean-room rule in
+  [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md), not by the hook.
 
 </details>
 

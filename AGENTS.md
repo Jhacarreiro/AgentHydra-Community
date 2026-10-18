@@ -112,8 +112,9 @@ This repo is PUBLIC (Jhacarreiro/AgentHydra-Community), `desk2/` included. It is
 - Nothing upstream wrote after `3a65ba8e` comes into this repository: no merge or rebase onto upstream's `main`, and
   no code, text or changelog entry copied or adapted from it, since it is no longer MIT. Nothing from a private
   repository either. `bun run audit:public` checks the tree and every commit since the base, and the pre-push hook
-  runs it on every push and refuses any ref whose history contains the relicensing commit `aee9dfc4`. A finding that
-  is fine goes in `scripts/audit-public.allow.json` with its reason, never its value.
+  runs it on every push and refuses any ref whose history contains the relicensing commit `aee9dfc4`. That check is
+  of ancestry only: a copy or a cherry-pick of upstream's later work passes it, so this rule is what keeps them out.
+  A finding that is fine goes in `scripts/audit-public.allow.json` with its reason, never its value.
 - Upstream rewrote its history on 2026-10-05 to purge 68 such screenshots (its `main` then ran from `f53bbcda`, and
   tags v1.9.0-v1.9.2 were moved). This repository carries the rewritten history. Never rebase or merge a branch made
   from upstream's history before that rewrite: it brings the screenshots back. Values scrubbed on 2026-10-05

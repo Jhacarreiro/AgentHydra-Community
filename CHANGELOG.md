@@ -98,8 +98,9 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **The Hydra Core catalog is built only from your own people, skills, agents and repositories.** Sources that
   only worked on the original owner's machine are gone, and a rebuild removes the files they left behind.
 - **A public audit checks everything this repository publishes.** One command reads every file, and every commit
-  since the fork began, for secrets, personal data, private addresses, the original project's hosts and anything
-  from after its relicensing. CI runs it on every push and pull request, and a push it objects to is refused.
+  since the fork began, for secrets, personal data, private addresses and the original project's hosts, and fails
+  any commit built on the original project's relicensing. CI runs it on every push and pull request, and a push it
+  objects to is refused.
 - **The connector list stops polling fast when nothing changes.** A connector stuck installing or starting is asked about every second; after a minute with the same answer the poll falls back to every 5 seconds. A Desk window at rest asks once every 5 seconds (7 requests in 30 s).
 - **When a Claude Desktop or Codex app goes down with chats running, the Instance manager moves them and starts them
   again.** If the app crashed, was signed out, or its plan or organization stopped working, it opens the same kind of

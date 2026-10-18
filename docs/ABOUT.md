@@ -79,9 +79,10 @@ The intricacies worth remembering: the gotchas, the half-built parts, the decisi
 - The Codex hub is off unless `AGENTHYDRA_CODEX_HUB_TOKEN` is set, and like the rest of the API it answers loopback
   Hosts only. Its pairing page hands out the hub token, so it is served only behind the operator's own sign-in,
   never through the forward the pushers use (`server/src/routes/codex-hub.ts`).
-- Nothing upstream wrote after `3a65ba8e` may come into this repository: the audit's `license.boundary` rule and the
+- Nothing upstream wrote after `3a65ba8e` may come into this repository. The audit's `license.boundary` rule and the
   pre-push hook refuse any history that contains the relicensing commit `aee9dfc4` (`scripts/audit-public.mjs`,
-  `.githooks/check-public-push.mjs`).
+  `.githooks/check-public-push.mjs`), but they check ancestry only: a copy or a cherry-pick of upstream's later work
+  makes commits without it, so the clean-room rule in `CONTRIBUTING.md` is what keeps that out.
 
 ## At a glance
 
@@ -268,7 +269,7 @@ Each path is where the feature is defined.
   `install.ps1`
 - **The public audit** - One command reads the tree and every commit since the MIT base for secrets, personal data,
   private addresses, upstream hosts and private repository names, unrecorded binaries, non-noreply commit emails and
-  anything at or after the relicensing commit; CI and the pre-push hook run it. - `scripts/audit-public.mjs`,
+  any commit with the relicensing commit in its history; CI and the pre-push hook run it. - `scripts/audit-public.mjs`,
   `.githooks/check-public-push.mjs`, `.github/workflows/audit-public.yml`
 
 **Partial - exists but incomplete, gated off, or known broken**

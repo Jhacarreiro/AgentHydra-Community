@@ -57,8 +57,8 @@ a test that fails without it.
 This repository is public, so everything committed is published. `bun run audit:public` reads the tree at `HEAD`
 and every commit since `3a65ba8e`, the MIT base, and reports tokens and keys, credential files, private addresses,
 email addresses other than noreply and documentation ones, home-folder paths, upstream hosts and private repository
-names, binaries with no provenance, commit emails that are not noreply, and any commit from upstream's relicensing
-on. A finding prints its rule, `file:line` and a fingerprint, never the value.
+names, binaries with no provenance, commit emails that are not noreply, and any commit that has upstream's
+relicensing commit in its history. A finding prints its rule, `file:line` and a fingerprint, never the value.
 
 - Use invented data in tests and docs: `example.com`, `example.test` or `example.invalid` addresses, the
   documentation IP ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), names such as "Example Owner", and
@@ -70,7 +70,8 @@ on. A finding prints its rule, `file:line` and a fingerprint, never the value.
   `scripts/binary-provenance.json` saying where it comes from and how it was built.
 - **Never bring in code or text that upstream wrote after `3a65ba8e`.** That work is under PolyForm Noncommercial,
   not MIT. Write what you need from the MIT code and your own reasoning, and do not merge or rebase onto upstream's
-  `main`. Nothing from private repositories either.
+  `main`. Nothing from private repositories either. The audit and the hook check commit ancestry only, so they
+  cannot see code copied or cherry-picked from upstream's later work: keeping that out is up to you.
 
 `bun install` enables the hooks in `.githooks/`:
 

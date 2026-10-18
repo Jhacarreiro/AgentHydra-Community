@@ -63,11 +63,15 @@ git log --format='%h %an <%ae> %s' 3a65ba8e..HEAD     # only this fork's commits
 bun run audit:public                              # the tree, and every commit since the base
 ```
 
-- The audit's `license.boundary` rule fails on any commit at or after `aee9dfc4`. It is built into
+- The audit's `license.boundary` rule fails on any commit that has `aee9dfc4` in its history. It is built into
   `scripts/audit-public.mjs`, and its configuration can add another boundary commit but cannot remove that one.
   CI runs the audit on every push and pull request.
 - The pre-push hook (`.githooks/check-public-push.mjs`, enabled by `bun install`) refuses, on every remote and with
   no override, any ref whose history contains `aee9dfc4`, and runs the audit on what the push would publish.
+- Both look at commit ancestry only. Code copied or cherry-picked from upstream's later commits would make new
+  commits without `aee9dfc4` in their history, and neither would flag them. That is kept out by the clean-room rule
+  every contribution follows ([CONTRIBUTING.md](../CONTRIBUTING.md)), and anyone can compare the code itself with
+  upstream's.
 
 </details>
 
