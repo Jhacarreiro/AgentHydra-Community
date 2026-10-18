@@ -2,9 +2,9 @@
 
 A Codex chat lives on the PC that ran it. The Codex hub is one AgentHydra daemon, on a home server or any PC that
 stays on, that each of your PCs pushes its Codex chats to. Desk then lists every PC's chats, each marked with the PC
-it came from, and can continue one on its own PC while that PC is on. A small tray app sets each PC up: it gets the
-hub's token from a pairing page, runs the pusher, and keeps itself and the pusher at the builds the hub hands out,
-which you sign with your own key.
+it came from, and can continue one on its own PC while that PC is on. A small tray app sets each PC up: it gets a
+token of its own from a pairing page, runs the pusher, and keeps itself and the pusher at the builds the hub hands
+out, which you sign with your own key.
 
 This page is the operator's guide: setting up the server, the proxy in front of it, the tray builds and the key. The
 details of each route, header and variable are in
@@ -12,17 +12,21 @@ details of each route, header and variable are in
 
 **TL;DR**
 
-- **The hub is the daemon with `AGENTHYDRA_CODEX_HUB_TOKEN` set.** It listens on `127.0.0.1:7787` and on nothing
-  else; change the port with `PORT`.
-- **Your own HTTPS proxy forwards two paths and nothing else.** `/api/codex-hub/`, where the token is the
-  authentication, and `/codex-hub/pair`, only behind your own sign-in, because that page hands out the token.
+- **The hub is the daemon with `AGENTHYDRA_CODEX_HUB_TOKEN` set.** That value is your own admin token, and no PC is
+  ever given it. The hub listens on `127.0.0.1:7787` and on nothing else; change the port with `PORT`.
+- **Your own HTTPS proxy forwards two paths and nothing else.** `/api/codex-hub/`, where each PC's own token is the
+  authentication, and `/codex-hub/pair`, only behind your own sign-in, because that page hands out one-time pairing
+  codes.
 - **You make the signing key, and you keep it.** No key is in this repository. It stays outside the checkout, and the
   trays and pushers refuse any build it did not sign.
 - **`codex-hub-tray/build.sh` builds the tray with your addresses and public key,** the same bytes every time from the
   same commit.
-- **Open the tray once on each PC.** It installs itself, opens the pairing page, and you choose Connect.
-- **One token serves every PC, and it is the only lock.** Whoever has it can push and relay under any PC's name. If
-  you change it, every PC must pair again.
+- **Open the tray once on each PC.** It installs itself, opens the pairing page, and you choose Connect. The tray
+  makes a token of its own, and the hub keeps only its hash.
+- **Each PC has a token of its own; revoke one with `scripts/codex-hub-pcs.ts` without touching the others.** A
+  PC's token pushes and relays as that PC alone, and changing the admin token pairs no PC again.
+- **A hub that ran before PCs had tokens of their own moves them over by themselves** while a migration window you
+  open lasts: [Moving PCs to tokens of their own](#moving-pcs-to-tokens-of-their-own).
 
 <details>
 <summary>What has been tested, and what has not</summary>
@@ -30,16 +34,25 @@ details of each route, header and variable are in
 Tested, by automated tests in this repository:
 
 - **The hub as a server, with two PCs** (`server/tests/codex-hub-multi-pc.test.ts`). The test starts the real daemon
-  in a scratch HOME on a loopback port and pairs two PCs through the pairing page as the tray does. Each PC pushes its
-  own chat, and the hub lists each chat under its own PC. Each PC opens a relay. These are refused, and write
-  nothing: a request with no token, with a wrong one, without `Bearer`, with a network `Host`, or with the old token
-  after the token was changed. A PC that pairs again then pushes with the new token. With the token and no install
-  id, a request replaces a connected PC's copy and takes its relay, as [step 7](#7-the-security-model) says. It has
-  run on Linux; it is skipped on Windows, where the daemon starts its tray host at boot.
+  in a scratch HOME on a loopback port and pairs two PCs through the pairing page as the tray does: each gets a token
+  of its own, pushes its own chat, and the hub lists each chat under its own PC. Each PC opens a relay. These are
+  refused, and write nothing: a request with no token, with a wrong one, without `Bearer`, with a network `Host`, or
+  with the admin token. One PC's token in a push that names the other PC writes under its own PC, and its relay
+  opens as its own. The test then revokes one PC with `scripts/codex-hub-pcs.ts`: its relay closes, its push and
+  build check are refused as revoked, and the other PC goes on; paired again, it gets a new token, and the old one is
+  unknown. A restart with a new admin token keeps both PCs' tokens. Last, a PC that pushed with the shared token of
+  before moves to a token of its own while the migration window is open, and only then. It has run on Linux; it is
+  skipped on Windows, where the daemon starts its tray host at boot.
+- **Every route and refusal of the hub, in process** (`server/tests/codex-hub-auth.test.ts` and
+  `codex-hub-pcs.test.ts`): who may call what, each state of the pairing page, pairing codes and confirmations,
+  revoking, retiring and forgetting, the migration window, and a revoke that races a push or a relay. The pusher's
+  side is `codex-hub-push-auth.test.ts`: its install id's file, what it says for each refusal, and its relay's waits.
 - **The tray on Linux, end to end** (`codex-hub-tray/test-linux.sh`). It runs against a fake hub: installing,
-  pairing, the pusher, self-update, refusing unsigned builds and builds signed with another key, moving to a new
-  key, and a PC without a desktop taking a new token from `tray.json`. It runs on every change to the tray
-  (`.github/workflows/codex-hub-tray.yml`).
+  pairing with a code, the pusher, self-update, refusing unsigned builds and builds signed with another key, moving
+  to a new key, a PC without a desktop taking a token from `add` in its `tray.json`, moving off the shared token, a
+  tray from before tokens of their own updating itself and then moving, and a revoke. It also pairs, moves and
+  revokes PCs against the real hub (`scripts/codex-hub-test-daemon.ts`). It runs on every change to the tray or to
+  the hub's side of what it talks to (`.github/workflows/codex-hub-tray.yml`).
 - **`go vet` for the tray, for Linux and Windows, `go test` on Linux,** and **the reproducible build:** two builds
   from one commit, the second in another folder with an empty build cache, give the same SHA-256.
 
@@ -49,7 +62,7 @@ Not tested yet:
   the workflow has a macOS job, but neither has run for this version.
 - A real reverse proxy or sign-in in front of the hub. The checks in [Check it from outside](#check-it-from-outside)
   are how you test yours.
-- More than two PCs, large chat histories over a slow link, or a hub that runs for weeks.
+- More than a few PCs, large chat histories over a slow link, or a hub that runs for weeks.
 
 So treat it as a setup for your own PCs that you watch, not as a service other people depend on.
 
@@ -59,7 +72,8 @@ So treat it as a setup for your own PCs that you watch, not as a service other p
 
 The hub is the AgentHydra daemon from a checkout of this repository, run with Bun. It needs nothing else for the hub:
 the chats arrive from the PCs. Desk, the window you read them in, is set up as the README says. To continue another
-PC's chat, Desk needs the same `AGENTHYDRA_CODEX_HUB_TOKEN` in its environment; a Desk the daemon starts has it.
+PC's chat, Desk needs the hub's `AGENTHYDRA_CODEX_HUB_TOKEN`, the admin token, in its environment; a Desk the daemon
+starts has it.
 
 ```sh
 git clone https://github.com/Jhacarreiro/AgentHydra-Community.git ~/AgentHydra-Community
@@ -67,7 +81,9 @@ cd ~/AgentHydra-Community
 bun install --frozen-lockfile
 ```
 
-Make the token, a long random ASCII string, and keep it in a file only you can read, outside the checkout:
+Make the admin token, a long random ASCII string, and keep it in a file only you can read, outside the checkout. It
+turns the hub on, and Desk and the hub's command line use it on the server. No PC is ever given it, and the routes the
+PCs use refuse it:
 
 ```sh
 umask 077
@@ -75,6 +91,10 @@ mkdir -p ~/.config/codex-hub
 printf 'AGENTHYDRA_CODEX_HUB_TOKEN=%s\nPORT=7787\nAGENTHYDRA_PORT_FIXED=1\n' "$(openssl rand -hex 32)" \
   >~/.config/codex-hub/hub.env
 ```
+
+**A hub that ran before PCs had tokens of their own** has in its `hub.env` the token all its PCs share. Do not keep
+that value as the admin token: before you update such a hub, read
+[Moving PCs to tokens of their own](#moving-pcs-to-tokens-of-their-own).
 
 Then run the daemon with that file, for example as a systemd user service
 (`~/.config/systemd/user/codex-hub.service`):
@@ -101,13 +121,13 @@ loginctl enable-linger   # keeps it running while you are logged out, and starts
 curl -s http://127.0.0.1:7787/api/health
 ```
 
-To check that the hub is on, run this on the server. "this hub hands out no pusher build" means it is on (you add
-builds in step 4). "the Codex hub is off" means the token did not reach the daemon:
+To check that the hub is on, run its command line on the server, from the checkout. `legacy window: off` with no
+line after it means the hub is on and has no PC yet. "the hub at … is off" means the token did not reach the daemon,
+and "the hub is not running at …" that nothing answers on that port:
 
 ```sh
-. ~/.config/codex-hub/hub.env
-curl -s -H "Authorization: Bearer $AGENTHYDRA_CODEX_HUB_TOKEN" \
-  'http://127.0.0.1:7787/api/codex-hub/pusher?platform=linux-x64'
+cd ~/AgentHydra-Community
+bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts list
 ```
 
 ### The port
@@ -125,7 +145,15 @@ curl -s -H "Authorization: Bearer $AGENTHYDRA_CODEX_HUB_TOKEN" \
 Everything is in the daemon's config folder: `~/.agenthydra`, or `AGENTHYDRA_HOME`.
 
 - `codex-hub/<pc>/` holds each PC's copy of its chats.
+- `codex-hub/.pcs.json` (mode 600) holds what the hub knows of each PC's token: its id and its SHA-256, the install
+  id it is bound to, and when and how it was paired, first used or revoked. It never holds a token, a pairing code or
+  the admin token.
 - `codex-hub/.pusher/` holds the builds the hub hands out (step 4).
+
+Keep the folder private (`chmod 700 ~/.agenthydra/codex-hub`), and back it up. When you copy or move it, copy the
+whole folder with its dot-files: a hub without its `.pcs.json` knows none of its PCs' tokens, and every PC must pair
+again. The hub never writes over a `.pcs.json` it cannot read (one that does not parse, or is of another version):
+until you restore it and restart the hub, it refuses every PC's token with 503.
 
 The hub never holds your signing key.
 
@@ -137,14 +165,14 @@ forwards these two paths, and nothing else:
 
 | Path | Who opens it | What authenticates it | The proxy must |
 | --- | --- | --- | --- |
-| `/api/codex-hub/` | each PC's tray and pusher | the hub token (`Authorization: Bearer`), plus your access layer's own service token if it wants one | set `Host: 127.0.0.1:7787`, remove `Origin`, pass WebSocket upgrades (the relay), allow request bodies up to 16 MiB, and keep an idle WebSocket open for several minutes |
+| `/api/codex-hub/` | each PC's tray and pusher | that PC's own token (`Authorization: Bearer`), sent with its install id, plus your access layer's own service token if it wants one | set `Host: 127.0.0.1:7787`, remove `Origin`, pass WebSocket upgrades (the relay), allow request bodies up to 16 MiB, and keep an idle WebSocket open for several minutes |
 | `/codex-hub/pair` | your browser, on a PC you are setting up | **your own sign-in**, before the request reaches the hub | set `Host: 127.0.0.1:7787` and remove `Origin`; serve it only behind the sign-in, never on the `/api/codex-hub/` address and never to the home network |
 
 Never forward anything else.
 
 - **The rest of `/api/`** answers anyone who reaches it.
-- **Desk's end of the relay, `/api/codex-relay/`,** takes the same token and runs turns on your PCs. It stays on the
-  server's loopback.
+- **`/api/codex-relay/`** holds Desk's end of the relay, which runs turns on your PCs, and the admin API, which lists,
+  revokes and forgets them. Both take the admin token, and they stay on the server's loopback.
 
 If your access layer needs a header of its own on every request, such as a service token, put it on each PC as
 `AGENTHYDRA_CODEX_HUB_HEADERS`, a JSON object. The tray sends it on its own requests and passes it on to the pusher.
@@ -196,11 +224,30 @@ Run these from a machine outside your network, with your addresses.
   curl -s -o /dev/null -w '%{http_code}\n' --path-as-is 'https://hub.example.test/api/codex-hub/../health'
   ```
 
-- **The forward works and wants the token:** these should answer 401 or your access layer's refusal, then 404 or 200.
+- **The forward works and wants a PC's token.** Make a token for the check on the hub first; it prints the token:
+
+  ```sh
+  bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts add outside-check
+  ```
+
+  With that token in `$TOKEN`, these should answer 401 or your access layer's refusal, then 404 ("this hub hands out
+  no pusher build") or 200:
 
   ```sh
   curl -s -o /dev/null -w '%{http_code}\n' 'https://hub.example.test/api/codex-hub/pusher?platform=linux-x64'
   curl -s -H "Authorization: Bearer $TOKEN" 'https://hub.example.test/api/codex-hub/pusher?platform=linux-x64'
+  ```
+
+- **The admin token opens nothing there, and neither does a made-up pairing code:** with the admin token in
+  `$ADMIN`, both should answer 401.
+
+  ```sh
+  curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $ADMIN" \
+    'https://hub.example.test/api/codex-hub/pusher?platform=linux-x64'
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' \
+    -H 'x-codex-hub-install: outside-check' \
+    -d "{\"code\":\"$(openssl rand -hex 32)\",\"id\":\"$(openssl rand -hex 8)\",\"hash\":\"$(openssl rand -hex 32)\"}" \
+    https://hub.example.test/api/codex-hub/redeem
   ```
 
 - **The pairing page is not on the hub's address:** this should answer 404.
@@ -211,6 +258,12 @@ Run these from a machine outside your network, with your addresses.
 
   Open `https://inbox.example.test/codex-hub/pair` in a private window. It should show your sign-in first. After the
   sign-in it says to open it from the Codex Hub app, because it was not opened from a tray, and that is right.
+
+When you are done, forget the check's PC on the hub, which removes its token:
+
+```sh
+bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts forget outside-check
+```
 
 ## 3. The signing key
 
@@ -357,26 +410,48 @@ makes it check now.
 Give each PC its tray build in a way you trust, with `LICENSE`, `NOTICE` and the `THIRD-PARTY-LICENSES` file for its
 system (a Mac's zip has them inside): copy them over yourself, or put them behind the same sign-in as the pairing
 page. The hub's updates replace only the program, so when an update changes a licence file (a new module or Go
-version in `go.mod`), hand out the new one too. The hub's own download needs the token, which a new PC does not have
-yet. Before you open the file, compare its SHA-256 with your `SHA256SUMS`, or, for a Mac's zip, with your
+version in `go.mod`), hand out the new one too. The hub's own download needs a PC's token, which a new PC does not
+have yet. Before you open the file, compare its SHA-256 with your `SHA256SUMS`, or, for a Mac's zip, with your
 `SHA256SUMS-macos-zip`.
 
 ### Pairing from the Connect button
 
-When the tray starts without a token, it opens your pairing page in the browser, with a port and a one-time code for
-this PC. You can also choose **Connect this PC** in its menu at any time.
+When the tray starts without a token, it opens your pairing page in the browser, with a port and a one-time state
+for this PC, the name it pairs as, and when its link expires. You can also choose **Connect this PC** in its menu at
+any time.
 
-1. The browser goes through your sign-in to the hub's page, **Connect *this PC***.
+1. The browser goes through your sign-in to the hub's page, **Connect *the PC's name***.
 2. Choose **Connect**.
-3. The page posts the hub's token to the tray's own port on `127.0.0.1`, and nowhere else.
-4. The tray checks the token with the hub, saves it in `tray.json` (mode 600), fetches the pusher, and starts pushing.
+3. The page posts a one-time pairing code to the tray's own port on `127.0.0.1`, and nowhere else.
+4. The tray makes a token of its own, and redeems the code with the token's id and SHA-256: the hub keeps those, and
+   no token travels either way. Once the hub has taken it, the tray saves the token in `tray.json` (mode 600),
+   fetches the pusher, and starts pushing.
 
-The page answers "This PC is connected". The pairing link is good for 20 minutes, and only for the tray that opened
-it.
+The page answers "This PC is connected as *its name* and is pushing its Codex chats." The pairing link is good for 20
+minutes, once, and only for the tray that opened it.
 
 The PC is listed under its computer name. On a Mac, that is its Local Hostname. Set `AGENTHYDRA_CODEX_HUB_PC` in the
-user's environment to use another name. Two PCs cannot share a name: while one holds it, the hub refuses the other's
-pushes. That keeps two of your own PCs apart, not someone who has the token ([step 7](#7-the-security-model)).
+user's environment, before you choose Connect, to use another name. Two PCs cannot share a name: a token acts for the
+one name it was paired as, and only from the install of the pusher it was first used with, so another PC that sends
+it is refused.
+
+**A name already in use.** When the hub has a PC by that name already (one with a token, or one that still pushes
+with the shared token of before), the page says when and how it was paired, its last push, and whether it is online
+now. It offers two choices:
+
+- **This is another PC: connect it as *name*-2** comes first (the first free number up to 99). The tray keeps that
+  name and passes it to its pusher. This is how two machines called `ubuntu`, or WSL beside its Windows PC, become
+  `ubuntu` and `ubuntu-2`.
+- **This is *name* itself, set up again: replace its token…** leads to a second page that says what replacing does:
+  the PC's current token stops at once, its relay closes and any Desk session on it ends, and its copies on the hub
+  stay until this PC's pushes replace them. **Connect and replace** does it. Use it for a PC whose `tray.json` was
+  lost, or that was installed again.
+
+**Renaming a PC.** Set `AGENTHYDRA_CODEX_HUB_PC` to the new name, restart the tray, and choose Connect this PC. The
+page says it renames the old name to the new one. Once the tray is connected under the new name, it retires its old
+token on the hub, and the page says so; the old name's copies stay, revoked, until you forget them (`forget`, in
+[Listing PCs and revoking one](#listing-pcs-and-revoking-one)). The hub has no rename of its own: a PC's name is its
+folder there, and Desk's id for it.
 
 ### Windows
 
@@ -405,12 +480,18 @@ On GNOME, the icon shows only with the AppIndicator extension.
 
 On a PC without a desktop, it enables a systemd user unit (`codex-hub-tray.service`) instead. With
 `loginctl enable-linger`, that unit runs from boot. Without a display, it has no browser to open, so it writes the
-pairing link to its log (`~/.local/share/codex-hub/tray.log`). Open that link in a browser on that PC, or put the
-token in `tray.json` yourself:
+pairing link to its log (`~/.local/share/codex-hub/tray.log`, mode 600). Open that link in a browser on that PC, or
+give the PC a token made on the hub, which prints it:
+
+```sh
+bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts add <the PC's name>
+```
+
+Then, on the PC:
 
 ```sh
 umask 077
-printf '{\n  "hub": "%s",\n  "token": "%s"\n}\n' 'https://hub.example.test' '<the hub token>' \
+printf '{\n  "hub": "%s",\n  "token": "%s"\n}\n' 'https://hub.example.test' '<the token>' \
   >~/.local/share/codex-hub/tray.json
 pkill -USR1 -x codex-hub-tray   # or wait for its next check, at most 10 minutes
 ```
@@ -418,18 +499,28 @@ pkill -USR1 -x codex-hub-tray   # or wait for its next check, at most 10 minutes
 This writes the whole file. `tray.json` holds the hub's address as well as the token, so give both, the address as
 in your `HUB_URL`: a tray built without `HUB_URL` has no other place to find its hub, and one built with it takes
 that address as its own. To change only the token in a file that is already there, edit its `"token"` line instead.
+At its next check the tray asks the hub what it has the token under, which binds the token to this PC's install, and
+adds the PC's name. Use the token at once: until then, whoever sends it first with an install id binds it.
 
 ### What the tray shows, and its logs
 
 The menu's first line says how things stand:
 
-- **Pushing this PC's Codex chats** (green).
-- **Not connected** or **The hub refused the token** (amber): choose Connect this PC.
-- **The hub is out of reach** (grey): the PC is away from home, or the proxy is down.
-- **This build has no update key** (amber).
+- **Pushing this PC's Codex chats as *its name*** (green).
+- **Not connected: choose Connect this PC** (amber).
+- **The hub revoked this PC: choose Connect this PC to pair it again** (amber): you revoked it on the hub.
+- **This token belongs to another install: choose Connect this PC** (amber): the token was first used from
+  another install of the pusher, for example a token copied by hand from another PC's `tray.json`.
+- **This PC must be paired again: choose Connect this PC** (amber): the PC still has the shared token of before, and
+  the hub would not move it to a token of its own
+  ([Moving PCs to tokens of their own](#moving-pcs-to-tokens-of-their-own)).
+- **The hub refused the token: choose Connect this PC** (amber): the hub does not know the token, for example
+  because the PC was paired again from another install.
+- **The hub is out of reach (away from home?)** (grey): the PC is away from home, or the proxy is down.
+- **This build has no update key: it takes no builds over http** (amber).
 
-The tray's log is `tray.log` and the pusher's is `pusher.log`, both in the app folder above (Show the log opens the
-pusher's).
+The tray's log is `tray.log` and the pusher's is `pusher.log`, both in the app folder above, both mode 600 (Show the
+log opens the pusher's).
 
 ### Removing it
 
@@ -483,73 +574,205 @@ A build can trust two keys at once. That is how the PCs move to a new key withou
 A PC that missed step 2 has only the old key. It refuses the new builds and keeps the one it has, which is logged.
 Install a current tray on it by hand. It installs over the running one and keeps its token.
 
-If the old key leaked, do this at once, and change the hub token as well. Until the PCs run the build from step 4,
-they still trust the old key.
+If the old key leaked, do this at once. Until the PCs run the build from step 4, they still trust the old key.
 
 The tests for this are `TestKeyRotation` (`codex-hub-tray/main_test.go`), the "moving to a new key" part of
 `test-linux.sh`, and `server/tests/codex-hub-update.test.ts` for the pusher.
 
-### Changing the hub token
+### Changing the admin token
 
-The token is the only thing a PC needs to push, so changing it is how you cut off a token that got out:
+No PC holds the admin token, so changing it pairs no PC again:
 
-1. Put the new token in `hub.env`.
+1. Put a new `AGENTHYDRA_CODEX_HUB_TOKEN` in `hub.env` (`openssl rand -hex 32`).
 2. Restart the hub (`systemctl --user restart codex-hub.service`), and Desk too if it was running, since its end of
    the relay reads the same variable.
-3. Pair each PC again: choose Connect this PC, or, on a PC without a desktop, put the new token in `tray.json` as
-   above.
 
-The old token is refused at once everywhere: push, builds, relay. A PC that has not paired again shows "The hub
-refused the token", and its chats stay on the hub as they were.
+The old admin token then opens nothing. Every PC keeps its token, and the command line reads the new one from
+`hub.env`. To cut off one PC, revoke it instead (next section).
 
-There is one token for every PC, so you cannot cut off a single PC. To drop one PC, change the token, pair the
-others, and delete its folder in `~/.agenthydra/codex-hub/`.
+### Listing PCs and revoking one
+
+Each PC has a token of its own, so you list them, give one a token or cut one off on the hub itself, with
+`scripts/codex-hub-pcs.ts`. It runs on the server, from the checkout, with the admin token from `hub.env`, and talks
+to the hub on its loopback only: `http://127.0.0.1:$PORT`, else port 7787, or the address you give with `--hub`.
+Desk has no page for this; a chat in Desk whose PC you revoked says that it was revoked.
+
+```sh
+bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts list [--json]
+bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts add <pc> [--replace] [--json]
+bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts revoke <pc>
+bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts forget <pc>
+```
+
+- **`list`** first says whether the migration window is open (`legacy window: open until <date>, N pending`,
+  `closed on <date>`, or `off`), then gives a line for each PC: its name and state, its token's id, when and how it
+  was paired and from what address, when the token was first used, its last push, whether its relay is on, the
+  start of its install id, and when it was revoked and why. A state is `token` (a token of its own), `pending` (it
+  still pushes with the shared token of before, and may move), `revoked`, or `unpaired` (copies here and no token),
+  with the reason it cannot move by itself: `no-install`, `old`, `claimed`, `duplicate:<key>` or `window-closed`.
+  `CONTESTED <date>` marks a PC for which a second exchange came after it had moved: if that PC did not send it, pair
+  it again through the page and change the legacy token.
+- **`add <pc>`** makes a token for a PC that has no tray, or no desktop, and prints the token alone (with `--json`,
+  `{ token, pc, key, id }`); the hub is sent only its id and hash. Put it in that PC's `tray.json`
+  ([Linux](#linux) shows how), or in a daemon's or standalone pusher's `AGENTHYDRA_CODEX_HUB_TOKEN`, and restart
+  that pusher. Use it at once: until its first request with an install id, whoever sends it first binds it to their
+  install. A name that has a token, or is pending, is refused unless you add `--replace`, which stops its current
+  token at once and closes its relay.
+- **`revoke <pc>`** cuts one PC off at once, and touches no other. Its relay closes and every Desk session on it ends.
+  Its next push, build check and whoami are refused as revoked, so it takes no more updates. Its tray says "The hub
+  revoked this PC: choose Connect this PC to pair it again" (a tray from before tokens of their own says "The hub
+  refused the token"), and its pusher logs "the hub revoked this PC's token; pair it again". Its chats stay listed on
+  the hub until you forget it. Revoking a pending PC stops it from moving.
+- **`forget <pc>`** also removes the PC's record and its copies from the hub. Forget a PC that was lost or stolen,
+  once it is revoked: whatever was pushed with a stolen token is the thief's content, and Desk lists and searches it
+  like your own chats.
+
+`<pc>` is a name or a key: `revoke` and `forget` take its key, and `add` keeps the name as you typed it. The same
+requests with `curl` are in [REFERENCE.md](REFERENCE.md#codex-chats-from-other-pcs-codex-hub).
+
+### Moving PCs to tokens of their own
+
+A hub set up before PCs had tokens of their own let every PC push with one shared token. Now the hub refuses that
+token unless you open a migration window for it. While the window is open, each PC that was pushing with it moves to
+a token of its own by itself, and `list` shows them go. A hub set up after this change has nothing to move.
+
+**What the window allows.** The shared token, now the legacy token, then acts only for a **pending** PC: one whose
+folder on the hub
+
+- names the install id its pusher sent (a folder whose pusher sent none cannot move by itself);
+- was pushed to in the 30 days before the window opened, or since;
+- has no token of its own, and an install id that no other PC's token has taken;
+- and is the newest folder with that install id (so one Mac kept under two names moves once).
+
+For a pending PC, and only with that PC's own install id, the legacy token pushes, opens the relay, and trades
+itself once for a token the tray made. It also gets the builds while any PC is pending, since an old tray fetches
+the tray that can move with it. Anything else it asks for is a bare 401, and once the window has closed it opens
+nothing anywhere.
+
+**The steps:**
+
+1. **Check, then back up.** On the new checkout, run the hub's tests, the multi-PC test among them
+   (`bun test server/tests/codex-hub`), and back up `~/.agenthydra/codex-hub/` with its dot-files. If the hub
+   updates its own checkout, turn that off until step 2 is done, or do step 2 in the same sitting.
+2. **Update the hub, and give it a new admin token in the same restart.** In `hub.env`, rename
+   `AGENTHYDRA_CODEX_HUB_TOKEN=<old>` to `AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN=<old>`, and add a new
+   `AGENTHYDRA_CODEX_HUB_TOKEN` (`openssl rand -hex 32`). The old value is on every PC and in their backups, so it
+   must not stay the admin token: a legacy token equal to the admin token is ignored, and the hub's log says so.
+   Restart the hub and Desk. The start log, or `list`, then names the pending PCs, each with its last push, and the
+   folders that cannot move by themselves, with the reason. Forget a stale folder with `forget`; revoke a pending PC
+   only to stop it from moving.
+3. **Publish the new builds,** the pusher's and the tray's for each platform (step 4), one platform at a time. Linux
+   first: send `kill -USR1` to that PC's tray, and `list` shows it as `token`, paired by `exchange`. Then Windows,
+   where the menu's Restart the pusher runs a check at once (Windows has no SIGUSR1). Then both darwin builds. A tray
+   from before this change fetches the new pusher and the new tray with the legacy token and replaces itself, and the
+   new tray moves as it starts.
+4. **Give a token to each pusher that runs without a tray,** a daemon's or a standalone one: pushers never move by
+   themselves. Run `add <pc>`, put the token in that PC's `AGENTHYDRA_CODEX_HUB_TOKEN`, and restart its pusher,
+   before the window closes.
+5. **Watch `list` until nothing is pending.** The window closes 7 days after the hub first saw the legacy token, or at
+   `AGENTHYDRA_CODEX_HUB_LEGACY_UNTIL`, an ISO 8601 date or date-time, earlier or later. The start is kept in
+   `.pcs.json`, so setting the legacy token again after the window has closed reopens nothing unless you move that
+   date too. For a PC that is off, move it later, or let the window close and fix the PC when it is back (below).
+6. **Close the window.** Remove `AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN` and `AGENTHYDRA_CODEX_HUB_LEGACY_UNTIL` from
+   `hub.env`, and restart the hub: the old value is then nowhere on it. On each PC you may also remove an
+   `AGENTHYDRA_CODEX_HUB_TOKEN` that a setup from before the tray put in the user's environment; it is worthless now.
+
+The migration trusts the old shared token together with each PC's install id, and the install id is no secret: it
+sat in a file anyone on the PC could read. If you think the old token leaked, do not migrate: set no legacy token,
+and pair each PC through the page instead.
+
+**A PC that missed the window.** While the window is open, a PC that is off stays pending as long as its last push
+was within 30 days of the window's start, and moves when it is back. Once the window has closed, or for a PC that
+cannot move by itself (`list` says why), do one of these:
+
+- while the legacy token is still in `hub.env`, move `AGENTHYDRA_CODEX_HUB_LEGACY_UNTIL` later and restart the hub
+  (a folder past the 30 days still needs one of the next two);
+- run `add <pc>` on the hub (`--replace` when the name has a token), and write that token into the PC's `tray.json`
+  by hand, keeping `"hub"`: even a tray from before this change takes it and updates itself, and the new tray fills
+  in the rest;
+- or install the current tray on it by hand, over the old one, and choose Connect this PC.
+
+`revoke <pc>` stops a PC from moving, and `forget <pc>` also removes its copies: it can then come back only by
+pairing.
+
+**The order, and no way back.** The safe order is the hub first, with the legacy token set in the same restart, then
+the builds within the window. A hub that restarts on the new code without the legacy token, one that updated itself
+for example, refuses every PC that has not moved, which shows "The hub refused the token": add the setting, restart,
+and they come back. There is no rollback after the first exchange, though. A hub rolled back to before this change
+refuses every token of a PC's own, and each moved PC then needs Connect this PC, which the current tray takes from
+the old page too. So run the tests (step 1) before you publish the builds (step 3).
 
 ### Moving the hub
 
 A tray has the hub's address from its build. Build the new tray with the old address in `OLD_HUB_URLS`, and hand it
-out from the old hub first ([REFERENCE.md, Moving the hub](REFERENCE.md#codex-chats-from-other-pcs-codex-hub)).
+out from the old hub first ([REFERENCE.md, Moving the hub](REFERENCE.md#codex-chats-from-other-pcs-codex-hub)). Copy
+the whole `codex-hub/` folder to the new server, dot-files included, so that it keeps every PC's token
+([What the hub keeps](#what-the-hub-keeps)).
 
 ## 7. The security model
 
-**What the token allows.** Anyone who has the hub token and can reach `/api/codex-hub/` can:
+**What a PC's token allows.** From wherever `/api/codex-hub/` is reached, a PC's token allows that PC's own pushes,
+which replace that PC's copies on the hub, its own relay, the builds, asking the hub what it has the token under
+(whoami), and retiring itself. It allows nothing for any other PC: whatever name a push or a relay sends, the hub
+takes the PC from the token.
 
-- **Push chats under any PC name, at any time.** That adds chats to the hub's list under that name, and replaces or
-  removes the hub's copies of the chats of a PC that already has that name, even one that is connected. The chats
-  on the PC itself are untouched.
-- **Open the relay for any PC name.** A relay opened for a connected PC's name takes that PC's place: its own relay
-  is closed, and when Desk continues a chat of that PC, what you type and approve in Desk goes to whoever opened the
-  new relay instead.
-- **Download the hub's pusher and tray builds.** They carry your addresses and public key, and nothing secret.
+- **It is bound to one install of the pusher,** the one it was first used with. A push, relay or retire that sends
+  another install id is refused, so a second pusher on the same PC, or a token copied into another PC's `tray.json`,
+  does not act as that PC by mistake. The install id is no second secret, though: whoami answers it to the token
+  itself, and before this change it sat in a file anyone on the PC could read. So treat a PC's token as that PC.
+  Whoever has it can act as that PC, and as no other, until you revoke it, and a revoke cuts them off at once.
+- **The tray makes the token on the PC,** and sends the hub only its id and SHA-256. No token travels from the hub,
+  and the hub keeps none.
 
-The hub's hold on a PC's name ([step 5](#pairing-from-the-connect-button)) is not a check on any of this. It keeps
-two of your own PCs that send the same name from replacing each other's chats, and it works only because each
-pusher sends its install id. A request can leave the id out, and the hub then takes it as it took pushes from
-pushers older than install ids. So treat the token as the key to every PC's copy and relay: if it leaks, change it
-and pair every PC again ([Changing the hub token](#changing-the-hub-token)).
+**What the admin token allows,** on the hub's loopback only: Desk's end of the relay, which runs turns on a connected
+PC, and the admin API, which lists, gives tokens to, revokes and forgets PCs. `/api/codex-hub/` refuses it, and no PC
+is ever given it.
 
-It does not let them:
+**What the legacy token allows:** nothing, unless the migration window is open, and then only for pending PCs, each
+only with its own install id: their pushes and relay, the builds, and one exchange each for a token of its own. As the
+install id is not a secret, what protects the window is the legacy token itself, the window being short, and the
+`CONTESTED` mark that `list` shows on a PC whose exchange came second. If that token may have leaked, pair the PCs
+instead of moving them.
+
+Every refusal of a value that does not have the shape of a PC's token is the same bare 401, whatever the reason, so
+an answer never tells whether a value is the admin token, the legacy token or neither. The hub's log says why, at
+most once a minute for each route and reason, and names a token by its id only.
+
+**The pairing page hands out one-time codes, not tokens.** A code lasts 20 minutes and never past the tray's
+listener, is used once, at most 32 are outstanding, and it is bound to one name and to the token it may replace.
+Replacing a PC that has a token, or a pending one, takes a second page that only the first one leads to. The page is
+built so that another site cannot read it: it refuses a network `Host`, posts only to the tray's port on
+`127.0.0.1`, and is not cached or shown in a frame. Your sign-in is still what keeps it from strangers: whoever
+passes it can pair a PC, which is what it is for.
+
+A PC's token does not let anyone:
 
 - read the hub's chat list or transcripts, which are only on the server's loopback;
 - run anything on the hub;
-- reach Desk's end of the relay, which takes the same token but is never forwarded. On the hub machine, that token
-  lets Desk run turns on a connected PC.
+- reach Desk's end of the relay or the admin API, which are never forwarded.
 
 Even through Desk, a PC's relay lets the hub only resume, read, start and stop turns in existing threads. It never
 starts a thread, changes config or signs in. By default it also refuses a turn without approvals or outside the
-sandbox (`AGENTHYDRA_CODEX_HUB_RELAY`, in [REFERENCE.md](REFERENCE.md#codex-chats-from-other-pcs-codex-hub)).
+sandbox (`AGENTHYDRA_CODEX_HUB_RELAY`, in [REFERENCE.md](REFERENCE.md#codex-chats-from-other-pcs-codex-hub)). The
+commands a relayed turn runs do not see the tokens: every `codex app-server` AgentHydra starts has the
+`AGENTHYDRA_CODEX_HUB_*` settings, and their `CCMANAGERUI_` names, taken out of its environment.
 
-**Who has the token:**
+**Who holds what:**
 
-- the hub's `hub.env`;
-- each PC's `tray.json`, mode 600;
-- anyone who can open the pairing page, which is why the page sits behind your sign-in.
+- the admin token: `hub.env` and Desk's environment, on the server;
+- the legacy token: `hub.env` while you keep it there, and the PCs that have not moved;
+- each PC's token, with its install id: that PC's `tray.json` (mode 600), or a pusher's environment;
+- the tokens' hashes: the hub's `.pcs.json` (mode 600);
+- the signing key: only the machine you sign on, plus your offline copy, never this repository, a build, or the hub's
+  disk beside the builds.
 
-The page is built so that another site cannot read it: it refuses a network `Host`, posts only to the tray's port on
-`127.0.0.1`, and is not cached or shown in a frame. The sign-in is still what keeps it from strangers.
+**When something leaks.** A PC's token: revoke that PC and pair it again. The admin token: change it and restart the
+hub and Desk ([Changing the admin token](#changing-the-admin-token)); no PC is affected. The hub's `.pcs.json`: it
+holds hashes of 256-bit secrets, so there is nothing to do but note it. The signing key:
+[Moving to a new signing key](#moving-to-a-new-signing-key).
 
-**Over the network, HTTPS protects the token.** The token travels in a header on every request, so use `https://`
-for `HUB_URL` and `PAIR_URL`. Over `http://`, anyone on the path can read it.
+**Over the network, HTTPS protects the tokens.** A token travels in a header on every request, and a pairing code in
+the page, so use `https://` for `HUB_URL` and `PAIR_URL`. Over `http://`, anyone on the path can read them.
 
 **What is signed.** Every pusher and tray build the hub hands out is signed with your key, as in step 3. The tray
 checks the signature before it downloads a build, and checks the bytes against the hash after.
@@ -557,13 +780,7 @@ checks the signature before it downloads a build, and checks the bytes against t
 **What is not signed:**
 
 - the first tray you hand out, which is why you compare its SHA-256;
-- the pushes, the relay's messages and the pairing page, which rely on HTTPS, the token and your sign-in.
+- the pushes, the relay's messages and the pairing page, which rely on HTTPS, the PCs' tokens and your sign-in.
 
 A tray built without a key (`ALLOW_NO_KEY=1`) checks no signatures: it takes any build an `https://` hub hands it,
 relying on HTTPS alone.
-
-**Where the secrets live:**
-
-- the hub token: in `hub.env` on the server and `tray.json` on each PC;
-- the private key: only on the machine you sign on, plus your offline copy;
-- neither of them in this repository, in a build, or on the hub's disk beside the builds.

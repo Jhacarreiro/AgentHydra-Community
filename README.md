@@ -173,22 +173,26 @@ you already have.
 
 Pick one AgentHydra as the hub, usually on a home server that stays on, and point each PC at it. Nothing below
 runs until you set its variables. [docs/CODEX-HUB.md](docs/CODEX-HUB.md) walks through running a hub of your own: the
-server, your proxy and sign-in, building and installing the tray, and changing the key or the token.
+server, your proxy and sign-in, building and installing the tray, listing and revoking PCs, and changing the key.
 
 <details>
 <summary><b>Read more: the hub, each PC, the tray app, cloud sessions and the phone</b></summary>
 
-- **The hub:** set `AGENTHYDRA_CODEX_HUB_TOKEN` to a long random token. Like the rest of AgentHydra's API, the
-  hub answers loopback only, so other PCs reach it through a reverse proxy you run: `/api/codex-hub/`, where the
-  token is the authentication, and the pairing page `/codex-hub/pair`, which hands out that token and so is served
-  only behind your own sign-in. On a machine with no screen, `AGENTHYDRA_DESK_AT_BOOT=1` starts the window's
-  server with the daemon, so the proxy has something to reach after a restart. The token is the only lock: whoever
-  has it can push chats and open the relay under any PC's name, so keep it behind HTTPS and your sign-in, and change
-  it if it leaks (every PC then pairs again).
-- **Each PC:** set `AGENTHYDRA_CODEX_HUB_URL` and the same token. Its AgentHydra pushes its Codex chat list and the
-  chats that changed every two minutes; a PC that does not run AgentHydra can run the standalone pusher. A chat
-  archived or deleted on the PC leaves the hub at its next push. The hub's usage analytics leave these chats out,
-  since they are the other PC's usage.
+- **The hub:** set `AGENTHYDRA_CODEX_HUB_TOKEN` to a long random token, your own admin token, which no PC is
+  given. Like the rest of AgentHydra's API, the hub answers loopback only, so other PCs reach it through a reverse
+  proxy you run: `/api/codex-hub/`, where each PC's own token is the authentication, and the pairing page
+  `/codex-hub/pair`, which hands out one-time pairing codes and so is served only behind your own sign-in. On a
+  machine with no screen, `AGENTHYDRA_DESK_AT_BOOT=1` starts the window's server with the daemon, so the proxy has
+  something to reach after a restart.
+- **Each PC has a token of its own:** it pushes and relays as that PC alone, and only from the install it was
+  first used with. `scripts/codex-hub-pcs.ts` on the hub lists the PCs and revokes one at once without touching
+  the others, and a chat in Desk whose PC you revoked says so. A hub set up before this moves its PCs off the one
+  token they shared, by themselves, while a migration window you open lasts.
+- **Each PC:** the tray app below sets it up. Without the tray, set `AGENTHYDRA_CODEX_HUB_URL` and, in
+  `AGENTHYDRA_CODEX_HUB_TOKEN`, a token for that PC from `scripts/codex-hub-pcs.ts add`. Its AgentHydra pushes its
+  Codex chat list and the chats that changed every two minutes; a PC that does not run AgentHydra can run the
+  standalone pusher. A chat archived or deleted on the PC leaves the hub at its next push. The hub's usage
+  analytics leave these chats out, since they are the other PC's usage.
 - **Continuing a chat from the hub:** the PC keeps a connection open to the hub, and when you continue one of its
   chats, its own Codex runs the turn. The PC lets the hub only read, resume, start and stop turns in chats it
   already has (never start a chat, change its configuration or sign in), and by default it refuses a turn without
@@ -198,17 +202,19 @@ server, your proxy and sign-in, building and installing the tray, and changing t
   `ALLOW_NO_KEY=1`. No release includes it. Each build comes with AgentHydra's `LICENSE`, its `NOTICE` and a
   `THIRD-PARTY-LICENSES` file for its system (inside the macOS app), to hand out with it. Two builds of one commit
   with the same addresses and key are the same bytes, so you can check what a PC runs (a Mac's zip has a checksum
-  file of its own instead). Opened once, it
-  installs itself for the user, starts at login, opens the pairing page to get the token, runs the pusher, shows in
-  its icon whether the PC is sending, and takes new pusher and tray builds from the hub, only ones your key signed.
+  file of its own instead). Opened once, it installs itself for the user, starts at login, opens the pairing page
+  to get a token of its own, runs the pusher, shows in its icon whether the PC is sending, and takes new pusher and
+  tray builds from the hub, only ones your key signed.
   A build can trust two keys, so the PCs move to a new key without being set up again.
   `bun scripts/codex-hub-sign.ts` makes the key and signs builds. On a Mac, `build.sh` also builds the macOS app
   (through `build-macos.sh`), and `test-macos.sh` smoke-tests it there.
 - **How far the hub is tested:** this repository's tests run on Linux. They start the real daemon as a hub with two
-  PCs that pair, push, relay and are refused with a wrong or old token, and run the tray end to end against a
-  stand-in hub. In this repository the Windows tray has had only `go vet` and a build, the macOS one has not run,
-  and no real proxy or sign-in is under test. Before the fork, the same hub and tray ran in the maintainer's own
-  setup with Windows PCs and were tried on a Mac.
+  PCs that pair, push and relay with tokens of their own, act only as their own PC whatever name they send, are
+  refused with a wrong token, are revoked one at a time, and move off the shared token of before; and they run the
+  tray end to end against a stand-in hub and against the real one. In this repository the Windows tray has had
+  only `go vet` and a build, the macOS one has not run, and no real proxy or sign-in is under test. Before the
+  fork, the hub and tray, then on one shared token, ran in the maintainer's own setup with Windows PCs and were
+  tried on a Mac.
 - **Claude Code cloud sessions:** set `AGENTHYDRA_CLOUD_SESSIONS=1`. AgentHydra then asks Anthropic's API, with
   each Claude Code CLI login it finds (or a `claude setup-token` token in `CLAUDE_CODE_OAUTH_TOKEN`), for that
   account's cloud and Remote Control sessions, and lists them with your local chats. The token needs the

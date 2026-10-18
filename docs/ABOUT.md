@@ -80,9 +80,12 @@ The intricacies worth remembering: the gotchas, the half-built parts, the decisi
   boolean an agent set for itself read identically to one a human asked for and queued 22 archived chats behind 3
   unarchived ones. `move_chat`, the singular, still takes `archived: true`
   (`orchestrator/scripts/migrate_batch.py`, `server/src/mcp.ts`).
-- The Codex hub is off unless `AGENTHYDRA_CODEX_HUB_TOKEN` is set, and like the rest of the API it answers loopback
-  Hosts only. Its pairing page hands out the hub token, so it is served only behind the operator's own sign-in,
-  never through the forward the pushers use (`server/src/routes/codex-hub.ts`).
+- The Codex hub is off unless `AGENTHYDRA_CODEX_HUB_TOKEN`, the owner's admin token, is set, and like the rest of
+  the API it answers loopback Hosts only. Each PC pushes and relays with a token of its own, which acts for that PC
+  alone and which the hub keeps only as a hash; the routes the PCs use refuse the admin token. Its pairing page
+  hands out one-time pairing codes, so it is served only behind the operator's own sign-in, never through the
+  forward the pushers use (`server/src/routes/codex-hub.ts`, `server/src/core/codex-hub-pcs.ts`). The owner
+  revokes one PC with `scripts/codex-hub-pcs.ts` without touching the others.
 - Nothing upstream wrote after `3a65ba8e` may come into this repository. The audit's `license.boundary` rule and the
   pre-push hook refuse any history that contains the relicensing commit `aee9dfc4` (`scripts/audit-public.mjs`,
   `.githooks/check-public-push.mjs`), but they check ancestry only: a copy or a cherry-pick of upstream's later work
@@ -157,15 +160,19 @@ Each path is where the feature is defined.
   token, and shows them beside local chats, read-only, with working, waiting-on-you and done states. -
   `server/src/cloud-sessions.ts`, `server/src/cloud-sessions-cache.ts`
 - **Codex chats from other PCs (Codex hub)** - Opt-in (`AGENTHYDRA_CODEX_HUB_TOKEN` on the hub,
-  `AGENTHYDRA_CODEX_HUB_URL` on each PC): each PC pushes its Codex chat list and changed rollouts to one hub, which
-  lists, searches and reads them beside its own, marked with their PC and left out of its usage analytics. While the
-  PC is on, Desk continues one of its chats there through a relay; the PC accepts only reads, resumes and turns in
-  existing chats, and by default only with approvals and the sandbox on. - `server/src/core/codex-hub.ts`,
-  `server/src/core/codex-hub-push.ts`, `server/src/core/codex-hub-relay.ts`, `server/src/routes/codex-hub.ts`
+  `AGENTHYDRA_CODEX_HUB_URL` and that PC's own token on each PC): each PC pushes its Codex chat list and changed
+  rollouts to one hub, which lists, searches and reads them beside its own, marked with their PC and left out of its
+  usage analytics. While the PC is on, Desk continues one of its chats there through a relay; the PC accepts only
+  reads, resumes and turns in existing chats, and by default only with approvals and the sandbox on. Each PC has a
+  token of its own, bound to its install; the owner lists and revokes PCs with `scripts/codex-hub-pcs.ts`, and a
+  hub set up before this moves its PCs off their shared token during a migration window. -
+  `server/src/core/codex-hub.ts`, `server/src/core/codex-hub-pcs.ts`, `server/src/core/codex-hub-push.ts`,
+  `server/src/core/codex-hub-relay.ts`, `server/src/routes/codex-hub.ts`, `scripts/codex-hub-pcs.ts`
 - **Codex hub tray app and signed builds** - A tray app per PC pairs it through a page behind the operator's
-  sign-in, starts at login, runs the pusher, and updates the pusher and itself from the hub, taking only builds signed
-  with the operator's ed25519 key (or, built without a key on request, only over https). A build can trust two keys,
-  so the key can change without setting each PC up again, and two builds of one commit are the same bytes. -
+  sign-in and makes it a token of its own there, starts at login, runs the pusher, and updates the pusher and itself
+  from the hub, taking only builds signed with the operator's ed25519 key (or, built without a key on request, only
+  over https). A build can trust two keys, so the key can change without setting each PC up again, and two builds
+  of one commit are the same bytes. -
   `codex-hub-tray/`, `codex-hub-tray/build.sh`,
   `server/src/core/codex-hub-update.ts`, `server/src/core/codex-hub-signature.ts`, `scripts/codex-hub-sign.ts`
 - **Reply into live Claude sessions, single or bulk** - The session composer types a message into the chat's own

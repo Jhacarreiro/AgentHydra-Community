@@ -16,6 +16,7 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Codex chats from your other PCs appear here, and Desk can continue them**
 - **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click**
 - **A guide to running your own Codex hub, with tray builds that come out the same every time**
+- **Each PC on a Codex hub now has a token of its own**
 - **Claude Code cloud and Remote Control sessions can show beside your local chats**
 - **The window can run on a server with no screen and open on your phone behind your own sign-in**
 - **The effort picker is back beside the model**
@@ -43,8 +44,8 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   approvals as usual. Nothing changes until a hub is set up.
 - **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click.** No release includes it:
   you build it from this repository with your hub's addresses and update key, for Windows, macOS or Linux, and each
-  build comes with its licence files. Opened once on a PC, it installs itself, starts at login, and takes the hub's
-  token from the pairing page you serve behind your own sign-in, so nothing is copied by hand. Its icon shows
+  build comes with its licence files. Opened once on a PC, it installs itself, starts at login, and gets a token of its
+  own from the pairing page you serve behind your own sign-in, so nothing is copied by hand. Its icon shows
   whether the PC is sending, not connected, or cannot reach the hub.
 - **A PC's Codex pusher and tray app update themselves from the hub.** Put a new build on the hub and each PC
   fetches the one for its own system, checks its signature and makes sure it starts before it replaces the old
@@ -58,8 +59,11 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   Two builds of one commit give the same checksums, so you can check what a PC runs, and a Mac's download has a
   checksum of its own to compare. The script stops if no key is given, unless you ask for a tray without one.
 - **A guide to running your own Codex hub.** It covers the home server and its port, your own proxy and sign-in,
-  pairing each PC with Connect, installing the tray on Windows, macOS and Linux, and changing the key or the token.
-  It also says plainly what the token allows: whoever has it can push and relay under any PC's name.
+  pairing each PC with Connect, installing the tray on Windows, macOS and Linux, listing and revoking PCs, and
+  changing the key. It also says plainly what each token allows.
+- **Each PC on a Codex hub now has a token of its own.** Revoking one PC no longer means pairing the others again,
+  and a PC can no longer push or relay as another. A hub set up before this moves its PCs over by themselves while
+  its migration window is open.
 - **Codex starts on a Mac or Linux PC that runs AgentHydra as a service.** A service sees fewer program folders
   than your terminal does, so AgentHydra could miss Codex, or find an npm install of it that could not start. It
   now looks where Codex is usually installed and starts it so it finds its own Node.js, and a Codex that fails to
