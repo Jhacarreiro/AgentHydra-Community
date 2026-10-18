@@ -101,8 +101,6 @@ describe('no code points at the project this one was forked from', () => {
   ]
   // Each stays on purpose, and the reason is beside it.
   const ALLOWED = new Set([
-    // The Go module path of the Codex hub tray: a name, never fetched; renaming it moves every import with it.
-    'codex-hub-tray/go.mod',
     // A comment on the public-push guard, about the repository that guard was written for.
     '.githooks/check-public-push.mjs',
     // The public audit's binary provenance record: it says which images came with the fork, and from where.

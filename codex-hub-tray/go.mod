@@ -1,4 +1,4 @@
-module github.com/LunarWerxs/AgentHydra/codex-hub-tray
+module github.com/Jhacarreiro/AgentHydra-Community/codex-hub-tray
 
 go 1.23
 
