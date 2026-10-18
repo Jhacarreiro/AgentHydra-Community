@@ -1,0 +1,147 @@
+# Testing the orchestrator - three tiers, all runnable and confirmable by an AI
+
+Every tier is a plain command with a meaningful exit code and JSON output on demand, so an
+agent can run it, read it, and assert on it without a human watching a screen.
+
+## Tier 1 - unit tests (no fleet, no daemon, no risk)
+
+```sh
+python -m unittest discover -s scripts/tests        # the whole suite
+python -m unittest scripts.tests.test_archive_chat  # one script's suite
+```
+
+Most scripts have a dedicated test file. Nine do not, and are only exercised indirectly or not at
+all: `remote.py`, `remote_tunnel.py`, `saturate.py`, `harvest_todos.py`, `undo.py`,
+`run_locked.py`, `audit_done_bar.py`, `dossier.py` and `attempts.py` (counted 2026-09-13). That
+list is the honest gap, and it matters because `tests/test_collection_guard.py` can only catch a
+test module that exists and collects zero cases, never one that was never written.
+
+The daemon is a stub (`tests/stubdaemon.py`) serving
+declared routes and RECORDING every POST, so tests assert not just exit codes but exactly what
+an act script sent - and, just as important, that a refused act sent NOTHING. Transcripts are
+real temp files with controlled mtimes, so the gate is tested over actual bytes, not mocks of
+itself.
+
+The stub answers `hydralib` IN-PROCESS: a test sets `hydralib.BASE = stub.url` as before, and
+every hydralib call to that BASE is dispatched to the stub's routes without opening a socket
+(`hydralib.INPROC`). The stub still listens on its ephemeral port for anything that speaks HTTP
+itself (a subprocess handed `AGENTHYDRA_URL`, a test using urllib directly) and answers through
+the same dispatcher. Why (measured 2026-09-05): one loopback connection per request left a
+TIME_WAIT socket behind for about two minutes, so the 908-test suite held over a thousand of
+Windows' 16,384 ephemeral ports at a time, and beside other socket-heavy work on the same machine
+a random test could find the "daemon" unreachable and go red with nothing to say why. A test
+that points BASE at a dead port still gets a real connection failure: only a registered stub's
+own URL is answered in-process.
+
+Every test class that runs a script or a state-keeping lib calls `isolate_state_dir(self)`
+(`tests/util.py`) first in `setUp`: it points `ORCHESTRATOR_STATE_DIR` at a private temp dir.
+Without it a test writes the CHECKOUT's own `state/`, which in the live checkout is the real
+orchestrator's ledger, locks and usage-survey cache (measured 2026-09-05: a full run left the
+stub's fake accounts in the cache, and four copies of the suite side by side collided on the
+naming lock). `python scripts/tests/probe_state_dir.py` finds any module that still writes there
+(about fifteen minutes; run it after adding a test that drives a script). A test file with no
+`TestCase` is invisible to `unittest discover` - `test_chatwatch.py` was one until the same day -
+so a script-style check file must carry a wrapper class that runs it.
+
+⛔ **A STUBBED DAEMON MEANS A STUBBED MACHINE, and two reads escape that by default** (2026-09-17).
+`StubDaemon` now switches off the move scripts' collateral watch (`lib/archivewatchlib`) while it
+is up, because that watch reads every chat store ON THIS MACHINE - the real default app's included,
+whatever the stub's fleet says - twice per move, and a chat the owner archives while the suite runs
+would surface as collateral and turn a clean test red. The migrate test bases stub it directly (they
+use no stub daemon). The second is the SIDEBAR: `name_chats.rendered_titles` runs a real PowerShell
+UI read of the live desktop, and neither migrate test file stubbed it - which is what the suite's
+four "pre-existing" reds were (two batches reported unfinished because the real sidebar has no chat
+called "one"; two bounded-phase cases blamed on load when the time was the PowerShell spawn). Both
+bases now stub `name_chats._run_list`. If a new test drives a batch, a move or a naming pass, check
+what it reaches before trusting a red: green on CI and red here means the machine, not the code.
+
+The suite encodes the six inherited rules as regression tests - the Ghost "say the word" case,
+the pending-restart honesty, the breaker cap, the deterministic one-strike stop, the
+recheck-before-acting race, verify-before-claiming - so a change that re-opens a postmortem bug
+fails a named test.
+
+## Tier 2 - smoke (live daemon, READ-ONLY, safe any time)
+
+```sh
+python scripts/smoke.py
+python scripts/dashboard.py --open   # the same read-only chain, as a browser page a human reads
+```
+
+The dashboard is the human-facing member of this tier: it draws the logic tree and dry-runs
+the plan for every chat (state, verdict, why, account, and the terminal command that WOULD do
+it). Its server defines no POST handler, so "this page cannot act" is a structural property -
+and `test_dashboard.py` asserts exactly that, plus that a whole plan build sends zero POSTs.
+
+Proves the whole observe chain against the real daemon: health, fleet shape, sessions shape,
+dossier round-trip, a real gate over the newest chat's transcript, ledger readability. There is
+no POST anywhere in the file, and the unit suite asserts that property against the stub.
+
+## Tier 3 - drill (live daemon, ACTS, reversible by construction)
+
+```sh
+python scripts/drill.py --chat "<some retired junk chat>"          # archive round-trip
+python scripts/drill.py --chat "<a visible chat>" --rename         # UI rename round-trip
+```
+
+The drill exercises the real WRITE path through the production scripts themselves and ends
+where it started:
+
+- **archive drill (legacy path)**: subject must be already-archived, writer-less, in a CLOSED
+  instance without `native-only` routing. That mode refuses archive without its running
+  native connection, so this disk-based round-trip is not a native-control test.
+  unarchive -> verify -> re-archive -> verify. A failure at any point leaves the chat merely
+  visible, never lost, and the output names the exact command that restores it.
+- **rename drill**: subject must be visible in a RUNNING instance. rename to `<title> [drill]`
+  -> verify -> rename back -> verify. Two real UI clicks, landed and confirmed.
+
+## How UI/UX manipulation is tested WITHOUT clicking around
+
+Prefer the production native route for archive and migration-source cleanup. See the
+[native-control operating guide](../../docs/CLAUDE-DESKTOP-NATIVE-CONTROL.md) for automatic
+debugger startup, exact-profile requests and result verification. The mechanics:
+
+- **Native archive uses the running app's main-process session manager**, addressed by
+  exact profile/PID and session identity. The production scripts already attempt
+  `/api/sessions/:id/native-archive`, and `desktop-archive` tries native before disk/UI.
+  A verified native result requires no sidebar lookup, Lua, focus change or legacy retry.
+  Portable guard/transport tests are `server/tests/native-program.test.ts`,
+  `server/tests/inspector-client.test.ts` and `server/tests/claude-native-*.test.ts`; Python
+  routing coverage is in `test_nativearchivelib.py` and `test_native_archive_paths.py`.
+- **Automatic connection startup is per profile**: set `launchDebugger:true` through
+  `/api/claude-native/settings` or Instances tab → gear (Instances settings) → Claude native control, then use the
+  next authorized AgentHydra Open. Do not restart an active desktop to test this. Setting
+  `developer_settings.json` / `allowDevTools` alone only exposes a menu; it does not start
+  the debugger. New profiles need explicit configuration.
+- **No uncertain-result fallback**: `native-only` refuses any unavailable connection.
+  `prefer-native` permits legacy fallback only on proven unavailability before dispatch.
+  Native refusal, malformed result or unknown mutation outcome is terminal in either
+  mode; never repeat it through UIA, Lua or a disk write.
+
+- **Remaining and permitted fallback operations use Windows UI-Automation** (UIA): sidebar kebab =
+  `ExpandCollapse.Expand`, menu items = `Invoke`. Focus-free, cursor-free, and it VERIFIES its
+  own click before reporting ok. Our scripts reach it over HTTP (`/api/chats/:id/rename`), so
+  "clicking the app" is already a programmatic, assertable call - the drill just closes the
+  loop by re-reading the dossier afterwards.
+- **UIA reaches RENDERED rows only** - an archived chat has no sidebar row, which is why the
+  rename drill refuses archived subjects instead of failing confusingly inside the actuator.
+- **The old renderer-CDP experiment is not the main-process native connection.** The stock
+  app rejected the tested Chromium remote-debugging launch. The reviewed managed executable
+  instead enables Node inspector arguments and has verified full startup/native archive.
+  Use that existing launcher; do not repeat the stock renderer-CDP or menu-bootstrap attempts.
+- **A disk flag is not an in-app result.** In the legacy fallback added 2026-09-17,
+  `desktop-archive` writes metadata and then drives the app's own Archive control if its app is
+  RUNNING, answering `stillOnScreen: false` once the row has left the sidebar. `archive_chat.py`
+  reads that: it still reports exit 7 ("written, not claiming success") when only the flag
+  landed, and now continues to normal verification when the daemon settled the click itself,
+  instead of sending the caller round again. The drill's closed-instance disk case applies
+  only where native-only policy is absent. The legacy UIA path both routes share is
+  `misc/Manage-DesktopChat.ps1`, driven server-side by `server/src/ui-archive.ts`.
+
+## What "confirmable by the AI" means here, concretely
+
+- exit codes are a contract, documented per script in its docstring, distinct per refusal kind
+  (gate / deterministic / live-writer / breaker / pending-restart), so an agent can branch on
+  WHY without parsing prose;
+- `--json` on every script emits the full decision record (gate verdict, breaker state, daemon
+  response, verify result);
+- nothing ever claims success it did not re-read from the daemon afterwards.

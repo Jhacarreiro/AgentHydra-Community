@@ -1,0 +1,506 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Hydra Desk is dark only: `dark:` utilities follow the `dark` class index.html puts on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Token layer. Every value is MEASURED from the real Claude Desktop (docs/reference/real/DESIGN.md and
+ * tokens.json, dark theme). One variable per row; nothing here is guessed.
+ */
+:root {
+  /* Surfaces */
+  --bg-sidebar: #111111;
+  --bg-page: #151515;
+  --bg-panel: #1a1a19;
+  --bg-deepest: #0b0b0b;
+  --bg-popover: #20201f; /* popover, composer box, tooltip */
+
+  /* Text */
+  --text: #f0efec;
+  --text-2: #c3c2b7;
+  --text-muted: #898781;
+  --text-shortcut: #a5a49a;
+
+  /* Borders and white fills */
+  --border: #ffffff1a;
+  --border-strong: #ffffff33;
+  --border-stronger: #ffffff66;
+  --fill-hover: #ffffff13;
+  --fill-selected: #ffffff26;
+  --fill-5: #ffffff0d; /* user bubble, repo strip, mode radiogroup, inline code */
+
+  /* Accent (blue) */
+  --accent: #2a78d6;
+  --accent-hover: #3987e5;
+  --accent-text: #6da7ec;
+  --accent-bg: #032042;
+
+  /* Brand (clay) */
+  --brand: #c6613f;
+  --brand-hover: #d97757;
+
+  /* Semantic */
+  --success: #009300;
+  --success-text: #0ca30c;
+  --success-bg: #11260f;
+  --warning: #fab219;
+  --warning-text: #db9300;
+  --warning-bg: #311a00;
+  --danger: #d03b3b;
+  --danger-text: #ec7e7e;
+  --danger-bg: #3c0e0e;
+
+  /* Code and git */
+  --code-text: #ec7e7e;
+  --git-add: #32d74b;
+  --git-del: #ff2c56;
+  --git-mod: #ffd014;
+  --git-merged: #b796ff;
+
+  /* Focus and scrollbar */
+  --focus-ring: inset 0 0 0 1px #151515, 0 0 0 1px #2a78d6, 0 0 6px 1px #184f9599;
+  --scrollbar-thumb: rgba(225, 224, 217, 0.35);
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur-slow: 300ms;
+
+  /*
+   * Hydra Desk status colors. The real sidebar dot language: idle is a 1px ring, working is a solid
+   * dot that blinks. Everything waiting for the owner (needs you, a finished turn unread) is the
+   * warning orange (the real app paints unread blue); error is the danger red. A usage-limited chat
+   * waits for a reset, not for him: its own soft red-pink, a ring, with a text tone for "resets ...".
+   */
+  --status-needs-you: var(--warning);
+  --status-done: var(--success-text);
+  --status-error: var(--danger);
+  --status-limited: #e5689a;
+  --status-limited-text: #f08fb6;
+  --status-working: var(--text-muted);
+  --status-idle: var(--text-muted);
+}
+
+/* Radii, shadows, easing, fonts: theme variables so Tailwind also emits rounded-10, shadow-menu, font-sans ... */
+@theme {
+  --radius-5: 5px; /* small button */
+  --radius-6: 6px; /* row, button */
+  --radius-7: 7px; /* chrome button */
+  --radius-8: 8px;
+  --radius-10: 10px; /* bubble, menu, strip */
+  --radius-12: 12px; /* composer */
+  --radius-22: 22px; /* popover dialog */
+
+  /* The type scale (2026-10-13): the 10 to 14 px sizes the window hard-coded as arbitrary text utilities, declared
+     once, in px as the literals were. No --line-height sub-keys on purpose: an arbitrary size set only the font size,
+     so these must too (leading stays inherited). desk2/hydra names its 10, 11 and 13 px steps the same; lib/utils.ts
+     tells tailwind-merge about every step here. (No bracketed class names in this comment: Tailwind would build them.) */
+  --text-3xs: 10px;
+  --text-2xs: 11px;
+  --text-ui-sm: 12px;
+  --text-ui: 13px;
+  --text-ui-lg: 14px;
+
+  --shadow-menu: 0 8px 24px #00000052, 0 2px 6px #0003;
+  --shadow-composer: inset 0 0 0 1px #ffffff1a, 0 4px 20px #00000009;
+  --shadow-popover: inset 0 0 0 1px #ffffff1a, 0 8px 24px #000000;
+  /* Every picture (tiles, markdown, attachments, the viewer): a light ring and a drop shadow, so a dark screenshot on the
+     dark page still reads as a picture. Outer, not inset: an inset ring is painted under the picture and never shows. */
+  --shadow-picture: 0 0 0 1px #ffffff29, 0 2px 4px #00000059, 0 6px 18px #0000008c;
+  /* A picture waiting in the message box: the same ring, only a faint shadow (the full one looked heavy there). */
+  --shadow-picture-light: 0 0 0 1px #ffffff1f, 0 1px 3px #00000033;
+  --shadow-picture-lifted: 0 0 0 1px #ffffff33, 0 4px 12px #00000080, 0 18px 56px #000000cc;
+
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-snap: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.165, 0.84, 0.44, 1);
+
+  /* anthropic-sans / anthropic-mono are proprietary and not copied: the real app falls back to these on Windows. */
+  --font-sans: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --animate-dot-blink: dframe-dot-blink 2.4s ease-in-out infinite;
+  --animate-dot-pulse: dframe-dot-pulse 3s infinite;
+}
+
+/* Tailwind color utilities (bg-bg-page, text-text-muted, bg-fill-hover, text-danger-text ...) read the :root variables. */
+@theme inline {
+  --color-bg-sidebar: var(--bg-sidebar);
+  --color-bg-page: var(--bg-page);
+  --color-bg-panel: var(--bg-panel);
+  --color-bg-deepest: var(--bg-deepest);
+  --color-bg-popover: var(--bg-popover);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-muted: var(--text-muted);
+  --color-text-shortcut: var(--text-shortcut);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-stronger: var(--border-stronger);
+  --color-fill-hover: var(--fill-hover);
+  --color-fill-selected: var(--fill-selected);
+  --color-fill-5: var(--fill-5);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-text: var(--accent-text);
+  --color-accent-bg: var(--accent-bg);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-success: var(--success);
+  --color-success-text: var(--success-text);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-text: var(--warning-text);
+  --color-warning-bg: var(--warning-bg);
+  --color-danger: var(--danger);
+  --color-danger-text: var(--danger-text);
+  --color-danger-bg: var(--danger-bg);
+  --color-code-text: var(--code-text);
+  --color-git-add: var(--git-add);
+  --color-git-del: var(--git-del);
+  --color-git-mod: var(--git-mod);
+  --color-git-merged: var(--git-merged);
+}
+
+/* Keyframes, verbatim from tokens.json. */
+@keyframes dframe-dot-blink { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+@keyframes dframe-dot-pulse { 0%, 5% { opacity: 0.3; animation-timing-function: cubic-bezier(0.165, 0.84, 0.44, 1); } 15%, 25% { opacity: 1; animation-timing-function: cubic-bezier(0.165, 0.84, 0.44, 1); } 65%, 100% { opacity: 0.3; } }
+@keyframes epitaxy-thinking-shimmer { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
+@keyframes cds-shimmer { 0% { transform: translate(-100%); } 100% { transform: translate(100%); } }
+@keyframes cds-shimmer-text-shine { 0%, 15% { background-position: 83.333% 0px; animation-timing-function: cubic-bezier(0.714, 0.121, 0.211, 0.888); } 85%, 100% { background-position: 16.667% 0px; } }
+@keyframes cds-shimmer-text-band { 0%, 15% { animation-timing-function: cubic-bezier(0.714, 0.121, 0.211, 0.888); translate: -62.5%; } 85%, 100% { translate: -12.5%; } }
+@keyframes codeSpinnerSpin { 0% { transform: translateY(0px); } 10% { transform: translateY(-2em); } 20% { transform: translateY(-4em); } 30% { transform: translateY(-6em); } 40% { transform: translateY(-8em); } 50% { transform: translateY(-8em); } 60% { transform: translateY(-6em); } 70% { transform: translateY(-4em); } 80% { transform: translateY(-2em); } 90% { transform: translateY(0px); } }
+@keyframes spin { 100% { transform: rotate(360deg); } }
+@keyframes code-user-bubble-enter { 0% { opacity: 0; transform: scale(0.92) translateY(6px); } 100% { opacity: 1; transform: none; } }
+@keyframes epitaxy-approval-inline-enter { 0% { opacity: 0; } 100% { opacity: 1; } }
+
+/*
+ * The sidebar's running marks pulse and never spin (owner, 2026-10-05: "instead of being blue spinning icons,
+ * ... a slow blue pulsing icon. And also ... for chats that are remote ... gray pulsing"): the working dot's
+ * blink, gray for a chat, a CliMayte task or another PC's chat, blue for an HSwarm job alone. Only the motion
+ * lives here; the tone is the mark's (components/sidebar/logic.ts runPulse, glyphDotClass). It holds still
+ * when the system asks for reduced motion.
+ */
+@layer components {
+  .run-pulse {
+    animation: var(--animate-dot-blink);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .run-pulse {
+      animation: none;
+    }
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 20px; /* body 14/20 */
+    letter-spacing: normal;
+    background: var(--bg-page);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font-mono);
+    font-feature-settings: "calt" 0, "liga" 0;
+  }
+
+  /* Times and counts. */
+  time,
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Focus ring (low specificity so a component's own ring still wins). */
+  :where(:focus-visible):not(textarea, input) {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  /* Thin scrollbars everywhere; no custom ::selection (native). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
+  }
+
+  /* Icon stroke (lib/icons.ts ICON_STROKE). */
+  .lucide {
+    stroke-width: 1.5;
+  }
+
+  /* Code blocks and tables: 8px scrollbar on a 5% track. */
+  .code-scroll {
+    scrollbar-width: auto;
+    scrollbar-color: var(--scrollbar-thumb) var(--fill-5);
+  }
+  .code-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .code-scroll::-webkit-scrollbar-track {
+    background: var(--fill-5);
+  }
+}
+
+/* Composer, menus and panes (composer fidelity worker; values from docs/reference/real tokens.json). */
+:root {
+  --fill-secondary: #ffffff1a; /* button fill (Create PR, counts chip) */
+  --fill-secondary-hover: #ffffff24;
+  --pro: #7161e0; /* effort name at the top stop */
+  --pro-hover: #8173e3;
+  --slider-track: #ffffff1a;
+  --slider-fill: #ffffff59;
+  --slider-handle: #ffffff;
+  --slider-stop: #ffffff40;
+  --shadow-menu-ringed: inset 0 0 0 1px #ffffff1a, 0 8px 24px #00000052, 0 2px 6px #0003; /* menu ring + shadow */
+  --shadow-composer-focus: inset 0 0 0 1px #ffffff33, 0 4px 20px #00000009; /* not measured: ring goes border-strong */
+  --ease-composer: cubic-bezier(0.4, 0, 0.2, 1);
+  --radius-4: 4px; /* badges (Recommended, Default, counts) */
+  --bg-picture: #232322; /* behind a picture while it loads, and through a transparent one */
+  --on-accent: #ffffff;
+  --on-accent-muted: #ffffffb3;
+  --bg-pure-black: #000;
+  --checker-a: #2b2b29;
+  --checker-b: #3a3a38;
+  --ring-swatch: #ffffff40;
+  --workflow-dot-idle: #444444;
+  --workflow-dot-done: #255da2;
+  --workflow-dot-ring: #303030;
+  --find-match: rgb(250 204 21 / 0.3);
+  --find-active: rgb(249 115 22 / 0.8);
+  --shadow-soft: 0 4px 20px #00000009;
+}
+
+/* Composer polish: the send glyph while the box shows a suggested next prompt (user/window.webp). */
+:root {
+  --send-suggested: #737371;
+}
+
+/*
+ * Nothing moves while the window is unfocused, hidden or minimized (src/lib/pause-motion.ts sets the class):
+ * a running row's pulse or spinner would keep the compositor and WebView2's GPU process drawing 60 frames
+ * a second for nobody. It resumes where it stopped. With reduced motion asked for, pulses hold still and
+ * spinners slow down (they are what says a row is running). A popup's own open and close (anything reka marks with
+ * data-state) keeps running: it lasts a tenth of a second, and a closed tooltip or popover leaves the page only when
+ * its close ends, so paused, every one the pointer passed stayed on screen (owner, 2026-10-06).
+ */
+html.motion-paused *:not([data-state]),
+html.motion-paused *:not([data-state])::before,
+html.motion-paused *:not([data-state])::after {
+  animation-play-state: paused !important;
+}
+/* The window's own title bar (lib/host-window.ts): once the host has taken Windows' caption off, the page's top row is
+   the title bar. Its `title-drag` parts drag the window (WebView2's non-client regions: a double-click maximizes, a
+   right-click opens the window menu), everything that takes a click inside them stays the page's, and anything that
+   can open over them (menus, dialogs, popovers) is never a drag area. --caption-w is the width of the three window
+   buttons (WindowControls.vue) that the title row keeps clear at its right end; host-window.ts sets it. */
+:root {
+  --caption-w: 0px;
+}
+html.own-frame .title-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html.own-frame .title-drag :is(button, a, input, textarea, select, [role='button'], [role='tab'], [role='radio'], [contenteditable]),
+html.own-frame :is([role='menu'], [role='dialog'], [role='listbox'], [role='tooltip'], [data-reka-popper-content-wrapper]),
+html.own-frame .no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* The working mark (transcript/working-mark.css) keeps moving in a window that is on screen but not focused (owner,
+   2026-10-08: "the animation, seems to pause when I click out of it"); hidden or minimized it holds still with the rest.
+   A few small dots on transform and opacity: the compositor's cost, nothing more. */
+html.motion-paused:not(.motion-hidden) .wm *,
+html.motion-paused:not(.motion-hidden) .wm *::before,
+html.motion-paused:not(.motion-hidden) .wm *::after {
+  animation-play-state: running !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse {
+    animation: none;
+  }
+  .animate-spin {
+    animation-duration: 3s;
+  }
+}
+
+/* A row that moves in a reordering list (TransitionGroup) glides to its place. */
+.v-move {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .v-move {
+    transition: none;
+  }
+}
+
+.tip[data-state] {
+  animation: tip-in var(--dur-fast) var(--ease-out);
+}
+@keyframes tip-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Fade mask behind a row's control: 32px for a chat, 24px for an external one, 44px while the control shows. */
+.row-title {
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+.ext-title {
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+.group\/row:hover .row-title,
+.row-title-open,
+.group\/row:hover .ext-title,
+.ext-title-open {
+  mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent calc(100% - 20px));
+}
+/* The speaker (AudioButton.vue) sits at the right end, and left of the three dots while those show: the title fades earlier. */
+.row-title-audio,
+.ext-title-audio {
+  mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent calc(100% - 20px));
+}
+.group\/row:hover .row-title-audio,
+.row-title-open.row-title-audio,
+.group\/row:hover .ext-title-audio,
+.ext-title-open.ext-title-audio {
+  mask-image: linear-gradient(to right, #000 calc(100% - 64px), transparent calc(100% - 40px));
+}
+
+.tx-annotate-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--bg-popover);
+  box-shadow: var(--shadow-menu-ringed);
+}
+.tx-annotate-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color 60ms, color 60ms;
+}
+.tx-annotate-btn:hover:not(:disabled) {
+  background: var(--fill-hover);
+  color: var(--text);
+}
+.tx-annotate-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.tx-annotate-on {
+  background: var(--fill-hover);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.tx-annotate-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  box-shadow: inset 0 0 0 1px var(--ring-swatch);
+}
+.tx-annotate-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border);
+}
+.tx-annotate-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.tx-annotate-text:hover:not(:disabled) {
+  background: var(--fill-hover);
+  color: var(--text);
+}
+.tx-annotate-save {
+  background: var(--text);
+  color: var(--bg-page);
+}
+.tx-annotate-save:hover:not(:disabled) {
+  background: var(--text);
+  color: var(--bg-page);
+  opacity: 0.9;
+}
+.tx-annotate-save:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.tx-annotate-sheet {
+  border-radius: 6px;
+  box-shadow: var(--shadow-picture-lifted);
+}
+
+.tx-viewer-img {
+  /* The checkerboard SageThumbs draws behind a transparent picture. */
+  background-color: var(--checker-a);
+  background-image: conic-gradient(var(--checker-b) 25%, transparent 0 50%, var(--checker-b) 0 75%, transparent 0);
+  background-size: 16px 16px;
+}
+.tx-viewer-pen {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text-2);
+  background: var(--fill-5);
+  box-shadow: inset 0 0 0 1px var(--border);
+  cursor: pointer;
+  transition: background-color 60ms, color 60ms;
+}
+.tx-viewer-pen:hover {
+  background: var(--fill-hover);
+  color: var(--text);
+}

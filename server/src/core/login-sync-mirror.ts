@@ -1,0 +1,222 @@
+// server/src/core/login-sync-mirror.ts — this PC's copy of the login sync store's three lists
+// (logins, queues, chats: id or pc, version, meta, updatedAt), kept current from the Worker's changes
+// feed so a pass asks the store for what changed, not for every row of every table.
+//
+// refresh() with no cursor reads the three lists; the cursor is the lowest x-store-rev among them (the
+// Worker reads the rev before the list, so that can only re-send a row, never miss one). With a cursor
+// it reads GET /v1/changes?since=cursor, upserts the rows, drops the gone ids and moves the cursor.
+// Anything the feed cannot answer (a Worker without the route, a list without x-store-rev, a refused
+// request, {full: true}) drops the cursor and takes the first-pass path: the full lists, which is how
+// sync worked before the feed. One mirror per store; every consumer of a pass shares it.
+//
+// getItem() fetches one row's blob (GET /v1/<table>/<id>) and keeps the reply, keyed by the version the
+// mirror lists for that row: a row whose version did not change is never fetched again. D1 bills the
+// row of every fetch, and a row a PC cannot act on (a login that cannot land while a session runs, a
+// chat that diverged) was fetched again by every pass, twice a minute, for nothing new.
+
+export type Table = 'logins' | 'queues' | 'chats'
+type Reply = { status: number; json: any; rev?: number; seen?: Record<string, number> }
+export type Call = (
+  method: string,
+  path: string,
+  headers?: Record<string, string>,
+) => Promise<Reply>
+export interface MirrorRow {
+  version: number
+  meta?: any
+  updatedAt?: number
+  [k: string]: any
+}
+
+const TABLES: Array<{ name: Table; key: 'id' | 'pc' }> = [
+  { name: 'logins', key: 'id' },
+  { name: 'queues', key: 'pc' },
+  { name: 'chats', key: 'id' },
+]
+const KEY = { logins: 'id', queues: 'pc', chats: 'id' } as const
+
+/** The Worker's x-seen header (`<pc>=<epoch ms>,...`): when it last saw each OTHER PC poll the changes
+ *  feed. Malformed entries are skipped; no header reads as none. */
+export function parseSeen(header: string | null): Record<string, number> | undefined {
+  if (header === null) return undefined
+  const out: Record<string, number> = {}
+  for (const part of header.split(',')) {
+    const m = /^\s*([0-9a-fA-F-]{36})=(\d+)\s*$/.exec(part)
+    if (m) out[m[1]!.toLowerCase()] = Number(m[2])
+  }
+  return out
+}
+
+/** A refresh younger than this is reused: consumers on separate timers share one request. */
+export const MIRROR_FRESH_MS = 20_000
+
+/** Replies kept by getItem, at most this many (each blob is up to 256 KB), oldest first out. */
+const ITEMS_KEPT = 64
+
+export type View = { ok: true; rows: MirrorRow[] } | { ok: false; reply: Reply }
+
+export class StoreMirror {
+  private rowsBy: Record<Table, Map<string, MirrorRow>> = {
+    logins: new Map(),
+    queues: new Map(),
+    chats: new Map(),
+  }
+  private failed: Partial<Record<Table, Reply>> = {}
+  /** Tables whose full list was read (or failed) and that the changes feed keeps current. */
+  private listed = new Set<Table>()
+  private cursor: number | null = null
+  private at = 0
+  private changed: Record<Table, number> = { logins: 0, queues: 0, chats: 0 }
+  private queue: Promise<void> = Promise.resolve()
+  private items = new Map<string, { stamp: string; reply: Reply }>()
+  private seen: Record<string, number> = {}
+  /** This PC's id, sent with every changes poll: the Worker stamps it seen, which is how the other PC
+   *  knows this one is alive (no upload needed for that). */
+  pc?: string
+
+  constructor(private readonly call: Call) {}
+
+  /** How many refreshes brought rows of `tables` in or out (the feed's changes, a full list). The sync
+   *  loop compares it across a pass: unchanged means the store had nothing new for this PC there. */
+  changesIn(tables: Table[]): number {
+    return tables.reduce((n, t) => n + this.changed[t], 0)
+  }
+
+  /** Bring `tables` (default: logins) up to date. `maxAgeMs` reuses a refresh at most that old (0:
+   *  always ask); `full` reads the full lists whatever the cursor. Calls run one after another, so a
+   *  second caller within the window finds the first one's answer. A table nobody asked for is never
+   *  listed (a PC that shares no chats makes no chat request). */
+  refresh(opts: { tables?: Table[]; maxAgeMs?: number; full?: boolean } = {}): Promise<void> {
+    const tables = opts.tables ?? ['logins']
+    const next = this.queue.then(() => {
+      const covered = tables.every((t) => this.listed.has(t))
+      if (!opts.full && covered && this.at && Date.now() - this.at < (opts.maxAgeMs ?? 0)) return
+      return this.run(tables, opts.full === true)
+    })
+    this.queue = next.catch(() => {})
+    return next
+  }
+
+  private async run(tables: Table[], full: boolean): Promise<void> {
+    if (full) this.cursor = null
+    if (this.cursor !== null && !(await this.applyChanges(this.cursor))) this.cursor = null
+    if (this.cursor === null) {
+      // The first pass, a fallback, or {full: true}: the lists of what is asked for.
+      this.listed = new Set()
+      this.failed = {}
+      await this.readLists(tables, null)
+    } else {
+      const missing = tables.filter((t) => !this.listed.has(t))
+      if (missing.length) await this.readLists(missing, this.cursor)
+    }
+    this.at = Date.now()
+  }
+
+  /** One row with its blob. A 200 reply is kept while the mirror lists the row at the same version and
+   *  update time, so asking again costs nothing; any other reply, and a row the mirror does not list,
+   *  goes to the store every time. The caller still gets the store's own reply object. */
+  async getItem(table: Table, id: string): Promise<Reply> {
+    const path = `/v1/${table}/${id}`
+    const listed = this.rowsBy[table].get(id)
+    const stamp = listed ? `${listed.version}/${listed.updatedAt ?? ''}` : null
+    const kept = this.items.get(path)
+    if (kept && stamp !== null && kept.stamp === stamp) return kept.reply
+    this.items.delete(path)
+    const reply = await this.call('GET', path)
+    const j = reply.json
+    if (reply.status === 200 && typeof j?.blob === 'string' && Number.isInteger(j.version)) {
+      this.items.set(path, { stamp: `${j.version}/${j.updatedAt ?? ''}`, reply })
+      if (this.items.size > ITEMS_KEPT) this.items.delete(this.items.keys().next().value as string)
+    }
+    return reply
+  }
+
+  /** Drop the kept reply of `path` (/v1/<table>/<id>): this PC wrote or deleted that row, so what the
+   *  mirror lists for it is behind the store until the next refresh. */
+  forget(path: string): void {
+    this.items.delete(path.split('?')[0])
+  }
+
+  /** When the Worker last saw each other PC poll (epoch ms), from the changes feed's answers. */
+  lastSeen(): Record<string, number> {
+    return { ...this.seen }
+  }
+
+  /** The feed's answer applied; false when it gave none (the caller then reads the lists). */
+  private async applyChanges(since: number): Promise<boolean> {
+    let r: Reply
+    try {
+      // The cursor doubles as the ETag: an unchanged store answers 304, which costs the Worker no
+      // rows. A Worker that predates it ignores the header and answers 200 as before.
+      r = await this.call('GET', `/v1/changes?since=${since}`, {
+        'if-none-match': `"${since}"`,
+        ...(this.pc ? { 'x-agenthydra-pc': this.pc } : {}),
+      })
+    } catch {
+      return false
+    }
+    for (const [pc, at] of Object.entries(r.seen ?? {}))
+      this.seen[pc] = Math.max(this.seen[pc] ?? 0, at)
+    if (r.status === 304) return true
+    const j = r.json
+    if (r.status !== 200 || j?.full === true || !Number.isInteger(j?.rev)) return false
+    for (const g of Array.isArray(j.gone) ? j.gone : [])
+      if (g?.table in KEY) {
+        this.changed[g.table as Table]++
+        this.rowsBy[g.table as Table].delete(g.id)
+        this.items.delete(`/v1/${g.table}/${g.id}`)
+      }
+    for (const t of TABLES)
+      for (const row of Array.isArray(j[t.name]) ? j[t.name] : []) {
+        this.rowsBy[t.name].set(row[t.key], row)
+        this.changed[t.name]++
+      }
+    this.cursor = j.rev
+    return true
+  }
+
+  /** Full lists of `tables`. The cursor becomes the lowest rev among them and `cursor`; none (null)
+   *  when a list failed or came without x-store-rev, so the next refresh reads the lists again. */
+  private async readLists(tables: Table[], cursor: number | null): Promise<void> {
+    let low = cursor
+    let complete = true
+    for (const t of TABLES.filter((x) => tables.includes(x.name))) {
+      delete this.failed[t.name]
+      this.listed.add(t.name)
+      const res = await this.listOne(t.name, t.key)
+      this.changed[t.name]++
+      if (!res || res.rev < 0) complete = false
+      else low = low === null ? res.rev : Math.min(low, res.rev)
+    }
+    this.cursor = complete ? low : null
+  }
+
+  /** One full list into the mirror; its rev (-1 when the header is missing), null when it failed. */
+  private async listOne(name: Table, key: 'id' | 'pc'): Promise<{ rev: number } | null> {
+    let r: Reply
+    try {
+      r = await this.call('GET', `/v1/${name}`)
+    } catch (err) {
+      r = { status: 0, json: { error: err instanceof Error ? err.message : String(err) } }
+    }
+    if (r.status !== 200 || !Array.isArray(r.json?.[name])) {
+      this.failed[name] = r
+      this.rowsBy[name] = new Map()
+      return null
+    }
+    this.rowsBy[name] = new Map((r.json[name] as MirrorRow[]).map((row) => [row[key], row]))
+    return { rev: typeof r.rev === 'number' && Number.isInteger(r.rev) ? r.rev : -1 }
+  }
+
+  /** The rows of one table as of the last refresh, ordered by id like the list route; or the store's
+   *  refusal when that table's list failed. */
+  view(table: Table): View {
+    const reply = this.failed[table]
+    if (reply) return { ok: false, reply }
+    const key = KEY[table]
+    const rows = [...this.rowsBy[table].values()].sort((a, b) =>
+      String(a[key]) < String(b[key]) ? -1 : String(a[key]) > String(b[key]) ? 1 : 0,
+    )
+    return { ok: true, rows }
+  }
+}

@@ -1,0 +1,1509 @@
+// GitHub-Releases self-updater for the COMPILED distribution.
+//
+// The git-based engine (updater-engine.mjs) can't work in a packaged build (no .git, no server/src).
+// This is its compiled-mode counterpart: it asks the GitHub Releases API for the latest tag, and —
+// when newer — downloads that release's bundle for THIS platform, extracts it beside the running
+// binary, and swaps the self-contained executable in place. It exposes the SAME UpdateStatus / UpdateApplyResult
+// shape the engine does, so updater.ts, the /api/update routes, the auto-update loop, and the web UI
+// all drive it unchanged.
+//
+// The binary swap is the delicate part, done defensively:
+//   1. Stage the download+extract INSIDE the install dir (so every rename is same-volume — a temp
+//      dir on another drive would make renameSync throw EXDEV mid-swap).
+//   1b. VERIFY the archive's SHA-256 against the release's SHA256SUMS.txt BEFORE extracting it or
+//      running anything out of it (verifyArchiveChecksum) — a version string is a compatibility
+//      canary, not an integrity check, and running the canary already executes the download.
+//   2. PROVE the new exe runs (`<new> --version` prints the expected version) BEFORE touching the
+//      live install — never swap in a binary that doesn't launch.
+//   3. Rename the running exe aside (allowed on Windows even while running; fine on POSIX) so it can
+//      be rolled back, then move the new exe into its place.
+//   4. On any failure mid-swap, restore from the renamed-aside originals.
+// Leftover `*.old-*` artifacts are swept on the next boot (cleanupStaleUpdateArtifacts).
+//
+// From 2.0.0 the archive also carries desk2/ (AgentHydra 2.0's window) and its dev-servers service.
+// Desk 2 is reconciled file by file (a running bun.exe is moved aside, not overwritten), stopped before
+// its files are replaced and started again after. The launcher downloads runtime/bun into runtime/ on
+// first run (or when app/bun-version changes) and never ships it; a daemon missing app/ repairs it
+// from its own version's archive at boot.
+
+import { spawn } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import os from 'node:os'
+import { basename, dirname, join } from 'node:path'
+import { APP_ROOT, appEnv, IS_RELEASE, LAUNCHER_PATH, SERVICE_NAME, VERSION } from './config'
+import { getSetting, setSetting } from './db'
+import { desk2 } from './desk2'
+import { orchestratorBusy } from './orchestrator'
+import { retireLegacyTrayHost } from './tray-bootstrap.mjs'
+import { TRAY_HOST_CONFIG } from './tray-host'
+import {
+  beginUpdateProgress,
+  finishUpdateProgress,
+  setUpdateBytes,
+  setUpdatePhase,
+} from './update-progress'
+import type { UpdateApplyResult, UpdateStatus } from './updater-engine.mjs'
+
+const REPO = 'LunarWerxs/agenthydra'
+const RELEASES_PAGE = `https://github.com/${REPO}/releases`
+/** LunarWerx's Studio proxy: relays GitHub's `releases/latest` JSON for this repo VERBATIM (so
+ *  every reader below is unchanged), and logs one anonymous install-count row per hit (random
+ *  install id, app version, coarse OS tag, and a CDN-derived coarse country — never the caller's
+ *  IP; 90-day retention). This IS the app's update check, not an addition to it: replacing the
+ *  former direct `api.github.com` call here means the periodic check that already ran adds zero
+ *  extra network traffic. See README.md "Update check" for the user-facing disclosure. */
+const STUDIO_LATEST_API = 'https://studio.connectionsapi.com/v1/app/agenthydra/latest'
+/** The plain GitHub API, carrying no install id and no version/os telemetry. Serves two jobs:
+ *  the PRIVACY path (pinging disabled, see {@link pingOptedOut}, so opting out still leaves
+ *  update-checking working) and, since 2026-08, the RESILIENCE path — {@link fetchLatestRelease}
+ *  retries here whenever the Studio proxy fails, so a proxy outage or a moved path can never
+ *  strand an install the way YTSort's renamed update URL did. */
+const GITHUB_LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
+
+// ── anonymous install ping ──────────────────────────────────────────────────────────────────
+//
+// Piggybacks entirely on the update check above: no separate request, no separate timer. The
+// settings table (server/src/db.ts) already IS "the app's existing config/state location" — the
+// auto-update loop persists its own settings there — so the install id and the reported flag
+// live beside them rather than inventing a second store.
+
+/** Windows build-number → "win11-26100" / "win10-19045", using Microsoft's Windows 11 cutover
+ *  build (22000). Exported so the parsing logic is testable independent of the host OS. */
+export function formatWindowsTag(release: string): string {
+  const build = Number(release.split('.')[2])
+  if (!Number.isFinite(build)) return 'windows'
+  return `win${build >= 22000 ? 11 : 10}-${build}`
+}
+
+/** Coarse OS tag sent with the ping: Windows gets its build number, everything else gets its
+ *  plain family. Never anything more identifying (no hostname, no arch, no locale). */
+export function coarseOsTag(): string {
+  if (process.platform === 'win32') return formatWindowsTag(os.release())
+  if (process.platform === 'darwin') return 'macos'
+  if (process.platform === 'linux') return 'linux'
+  return process.platform
+}
+
+/** Anonymous per-install id sent as `X-Install-Id`. Generated once and persisted in the settings
+ *  table; reused for the life of the install. Never derived from hostname, MAC, username, or any
+ *  other machine identifier. */
+export function installId(): string {
+  const existing = getSetting('app_install_id')
+  if (existing) return existing
+  const id = randomUUID()
+  setSetting('app_install_id', id)
+  return id
+}
+
+function pingAlreadyReported(): boolean {
+  return getSetting('app_ping_reported') === '1'
+}
+/** Called once, only after a ping the server actually received (HTTP success) — never before,
+ *  so a request that never left the machine (offline, timeout) does not consume the one-time
+ *  `new=1` signal. */
+function markPingReported(): void {
+  setSetting('app_ping_reported', '1')
+}
+
+/** True when the anonymous ping should be skipped: an explicit opt-out, or a dev/test/CI run
+ *  (which must never inflate install-count analytics or depend on network access). Update
+ *  CHECKING itself keeps working either way — it just falls back to asking GitHub directly,
+ *  carrying no install id and no version/os telemetry. */
+export function pingOptedOut(): boolean {
+  return appEnv('NO_PING') === '1' || process.env.NODE_ENV === 'test' || !!process.env.CI
+}
+
+/** Build the request for "the latest release" — the one call that serves both jobs (update info
+ *  + anonymous install ping) when pinging is allowed, or GitHub directly with no telemetry when
+ *  it is not. Exported so the URL/header shape is unit-testable without a real network call. */
+export function buildLatestReleaseRequest(): { url: string; headers: Record<string, string> } {
+  const headers: Record<string, string> = {
+    accept: 'application/vnd.github+json',
+    'user-agent': `${SERVICE_NAME}/${VERSION}`,
+  }
+  if (pingOptedOut()) return { url: GITHUB_LATEST_API, headers }
+
+  headers['X-Install-Id'] = installId()
+  const params = new URLSearchParams({ v: VERSION, os: coarseOsTag() })
+  if (!pingAlreadyReported()) params.set('new', '1')
+  return { url: `${STUDIO_LATEST_API}?${params.toString()}`, headers }
+}
+
+/** Fire the request built above. Bounded to 5s so a slow/unreachable endpoint never turns an
+ *  update check into a hang — every caller already wraps this in try/catch and treats a failure
+ *  as "no answer", exactly as before this ping existed.
+ *
+ *  On a Studio failure this retries against {@link GITHUB_LATEST_API}. Note that constant was
+ *  already here but only for the PRIVACY path (ping opted out); it was never a failure path, so
+ *  until now a broken proxy stranded this install exactly like any other single-endpoint app.
+ *
+ *  Why it matters (YTSort, 2026-08): a shipped artifact whose only update URL later stopped
+ *  resolving left every install silently polling a dead link for six months, with no signal to
+ *  the users or the maintainer. GitHub's own API is the right backstop because it is the one
+ *  URL here a rename cannot orphan — GitHub redirects both owner and repo renames.
+ *
+ *  `viaFallback` exists so the caller does NOT mark the install-count ping reported for a
+ *  response Studio never served: that would burn this install's one-time `new=1` on a request
+ *  the analytics side never saw. */
+async function fetchLatestRelease(): Promise<{ res: Response; viaFallback: boolean }> {
+  const { url, headers } = buildLatestReleaseRequest()
+  let res: Response | null = null
+  let primaryError: unknown = null
+  try {
+    res = await fetch(url, { headers, signal: AbortSignal.timeout(5000) })
+  } catch (e) {
+    primaryError = e
+  }
+  if (res?.ok) return { res, viaFallback: false }
+  // Already talking to GitHub (ping opted out) — there is no second opinion left to ask for.
+  if (url === GITHUB_LATEST_API) {
+    if (res) return { res, viaFallback: false }
+    throw primaryError
+  }
+  let fallback: Response
+  try {
+    fallback = await fetch(GITHUB_LATEST_API, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'user-agent': `${SERVICE_NAME}/${VERSION}`,
+      },
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch (e) {
+    if (primaryError) throw primaryError
+    if (res) return { res, viaFallback: false }
+    throw e
+  }
+  // Backstop unhappy too: hand back the PRIMARY's response so the reason an operator reads
+  // names the endpoint that actually broke rather than the one standing in for it.
+  if (!fallback.ok) {
+    if (res) return { res, viaFallback: false }
+    throw primaryError
+  }
+  return { res: fallback, viaFallback: true }
+}
+
+/** This binary's release target string (matches the release-asset naming: windows-x64, linux-arm64…). */
+export function currentTarget(): string {
+  const os = process.platform === 'win32' ? 'windows' : process.platform // darwin | linux | windows
+  return `${os}-${process.arch}` // arch is already x64 | arm64
+}
+
+/** `1.2.3` → [1,2,3]; strips a leading `v`. Non-numeric parts become 0. */
+function parseVersion(v: string): number[] {
+  return v
+    .replace(/^v/, '')
+    .split(/[.+-]/)
+    .slice(0, 3)
+    .map((n) => Number.parseInt(n, 10) || 0)
+}
+/** True when `remote` is a strictly newer semver than `local`. */
+export function isNewer(remote: string, local: string): boolean {
+  const a = parseVersion(remote)
+  const b = parseVersion(local)
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0)
+    if (d !== 0) return d > 0
+  }
+  return false
+}
+
+interface GhAsset {
+  name: string
+  browser_download_url: string
+  size: number
+}
+interface GhRelease {
+  tag_name: string
+  draft: boolean
+  prerelease: boolean
+  assets: GhAsset[]
+}
+
+/** The manifest release.yml publishes beside the archives (`sha256sum out/* > out/SHA256SUMS.txt`)
+ *  and install.ps1 already refuses to install without. */
+export const CHECKSUM_MANIFEST = 'SHA256SUMS.txt'
+
+/**
+ * `sha256sum` output -> basename -> lowercase hex. Tolerates the binary-mode `*` marker, CRLF, blank
+ * lines and paths with directories (the workflow hashes `out/<name>`); anything that is not
+ * `<64 hex> <path>` is skipped rather than guessed at.
+ */
+export function parseSha256Sums(text: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const raw of text.split(/\r?\n/)) {
+    const m = /^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$/.exec(raw)
+    if (!m) continue
+    const name = m[2]!.replace(/\\/g, '/').split('/').pop()
+    if (name) out.set(name, m[1]!.toLowerCase())
+  }
+  return out
+}
+
+/** SHA-256 of a file on disk, streamed (release archives are ~100 MB). */
+export async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256')
+  for await (const chunk of Bun.file(path).stream()) hash.update(chunk)
+  return hash.digest('hex')
+}
+
+/**
+ * Does the downloaded archive match what the release's manifest says it should be? (audit AH-38)
+ *
+ * The updater used to establish that a download was genuine by RUNNING it (`<exe> --version`
+ * must print the expected version) - a compatibility canary, not an integrity check, and by the
+ * time it answered the downloaded program had already executed. This runs first, on the bytes,
+ * before extraction and before any candidate is launched. Missing manifest, missing entry and
+ * mismatch are all refusals: an unverifiable download is not installed.
+ *
+ * Boundary, stated plainly: the manifest is downloaded from the same release as the archive, so
+ * this proves the bytes are the ones the release published, not that the publisher is who you
+ * think - a compromised release account can sign its own manifest. Publisher identity needs a
+ * signature against a key shipped in this binary; that is not built.
+ */
+export async function verifyArchiveChecksum(
+  archivePath: string,
+  assetName: string,
+  manifestText: string,
+): Promise<{ ok: true; sha256: string } | { ok: false; reason: string }> {
+  const sums = parseSha256Sums(manifestText)
+  const expected = sums.get(assetName)
+  if (!expected)
+    return {
+      ok: false,
+      reason: `${CHECKSUM_MANIFEST} has no entry for ${assetName} (${sums.size} entr${sums.size === 1 ? 'y' : 'ies'} read) - refusing an unverifiable download`,
+    }
+  let actual: string
+  try {
+    actual = await sha256File(archivePath)
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `could not hash the download: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+  if (actual !== expected)
+    return {
+      ok: false,
+      reason: `SHA-256 mismatch for ${assetName}: the release manifest says ${expected.slice(0, 12)}…, the download is ${actual.slice(0, 12)}… - refusing a download that is not what was published`,
+    }
+  return { ok: true, sha256: actual }
+}
+
+/** The compressed updater asset for THIS platform. A release may also expose a direct Windows
+ *  `.exe` for humans; extension matching makes updater selection independent of upload order. */
+export function assetForThisPlatform(assets: GhAsset[]): GhAsset | null {
+  const target = currentTarget()
+  const extension = process.platform === 'win32' ? '.zip' : '.tar.gz'
+  return assets.find((a) => a.name.endsWith(`-${target}${extension}`)) ?? null
+}
+
+let cached: { value: UpdateStatus; at: number } | null = null
+const CACHE_TTL_MS = 5 * 60 * 1000
+
+function baseStatus(overrides: Partial<UpdateStatus>): UpdateStatus {
+  return {
+    ok: true,
+    service: SERVICE_NAME,
+    currentVersion: VERSION,
+    currentCommit: null,
+    remoteCommit: null,
+    branch: null,
+    upstream: null,
+    // A non-null `remote` keeps the web UI from graying the controls out as "no update source".
+    remote: RELEASES_PAGE,
+    dirty: false,
+    updateAvailable: false,
+    canApply: false,
+    checkedAt: Date.now(),
+    reason: null,
+    components: componentVersions(APP_ROOT),
+    ...overrides,
+  }
+}
+
+export async function checkForUpdate(opts: { fresh?: boolean } = {}): Promise<UpdateStatus> {
+  if (!opts.fresh && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value
+
+  let release: GhRelease
+  try {
+    const { res, viaFallback } = await fetchLatestRelease()
+    if (!res.ok) {
+      return baseStatus({
+        ok: false,
+        reason:
+          // 429 is GitHub's SECONDARY rate limit and it is the same situation as the 403 primary
+          // one: transient, self-resolving, nothing the user broke. Reporting it as the generic
+          // "couldn't reach the API" made a wait-and-retry look like a dead endpoint, which is the
+          // kind of message that sends someone hunting for a network fault that isn't there.
+          res.status === 403 || res.status === 429
+            ? 'GitHub API rate limit reached — try the check again later.'
+            : `couldn't reach the GitHub Releases API (HTTP ${res.status}).`,
+      })
+    }
+    // The ping succeeded (the server answered) — record it before touching the body, so a
+    // malformed/unexpected JSON payload still counts as "this install was heard from".
+    // Not for a fallback response: Studio never served it, so it never saw the ping either.
+    if (!pingOptedOut() && !viaFallback) markPingReported()
+    release = (await res.json()) as GhRelease
+  } catch (e) {
+    return baseStatus({
+      ok: false,
+      reason: `couldn't reach the GitHub Releases API (${e instanceof Error ? e.message : String(e)}).`,
+    })
+  }
+
+  const remoteVersion = release.tag_name?.replace(/^v/, '') ?? ''
+  const available = !!remoteVersion && isNewer(remoteVersion, VERSION)
+  const asset = available ? assetForThisPlatform(release.assets ?? []) : null
+
+  const value = baseStatus({
+    remoteCommit: release.tag_name ?? null,
+    updateAvailable: available,
+    canApply: available && !!asset,
+    reason: !available
+      ? null
+      : asset
+        ? `v${remoteVersion} is available.`
+        : `v${remoteVersion} is available, but no ${currentTarget()} build is attached to it — download it from ${RELEASES_PAGE}.`,
+  })
+  cached = { value, at: Date.now() }
+  return value
+}
+
+/** Await a child process; reject on non-zero exit. */
+function run(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: 'ignore', windowsHide: true })
+    child.on('error', reject)
+    child.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code ?? 'null'}`)),
+    )
+  })
+}
+
+/** `<exe> --version` prints exactly `expected` — the gate that a downloaded binary actually runs
+ *  before it's allowed to replace the live one. */
+function verifyExeVersion(exePath: string, expected: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let out = ''
+    let done = false
+    const finish = (ok: boolean) => {
+      if (done) return
+      done = true
+      resolve(ok)
+    }
+    try {
+      const child = spawn(exePath, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] })
+      const timer = setTimeout(() => {
+        child.kill()
+        finish(false)
+      }, 15_000)
+      child.stdout?.on('data', (d) => {
+        out += String(d)
+      })
+      child.on('error', () => {
+        clearTimeout(timer)
+        finish(false)
+      })
+      child.on('exit', (code) => {
+        clearTimeout(timer)
+        finish(code === 0 && out.trim().replace(/^v/, '') === expected.replace(/^v/, ''))
+      })
+    } catch {
+      finish(false)
+    }
+  })
+}
+
+/**
+ * Stream a download to disk, publishing bytes-received as it goes (see update-progress.ts).
+ *
+ * `Bun.write(path, response)` is the shorter way to do this and was what ran here before, but it is
+ * opaque: the whole transfer is one await with nothing observable in between, which is precisely
+ * what made a healthy multi-MB download look like a hang.
+ *
+ * `expected` comes from the release asset's own `size`. The response's content-length is preferred
+ * when present (a redirect to a CDN can serve a different encoding), and a missing one is reported
+ * as null rather than guessed — the UI then shows bytes without a percentage.
+ */
+async function writeWithProgress(
+  response: Response,
+  destPath: string,
+  expected: number,
+): Promise<void> {
+  const header = Number(response.headers.get('content-length'))
+  const total = Number.isFinite(header) && header > 0 ? header : (expected ?? null)
+  const body = response.body
+  if (!body) {
+    // No readable stream (shouldn't happen for a release asset) — fall back to the simple path
+    // rather than failing an update over a missing progress nicety.
+    await Bun.write(destPath, response)
+    return
+  }
+
+  const file = Bun.file(destPath).writer()
+  let received = 0
+  // Throttled: a 100 MB download delivers thousands of chunks and the UI polls once a second, so
+  // publishing every chunk would be pure churn for identical readings.
+  let lastPublishedAt = 0
+  try {
+    for await (const chunk of body) {
+      file.write(chunk)
+      received += (chunk as Uint8Array).byteLength
+      const now = Date.now()
+      if (now - lastPublishedAt >= 250) {
+        lastPublishedAt = now
+        setUpdateBytes(received, total)
+      }
+    }
+    setUpdateBytes(received, total)
+  } finally {
+    await file.end()
+  }
+}
+
+async function extract(archivePath: string, destDir: string): Promise<void> {
+  if (process.platform === 'win32') {
+    await run('powershell', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
+    ])
+  } else {
+    await run('tar', ['-xzf', archivePath, '-C', destDir])
+  }
+}
+
+/** Move `from`→`to`, falling back to copy+remove across volumes (renameSync throws EXDEV there). */
+function moveInto(from: string, to: string, rename: RenameFn = renameSync): void {
+  try {
+    rename(from, to)
+  } catch {
+    cpSync(from, to, { recursive: true })
+    rmSync(from, { recursive: true, force: true })
+  }
+}
+
+// ── release-owned components (audit AH-08) ──────────────────────────────────────────────────
+//
+// A release archive is the executable PLUS two folders beside it: misc/ (the tray toolkit) and
+// orchestrator/ (the Python toolbox). Until 2026-09-05 the compiled updater swapped the executable,
+// overlaid misc/ file by file, and never touched orchestrator/ at all - so an installed toolbox
+// stayed at whatever version first installed it while the executable's MCP advertised newer tools
+// and contracts, a retired sidecar in misc/ lived forever (overlay never deletes), and a
+// bare-executable install could never acquire the toolbox through an update. Reproduced with a
+// synthetic release against a disposable install: orchestrator/old-payload.txt stayed,
+// orchestrator/new-payload.txt never arrived, misc/obsolete-component.txt stayed.
+//
+// The rule now: every component listed here is release-owned and is brought to the release's
+// exact content on update. Two strategies, because the two folders live different lives:
+//
+//   swap       orchestrator/: nothing holds it open while the daemon is not running a script
+//              (applyUpdate refuses while one is), so the whole folder is replaced atomically -
+//              user state inside it (`preserve`) is carried into the new copy first, the current
+//              folder is renamed aside, the new one moved in, and a failure anywhere puts the
+//              aside copy back. Retired files are gone by construction.
+//   reconcile  misc/: the running tray host holds its own executable image, so a rename-aside
+//              would fail or strand it. Files are copied over one by one and files the release no
+//              longer ships are deleted; a locked file is reported and left, and the next update
+//              retries - the same best-effort, non-fatal posture misc/ always had, minus the
+//              retired-sidecar leak.
+//
+// Each installed component gets a RELEASE_VERSION_FILE so the components' versions can be read
+// and compared, instead of inferred from the executable's.
+
+export type RenameFn = (from: string, to: string) => void
+
+export interface ReleaseComponent {
+  /** Folder name beside the executable. */
+  name: string
+  strategy: 'swap' | 'reconcile'
+  /** Paths inside the folder that are USER STATE, never release content: carried across a swap
+   *  and never deleted by a reconcile. */
+  preserve: string[]
+  /** Platforms whose release archive actually SHIPS this folder. Absent = every platform.
+   *  Only `missingComponents` reads this; the swap/reconcile machinery is unaffected, because it
+   *  works from what a downloaded bundle contains rather than from what it ought to contain. */
+  platforms?: NodeJS.Platform[]
+  /** True when a bare executable with none of the folders still counts this one as missing, because
+   *  the release's reason for being lives in it. `missingComponents` otherwise reads "none of them
+   *  are here" on Windows as a deliberate single-file install. */
+  repairBare?: boolean
+}
+
+export const RELEASE_COMPONENTS: readonly ReleaseComponent[] = [
+  // The bundled daemon (server.js, release.json, bun-version, web assets). Swap strategy: atomically
+  // replace the folder so retired web assets and outdated version metadata are gone by construction.
+  // Required even for a bare launcher: the daemon cannot start without it.
+  { name: 'app', strategy: 'swap', preserve: [], repairBare: true },
+  { name: 'orchestrator', strategy: 'swap', preserve: ['state'] },
+  // WINDOWS-ONLY, and saying so is load-bearing: release.yml stages misc/ inside
+  // `if [ "$target" = "windows-x64" ]`, so a perfectly healthy linux or macOS install has no
+  // misc/ and never will. Without this field `missingComponents` reported ['misc'] on every
+  // POSIX install, which made "already up to date" unreachable there and turned each apply into
+  // a full reinstall + daemon restart that could never converge (review, 2026-09-07).
+  { name: 'misc', strategy: 'reconcile', preserve: [], platforms: ['win32'] },
+  // AgentHydra 2.0's window (Hydra Desk 2) and the dev-server tool its servers pane starts. Reconcile,
+  // never swap: Desk 2's chat hosts are detached processes running desk2/runtime/bun(.exe) that outlive
+  // its server on purpose, so renaming the whole folder fails on Windows. A busy file is moved aside the
+  // way the daemon's own exe is. Desk 2's data (~/.hydra-desk-2, %LOCALAPPDATA%\HydraDesk2) is outside
+  // the folder and never touched. Every platform ships both.
+  { name: 'desk2', strategy: 'reconcile', preserve: [], repairBare: true },
+]
+
+/** The components this platform's release archive is expected to carry. */
+export function componentsForPlatform(platform: NodeJS.Platform = process.platform) {
+  return RELEASE_COMPONENTS.filter((c) => !c.platforms || c.platforms.includes(platform))
+}
+
+/** Written into every installed component with the release version it came from. */
+export const RELEASE_VERSION_FILE = '.release-version'
+
+export interface ComponentDeps {
+  /** Injected rename (tests make a specific step fail). Defaults to renameSync. */
+  rename?: RenameFn
+  /** Injected "put the new copy in place" step. Defaults to moveInto with the rename above, i.e.
+   *  rename with a copy fallback, so a test that wants the swap to FAIL injects this one. */
+  move?: (from: string, to: string) => void
+}
+
+/** Every regular file under `dir`, as forward-slash paths relative to it. */
+function listFilesRecursive(dir: string): string[] {
+  const out: string[] = []
+  const walk = (d: string, rel: string): void => {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = readdirSync(d, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const r = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) walk(join(d, e.name), r)
+      else if (e.isFile()) out.push(r)
+    }
+  }
+  walk(dir, '')
+  return out
+}
+
+function underPreserved(rel: string, comp: ReleaseComponent): boolean {
+  return comp.preserve.some((p) => rel === p || rel.startsWith(`${p}/`))
+}
+
+/** What a swap left behind for rollback: the previous copy, renamed aside. */
+export interface ComponentAside {
+  name: string
+  aside: string
+}
+
+/**
+ * Replace one swap-strategy component with the bundle's copy. Returns the aside record when a
+ * previous copy existed (the caller keeps it for rollback and removes it once the whole update
+ * has succeeded), null when the bundle did not ship the component or nothing was there before.
+ * Throws on failure - with the previous copy already put back where it was.
+ */
+export function swapComponent(
+  bundleDir: string,
+  installDir: string,
+  comp: ReleaseComponent,
+  stamp: string,
+  version: string,
+  output: string[],
+  deps: ComponentDeps = {},
+): ComponentAside | null {
+  const rename = deps.rename ?? renameSync
+  const move = deps.move ?? ((from: string, to: string) => moveInto(from, to, rename))
+  const src = join(bundleDir, comp.name)
+  if (!existsSync(src)) {
+    output.push(`the bundle ships no ${comp.name}/ - the installed copy is kept as it is`)
+    return null
+  }
+  const cur = join(installDir, comp.name)
+  const aside = join(installDir, `${comp.name}.old-${stamp}`)
+  const hadPrevious = existsSync(cur)
+  if (hadPrevious) {
+    // User state rides into the NEW copy before anything moves, so the swap never has a moment
+    // where the state exists only in a folder about to be renamed. Ours wins over anything the
+    // bundle happened to ship at the same path (a release must not carry state, but if it did,
+    // the user's is the truth).
+    for (const rel of comp.preserve) {
+      const from = join(cur, rel)
+      if (!existsSync(from)) continue
+      cpSync(from, join(src, rel), { recursive: true, force: true })
+    }
+    rename(cur, aside)
+  }
+  try {
+    move(src, cur)
+    writeFileSync(join(cur, RELEASE_VERSION_FILE), `${version}\n`)
+  } catch (e) {
+    // Put the previous copy back before telling the caller. A half-moved new copy is removed.
+    try {
+      rmSync(cur, { recursive: true, force: true })
+    } catch {
+      /* best-effort */
+    }
+    if (hadPrevious) {
+      try {
+        rename(aside, cur)
+      } catch {
+        /* best-effort; the aside still exists on disk under its .old- name */
+      }
+    }
+    throw e
+  }
+  output.push(
+    `installed ${comp.name}/ v${version}${comp.preserve.length ? ` (carried ${comp.preserve.join(', ')} across)` : ''}`,
+  )
+  return hadPrevious ? { name: comp.name, aside } : null
+}
+
+/** Undo swaps, newest first: remove what was installed, put the aside copies back. */
+export function rollbackComponents(
+  installDir: string,
+  asides: ComponentAside[],
+  deps: ComponentDeps = {},
+): void {
+  const rename = deps.rename ?? renameSync
+  for (const { name, aside } of [...asides].reverse()) {
+    const cur = join(installDir, name)
+    try {
+      rmSync(cur, { recursive: true, force: true })
+      if (existsSync(aside)) rename(aside, cur)
+    } catch {
+      /* best-effort; a leftover .old- folder is swept at the next boot */
+    }
+  }
+}
+
+/** A file moved out of the way during an update: `<name>.old-<stamp>`, the exe's aside name too. */
+const ASIDE_RE = /\.old-\d+(\.exe)?$/
+
+export interface ReconcileDeps {
+  /** Injected copy (a test makes a running executable refuse to be overwritten). Defaults to cpSync. */
+  copy?: (from: string, to: string) => void
+  rename?: RenameFn
+  /** Digits that make the aside names (`bun.exe.old-<stamp>`); swept by cleanupStaleUpdateArtifacts. */
+  stamp?: string
+}
+
+interface ReconcileCtx {
+  src: string
+  cur: string
+  stamp: string
+  copy: (from: string, to: string) => void
+  rename: RenameFn
+  locked: string[]
+  removed: string[]
+  movedAside: string[]
+}
+
+/** Rename a file in use out of the way; its aside path, or null when even that is refused. */
+function moveAside(ctx: ReconcileCtx, rel: string): string | null {
+  const aside = `${join(ctx.cur, rel)}.old-${ctx.stamp}`
+  try {
+    ctx.rename(join(ctx.cur, rel), aside)
+    return aside
+  } catch {
+    return null
+  }
+}
+
+/** Copy one shipped file over, moving an in-use one aside first; records what it could not touch. */
+function reconcileShippedFile(ctx: ReconcileCtx, rel: string): void {
+  const dest = join(ctx.cur, rel)
+  try {
+    mkdirSync(dirname(dest), { recursive: true })
+    ctx.copy(join(ctx.src, rel), dest)
+    return
+  } catch {
+    /* in use, most likely: try to move it aside below */
+  }
+  const aside = moveAside(ctx, rel)
+  if (!aside) {
+    ctx.locked.push(rel)
+    return
+  }
+  try {
+    ctx.copy(join(ctx.src, rel), dest)
+    ctx.movedAside.push(rel)
+  } catch {
+    // The new file did not land: put the old one back rather than leave a hole.
+    try {
+      rmSync(dest, { force: true })
+      ctx.rename(aside, dest)
+    } catch {
+      /* the aside stays under its .old- name */
+    }
+    ctx.locked.push(rel)
+  }
+}
+
+/** Delete one file the release no longer ships, or move it aside when it is in use. */
+function removeRetiredFile(ctx: ReconcileCtx, rel: string): void {
+  try {
+    rmSync(join(ctx.cur, rel), { force: true })
+    ctx.removed.push(rel)
+  } catch {
+    if (moveAside(ctx, rel)) {
+      ctx.removed.push(rel)
+      ctx.movedAside.push(rel)
+    } else ctx.locked.push(rel)
+  }
+}
+
+/**
+ * Bring one reconcile-strategy component to the bundle's exact content, file by file, without
+ * ever renaming the folder: copy every shipped file over, delete every file the release no longer
+ * ships (except preserved paths and the version stamp), report what could not be touched.
+ * A file that is in use (a running bun.exe cannot be overwritten, but it can be renamed) is moved
+ * aside to `<name>.old-<stamp>` and the new one copied in; the aside is swept at a later boot,
+ * once the process holding it has gone. Only a file that cannot even be moved is left, reported.
+ * Never throws: a locked tray executable must not fail an otherwise-good update.
+ */
+export function reconcileComponent(
+  bundleDir: string,
+  installDir: string,
+  comp: ReleaseComponent,
+  version: string,
+  output: string[],
+  deps: ReconcileDeps = {},
+): { installed: boolean; removed: string[]; locked: string[]; movedAside: string[] } {
+  const src = join(bundleDir, comp.name)
+  if (!existsSync(src)) return { installed: false, removed: [], locked: [], movedAside: [] }
+  const copy = deps.copy ?? ((from: string, to: string) => cpSync(from, to, { force: true }))
+  const rename = deps.rename ?? renameSync
+  const stamp = deps.stamp ?? String(Date.now())
+  const cur = join(installDir, comp.name)
+  const wanted = new Set(listFilesRecursive(src))
+  const locked: string[] = []
+  const removed: string[] = []
+  const movedAside: string[] = []
+  try {
+    mkdirSync(cur, { recursive: true })
+  } catch (e) {
+    output.push(`could not create ${comp.name}/: ${e instanceof Error ? e.message : String(e)}`)
+    return { installed: false, removed, locked, movedAside }
+  }
+  const ctx: ReconcileCtx = { src, cur, stamp, copy, rename, locked, removed, movedAside }
+  for (const rel of wanted) reconcileShippedFile(ctx, rel)
+  for (const rel of listFilesRecursive(cur)) {
+    // An aside from this or an earlier update is cleanup's to remove, not a retired release file.
+    if (wanted.has(rel) || rel === RELEASE_VERSION_FILE || ASIDE_RE.test(rel)) continue
+    if (underPreserved(rel, comp)) continue
+    removeRetiredFile(ctx, rel)
+  }
+  try {
+    writeFileSync(join(cur, RELEASE_VERSION_FILE), `${version}\n`)
+  } catch {
+    locked.push(RELEASE_VERSION_FILE)
+  }
+  output.push(
+    `reconciled ${comp.name}/ to v${version}` +
+      (removed.length ? `; removed ${removed.length} retired file(s): ${removed.join(', ')}` : '') +
+      (movedAside.length
+        ? `; ${movedAside.length} file(s) in use moved aside until they are free: ${movedAside.join(', ')}`
+        : '') +
+      (locked.length
+        ? `; ${locked.length} file(s) in use and left for the next update: ${locked.join(', ')}`
+        : ''),
+  )
+  return { installed: true, removed, locked, movedAside }
+}
+
+/** The version stamp an installed component carries, or null (older install, never stamped). */
+export function installedComponentVersion(installDir: string, name: string): string | null {
+  try {
+    return readFileSync(join(installDir, name, RELEASE_VERSION_FILE), 'utf8').trim() || null
+  } catch {
+    return null
+  }
+}
+
+/** Every release component's installed version, as the update status reports it (audit AH-08:
+ *  "Done when" required the daemon to REPORT matching versions, not merely swap them correctly).
+ *  Exported so a test can point it at a scratch install dir instead of the real APP_ROOT. */
+export function componentVersions(
+  installDir: string,
+): Array<{ name: string; version: string | null }> {
+  return RELEASE_COMPONENTS.map((c) => ({
+    name: c.name,
+    version: installedComponentVersion(installDir, c.name),
+  }))
+}
+
+/**
+ * Release-owned folders that are NOT installed beside the executable.
+ *
+ * The hole this closes (measured 2026-09-07 on a real install): the component-aware updater landed
+ * IN v0.39.0, so the update that installed 0.39.0 was performed by the OLD updater and brought the
+ * executable alone. That install therefore runs the latest version with no orchestrator/ - every
+ * chat-moving tool answers `no orch.py under <dir>` - and because it IS the latest version,
+ * checkForUpdate says "up to date" and no update will ever repair it. An updater that can only fix
+ * a component while ALSO bumping a version cannot fix the install its own predecessor broke.
+ *
+ * Deliberately conservative: this reports missing components only when at least one component IS
+ * installed. A bare single-file .exe download legitimately has none of them (release.yml ships the
+ * folders in the .zip only, and the daemon already says so at boot), and reading that as damage
+ * would offer every such user a "repair" that quietly converts their install into a bundle.
+ */
+export function missingComponents(
+  installDir: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  // Only components this platform's archive actually ships can be "missing" here. misc/ is
+  // Windows-only, so on linux/macOS the expected set is orchestrator/ alone - without that, every
+  // healthy POSIX install reported ['misc'] forever.
+  const expected = componentsForPlatform(platform)
+  const missing = expected.filter((c) => !existsSync(join(installDir, c.name)))
+  if (missing.length === 0) return []
+  // From 2.0.0 the window is desk2/, so a bare executable that lacks it IS missing something: it is
+  // how the lone AgentHydra-<v>-windows-x64.exe download (and an install its old updater left
+  // without desk2/) gets the window. Only the components that say so (`repairBare`) are named then;
+  // the rest of a bundle comes along with the reinstall.
+  const bareBail = platform === 'win32' && missing.length === expected.length
+  // THE BARE-BINARY BAIL-OUT IS WINDOWS-ONLY, because the bare binary is. release.yml publishes a
+  // standalone `.exe` for windows-x64 and NOTHING but tarballs for every Unix target, and those
+  // tarballs always stage orchestrator/. So on Windows "none of them are here" is a legitimate
+  // single-file install and not damage, while on Unix there is no download that could produce it -
+  // a missing orchestrator/ there is damage, and reporting nothing would swallow the one case this
+  // repair path exists for.
+  if (bareBail) return missing.filter((c) => c.repairBare).map((c) => c.name)
+  return missing.map((c) => c.name)
+}
+
+function fail(message: string): UpdateApplyResult {
+  // Every early return in applyUpdate goes through here, so this is the one place that has to
+  // settle the progress record — otherwise a failed apply leaves the UI on "Downloading…" forever,
+  // which is the exact symptom this reporting exists to remove.
+  finishUpdateProgress(false, message)
+  return {
+    ok: false,
+    message,
+    restartRequired: false,
+    status: baseStatus({ ok: false, reason: message }),
+    output: [],
+  }
+}
+
+/**
+ * Everything up to having a verified, ready-to-install executable on disk: staging dir setup,
+ * download-with-progress, extraction, and a version self-check. Nothing here has touched the
+ * INSTALLED app yet, so a thrown error is safe to let applyUpdate's own try/catch handle —
+ * there is nothing to roll back. Pulled out of applyUpdate, see fail() above for why every
+ * early return (here, as a returned UpdateApplyResult rather than a throw) still goes through it.
+ */
+async function downloadAndVerifyUpdate(
+  asset: GhAsset,
+  /** The release's SHA256SUMS.txt asset. Verified against BEFORE anything is extracted or run. */
+  sums: GhAsset,
+  remoteVersion: string,
+  staging: string,
+  bundledExeName: string,
+  exeName: string,
+  output: string[],
+): Promise<{ newExe: string; bundleDirPath: string | null } | UpdateApplyResult> {
+  rmSync(staging, { recursive: true, force: true })
+  mkdirSync(staging, { recursive: true }) // tar -C needs it to exist; Expand-Archive/Bun.write are fine either way
+  const archivePath = join(staging, asset.name)
+  const totalMb = Math.round(asset.size / 1048576)
+  const headers = { accept: 'application/octet-stream', 'user-agent': `${SERVICE_NAME}/${VERSION}` }
+  output.push(`downloading ${asset.name} (${totalMb} MB)`)
+  setUpdatePhase('downloading', `Downloading v${remoteVersion} (${totalMb} MB)…`)
+  const dl = await fetch(asset.browser_download_url, { headers, redirect: 'follow' })
+  if (!dl.ok) return fail(`download failed (HTTP ${dl.status})`)
+  // Streamed rather than `Bun.write(path, response)` so the bytes can be COUNTED as they land.
+  // This is the step the "it just sat there spinning" report was actually about: a ~100 MB
+  // release over a normal connection is tens of seconds during which the old code emitted
+  // nothing at all, and a slow download was indistinguishable from a dead one.
+  await writeWithProgress(dl, archivePath, asset.size)
+
+  // Integrity BEFORE extraction and before any candidate runs (audit AH-38; see
+  // verifyArchiveChecksum for what this does and does not prove).
+  output.push(`verifying SHA-256 against ${CHECKSUM_MANIFEST}`)
+  setUpdatePhase('verifying', 'Checking the download against the release checksums…')
+  const sumsRes = await fetch(sums.browser_download_url, { headers, redirect: 'follow' })
+  if (!sumsRes.ok)
+    return fail(
+      `could not fetch ${CHECKSUM_MANIFEST} (HTTP ${sumsRes.status}) - refusing an unverifiable download`,
+    )
+  const verified = await verifyArchiveChecksum(archivePath, asset.name, await sumsRes.text())
+  if (!verified.ok) return fail(verified.reason)
+  output.push(`sha256 ok (${verified.sha256.slice(0, 12)}…)`)
+
+  output.push('extracting')
+  setUpdatePhase('extracting', 'Extracting the update…')
+  await extract(archivePath, staging)
+
+  // Updater bundles retain the versioned wrapper directory expected by older releases, while
+  // containing only the executable now. Also accept a flat archive if one is ever published.
+  const entries = readdirSync(staging, { withFileTypes: true })
+  const bundleDirEntry = entries.find((e) => e.isDirectory() && e.name.startsWith('AgentHydra-'))
+  const bundleDirPath = bundleDirEntry ? join(staging, bundleDirEntry.name) : null
+  const newExe = bundleDirPath ? join(bundleDirPath, bundledExeName) : join(staging, bundledExeName)
+  if (!existsSync(newExe)) return fail(`the update bundle has no ${exeName}`)
+
+  output.push('verifying the new binary runs')
+  setUpdatePhase('verifying', 'Checking that the downloaded build runs…')
+  if (!(await verifyExeVersion(newExe, remoteVersion))) {
+    return fail('the downloaded binary failed its version self-check — not swapping it in')
+  }
+  return { newExe, bundleDirPath }
+}
+
+/** Everything applyUpdate calls that a test needs to fake: network, the daemon's busy gate, and
+ *  the two filesystem paths under mutation. Defaults are the real implementations, so production
+ *  callers pass nothing and behavior is unchanged — this exists so a test can drive the actual
+ *  orchestration function (the refusal gate, the swap-then-rename ordering, the rollback) against
+ *  scratch directories instead of the real install, a real process, or the network (audit AH-08). */
+export interface ApplyUpdateDeps {
+  /** Root of the install being updated. Defaults to APP_ROOT. */
+  installDir?: string
+  /** Path of the executable being replaced. Defaults to LAUNCHER_PATH in a release; a source
+   *  checkout has none, so there applyUpdate refuses unless one is passed. */
+  exePath?: string
+  checkForUpdate?: (opts?: { fresh?: boolean }) => Promise<UpdateStatus>
+  /** Re-fetch used to read the asset list (checkForUpdate intentionally doesn't carry it). */
+  fetchLatestRelease?: () => Promise<{ res: { ok: boolean; json: () => Promise<unknown> } }>
+  downloadAndVerifyUpdate?: (
+    asset: GhAsset,
+    sums: GhAsset,
+    remoteVersion: string,
+    staging: string,
+    bundledExeName: string,
+    exeName: string,
+    output: string[],
+  ) => Promise<{ newExe: string; bundleDirPath: string | null } | UpdateApplyResult>
+  orchestratorBusy?: () => boolean
+  /** Injected exe rename/move (tests make the swap fail). Defaults to renameSync / moveInto. */
+  rename?: RenameFn
+  move?: (from: string, to: string) => void
+  /** Desk 2, as the swap needs it (stop before desk2/ is replaced, start after). Defaults to the real
+   *  one for the running install and to an inert one for any other install dir, so a scratch install
+   *  in a test can never stop a real Desk 2. */
+  desk?: DeskSeam
+  /** Injected copy for reconcile (a test makes a running executable refuse to be overwritten). */
+  copy?: ReconcileDeps['copy']
+}
+
+/** Desk 2 as the updater drives it: the part of desk2.ts it needs, so a test can stand in for it. */
+export interface DeskSeam {
+  present: () => boolean
+  stop: () => Promise<{ ok: boolean; reason?: string }>
+  start: (opts?: { window?: boolean }) => Promise<{ ok: boolean; reason?: string }>
+  /** True when Desk 2's native window is open. Cheap, and false whenever that is not known. */
+  windowOpen?: () => Promise<boolean>
+}
+
+/** Is HydraDesk2.exe (Desk 2's native window host) running? Windows only; any doubt is "no", which
+ *  starts the server alone and leaves an open window to reconnect by itself. */
+function windowIsOpen(): Promise<boolean> {
+  if (process.platform !== 'win32') return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let out = ''
+    try {
+      const child = spawn('tasklist', ['/FI', 'IMAGENAME eq HydraDesk2.exe', '/NH'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      })
+      const timer = setTimeout(() => {
+        child.kill()
+        resolve(false)
+      }, 5000)
+      child.stdout?.on('data', (d) => {
+        out += String(d)
+      })
+      child.on('error', () => {
+        clearTimeout(timer)
+        resolve(false)
+      })
+      child.on('exit', () => {
+        clearTimeout(timer)
+        resolve(/HydraDesk2\.exe/i.test(out))
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+}
+
+const INERT_DESK: DeskSeam = {
+  present: () => false,
+  stop: async () => ({ ok: true }),
+  start: async () => ({ ok: true }),
+}
+
+function defaultDesk(installDir: string): DeskSeam {
+  if (installDir !== APP_ROOT) return INERT_DESK
+  return {
+    present: () => desk2.present(),
+    stop: () => desk2.stop(),
+    start: (o) => desk2.start(o),
+    windowOpen: windowIsOpen,
+  }
+}
+
+/** What an update needs before anything on disk is touched: which version, and the two assets that
+ *  prove it. Anything short of all three is a refusal, returned as the failure itself. */
+interface ResolvedUpdate {
+  remoteVersion: string
+  asset: GhAsset
+  sums: GhAsset
+  stamp: string
+}
+
+/**
+ * Decide WHAT to install, touching nothing.
+ *
+ * Split from the install itself because the two halves fail for completely different reasons and at
+ * completely different costs: everything here is a refusal with the disk untouched, while every
+ * failure below has to be rolled back. Keeping them in one function is what put applyUpdate over
+ * the complexity gate, and it also made it hard to see that this half can never leave a mess.
+ */
+async function resolveUpdateToApply(
+  doCheckForUpdate: NonNullable<ApplyUpdateDeps['checkForUpdate']>,
+  doFetchLatestRelease: NonNullable<ApplyUpdateDeps['fetchLatestRelease']>,
+  installDir: string,
+): Promise<ResolvedUpdate | UpdateApplyResult> {
+  beginUpdateProgress('Checking for the latest release…')
+  const status = await doCheckForUpdate({ fresh: true })
+  if (!status.ok) return fail(status.reason ?? 'update check failed')
+  const remoteVersion = (status.remoteCommit ?? '').replace(/^v/, '')
+  // "Up to date" is not the same as "complete". An install missing a release-owned folder is
+  // repaired by reinstalling THIS version - the same download, the same verification, the same
+  // component install - so the only thing that changes here is that the version equality stops
+  // being a refusal. See missingComponents() for why a bare .exe is not treated as damaged.
+  //
+  // ONLY when the latest release IS this version. `!updateAvailable` is also true when the remote
+  // is OLDER (a yanked release, a rolled-back tag), and there "reinstall the latest" would silently
+  // DOWNGRADE the executable and both component folders to fix a missing folder. A repair may
+  // restore what is missing; it may never take the app backwards.
+  const repairable = !status.updateAvailable && remoteVersion === VERSION
+  const repairing = repairable ? missingComponents(installDir) : []
+  if (!status.updateAvailable && repairing.length === 0)
+    return fail(
+      !repairable && remoteVersion && remoteVersion !== VERSION
+        ? `already up to date (this install is v${VERSION}; the latest release is v${remoteVersion})`
+        : 'already up to date',
+    )
+  // Re-fetch the release to get the asset URL (checkForUpdate intentionally doesn't carry it).
+  // The check above already marked the ping reported on success, so this second hit never
+  // resends `new=1` — one "first ping" signal per install, no matter how many requests it takes.
+  let asset: GhAsset | null = null
+  let sums: GhAsset | null = null
+  try {
+    const { res } = await doFetchLatestRelease()
+    if (res.ok) {
+      const assets = ((await res.json()) as GhRelease).assets ?? []
+      asset = assetForThisPlatform(assets)
+      sums = assets.find((a) => a.name === CHECKSUM_MANIFEST) ?? null
+    }
+  } catch {
+    asset = null
+  }
+  if (!asset)
+    return fail(
+      repairing.length
+        ? `this install is missing ${repairing.join(', ')}, but no ${currentTarget()} build is attached to v${remoteVersion} to restore it from - download the .zip from ${RELEASES_PAGE}`
+        : `no ${currentTarget()} build attached to v${remoteVersion}`,
+    )
+  // Same rule install.ps1 applies: a release without its manifest cannot be verified, so it is not
+  // installed. Every release since the manifest step landed carries one.
+  if (!sums)
+    return fail(
+      `v${remoteVersion} published no ${CHECKSUM_MANIFEST}, so the download cannot be verified - refusing to update`,
+    )
+
+  // Date.now() is unavailable here; reuse the check time as the swap-aside stamp.
+  return { remoteVersion, asset, sums, stamp: String(status.checkedAt) }
+}
+
+/**
+ * The swap itself: components aside, exe aside, new exe in, reconcile, tidy up.
+ *
+ * Every line here can throw, and the caller's catch is what puts the install back — so this
+ * function's ONE job beyond moving files is to report what it has moved aside before it fails.
+ * `recordExeAside` exists for exactly that: the exe rename is the point of no return, and the
+ * caller cannot roll it back unless it learns the aside path the instant it is created.
+ */
+async function swapInBundle(
+  prepared: { newExe: string; bundleDirPath: string | null },
+  resolved: ResolvedUpdate,
+  ctx: {
+    exePath: string
+    exeName: string
+    installDir: string
+    staging: string
+    isOrchestratorBusy: () => boolean
+    rename: RenameFn
+    move: (from: string, to: string) => void
+    desk: DeskSeam
+    copy?: ReconcileDeps['copy']
+  },
+  output: string[],
+  componentAsides: ComponentAside[],
+  recordExeAside: (aside: string) => void,
+  deskRestart: DeskRestart,
+): Promise<UpdateApplyResult> {
+  const { remoteVersion, stamp } = resolved
+  const { exePath, exeName, installDir, staging, rename, move } = ctx
+  const { newExe, bundleDirPath } = prepared
+  const bundleDir = bundleDirPath ?? staging
+  setUpdatePhase('installing', `Installing v${remoteVersion}…`)
+
+  // A toolbox script mid-run executes out of orchestrator/; replacing that folder under it
+  // is not an update, it is a crash with a good excuse. Refuse and let the next tick retry.
+  if (ctx.isOrchestratorBusy())
+    return fail(
+      'an orchestrator script is running through this daemon; the update would replace the code it is executing - retry when it finishes',
+    )
+
+  // --- 0. Desk 2 down before its files are replaced. Its chat hosts are detached and keep running
+  //        (they are why desk2/ is reconciled, not renamed); the server and the window are what stop.
+  //        Recorded BEFORE the await, so the caller starts it again however this goes. ---
+  if (existsSync(join(bundleDir, 'desk2'))) {
+    deskRestart.wanted = true
+    if (ctx.desk.present()) {
+      deskRestart.window = (await ctx.desk.windowOpen?.().catch(() => false)) ?? false
+      const stopped = await ctx.desk.stop().catch((e) => ({
+        ok: false,
+        reason: e instanceof Error ? e.message : String(e),
+      }))
+      if (!stopped.ok)
+        return fail(
+          `Desk 2 would not stop (${stopped.reason ?? 'no reason given'}), so its files were not replaced under it - retry once it is closed`,
+        )
+      output.push('stopped Desk 2')
+    }
+  }
+
+  // --- 1. swap-strategy components (orchestrator/), each rollbackable ---
+  for (const comp of RELEASE_COMPONENTS) {
+    if (comp.strategy !== 'swap') continue
+    const aside = swapComponent(bundleDir, installDir, comp, stamp, remoteVersion, output)
+    if (aside) componentAsides.push(aside)
+  }
+
+  // --- 2. swap the exe (rename-aside is allowed on a running Windows image) ---
+  const exeAside = join(installDir, `${exeName}.old-${stamp}`)
+  rename(exePath, exeAside)
+  recordExeAside(exeAside)
+  move(newExe, exePath)
+  if (process.platform !== 'win32') {
+    try {
+      await run('chmod', ['+x', exePath])
+    } catch {
+      /* best-effort; the bundle already ships it executable */
+    }
+  }
+  output.push(`installed v${remoteVersion}`)
+
+  // --- 3. reconcile-strategy components (misc/), best-effort and last: nothing below can fail
+  //        the update, and everything above it is already consistent. ---
+  for (const comp of RELEASE_COMPONENTS) {
+    if (comp.strategy !== 'reconcile') continue
+    reconcileComponent(bundleDir, installDir, comp, remoteVersion, output, {
+      stamp,
+      rename,
+      copy: ctx.copy,
+    })
+  }
+  // Only the running install has a tray host and shortcuts to carry across the rename, the same rule
+  // defaultDesk applies to Desk 2. Any other install dir is a test's scratch copy, where the retirement
+  // was a PowerShell scanning this machine's processes and Start Menu: 1.5 s idle, 2.3 s median and up
+  // to 13.6 s under the parallel suite (measured 2026-10-11), which put successful swap tests at 2.6-8.1 s
+  // against bun's 5 s.
+  const legacyTrayExit =
+    installDir === APP_ROOT
+      ? await retireLegacyTrayHost({ appRoot: installDir, configFile: TRAY_HOST_CONFIG })
+      : null
+  if (legacyTrayExit !== null)
+    output.push(`retired the pre-rename tray host (exit ${legacyTrayExit})`)
+
+  // The previous component copies are only garbage once the whole update has landed.
+  for (const { aside } of componentAsides) rmSync(aside, { recursive: true, force: true })
+  rmSync(staging, { recursive: true, force: true })
+  cached = null // force the next check to re-read the (now-current) version
+  finishUpdateProgress(true, `Updated to v${remoteVersion}. Restarting…`)
+  return {
+    ok: true,
+    message: `Updated to v${remoteVersion}. Restarting…`,
+    restartRequired: true,
+    status: baseStatus({ currentVersion: remoteVersion, updateAvailable: false }),
+    output,
+  }
+}
+
+/**
+ * Put the verified bundle in place, or leave the install exactly as it was.
+ *
+ * EVERY failure past this point has to roll back, which is the whole reason it is one function with
+ * one try/catch: the aside paths it records are the only record that a swap was half-done, and
+ * splitting the rollback away from the moves that need it is how an installer ends up bricked.
+ */
+async function installVerifiedUpdate(
+  resolved: ResolvedUpdate,
+  ctx: {
+    exePath: string
+    exeName: string
+    bundledExeName: string
+    installDir: string
+    staging: string
+    doDownloadAndVerifyUpdate: NonNullable<ApplyUpdateDeps['downloadAndVerifyUpdate']>
+    isOrchestratorBusy: () => boolean
+    rename: RenameFn
+    move: (from: string, to: string) => void
+    desk: DeskSeam
+    copy?: ReconcileDeps['copy']
+  },
+): Promise<UpdateApplyResult> {
+  // stamp / move / exeName are the SWAP's business now (see swapInBundle); this function keeps only
+  // what its own two jobs need — starting the download, and undoing whatever the swap got through.
+  const { remoteVersion, asset, sums } = resolved
+  const { exePath, exeName, installDir, staging, rename } = ctx
+  const output: string[] = []
+
+  // Staged renames-aside, tracked so a mid-swap failure can roll them back.
+  let exeMovedAside: string | null = null
+  const componentAsides: ComponentAside[] = []
+  const deskRestart: DeskRestart = { wanted: false, window: false }
+
+  try {
+    const prepared = await ctx.doDownloadAndVerifyUpdate(
+      asset,
+      sums,
+      remoteVersion,
+      staging,
+      ctx.bundledExeName,
+      exeName,
+      output,
+    )
+    if (!('newExe' in prepared)) return prepared
+    return await swapInBundle(
+      prepared,
+      resolved,
+      ctx,
+      output,
+      componentAsides,
+      (aside) => {
+        exeMovedAside = aside
+      },
+      deskRestart,
+    )
+  } catch (e) {
+    // Roll back anything we moved aside so the install is never left half-swapped: the
+    // executable, then the components that were swapped before it (newest first).
+    try {
+      if (exeMovedAside && existsSync(exeMovedAside)) {
+        rmSync(exePath, { force: true })
+        rename(exeMovedAside, exePath)
+      }
+    } catch {
+      /* rollback is best-effort */
+    }
+    rollbackComponents(installDir, componentAsides)
+    return fail(`update failed: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    // Desk 2 comes back whether the swap landed, was refused or rolled back. Not awaited: its start
+    // waits for health (up to 30 s) and an update response should not. The window comes back only if
+    // one was open; a window that stayed open reconnects to the server by itself.
+    if (deskRestart.wanted) startDeskAgain(ctx.desk, deskRestart.window)
+  }
+}
+
+/** Whether Desk 2 was stopped (or is to be started) around a swap, and whether its window was open. */
+interface DeskRestart {
+  wanted: boolean
+  window: boolean
+}
+
+function startDeskAgain(desk: DeskSeam, window: boolean): void {
+  const failed = (why: string) =>
+    console.error(`[agenthydra] update: Desk 2 did not start again: ${why}`)
+  try {
+    void desk
+      .start({ window })
+      .then((r) => {
+        if (!r.ok) failed(r.reason ?? 'no reason given')
+      })
+      .catch((e) => failed(e instanceof Error ? e.message : String(e)))
+  } catch (e) {
+    failed(e instanceof Error ? e.message : String(e))
+  }
+}
+
+/** How long the new launcher gets to fetch its bun: about 37 MB, on a slow link. */
+export const ENSURE_BUN_TIMEOUT_MS = 6 * 60_000
+
+/**
+ * Run the (new) launcher with `--ensure-bun`, hidden, so the bun that app/bun-version pins is on
+ * disk before the successor is spawned. Checks the exit code and keeps the stderr tail as the
+ * reason. Never throws: the caller reports a failure and relaunches anyway.
+ */
+export function ensureBunBeforeRelaunch(
+  launcherPath: string,
+  timeoutMs = ENSURE_BUN_TIMEOUT_MS,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  return new Promise((resolve) => {
+    let err = ''
+    let done = false
+    const finish = (r: { ok: true } | { ok: false; reason: string }) => {
+      if (done) return
+      done = true
+      resolve(r)
+    }
+    try {
+      const child = spawn(launcherPath, ['--ensure-bun'], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        windowsHide: true,
+      })
+      const timer = setTimeout(() => {
+        child.kill()
+        finish({ ok: false, reason: `no answer within ${Math.round(timeoutMs / 1000)}s` })
+      }, timeoutMs)
+      child.stderr?.on('data', (d) => {
+        err = (err + String(d)).slice(-2000)
+      })
+      child.on('error', (e) => {
+        clearTimeout(timer)
+        finish({ ok: false, reason: e.message })
+      })
+      child.on('exit', (code) => {
+        clearTimeout(timer)
+        finish(code === 0 ? { ok: true } : { ok: false, reason: `exit ${code}: ${err.trim()}` })
+      })
+    } catch (e) {
+      finish({ ok: false, reason: e instanceof Error ? e.message : String(e) })
+    }
+  })
+}
+
+export async function applyUpdate(deps: ApplyUpdateDeps = {}): Promise<UpdateApplyResult> {
+  const doCheckForUpdate = deps.checkForUpdate ?? checkForUpdate
+  const doFetchLatestRelease = deps.fetchLatestRelease ?? fetchLatestRelease
+  const doDownloadAndVerifyUpdate = deps.downloadAndVerifyUpdate ?? downloadAndVerifyUpdate
+  const isOrchestratorBusy = deps.orchestratorBusy ?? orchestratorBusy
+  const rename = deps.rename ?? renameSync
+  const move = deps.move ?? ((from: string, to: string) => moveInto(from, to, rename))
+
+  const installDir = deps.installDir ?? APP_ROOT
+  // In a release, the daemon runs through the launcher and process.execPath is runtime/bun(.exe),
+  // not the launcher. The exe being replaced is LAUNCHER_PATH. A checkout has no exe of its own:
+  // process.execPath there is the bun running it, and swapping that would put a release download
+  // in place of the machine's bun. So a checkout updates through git, and this refuses unless the
+  // caller names the exe (a test's scratch install).
+  const exePath = deps.exePath ?? (IS_RELEASE ? LAUNCHER_PATH : null)
+  if (exePath === null)
+    return fail('this is a source checkout, which updates through git, not a release download')
+  const resolved = await resolveUpdateToApply(doCheckForUpdate, doFetchLatestRelease, installDir)
+  // A refusal is already a finished result; only a ResolvedUpdate carries a version to install.
+  if (!('remoteVersion' in resolved)) return resolved
+
+  return installVerifiedUpdate(resolved, {
+    exePath,
+    exeName: basename(exePath),
+    bundledExeName: process.platform === 'win32' ? 'AgentHydra.exe' : 'agenthydra',
+    installDir,
+    staging: join(installDir, '.update-staging'),
+    doDownloadAndVerifyUpdate,
+    isOrchestratorBusy,
+    rename,
+    move,
+    desk: deps.desk ?? defaultDesk(installDir),
+    copy: deps.copy,
+  })
+}
+
+/** Remove every `*.old-<stamp>` file or folder under `dir`, however deep. One that is still in use
+ *  (a bun.exe a chat host is running) is left, and the next boot tries again. */
+export function sweepAsides(dir: string): void {
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const e of entries) {
+    const path = join(dir, e.name)
+    if (ASIDE_RE.test(e.name)) {
+      try {
+        rmSync(path, { recursive: true, force: true })
+      } catch {
+        /* still in use: the next boot */
+      }
+    } else if (e.isDirectory()) sweepAsides(path)
+  }
+}
+
+/** Remove leftover bun.exe.old-* files from runtime/. Only these; a bun still in use is left for
+ *  the next boot, as elsewhere. A launcher that renamed a bun aside while a chat host still ran it
+ *  creates these; they are swept here rather than in the reconcile sweep because runtime/ is never
+ *  a release component (the launcher, not the updater, owns it). */
+function sweepRuntimeAsides(installDir: string): void {
+  const runtime = join(installDir, 'runtime')
+  try {
+    for (const name of readdirSync(runtime)) {
+      if (/^bun(\.exe)?\.old-\d+$/.test(name)) {
+        try {
+          rmSync(join(runtime, name), { force: true })
+        } catch {
+          /* still in use: the next boot */
+        }
+      }
+    }
+  } catch {
+    /* runtime/ doesn't exist or is unreadable: nothing to sweep */
+  }
+}
+
+/** Delete leftover `*.old-*` swap artifacts + a stale staging dir, and the files a reconcile moved
+ *  aside inside desk2/ and misc/ once whatever held them has gone. Best-effort, at boot. */
+export function cleanupStaleUpdateArtifacts(installDir: string = APP_ROOT): void {
+  try {
+    rmSync(join(installDir, '.update-staging'), { recursive: true, force: true })
+  } catch {
+    /* best-effort */
+  }
+  try {
+    for (const name of readdirSync(installDir)) {
+      if (!ASIDE_RE.test(name)) continue
+      try {
+        rmSync(join(installDir, name), { recursive: true, force: true })
+      } catch {
+        /* the old exe of a daemon still shutting down: the next boot */
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+  try {
+    const webDir = join(installDir, 'web')
+    if (existsSync(webDir)) {
+      for (const name of readdirSync(webDir)) {
+        if (/^dist\.old-\d+$/.test(name))
+          rmSync(join(webDir, name), { recursive: true, force: true })
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+  for (const comp of RELEASE_COMPONENTS) {
+    if (comp.strategy === 'reconcile') sweepAsides(join(installDir, comp.name))
+  }
+  sweepRuntimeAsides(installDir)
+}

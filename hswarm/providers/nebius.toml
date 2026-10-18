@@ -1,0 +1,72 @@
+base_url = "https://api.tokenfactory.nebius.com/v1"
+about = "Nebius Token Factory (formerly AI Studio), OpenAI-compatible language-model inference."
+website = "https://tokenfactory.nebius.com"
+key_url = "https://tokenfactory.nebius.com"
+docs = "https://docs.tokenfactory.nebius.com/quickstart"
+transport = "openai"
+capabilities = ["chat"]
+key_billing = "unknown"
+models_path = "/models"
+passthrough = ["nebius:"]
+options = ["reasoning_effort"]
+anthropic_url = "facade"
+
+# Ranked routes (owner, 2026-10-10): the newest model of each maker Nebius serves; the older versions model watch
+# reports as superseded are left unrouted. Context, tool support and per-token prices come from Nebius's own model list
+# (api.tokenfactory.nebius.com/v1/models?verbose=true), which names no output limit and no cache price.
+# Nebius's list names no tool support for this one (each other model here lists `tools`): tool-free until a call shows it.
+[models."rank:deepseek-v4-1-flash:nebius"]
+api_id = "deepseek-ai/DeepSeek-V4.1-Flash"
+benchmark_slug = "deepseek-v4-1-flash"
+ctx = 1048000
+tools = false
+price_ref = "nebius/rank:deepseek-v4-1-flash:nebius"
+cc_effort = false
+
+[models."rank:kimi-k3:nebius"]
+api_id = "moonshotai/Kimi-K3"
+benchmark_slug = "kimi-k3"
+ctx = 1024000
+tools = true
+price_ref = "nebius/rank:kimi-k3:nebius"
+cc_effort = false
+
+[models."rank:glm-5-3:nebius"]
+api_id = "zai-org/GLM-5.3"
+benchmark_slug = "glm-5-3"
+ctx = 1024000
+tools = true
+price_ref = "nebius/rank:glm-5-3:nebius"
+cc_effort = false
+
+[models."rank:glm-5-3-flash:nebius"]
+api_id = "zai-org/GLM-5.3-Flash"
+benchmark_slug = "glm-5-3-flash"
+ctx = 1024000
+tools = true
+price_ref = "nebius/rank:glm-5-3-flash:nebius"
+cc_effort = false
+
+[models."rank:qwen3-8-27b:nebius"]
+api_id = "Qwen/Qwen3.8-27B"
+benchmark_slug = "qwen3-8-27b"
+ctx = 262144
+tools = true
+price_ref = "nebius/rank:qwen3-8-27b:nebius"
+cc_effort = false
+
+[models."rank:minimax-m3:nebius"]
+api_id = "MiniMaxAI/MiniMax-M3"
+benchmark_slug = "minimax-m3"
+ctx = 1048576
+tools = true
+price_ref = "nebius/rank:minimax-m3:nebius"
+cc_effort = false
+
+[models."rank:gpt-oss-120b:nebius"]
+api_id = "openai/gpt-oss-120b"
+benchmark_slug = "gpt-oss-120b"
+ctx = 131072
+tools = true
+price_ref = "nebius/rank:gpt-oss-120b:nebius"
+cc_effort = false

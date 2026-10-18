@@ -1,0 +1,199 @@
+// The condensed handoff (SPEC "Account failover"): a session too big to carry to another account moves as a
+// FRESH session whose first message is built here from the Desk chat file (the chat's full record), in the
+// shape of AgentHydra's CliMayte continuation (server/src/climayte-lib.ts continuationPrompt): the goal, the
+// owner's later instructions, what is done, what was in progress, the open to-dos, the last exchanges
+// verbatim, and where the full history is. A copied session would be re-read uncached on the new account,
+// and its thinking from another organization cannot be used there.
+
+import { statSync } from 'node:fs'
+import type { TranscriptItem } from '@shared/protocol'
+import { readTail } from '../bridge/session-jsonl'
+
+/** Above this many tokens of context a move starts a fresh session from a handoff (HYDRA_DESK_HANDOFF_TOKENS overrides). */
+export const HANDOFF_TOKENS = 150_000
+/** Above this many tokens the next message starts a fresh session from a handoff on the same account, as a CliMayte
+ *  worker does (owner, 2026-10-11): every call past it re-reads the whole history. HYDRA_DESK_FRESH_TOKENS overrides. */
+export const FRESH_TOKENS = 200_000
+/** HandoffInput.why for a session left because it grew past FRESH_TOKENS, not because of a move. */
+export const GROWN = 'grown'
+/** HandoffInput.why for a turn on a service the chat's pin just moved it to (Pin service), which has not seen the chat. */
+export const PINNED = 'pinned'
+/** How a PINNED handoff opens and where the owner's own message starts in it: the transcript shows only that message. */
+export const PIN_INTRO = 'This chat now runs on '
+export const ANSWER_NOW = "\n\n## The owner's message to answer now\n"
+/** The handoff's hard cap, in characters (about 4k tokens). */
+export const MAX_HANDOFF_CHARS = 16_000
+
+/** What a turn cut short by the move is told, once per move, when it resumes on the new account. */
+export const CONTINUE_TEXT =
+  'You were moved to another account mid-task because the previous one hit its usage limit or was signed out. Continue exactly where you left off; do not redo finished steps.'
+
+/**
+ * How many tokens a resume of this session would read: the context of its newest main-thread assistant
+ * line (input plus both cache counts plus output), which follows a compaction down. Falls back to the
+ * file's size / 4 when no line carries usage. Null when the file cannot be read.
+ */
+export function sessionTokens(file: string): number | null {
+  let size: number
+  try {
+    size = statSync(file).size
+  } catch {
+    return null
+  }
+  for (const max of [512 * 1024, 4 * 1024 * 1024]) {
+    let lines: string[]
+    try {
+      lines = readTail(file, max).split('\n')
+    } catch {
+      return null
+    }
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!.trim()
+      if (!line.includes('"usage"')) continue
+      try {
+        const rec = JSON.parse(line) as { type?: string; isSidechain?: boolean; message?: { usage?: Record<string, unknown> } }
+        const u = rec.message?.usage
+        if (rec.type !== 'assistant' || rec.isSidechain || !u) continue
+        const n = (k: string): number => (typeof u[k] === 'number' ? (u[k] as number) : 0)
+        const total = n('input_tokens') + n('cache_creation_input_tokens') + n('cache_read_input_tokens') + n('output_tokens')
+        if (total > 0) return total
+      } catch {
+        // the tail's first line may be cut
+      }
+    }
+    if (size <= max) break
+  }
+  return Math.round(size / 4)
+}
+
+export interface HandoffInput {
+  chatId: string
+  title: string
+  cwd: string
+  /** The chat's items, oldest first (ChatStore.loadItems). */
+  items: TranscriptItem[]
+  /** The session being left, then the ones before it, newest first. */
+  sessions: string[]
+  /** About how big the old session had grown; null when it was not sized (a session that could not be reopened). */
+  tokens: number | null
+  /** Why it moved: '5-hour limit', 'signed out', ...; not used when tokens is null. */
+  why: string
+  /** Hydra Desk's own address, for the transcript route. */
+  deskUrl: string
+  /** With why PINNED: the service this message runs on, and what ran the record before it ("Claude", "another Codex account"). */
+  services?: { from: string; to: string }
+}
+
+const squash = (s: string): string => s.replace(/\s+/g, ' ').trim()
+const cut = (s: string, max: number): string => (s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1)).trimEnd()}…`)
+
+/** One line for a tool call: its name and what it touched. */
+function toolLine(i: Extract<TranscriptItem, { kind: 'tool_use' }>, max: number): string {
+  const x = i.input
+  const pick = ['command', 'file_path', 'path', 'pattern', 'description', 'url', 'prompt'].map((k) => x[k]).find((v) => typeof v === 'string' && v.trim())
+  const what = typeof pick === 'string' ? squash(pick.split('\n')[0]!) : ''
+  return cut(`${i.name}${what ? `: ${what}` : ''}${i.status === 'error' ? ' (failed)' : ''}`, max)
+}
+
+/** The handoff text, built from the chat's own record and kept under MAX_HANDOFF_CHARS. */
+export function buildHandoff(h: HandoffInput): string {
+  for (let scale = 1; scale > 0.05; scale *= 0.7) {
+    const text = render(h, scale)
+    if (text.length <= MAX_HANDOFF_CHARS) return text
+  }
+  return cut(render(h, 0.05), MAX_HANDOFF_CHARS)
+}
+
+type UserItem = Extract<TranscriptItem, { kind: 'user' }>
+type TextItem = Extract<TranscriptItem, { kind: 'assistant_text' }>
+type ToolItem = Extract<TranscriptItem, { kind: 'tool_use' }>
+
+const isUser = (i: TranscriptItem): i is UserItem => i.kind === 'user' && !i.queued && !!i.text.trim()
+const isText = (i: TranscriptItem): i is TextItem => i.kind === 'assistant_text' && !!i.text.trim()
+
+/** Each finished turn's last words (what it did), cut to `max`, and the index of the last finished turn's result. */
+function finishedTurns(items: TranscriptItem[], inTail: Set<string>, max: number): { done: string[]; lastResult: number } {
+  const done: string[] = []
+  let lastText: TextItem | null = null
+  let lastResult = -1
+  items.forEach((i, at) => {
+    if (isText(i)) lastText = i
+    if (i.kind !== 'result') return
+    if (lastText && !inTail.has(lastText.id)) done.push(cut(squash(lastText.text), max))
+    lastText = null
+    lastResult = at
+  })
+  return { done, lastResult }
+}
+
+function introSection(h: HandoffInput): string {
+  const rest = 'Continue exactly where it left off; do not redo finished steps. Check its claims with cheap commands (git status, git log -3, reading a file); do not re-run a test suite or build it reports passing unless you change what it covers.'
+  if (h.why === PINNED && h.services) {
+    return `${PIN_INTRO}${h.services.to}, which has not seen it yet: until now it ran on ${h.services.from}. Instead of that history you start from this condensed handoff, which Hydra Desk built from the chat's full record. Answer the owner's message at the end; the sections before it are what you knew. ${rest.replace('Continue exactly where it left off; ', '')}`
+  }
+  if (h.why === GROWN) {
+    return `This chat's session had grown to about ${Math.round((h.tokens ?? 0) / 1000)}k tokens, so Hydra Desk continues it in a fresh session on the same account: instead of re-reading it you start from this condensed handoff, which Hydra Desk built from the chat's full record. Answer the owner's message at the end; the sections before it are what you knew. ${rest.replace('Continue exactly where it left off; ', '')}`
+  }
+  if (h.tokens === null) {
+    return `The session this chat was in could not be reopened on this machine, so this is a fresh session: instead of re-reading it you start from this condensed handoff, which Hydra Desk built from the chat's full record. ${rest}`
+  }
+  return `You were moved to another account mid-task because the previous one ${h.why === 'signed out' ? 'was signed out' : `hit its ${h.why}`}. This is a fresh session: the old one had grown to about ${Math.round(h.tokens / 1000)}k tokens, so instead of re-reading it you start from this condensed handoff, which Hydra Desk built from the chat's full record. ${rest}`
+}
+
+function historySection(h: HandoffInput): string {
+  const [current, ...older] = h.sessions
+  return [
+    '## Where the full history is',
+    `Hydra Desk chat "${h.title}" (id ${h.chatId}), folder ${h.cwd}. If you need a detail left out here:`,
+    `- the agenthydra MCP's hydra_run { tool: "desk_transcript", args: { chat: "${h.chatId}" } } (the whole chat as Desk keeps it, oldest first; \`last\` keeps the newest N)`,
+    ...(current ? [`- the agenthydra MCP's history_search tool, then hydra_run { tool: "history_read" } for a hit, with session_id ${current}${older.length ? ` (earlier sessions of this chat: ${older.join(', ')})` : ''}`] : []),
+  ].join('\n')
+}
+
+function laterSection(later: UserItem[], limit: number, max: number): string {
+  const shown = later.slice(-limit)
+  const skipped = later.length - shown.length
+  return `## The owner's later instructions, oldest first\n${skipped ? `(${skipped} earlier ones left out)\n` : ''}${shown.map((u) => `- ${cut(squash(u.text), max)}`).join('\n')}`
+}
+
+function progressSection(said: TextItem | undefined, tools: ToolItem[], inTail: Set<string>, n: (x: number) => number): string {
+  const lines = ['## In progress when the session was cut']
+  if (said && !inTail.has(said.id)) lines.push(cut(said.text.trim(), n(800)))
+  if (tools.length) lines.push(`Its last tool calls:\n${tools.map((t) => `- ${toolLine(t, n(160))}`).join('\n')}`)
+  return lines.join('\n')
+}
+
+function tailSection(tail: TranscriptItem[], max: number): string {
+  return `## The last exchanges, verbatim\n${tail.map((i) => `${i.kind === 'user' ? '**Owner:**' : '**You:**'} ${cut((i as { text: string }).text.trim(), max)}`).join('\n\n')}`
+}
+
+function render(h: HandoffInput, scale: number): string {
+  const n = (x: number): number => Math.max(40, Math.round(x * scale))
+  const count = (x: number): number => Math.max(1, Math.round(x * scale))
+  // The main thread only: a sub-agent's lines are its own business.
+  const items = h.items.filter((i) => !i.parentToolUseId)
+  const users = items.filter(isUser)
+
+  // The last exchanges, verbatim.
+  const tail = items.filter((i) => isUser(i) || isText(i)).slice(-count(4))
+  const inTail = new Set(tail.map((i) => i.id))
+
+  const { done, lastResult } = finishedTurns(items, inTail, n(700))
+
+  // What ran after the last finished turn: the cut one.
+  const after = items.slice(lastResult + 1)
+  const said = after.filter(isText).at(-1)
+  const tools = after.filter((i): i is ToolItem => i.kind === 'tool_use').slice(-count(10))
+
+  const todos = items.filter((i): i is Extract<TranscriptItem, { kind: 'todos' }> => i.kind === 'todos').at(-1)?.todos.filter((t) => t.status !== 'completed') ?? []
+
+  const out: string[] = [introSection(h), historySection(h)]
+  if (users[0]) out.push(`## The goal (the owner's first message)\n${cut(users[0].text.trim(), n(2000))}`)
+  const later = users.slice(1).filter((u) => !inTail.has(u.id))
+  if (later.length) out.push(laterSection(later, count(30), n(240)))
+  if (done.length) out.push(`## Done so far (how earlier turns ended, oldest first)\n${done.slice(-count(6)).map((d) => `- ${d}`).join('\n')}`)
+  if (said || tools.length) out.push(progressSection(said, tools, inTail, n))
+  if (todos.length) out.push(`## Open to-dos\n${todos.map((t) => `- [${t.status}] ${cut(squash(t.content), n(200))}`).join('\n')}`)
+  if (tail.length) out.push(tailSection(tail, n(1200)))
+  return out.join('\n\n')
+}

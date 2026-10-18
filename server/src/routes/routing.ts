@@ -1,0 +1,116 @@
+/**
+ * Cost routing: /api/routing/cost-model (GET) and /api/routing/settings (PUT).
+ * What the numbers mean: docs/COST-MODEL.md. HSwarm picks the route itself from /api/corch/capacity.
+ */
+
+import priceFile from '../../../hswarm/data/prices.json'
+import { setSetting } from '../db'
+import { app } from '../http-app'
+import { priceFor, pricesAsOf } from '../pricing'
+import { clampDiscounts, costModel, providerGroup, readRoutingSettings } from '../routing-cost'
+
+async function body(c: {
+  req: { json: () => Promise<unknown> }
+}): Promise<Record<string, unknown>> {
+  const b = await c.req.json().catch(() => null)
+  return b && typeof b === 'object' && !Array.isArray(b) ? (b as Record<string, unknown>) : {}
+}
+
+const round = (n: number, d = 6) => Math.round(n * 10 ** d) / 10 ** d
+
+app.get('/api/routing/cost-model', (c) => {
+  const m = costModel()
+  // Ids only from the price file; every rate comes through pricing.ts (a downloaded catalog wins there).
+  const models = Object.keys(priceFile.models)
+    .sort()
+    .filter((id) => /^(claude|deepseek)/.test(id))
+    .flatMap((id) => {
+      const p = priceFor(id)
+      if (!p) return []
+      const provider = id.startsWith('claude') ? 'anthropic' : 'deepseek'
+      const d = m.settings.discounts[providerGroup(provider)]
+      return [
+        {
+          model: id,
+          provider,
+          listIn: p.input,
+          listOut: p.output,
+          afterDiscountIn: round(p.input * (1 - d / 100)),
+          afterDiscountOut: round(p.output * (1 - d / 100)),
+          subscriptionIn: round(p.input * m.fleetFraction),
+          subscriptionOut: round(p.output * m.fleetFraction),
+        },
+      ]
+    })
+  return c.json({
+    dollarsPerProWindow: m.dollarsPerProWindow,
+    plans: m.plans,
+    fleetFraction: m.fleetFraction,
+    models,
+    pricesAsOf: pricesAsOf(),
+    settings: m.settings,
+  })
+})
+
+/** A finite number from a number or a numeric string; anything else (boolean, array, null, '') is junk. */
+const numeric = (v: unknown): number | null => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+const clampTo = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n))
+
+app.put('/api/routing/settings', async (c) => {
+  const b = await body(c)
+  const bad: string[] = []
+  const writes: Array<[string, string]> = []
+  /** One numeric field: absent leaves it alone, junk is named in the 400, a number is clamped. */
+  const field = (name: string, key: string, lo: number, hi: number) => {
+    const v = b[name]
+    if (v === undefined) return
+    const n = numeric(v)
+    if (n === null) bad.push(name)
+    else writes.push([key, String(clampTo(n, lo, hi))])
+  }
+  if (b.enabled !== undefined) {
+    if (typeof b.enabled === 'boolean') writes.push(['routing_enabled', b.enabled ? '1' : '0'])
+    else bad.push('enabled')
+  }
+  field('sessionOverheadPct', 'routing_session_overhead_pct', 0, 100)
+  if (b.discounts !== undefined) {
+    if (b.discounts && typeof b.discounts === 'object' && !Array.isArray(b.discounts)) {
+      const d = b.discounts as Record<string, unknown>
+      const next: Record<string, unknown> = { ...readRoutingSettings().discounts }
+      for (const k of Object.keys(next)) {
+        if (d[k] === undefined) continue
+        const n = numeric(d[k])
+        if (n === null) bad.push(`discounts.${k}`)
+        else next[k] = n
+      }
+      writes.push(['routing_discounts', JSON.stringify(clampDiscounts(next))])
+    } else bad.push('discounts')
+  }
+  if (b.planPrices !== undefined) {
+    if (b.planPrices && typeof b.planPrices === 'object' && !Array.isArray(b.planPrices)) {
+      const p = b.planPrices as Record<string, unknown>
+      for (const [name, key] of [
+        ['Pro', 'routing_price_pro'],
+        ['Max 5×', 'routing_price_max5'],
+        ['Max 20×', 'routing_price_max20'],
+      ] as const) {
+        if (p[name] === undefined) continue
+        const n = numeric(p[name])
+        if (n === null) bad.push(`planPrices.${name}`)
+        else writes.push([key, String(clampTo(n, 0, 10_000))])
+      }
+    } else bad.push('planPrices')
+  }
+  // Good fields are stored even when others are junk; the 400 names only the junk.
+  for (const [key, value] of writes) setSetting(key, value)
+  if (bad.length) return c.json({ error: `invalid value for: ${bad.join(', ')}`, fields: bad }, 400)
+  return c.json(readRoutingSettings())
+})

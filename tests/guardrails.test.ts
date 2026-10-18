@@ -1,0 +1,1098 @@
+// tests/guardrails.test.ts: proves the repo's custom checks themselves work, not just that the
+// repo currently passes them. Two real failures motivate this file:
+//   · reka-trigger-tooltip-button.mjs (2026-07-16) encoded a wrong diagnosis AND crashed on import
+//     (`Cannot find package 'connections-arkitect'`), so it never ran at all. A check that throws
+//     and a check that passes look the same from a distance.
+//   · spawn-console-window.mjs's first cut had a blind spot shaped exactly like the bug it exists to
+//     catch: it only saw literal argv, so a resolveClaudeExe() spawn slipped through unnoticed.
+// "The check passes" is not evidence the check works; it might not even be running. So for every
+// check under scripts/checks, discovered by reading the directory (never hardcoded, so
+// a new check cannot silently dodge this file), we: import it for real, assert it exports a
+// well-formed gating audit, run it against the live repo root, and, for every check that exposes
+// findViolations, prove it actually fires on the broken shape it claims to catch and stays quiet on
+// the fixed one. A guardrail that cannot fail is not a guardrail.
+
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { REPO_ROOT } from './repo-root'
+
+// The checks used to live under .arkitect/your-checks/code. That directory was deleted wholesale
+// on 2026-07-27 while both this file and ci.yml still pointed at it, which is exactly the
+// can-a-guardrail-silently-stop-running failure this file exists to catch. They now live in
+// scripts/checks and depend on nothing but bun.
+const CHECKS_DIR = join(REPO_ROOT, 'scripts', 'checks')
+
+// Discovered, not hardcoded: a check dropped into this directory is automatically subject to every
+// assertion below, including the fire / stay-quiet fixtures wired through FIXTURES_BY_FILE.
+const CHECK_FILES = readdirSync(CHECKS_DIR)
+  .filter((f) => f.endsWith('.mjs'))
+  .sort()
+
+// Assembled at runtime, never written as a contiguous literal in this file's source: see the
+// wmi-commandline-query-self-match fixtures below for why.
+const CMD_LINE = 'Command' + 'Line'
+
+// Bespoke broken / fixed text for each check that exports findViolations, written from the real bug
+// each check's own header comment documents, not a synthetic near-miss. A check that exports
+// findViolations but has no entry here fails loudly below rather than being silently skipped.
+const FIXTURES_BY_FILE: Record<string, { broken: string[]; fixed: string[] }> = {
+  'instance-dir-route-gate.mjs': {
+    broken: [
+      // The real pre-fix shape (index.ts on 2026-09-03, routes/instances.ts until 2026-10-03): the
+      // param goes straight to the action, so `POST /api/instances/thomas/open` resolved `thomas`
+      // relative to the daemon's working directory and launched claude.exe with a --user-data-dir
+      // under System32's driver store.
+      `
+      app.post('/api/instances/:dir/open', async (c) => {
+        const dir = decodeURIComponent(c.req.param('dir'))
+        return c.json(await openInstance(dir))
+      })
+      `,
+      // instance-mode.ts's shape: the first pass at the fix wired the full daemon and left this
+      // second daemon's four routes ungated. Same paths, its own port, and an expression-bodied
+      // arrow rather than a block, so a fix that pattern-matched on `const dir = ` alone would have
+      // walked straight past it.
+      `
+      app.post('/api/instances/:dir/focus', async (c) =>
+        c.json(await focusInstance(decodeURIComponent(c.req.param('dir')))),
+      )
+      `,
+    ],
+    fixed: [
+      `
+      app.post('/api/instances/:dir/open', async (c) => {
+        const dir = await instanceDirParam(c)
+        if (dir instanceof Response) return dir
+        return c.json(await openInstance(dir))
+      })
+      `,
+      // Precision, both halves of it. An `:id` family is an identity looked up in its own store,
+      // never joined against a filesystem, so this rule does not describe it and must not fire on
+      // it. And the route files narrate this very rule in their comments: a commented-out
+      // registration cannot serve a request, and spawn-console-window.mjs already shipped once
+      // reading a sentence as a call.
+      `
+      app.post('/api/cli-instances/:id/launch', (c) => c.json(launchCliInstance(c.req.param('id'))))
+      // app.post('/api/instances/:dir/open', async (c) => openInstance(c.req.param('dir')))
+      `,
+    ],
+  },
+  'ps1-read-as-ansi.mjs': {
+    broken: [
+      // install.ps1's canary exactly as it shipped: an em dash inside a double-quoted string, which
+      // Windows PowerShell 5.1 read as a closing quote and refused to parse (2026-09-28).
+      '    throw "The staged AgentHydra.exe exited $LASTEXITCODE on --version — refusing to install it."\n',
+      // A comment is not safe either: it is the same bytes, and one edit away from a string.
+      '# AH-40 — a running exe can hold files open mid-copy\n$x = 1\n',
+    ],
+    fixed: [
+      '    throw "The staged AgentHydra.exe exited $LASTEXITCODE on --version - refusing to install it."\n',
+      // A BOM-marked file is read as UTF-8 by 5.1, so its non-ASCII is fine.
+      '﻿# AH-40 — a running exe can hold files open mid-copy\n$x = 1\n',
+    ],
+  },
+  'local-api-origin-allowlist.mjs': {
+    broken: [
+      // instance-mode.ts as it actually stood after AH-11 was marked closed: a second local server,
+      // serving instance create/open/quit, still trusting ANY loopback origin. A page on any other
+      // localhost port could drive it, and nothing said so.
+      `
+      import { cors } from 'hono/cors'
+      import { isLoopbackOrigin, loopbackGuard } from './loopback-guard.mjs'
+      app.use('/api/*', cors({ origin: (o) => (o && isLoopbackOrigin(o) ? o : '') }))
+      app.use('/api/*', loopbackGuard)
+      Bun.serve({ hostname: HOST, port: boundPort, fetch: app.fetch })
+      `,
+      // The permissive default called by its new name is still the permissive default: naming
+      // createLoopbackGuard is not the rule, passing allowedOrigins is.
+      `
+      import { createLoopbackGuard } from './loopback-guard.mjs'
+      app.use('/api/*', createLoopbackGuard())
+      Bun.serve({ port, fetch: app.fetch })
+      `,
+      // Binds a port and installs no guard at all.
+      `
+      const app = new Hono()
+      app.get('/api/things', (c) => c.json([]))
+      Bun.serve({ port: 7799, fetch: app.fetch })
+      `,
+    ],
+    fixed: [
+      // The shape both entry points now have.
+      `
+      import { apiOriginAllowlist } from './api-origins'
+      import { createLoopbackGuard } from './loopback-guard.mjs'
+      let allowedApiOrigins: string[] = []
+      app.use('/api/*', createLoopbackGuard({ allowedOrigins: () => allowedApiOrigins }))
+      allowedApiOrigins = apiOriginAllowlist(\`http://\${HOST}:\${boundPort}\`)
+      Bun.serve({ hostname: HOST, port: boundPort, fetch: app.fetch })
+      `,
+      // A routes module hangs handlers on a shared app and binds nothing. Not an entry point, and
+      // demanding a guard of it would be the false red that gets a check ignored.
+      `
+      import { app } from '../http-app'
+      app.get('/api/sessions', async (c) => c.json(await listSessions()))
+      app.post('/api/sessions/:id/done', async (c) => c.json({ ok: true }))
+      `,
+      // http-app.ts itself: builds the Hono app, serves nothing.
+      `
+      import { Hono } from 'hono'
+      export const app = new Hono()
+      `,
+    ],
+  },
+  'test-stub-outlives-its-file.mjs': {
+    broken: [
+      // The tmp/audit2 probe shape (2026-09-05): fetch replaced at module scope, never put back, so
+      // instance-pointer's findLiveInstance probed its own server through this fake and saw 0 hits.
+      `
+      import { expect, test } from 'bun:test'
+      const calls: string[] = []
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        calls.push(String(input))
+        return new Response('{}', { status: 200 })
+      }) as typeof fetch
+      test('refreshAll', async () => { expect(calls).toEqual([]) })
+      `,
+      // The request-generations shape before its fix: a module mocked for the whole run with no
+      // re-mock, so resource-status (next in order) awaited a getQueue nothing would resolve.
+      `
+      import { beforeEach, describe, expect, mock, test } from 'bun:test'
+      mock.module('../src/lib/api', () => ({ getQueue: () => new Promise(() => {}) }))
+      const { useData } = await import('../src/composables/useData')
+      test('x', () => { expect(useData).toBeTruthy() })
+      `,
+      // A before-hook stub is module scope by another name: it runs once and nothing undoes it.
+      `
+      import { beforeAll, expect, test } from 'bun:test'
+      beforeAll(() => { globalThis.fetch = (async () => new Response('{}')) as typeof fetch })
+      test('x', () => { expect(1).toBe(1) })
+      `,
+      // Rule C, orchestrator-stale-lock.test.ts as it shipped until 2026-09-14: the run it parks
+      // can never settle, so it never reaches the finally that releases the route lock, and the
+      // NEXT file's migrate_batch was refused busy by it. Three preempt tests red on ubuntu,
+      // green on windows, and the red named the wrong file.
+      `
+      import { expect, test } from 'bun:test'
+      import { orchestratorBusy, runOrchestrator } from '../src/orchestrator'
+      const never = () => new Promise<never>(() => {})
+      test('a young lock still blocks a second caller', async () => {
+        void runOrchestrator({ script: 'migrate_batch', timeoutMs: 600_000 }, { dir, spawn: never })
+        expect(orchestratorBusy()).toBe(true)
+      })
+      `,
+      // The reset exists but sits in the TEST BODY, which a test that fails or times out never
+      // reaches - the same reason rule A demands a hook rather than a trailing statement.
+      `
+      import { expect, test } from 'bun:test'
+      import { resetOrchestratorOperationsForTests, startOrchestratorOperation } from '../src/orchestrator'
+      test('x', async () => {
+        startOrchestratorOperation({ script: 'migrate_batch', timeoutMs: 600_000 }, { deps: { dir, spawn: () => new Promise(() => {}) } })
+        expect(1).toBe(1)
+        resetOrchestratorOperationsForTests()
+      })
+      `,
+      // Rule D, fourman.test.ts as it shipped until 2026-10-12: a request through the shared app
+      // built its router, and every later file loading a routes/*.ts module died at import.
+      `
+      import { expect, test } from 'bun:test'
+      import { app } from '../src/http-app'
+      import '../src/routes/fourman'
+      test('x', async () => {
+        const res = await app.fetch(new Request('http://127.0.0.1/api/fourman'))
+        expect(res.status).toBe(200)
+      })
+      `,
+      // The same through a dynamic import under another name, as the mocking route tests load it.
+      `
+      import { expect, test } from 'bun:test'
+      const { app: shared } = await import('../src/http-app')
+      test('x', async () => { expect((await shared.request('/api/queue')).status).toBe(200) })
+      `,
+    ],
+    fixed: [
+      // Rule D's fixed shape (queue-patch-guard.test.ts): requests go through a copy with its own router.
+      `
+      import { expect, test } from 'bun:test'
+      import { Hono } from 'hono'
+      import { app } from '../src/http-app'
+      import '../src/routes/queue'
+      const http = new Hono().route('/', app)
+      test('x', async () => { expect((await http.request('/api/queue')).status).toBe(200) })
+      `,
+      // A test building its OWN Hono app named app (api-body-limit.test.ts) freezes nothing shared,
+      // and an import of http-app quoted in a comment is prose, not a binding.
+      `
+      import { expect, test } from 'bun:test'
+      import { Hono } from 'hono'
+      // was: import { app } from '../src/http-app'
+      const app = new Hono()
+      test('x', async () => { expect((await app.request('/x')).status).toBe(404) })
+      `,
+      // resource-status.test.ts's shape: stubbed inside the test through a helper, restored in finally.
+      `
+      import { expect, test } from 'bun:test'
+      function setFetch(fn: typeof fetch): void { globalThis.fetch = fn }
+      test('x', async () => {
+        const originalFetch = globalThis.fetch
+        setFetch((async () => new Response('{}')) as typeof fetch)
+        try { expect(1).toBe(1) } finally { globalThis.fetch = originalFetch }
+      })
+      `,
+      // connections-sync.test.ts's shape: a module-scope stub with an afterAll that puts it back.
+      `
+      import { afterAll, expect, test } from 'bun:test'
+      const realFetch = globalThis.fetch
+      globalThis.fetch = (async () => new Response('{}')) as typeof fetch
+      afterAll(() => { globalThis.fetch = realFetch })
+      test('x', () => { expect(1).toBe(1) })
+      `,
+      // request-generations.test.ts after its fix: the real exports copied BEFORE the fake lands,
+      // and the module re-mocked to that copy once the file is done.
+      `
+      import { afterAll, expect, mock, test } from 'bun:test'
+      const realApi = { ...(await import('../src/lib/api')) }
+      mock.module('../src/lib/api', () => ({ getQueue: () => new Promise(() => {}) }))
+      afterAll(() => { mock.module('../src/lib/api', () => realApi) })
+      test('x', () => { expect(1).toBe(1) })
+      `,
+      // A file that only TALKS about the hazard, the way tunnel.test.ts and monitor.test.ts do.
+      `
+      import { expect, test } from 'bun:test'
+      // never mock.module('node:child_process') here: it is global for the whole run, and
+      // globalThis.fetch = fake at module scope leaks the same way.
+      test('x', () => { expect(1).toBe(1) })
+      `,
+      // Rule C, the shape orchestrator-stale-lock.test.ts ships today: the lock it parks is handed
+      // back in an after hook, so the file cannot poison whatever runs next.
+      `
+      import { afterEach, expect, test } from 'bun:test'
+      import { orchestratorBusy, resetOrchestratorOperationsForTests, runOrchestrator } from '../src/orchestrator'
+      const never = () => new Promise<never>(() => {})
+      afterEach(() => resetOrchestratorOperationsForTests())
+      test('a young lock still blocks a second caller', async () => {
+        void runOrchestrator({ script: 'migrate_batch', timeoutMs: 600_000 }, { dir, spawn: never })
+        expect(orchestratorBusy()).toBe(true)
+      })
+      `,
+      // Precision: a promise the test KEEPS THE RESOLVE OF is not a parked lock. This is
+      // orchestrator-operations.test.ts's deferred() shape, released by the test itself, and
+      // reporting it would be the false red that gets a check ignored.
+      `
+      import { expect, test } from 'bun:test'
+      import { runOrchestrator } from '../src/orchestrator'
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      test('x', async () => {
+        void runOrchestrator({ script: 'chats', timeoutMs: 600_000 }, { dir, spawn: () => gate })
+        release()
+        expect(1).toBe(1)
+      })
+      `,
+      // A never-settling promise with no orchestrator run behind it parks no lock at all.
+      `
+      import { expect, test } from 'bun:test'
+      test('x', async () => {
+        const pending = new Promise(() => {})
+        expect(pending).toBeTruthy()
+      })
+      `,
+    ],
+  },
+  'reka-popper-root-inside-tooltip.mjs': {
+    broken: [
+      // DropdownMenu wraps AROUND the IconTooltip, so DropdownMenuTrigger's nearest PopperRoot is
+      // the tooltip's own and the menu's popper never gets anchored (the real SessionsView.vue bug,
+      // fixed 2026-07-16: menu opened off-screen and, being modal, froze the whole app's pointer
+      // events).
+      `
+      <DropdownMenu>
+        <IconTooltip :label="$t('sessions.listOptions')">
+          <span class="inline-flex">
+            <DropdownMenuTrigger as-child>
+              <button type="button"><MoreHorizontal /></button>
+            </DropdownMenuTrigger>
+          </span>
+        </IconTooltip>
+        <DropdownMenuContent align="end" class="w-56" />
+      </DropdownMenu>
+      `,
+    ],
+    fixed: [
+      // The shape the old window's SessionsView.vue shipped: IconTooltip contains a
+      // <span> anchor, which contains the whole DropdownMenu including its own trigger and content.
+      `
+      <IconTooltip :label="$t('sessions.listOptions')">
+        <span class="inline-flex">
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <button type="button"><MoreHorizontal /></button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-56" />
+          </DropdownMenu>
+        </span>
+      </IconTooltip>
+      `,
+    ],
+  },
+  'spawn-console-window.mjs': {
+    broken: [
+      // Direction A: a console-subsystem program (powershell) spawned with no windowsHide at all.
+      // invisible only by accident of how the daemon happens to be launched today; a terminal,
+      // Explorer, or the compiled exe all get a real, visible console flash from this same call.
+      `Bun.spawn(['powershell', '-Command', script])`,
+      // Direction B: a GUI program (explorer) spawned WITH windowsHide. Bun's windowsHide sets
+      // STARTUPINFO SW_HIDE, which a GUI app obeys, so this hides the very window the spawn exists
+      // to open (measured 2026-07-16: plain opened 1 Explorer window, windowsHide opened 0).
+      `Bun.spawn(['explorer', dir], { windowsHide: true })`,
+    ],
+    fixed: [
+      `
+      Bun.spawn(['powershell', '-Command', script], { windowsHide: true })
+      Bun.spawn(['explorer', dir], { stdin: 'ignore' })
+      `,
+      // A spawn named only in PROSE. The scan is textual, so before comments were blanked this was
+      // a finding: the shared kit's detached-spawn.mjs header explains which shell
+      // spawn("powershell") resolves to, and syncing that comment in turned the whole suite red
+      // against a file that contains no spawn call at all (2026-08-09).
+      `
+      // Windows PowerShell (powershell.exe, which spawn("powershell") resolves to) space-joins
+      // -ArgumentList without quoting, so pre-quote each element.
+      /* Bun.spawn(['powershell', '-Command', script]) */
+      export function buildDetachedSpawn(platform, argv) { return { argv, detached: true } }
+      `,
+      // The inverse direction must survive the same treatment: a commented-out GUI spawn is not a
+      // gui-hidden finding either.
+      `// Bun.spawn(['explorer', dir], { windowsHide: true })`,
+    ],
+  },
+  'spawn-test-without-timeout.mjs': {
+    broken: [
+      // Direction A: an inline spawn on the 5s default. The shape tests/launcher.test.ts:126 shipped.
+      `test('a live cscript probe resolves the discovery', () => {
+         const out = execFileSync('cscript', ['//NoLogo', probePath], { encoding: 'utf8' })
+         expect(out.trim()).toBe('AgentHydra-Tray.ps1|1')
+       })`,
+      // Direction B: the spawn is TWO hops away, through module-level helpers. This is the exact
+      // sessions-scan-cache.test.ts shape that actually failed CI, and the one an inline-only scan
+      // reports as clean.
+      `function child(body) {
+         return JSON.parse(Bun.spawnSync([process.execPath, '-e', body]).stdout.toString())
+       }
+       function listOne(id) {
+         return child('const { listSessions } = await import(S); console.log(1)')
+       }
+       test('a transcript is parsed into a scan-cache row', () => {
+         expect(listOne('abc').title).toBe('first question')
+       })`,
+      // Direction C: the curried test.if(cond)(name, fn) form, which reads as bodyless — and
+      // therefore as compliant — unless the second call span is the one examined.
+      `test.if(process.platform === 'win32')('the runner escapes the daemon job', async () => {
+         const proc = Bun.spawn(['powershell', '-NoProfile', '-Command', q])
+         expect((await new Response(proc.stdout).text()).trim()).toBe('WmiPrvSE.exe')
+       })`,
+      // Direction D: a lifecycle HOOK, which the check was blind to until 2026-08-12. This is
+      // ReDesign's tray-launcher beforeAll verbatim in shape: 0.35s locally, 5057ms on
+      // windows-latest, and it held that repo's daemon job red. A hook is the worse case because
+      // bun blames the timeout on an unnamed test, so the failure does not name what caused it.
+      `beforeAll(() => {
+         cp.execFileSync('powershell', ['-NoProfile', '-File', createShortcut], { stdio: 'ignore' })
+       })`,
+      // Direction E: the same blindness one hop away, and per-hook rather than per-file.
+      `function regenerate() {
+         return execFileSync('powershell', ['-NoProfile', '-File', p], { stdio: 'ignore' })
+       }
+       beforeEach(() => {
+         regenerate()
+       })`,
+    ],
+    fixed: [
+      // The same three, each stating an allowance. Any value counts; what matters is that it was
+      // chosen rather than inherited.
+      `test('a live cscript probe resolves the discovery', () => {
+         const out = execFileSync('cscript', ['//NoLogo', probePath], { encoding: 'utf8' })
+         expect(out.trim()).toBe('AgentHydra-Tray.ps1|1')
+       }, 20_000)`,
+      `function child(body) {
+         return JSON.parse(Bun.spawnSync([process.execPath, '-e', body]).stdout.toString())
+       }
+       function listOne(id) {
+         return child('const { listSessions } = await import(S); console.log(1)')
+       }
+       test(
+         'a transcript is parsed into a scan-cache row',
+         () => {
+           expect(listOne('abc').title).toBe('first question')
+         },
+         SPAWNS_A_CHILD_BUN,
+       )`,
+      `test.if(process.platform === 'win32')('the runner escapes the daemon job', async () => {
+         const proc = Bun.spawn(['powershell', '-NoProfile', '-Command', q])
+         expect((await new Response(proc.stdout).text()).trim()).toBe('WmiPrvSE.exe')
+       }, 30000)`,
+      // A hook states its allowance as the SECOND argument, not the third. Getting that wrong in
+      // either direction is the whole risk in extending the rule to hooks: read it as third and
+      // every compliant hook reads as broken.
+      `beforeAll(() => {
+         cp.execFileSync('powershell', ['-NoProfile', '-File', createShortcut], { stdio: 'ignore' })
+       }, 60_000)`,
+      `function regenerate() {
+         return execFileSync('powershell', ['-NoProfile', '-File', p], { stdio: 'ignore' })
+       }
+       beforeEach(() => {
+         regenerate()
+       }, 20_000)`,
+      // Precision, the half that keeps this check usable: a test that only NAMES a spawn, in a
+      // comment and in a string it asserts against, is not a spawn. These tests embed PowerShell and
+      // VBS source in template literals as a matter of course, and spawn-console-window.mjs already
+      // shipped once reading a sentence as a call.
+      `test('the adapter is a thin wrapper, not a re-inlined fork', () => {
+         // was: asserted the old Bun.spawn(['powershell', ...]) hand-off inline.
+         const ps = readFileSync(CREATE_SHORTCUT, 'utf8')
+         expect(ps).toContain("execFileSync('cscript', ['//NoLogo'])")
+       })`,
+    ],
+  },
+  'timer-callback-can-kill-the-daemon.mjs': {
+    broken: [
+      // scheduler.ts as it shipped until 2026-08-30: a bare named callback whose function has no
+      // try/catch anywhere in it, and whose first statement is a synchronous sqlite read.
+      `
+      function tick() {
+        if (getSetting('scheduler_enabled') !== '1') return
+        const next = db.query('select * from queue_items').get()
+        if (next) void dispatchItem(next)
+      }
+      export function startScheduler() {
+        timer = setInterval(tick, pollSeconds * 1000)
+      }
+      `,
+      // monitor.ts's shape: it HAS a try/catch, but the settings read sits above it, and the
+      // callback discards the promise with \`void\` so the rejection reaches the process handler.
+      `
+      async function tick(deps) {
+        if (getSetting('monitor_enabled') !== '1') return
+        try {
+          await processRateLimited(deps)
+        } catch (err) {
+          console.error('monitor tick error:', err)
+        }
+      }
+      export function startMonitor() {
+        timer = setInterval(() => void tick(defaultDeps), MONITOR_POLL_MS)
+      }
+      `,
+      // monitor.ts's shape again, written as a const arrow: resolving the arrow must still judge it,
+      // never pass it because it is an arrow.
+      `
+      const tick = async () => {
+        if (getSetting('monitor_enabled') !== '1') return
+        try {
+          await processRateLimited(defaultDeps)
+        } catch (err) {
+          console.error('monitor tick error:', err)
+        }
+      }
+      export function startMonitor() {
+        timer = setInterval(tick, MONITOR_POLL_MS)
+      }
+      `,
+    ],
+    fixed: [
+      // manager-analytics collect.ts and judge.ts as they shipped 2026-10-13: a const async arrow whose
+      // re-entrancy guard (a plain flag, which cannot throw) sits above the try that holds the rest.
+      `
+      let running = false
+      const tick = async () => {
+        if (running) return
+        running = true
+        try {
+          await runPass({ verdictsOf })
+        } catch (e) {
+          console.error('pass failed:', e)
+        } finally {
+          running = false
+        }
+      }
+      setTimeout(() => {
+        tick()
+        setInterval(tick, PASS_EVERY_MS)
+      }, FIRST_PASS_MS)
+      `,
+      // hswarm-shortfall.ts and manager-analytics rsi.ts: a const arrow that is the promise and its
+      // .catch(), exactly what rule (b) accepts written inline.
+      `
+      const tick = () =>
+        void checkShortfall().catch((err) => console.warn('check failed:', err))
+      timer = setInterval(tick, CHECK_MS)
+      const settle = () => {
+        settleTrials().catch((e) => console.error('settle failed:', e))
+      }
+      setTimeout(() => setInterval(settle, SETTLE_EVERY_MS), SETTLE_FIRST_MS)
+      `,
+      // The shape scheduler.ts ships today: the callback is a thin guarded wrapper.
+      `
+      function tick() {
+        try {
+          tickInner()
+        } catch (err) {
+          console.error('scheduler tick error:', err)
+        }
+      }
+      function tickInner() {
+        if (getSetting('scheduler_enabled') !== '1') return
+      }
+      export function startScheduler() {
+        timer = setInterval(tick, pollSeconds * 1000)
+      }
+      `,
+      // The shape monitor.ts ships today: every statement inside the try, AND a .catch() on the
+      // promise the callback returns, so nothing can escape either way.
+      `
+      export function startMonitor() {
+        timer = setInterval(() => {
+          tick(defaultDeps).catch((err) => console.error('monitor tick error:', err))
+        }, MONITOR_POLL_MS)
+      }
+      `,
+      // A timer that discusses its own failure in prose must not read as one: comments and string
+      // literals are blanked before the scan.
+      `
+      // A bare setInterval(tick, ms) here would be unguarded and could kill the daemon.
+      const note = 'setInterval(tick, 1000) is the shape we do not want'
+      `,
+    ],
+  },
+  'transcript-index-born-stale.mjs': {
+    broken: [
+      // Direction A: a snapshot lifetime shorter than the sweep that fills it. 2000 is the literal
+      // value that shipped: a sweep took ~9.5s, so the freshness test could never once be true and
+      // the daemon rebuilt the index for as long as it ran.
+      `const TTL_MS = 2000`,
+      // Direction B: the timestamp threaded in from before the work, in the SHORTHAND spelling the
+      // real code used. `at` here is a parameter captured at the top of the builder, so the snapshot
+      // is born ~9.5s old — the defect itself, and the one a colon-only pattern reads as clean.
+      `function finishIndex(files, at) {
+         cache = { at, files }
+         return files
+       }`,
+      // Direction B again, spelled out: same defect, named variable, no shorthand to hide behind.
+      `cache = { at: startedAt, files: result }`,
+      // Direction C: the "background" refresh that blocks. A sync sweep holds the event loop for its
+      // whole duration, so deferring it by a turn changes nothing — /api/health measured 6.6s.
+      `setTimeout(() => {
+         try {
+           buildTranscriptIndex()
+         } finally {
+           refreshing = false
+         }
+       }, 0)`,
+    ],
+    fixed: [
+      // The shape the module ships today: a lifetime longer than a sweep, stamped at the moment the
+      // snapshot became true, revalidated through the async coalesced builder.
+      `const TTL_MS = 15_000
+       function finishIndex(files) {
+         cache = { at: performance.now(), files: result }
+         return result
+       }
+       export function listTranscriptFiles(force = false) {
+         if (!force && cache) {
+           if (performance.now() - cache.at >= TTL_MS) void startIndexBuild()
+           return cache.files
+         }
+         return buildTranscriptIndex()
+       }`,
+      // A setTimeout that defers something which is not a sweep is not this bug.
+      `setTimeout(() => { refreshing = false }, 0)`,
+      // Precision, the half that keeps the check usable: this module's own header narrates the exact
+      // broken shapes above, in prose and in a fenced example. A comment cannot rebuild an index,
+      // and spawn-console-window.mjs already shipped once reading a sentence as a call.
+      `
+      // with \`const TTL_MS = 2000\`, so the snapshot was stale on arrival:
+      //     cache = { at, files }
+      //     setTimeout(() => buildTranscriptIndex(), 0)
+      /* const TTL_MS = 2000 */
+      export const audit = { id: 'transcript-index-born-stale' }
+      `,
+    ],
+  },
+  'wmi-commandline-query-self-match.mjs': {
+    broken: [
+      // The needle lives inside the LIKE pattern of the querying powershell's OWN command line, so
+      // the query always matches itself; this is the actual dispatch.ts isRunnerAlive() bug that
+      // made reattach think every runner was alive forever, on every machine, silently.
+      // (Built via CMD_LINE, never written as one contiguous word+keyword pair in this file's own
+      // source: this check scans tests/**/*.ts too, and a literal occurrence here would flag this
+      // very test file.)
+      `
+      function isRunnerAlive(id) {
+        const filter = "${CMD_LINE} LIKE '%" + id + ".spec.json%'"
+        return runPowershell(filter)
+      }
+      `,
+    ],
+    fixed: [
+      `
+      function isRunnerAlive(id) {
+        const filter = "${CMD_LINE} LIKE '%" + id + ".spec.json%' AND ProcessId <> $PID"
+        return runPowershell(filter)
+      }
+      `,
+    ],
+  },
+  'catalog-row-provenance.mjs': {
+    broken: [
+      // Rule C, the aider shape as it shipped: an empty `dirs` and no `envVar`, so rootsFor()
+      // returns zero candidates and the row cannot match on any machine, ever.
+      `export const AGENT_TOOLS: AgentTool[] = [
+  {
+    id: 'aider',
+    name: 'Aider',
+    vendor: 'Aider',
+    dirs: [],
+    format: null,
+  },
+]`,
+      // Rule B: a marker that cannot be re-checked is worse than no marker, because it stops the
+      // next reader looking.
+      `export const AGENT_TOOLS: AgentTool[] = [
+  {
+    id: 'hermes',
+    name: 'Hermes Agent',
+    vendor: 'Nous Research',
+    dirs: ['.hermes'],
+    format: null,
+    verified: 'trust me',
+  },
+]`,
+      // Rule 0, aimed at the guardrail itself: a row shape parseRows cannot read must be reported,
+      // never skipped in silence. `id:` here carries two spaces, which the strict row pattern
+      // misses and the looser declared-count pattern still sees.
+      `export const AGENT_TOOLS: AgentTool[] = [
+  {
+    id:  'zed',
+    name: 'Zed',
+    vendor: 'Zed Industries',
+    dirs: ['.local/share/zed'],
+    format: 'foreign',
+  },
+]`,
+    ],
+    fixed: [
+      // What the three repaired rows actually look like: a real path, an opt-in row whose empty
+      // dirs is legal because an envVar can still reach it, and a marker naming file and date.
+      `export const AGENT_TOOLS: AgentTool[] = [
+  {
+    id: 'aider',
+    name: 'Aider',
+    vendor: 'Aider',
+    envVar: 'AIDER_DIR',
+    dirs: ['.aider'],
+    format: null,
+    verified: 'Aider-AI/aider aider/main.py (2026-09-04)',
+  },
+  {
+    id: 'opt-in-only',
+    name: 'Opt In Only',
+    vendor: 'Example',
+    envVar: 'OPT_IN_DIR',
+    dirs: [],
+    format: null,
+  },
+  {
+    // A leading comment between the brace and the id is the shape that broke the first parser.
+    id: 'cowork',
+    name: 'Claude Cowork',
+    vendor: 'Anthropic',
+    dirs: [
+      '.config/Claude/local-agent-mode-sessions',
+      'AppData/Roaming/Claude/local-agent-mode-sessions',
+    ],
+    format: 'claude',
+  },
+]`,
+    ],
+  },
+  // Adapted from stablyai/orca's credential-persistence ratchet (MIT); the idea, written fresh.
+  // Top-level code sits at column 0 in these fixtures: the check treats each column-0 line as a
+  // block boundary, and a sink is judged only against the block it sits in.
+  'credential-writer-ratchet.mjs': {
+    broken: [
+      // A login's credential file written by a module that does not own logins: the shape a second
+      // writer takes when it "just saves the login" next to the owner's copy.
+      `import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+export function rememberLogin(configDir: string, credentials: string): void {
+  writeFileSync(join(configDir, '.credentials.json'), credentials)
+}
+`,
+      // A Codex home's auth.json copied through a bound name: the copy reaches the file by a variable,
+      // so a rule that only looked for the literal inside the call would have walked straight past it.
+      `import { copyFileSync } from 'node:fs'
+import { join } from 'node:path'
+export function cloneCodexHome(from: string, to: string): void {
+  const auth = join(from, 'auth.json')
+  copyFileSync(auth, join(to, 'auth.json'))
+}
+`,
+      // A token value written to disk: the refresh token leaves the process inside a JSON body.
+      `import { writeFileSync } from 'node:fs'
+export function saveSnapshot(cfg: { accessToken: string; refreshToken: string }): void {
+  writeFileSync('cache.json', JSON.stringify({ refreshToken: cfg.refreshToken }))
+}
+`,
+      // Desktop's token-store key rewritten and renamed into place: the block names oauth:tokenCacheV2,
+      // so its writes are the store's writes whichever variable they go through.
+      `import { renameSync, writeFileSync } from 'node:fs'
+export function stashGrant(path: string, cfg: Record<string, unknown>, sealed: string): void {
+  cfg['oauth:tokenCacheV2'] = sealed
+  const tmp = path + '.tmp'
+  writeFileSync(tmp, JSON.stringify(cfg))
+  renameSync(tmp, path)
+}
+`,
+      // The owner's helper imported by name: desktop-cli-feed.ts sees credPath, not the literal.
+      `import { writeFileSync } from 'node:fs'
+import { credPath } from './cli-login-move'
+export function feedLogin(configDir: string, cred: string): void {
+  writeFileSync(credPath(configDir), cred)
+}
+`,
+    ],
+    fixed: [
+      // Reading a login and writing an unrelated cache: the credential name sits in a block with no
+      // write, and the write sits in a block that names no credential. Neither is a credential write.
+      `import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+export function hasLogin(configDir: string): boolean {
+  return Boolean(readFileSync(join(configDir, '.credentials.json'), 'utf8'))
+}
+export function saveCache(file: string, cache: object): void {
+  writeFileSync(file, JSON.stringify(cache))
+}
+`,
+      // Signing out deletes the login; a delete is not a write, and cli-logout.ts is exactly this shape.
+      `import { rmSync } from 'node:fs'
+import { credPath } from './cli-login-move'
+export function signOut(configDir: string): void {
+  rmSync(credPath(configDir), { force: true })
+}
+`,
+      // A comment or a string that names the write is prose, never a call.
+      `// writeFileSync(join(configDir, '.credentials.json'), credentials) was the old shape.
+export const LABEL = 'signed in'
+`,
+      // A write to a file that holds no login key is not a credential write.
+      `import { writeFileSync } from 'node:fs'
+export function saveSettings(dir: string, settings: object): void {
+  writeFileSync(dir + '/config.json', JSON.stringify(settings))
+}
+`,
+    ],
+  },
+  // Its fixtures live in the dedicated describe block at the end of this file. Repeating them here
+  // would run the same contracts twice, so this entry registers the check without restating them.
+  'sqlite-fixture-autocommits.mjs': { broken: [], fixed: [] },
+}
+
+// Checks that deliberately do NOT export findViolations, and why, asserted explicitly below rather
+// than silently skipped, so dropping findViolations from a future check without updating this file
+// fails loudly instead of quietly losing its regression net.
+const EXEMPT_FROM_FIXTURES: Record<string, string> = {
+  'kit-lib-type-drift.mjs':
+    'diffs export sets across a WHOLE .mjs / .d.mts file PAIR, not a single text blob a ' +
+    'findViolations(text) signature could take; its regression coverage is the run({ root }) ' +
+    'assertion against the real repo tree, exercised for every check below.',
+  'fixer-only-called-by-its-test.mjs':
+    'judges a fixer by who ELSE names it, so its unit is a whole tree of files, never one text ' +
+    'blob; it exports findOrphans(files) instead, and the planted-tree describe block below proves ' +
+    'it fires on the shape that shipped twice and stays quiet once a production caller exists.',
+}
+
+for (const file of CHECK_FILES) {
+  describe(file, () => {
+    // Set by the import test and read by every test after it in this describe block. bun:test runs
+    // a describe block's tests sequentially by default, so this is never read before it is set.
+    let mod: any
+
+    test('imports cleanly, the exact failure mode a crashed check hides behind', async () => {
+      // pathToFileURL, not a bare path: a raw Windows path is not a valid ESM specifier.
+      mod = await import(pathToFileURL(join(CHECKS_DIR, file)).href)
+      expect(mod).toBeTruthy()
+    })
+
+    test('exports a well-formed, gating audit', () => {
+      expect(mod.audit).toBeTruthy()
+      expect(typeof mod.audit.id).toBe('string')
+      expect(mod.audit.id.length).toBeGreaterThan(0)
+      expect(typeof mod.audit.title).toBe('string')
+      expect(mod.audit.title.length).toBeGreaterThan(0)
+      expect(mod.audit.gating).toBe(true)
+    })
+
+    test('audit.run resolves clean against the real repo root (the regression net)', async () => {
+      const result = await mod.audit.run({ root: REPO_ROOT })
+      expect(result.failed).toBe(false)
+      expect(typeof result.report).toBe('string')
+      expect(result.report.length).toBeGreaterThan(0)
+    })
+
+    if (file in EXEMPT_FROM_FIXTURES) {
+      test(`does not export findViolations, exempt: ${EXEMPT_FROM_FIXTURES[file]}`, () => {
+        expect(mod.findViolations).toBeUndefined()
+      })
+    } else {
+      test('exports findViolations and has registered fixtures', () => {
+        // A failure here means a new check landed with findViolations but nobody taught this file
+        // its broken/fixed shape, exactly the silent-skip this file exists to prevent. Fix: add an
+        // entry to FIXTURES_BY_FILE (or, if it truly has no single-text-blob shape, an entry to
+        // EXEMPT_FROM_FIXTURES explaining why, same as kit-lib-type-drift.mjs above).
+        expect(typeof mod.findViolations).toBe('function')
+        expect(FIXTURES_BY_FILE[file]).toBeTruthy()
+      })
+
+      const fixtures = FIXTURES_BY_FILE[file]
+      if (fixtures) {
+        fixtures.broken.forEach((text, i) => {
+          test(`findViolations fires on the broken fixture #${i}`, () => {
+            expect(mod.findViolations(text).length).toBeGreaterThan(0)
+          })
+        })
+        fixtures.fixed.forEach((text, i) => {
+          test(`findViolations stays quiet on the fixed fixture #${i}`, () => {
+            expect(mod.findViolations(text).length).toBe(0)
+          })
+        })
+      }
+    }
+  })
+}
+
+// spawn-test-without-timeout.mjs can stand ITSELF down: a repo-wide `bun test --timeout N` means
+// no test inherits the 5s default, so there is nothing to enforce. That is correct (RepoYeti shells
+// out to git in nearly every test and solves it exactly that way, and this check reported 230
+// violations there until it learned to look), but it is also a path that silently disables a
+// guardrail — precisely the failure this file exists to catch. So it gets asserted in BOTH
+// directions rather than trusted.
+describe('spawn-test-without-timeout.mjs — repo-wide timeout stand-down', () => {
+  const load = () => import(pathToFileURL(join(CHECKS_DIR, 'spawn-test-without-timeout.mjs')).href)
+
+  const guardrailRoots: string[] = []
+  const withRoot = (files: Record<string, string>): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'agenthydra-guardrail-'))
+    guardrailRoots.push(dir)
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body)
+    return dir
+  }
+
+  afterEach(() => {
+    for (const dir of guardrailRoots.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a --timeout in the test script stands the check down', async () => {
+    const { audit, globalTimeoutMs } = await load()
+    const root = withRoot({
+      'package.json': JSON.stringify({ scripts: { test: 'bun test tests --timeout 20000' } }),
+    })
+    expect(globalTimeoutMs(root)).toBe(20000)
+    const res = await audit.run({ root })
+    expect(res.failed).toBe(false)
+    expect(res.report).toContain('20000')
+  })
+
+  test('a [test] timeout in bunfig.toml does NOT stand it down - bun ignores that key', async () => {
+    // This used to assert the opposite, and the opposite was a false stand-down. Bun 1.4.0 IGNORES
+    // `timeout` under [test] entirely (measured 2026-08-21 in RepoYeti: a 6s test still dies at the
+    // 5s default with it set), so believing it would switch this whole check off while the repo got
+    // none of the protection it thought it had bought - a guardrail reporting clean because it was
+    // told to stop looking. `setDefaultTimeout()` in a preload is out for the same reason and is
+    // subtler: it applies when ONE file runs and silently stops the moment a second file joins the
+    // invocation. The CLI flag is the only form that actually holds.
+    const { globalTimeoutMs } = await load()
+    const root = withRoot({
+      'package.json': JSON.stringify({ scripts: { test: 'bun test' } }),
+      'bunfig.toml': '[install]\nregistry = "x"\n\n[test]\ntimeout = 15000\n',
+    })
+    expect(globalTimeoutMs(root)).toBeNull()
+  })
+
+  test('no repo-wide timeout means the per-test rule still applies (this repo)', async () => {
+    // The real guard: if AgentHydra ever gains a global --timeout, this flips and the check above
+    // stops enforcing anything. That should be a deliberate, visible change, not a silent one.
+    const { globalTimeoutMs } = await load()
+    expect(globalTimeoutMs(REPO_ROOT)).toBeNull()
+  })
+})
+
+// fixer-only-called-by-its-test.mjs, fired at a PLANTED tree: a temp module exporting sweepX that
+// only a test imports, exactly the state reassertAutomationStamps and sweepUntitledDesktopChats
+// shipped in. Then the same tree with a caller, and the two real fixers with their real callers
+// taken away, so the check is proven against the bugs it was written from, not a synthetic one.
+describe('fixer-only-called-by-its-test.mjs — planted orphan', () => {
+  const FIXER = 'export function sweepX(): number {\n  return 0\n}\n'
+  const TEST =
+    "import { sweepX } from '../src/sweep-x'\ntest('sweeps', () => expect(sweepX()).toBe(0))\n"
+  let root = ''
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true })
+    root = ''
+  })
+  const plant = (files: Record<string, string>) => {
+    root = mkdtempSync(join(tmpdir(), 'fixer-orphan-'))
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(join(root, rel, '..'), { recursive: true })
+      writeFileSync(join(root, rel), text)
+    }
+  }
+  const load = async () =>
+    import(pathToFileURL(join(CHECKS_DIR, 'fixer-only-called-by-its-test.mjs')).href)
+
+  test('fails the build when only a test imports the fixer', async () => {
+    plant({
+      'server/src/sweep-x.ts': FIXER,
+      'server/tests/sweep-x.test.ts': TEST,
+      // A doc comment and a string naming it are not callers.
+      'server/src/index.ts': "// sweepX runs on a timer\nconst note = 'sweepX()'\n",
+    })
+    const result = await (await load()).audit.run({ root })
+    expect(result.failed).toBe(true)
+    expect(result.findings.map((f: { symbol: string }) => f.symbol)).toEqual(['sweepX'])
+    expect(result.report).toContain('server/src/sweep-x.ts:1 sweepX')
+  })
+
+  test('passes once production code calls it, from another file or its own', async () => {
+    plant({
+      'server/src/sweep-x.ts': FIXER,
+      'server/tests/sweep-x.test.ts': TEST,
+      'server/src/index.ts':
+        "import { sweepX } from './sweep-x'\nsetInterval(() => { try { sweepX() } catch {} }, 1000)\n",
+    })
+    expect((await (await load()).audit.run({ root })).failed).toBe(false)
+    rmSync(root, { recursive: true, force: true })
+    plant({
+      'server/src/sweep-x.ts': `${FIXER}export function start() {\n  setInterval(sweepX, 1000)\n}\n`,
+      'server/tests/sweep-x.test.ts': TEST,
+    })
+    expect((await (await load()).audit.run({ root })).failed).toBe(false)
+  })
+
+  test('catches both real fixers once their real production callers are taken away', async () => {
+    const { findOrphans } = await load()
+    const read = (rel: string) => ({ path: rel, text: readFileSync(join(REPO_ROOT, rel), 'utf8') })
+    const owner = read('server/src/session-launch.ts')
+    const tests = [
+      read('server/tests/session-launch.test.ts'),
+      read('server/tests/title-sweep.test.ts'),
+    ]
+    // With its caller present, neither is an orphan; without it, each is, which is the state each
+    // one shipped in.
+    const callers = [
+      read('server/src/title-sweep.ts'),
+      read('server/src/automation-stamp-sweep.ts'),
+    ]
+    expect(findOrphans([owner, ...tests, ...callers])).toEqual([])
+    const symbols = findOrphans([owner, ...tests]).map((f: { symbol: string }) => f.symbol)
+    expect(symbols).toContain('sweepUntitledDesktopChats')
+    expect(symbols).toContain('reassertAutomationStamps')
+  })
+})
+
+test('at least one check was actually discovered and exercised above', () => {
+  // Guards against the whole file above passing vacuously if CHECKS_DIR were ever empty or
+  // misnamed: an empty for-loop registers zero tests and bun reports that as success, not failure.
+  // A guardrail that cannot fail is not a guardrail, and neither is a suite with nothing in it.
+  expect(CHECK_FILES.length).toBeGreaterThan(0)
+})
+
+// ── CASE-INSENSITIVE SELF-EXCLUSION ────────────────────────────────────────────────────────────
+// The net above runs every audit against REPO_ROOT, which is derived from import.meta.dir — the
+// SAME canonical spelling a check's own `import.meta.url` resolves to. So the two always agreed,
+// and a case-sensitive self-comparison sailed through it.
+//
+// It did not sail through CI. `bun scripts/checks/wmi-commandline-query-self-match.mjs` uses
+// process.cwd(), which carries whatever casing the invoker typed, while Bun canonicalises
+// import.meta.url to the real on-disk spelling (Node echoes the typed one instead). On a checkout
+// reached as `...\agenthydra\...` whose folder is really `AgentHydra`, the check stopped excluding
+// itself and reported the two example queries in its own header — green under node, RED under bun,
+// which is the runtime CI uses. Found 2026-08-30 by a local CI run.
+//
+// This pins the property the fix relies on: a differently-cased root must not change any verdict.
+describe('checks survive a differently-cased repo root (Windows path identity)', () => {
+  const files = CHECK_FILES
+  for (const file of files) {
+    test.skipIf(process.platform !== 'win32')(`${file} is casing-stable`, async () => {
+      const mod = await import(pathToFileURL(join(CHECKS_DIR, file)).href)
+      if (typeof mod.audit?.run !== 'function') return
+      // Windows resolves both spellings to the same directory, so any difference in the verdict
+      // is the check reasoning about the STRING rather than about the file.
+      const lower = await mod.audit.run({ root: REPO_ROOT.toLowerCase() })
+      const upper = await mod.audit.run({ root: REPO_ROOT })
+      expect(lower.failed).toBe(upper.failed)
+      expect(lower.failed).toBe(false)
+    })
+  }
+})
+
+// sqlite-fixture-autocommits.mjs: four contracts, one fixture each. The broken shape is the codex
+// fixture as it stood before 6fea9abe: CREATE TABLEs and INSERTs with no transaction. Two fixes
+// are accepted (the begin/commit markers and db.transaction), and a read-only handle is out of scope.
+describe('sqlite-fixture-autocommits.mjs — autocommit fixtures', () => {
+  const load = () => import(pathToFileURL(join(CHECKS_DIR, 'sqlite-fixture-autocommits.mjs')).href)
+
+  const BROKEN = `import { Database } from 'bun:sqlite'
+const db = new Database(join(codexHome, 'thread_history_1.sqlite'))
+db.exec('CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT); CREATE TABLE thread_items (thread_id TEXT, item_id TEXT); CREATE TABLE thread_history_projection_state (thread_id TEXT, cursor INTEGER);')
+db.query('INSERT INTO thread_turns VALUES (?, ?)').run('t1', 't1-turn')
+db.query('INSERT INTO thread_items VALUES (?, ?)').run('t1', 't1-item')
+db.query('INSERT INTO thread_history_projection_state VALUES (?, 42)').run('t1')
+db.query('INSERT INTO thread_turns VALUES (?, ?)').run('t2', 't2-turn')
+db.query('INSERT INTO thread_items VALUES (?, ?)').run('t2', 't2-item')
+db.query('INSERT INTO thread_history_projection_state VALUES (?, 42)').run('t2')
+db.close()
+`
+
+  test('the pre-fix codex shape (3 CREATE TABLE, 6 INSERT, no transaction) is one finding', async () => {
+    const { findViolations } = await load()
+    expect(findViolations(BROKEN)).toHaveLength(1)
+  })
+
+  test('the same fixture wrapped in db.exec begin/commit is no finding', async () => {
+    const { findViolations } = await load()
+    const wrapped = BROKEN.replace(
+      "db.exec('CREATE TABLE",
+      "db.exec('begin')\ndb.exec('CREATE TABLE",
+    ).replace('db.close()', "db.exec('commit')\ndb.close()")
+    expect(findViolations(wrapped)).toHaveLength(0)
+  })
+
+  test('the same fixture wrapped in db.transaction(() => {...})() is no finding', async () => {
+    const { findViolations } = await load()
+    const body = BROKEN.split('\n')
+      .slice(2, -2)
+      .map((line) => `  ${line}`)
+      .join('\n')
+    const wrapped = `import { Database } from 'bun:sqlite'
+const db = new Database(join(codexHome, 'thread_history_1.sqlite'))
+db.transaction(() => {
+${body}
+})()
+db.close()
+`
+    expect(findViolations(wrapped)).toHaveLength(0)
+  })
+
+  test('a read-only handle that only reads is no finding', async () => {
+    const { findViolations } = await load()
+    const readonly = `import { Database } from 'bun:sqlite'
+const db = new Database(join(codexHome, 'thread_history_1.sqlite'), { readonly: true })
+const turns = db.query('SELECT thread_id FROM thread_turns').all()
+const items = db.query('SELECT COUNT(*) AS n FROM thread_items').get()
+db.close()
+`
+    expect(findViolations(readonly)).toHaveLength(0)
+  })
+})

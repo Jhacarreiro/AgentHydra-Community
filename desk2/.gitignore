@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist.next-*/
+dist.old-*/
+*.log
+.env
+.env.local
+tmp/
+*.tsbuildinfo
+__pycache__/
+.venv/
+.state/
+# Free logins (Windows-encrypted sessions) live in ~/.hydra-desk-2/free; never in the repo.
+*.dpapi

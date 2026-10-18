@@ -1,0 +1,1202 @@
+// Pure sidebar logic (tested in web/test/shell). No Vue, no store.
+import type { ChatServiceInfo, ChatServiceKind, ChatStatus, ChatSummary, ExternalSession, ProjectEntry } from '@shared/protocol'
+import { accountTitle } from '../accounts/format'
+
+/** The folder a chat belongs to, as the real sidebar labels it: the basename, case kept. */
+export function folderLabel(cwd: string): string {
+  const parts = cwd.split(/[\\/]+/).filter(Boolean)
+  return parts[parts.length - 1] ?? cwd
+}
+
+/** Two spellings of one folder ("C:\x\Connections", "c:/x/connections/") share a key. */
+export function folderKey(cwd: string): string {
+  return cwd.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase()
+}
+
+/** The filter menu: Active (not archived, the default), Archived only, or All (Archived as its own group last). */
+export type SidebarFilter = 'active' | 'archived' | 'all'
+export const FILTER_LABELS: Record<SidebarFilter, string> = {
+  active: 'Active',
+  archived: 'Archived',
+  all: 'All'
+}
+
+/** A remembered filter, back from storage: anything but a known one is the default, Active. */
+export function parseFilter(stored: string | null | undefined): SidebarFilter {
+  return stored && Object.hasOwn(FILTER_LABELS, stored) ? (stored as SidebarFilter) : 'active'
+}
+
+/** What an empty list says it is empty for: a search, hidden groups, Active only (named even under another filter), or the filter. */
+export function emptyListText(s: { searching: boolean; hiddenOut: boolean; filter: SidebarFilter; activeOnly: boolean }): string {
+  if (s.searching) return 'No matching sessions'
+  if (s.hiddenOut) return 'Every group here is hidden'
+  if (s.activeOnly) return s.filter === 'archived' ? 'No active archived sessions' : 'No active sessions'
+  if (s.filter === 'archived') return 'No archived sessions'
+  return 'No sessions yet'
+}
+
+/**
+ * The list a chat the current one hides is shown in (a new chat started while Archived or a search is
+ * on): no search, and Active for a live chat, All for an archived one under Active.
+ */
+export function revealChat(chat: Pick<ChatSummary, 'archived'>, filter: SidebarFilter): { query: string; filter: SidebarFilter } {
+  if (chat.archived) return { query: '', filter: filter === 'active' ? 'all' : filter }
+  return { query: '', filter: filter === 'archived' ? 'active' : filter }
+}
+
+/**
+ * What renaming an outside session sends: the new name; null (an emptied field) for the session's own
+ * name again; undefined when nothing changed. The window only sees the shown title (the overlay's once
+ * renamed), so an empty field is the way back to the session's own name.
+ */
+export function externalRename(draft: string, shown: string): string | null | undefined {
+  const title = draft.trim()
+  if (!title) return null
+  return title === shown ? undefined : title
+}
+
+const ACTIVE: ChatStatus[] = ['starting', 'working', 'needs_you']
+/** A turn runs now; one waiting on you does not. */
+const RUNNING: ChatStatus[] = ['starting', 'working']
+
+/** One row of the list: a Hydra Desk chat, or a session running elsewhere (read-only until continued here). */
+export type SidebarEntry = (
+  | { kind: 'chat'; id: string; at: number; chat: ChatSummary }
+  | { kind: 'external'; id: string; at: number; session: ExternalSession }
+) & {
+  under?: string // a nested row (nestChildren): the entryKey of the top row it sits under
+  depth?: number // a nested row's generations below that top row: 1 for a child, 2 for a grandchild
+}
+
+export interface ChatGroup {
+  key: string // the cwd, '' for no folder, 'group:<name>' for a moved-to group, 'name:<folder>' for another PC's folder known only by its last name (tasks.ts), or 'pinned' / 'archived'
+  label: string
+  cwd: string | null // folder for "New session in <folder>"; null for Pinned / Archived / No folder / a moved-to group
+  entries: SidebarEntry[]
+  hidden?: boolean // hidden (its right-click's Hide), shown because Show hidden is on or a search is typed
+}
+
+export interface SidebarGroups {
+  pinned: ChatGroup | null // hidden when empty, as in the real app
+  folders: ChatGroup[]
+  archived: ChatGroup | null // filter 'all' only, when non-empty
+  hiddenOut: number // the folder groups Hide left out of `folders`
+}
+
+/** Hide's tooltip, in both lists' group menus. */
+export const HIDE_TITLE = 'Hides this group, not its chats (they stay active). Filter, Show hidden groups brings it back.'
+
+/** The Unassigned holding area's group key (Move to account > Unassigned): last of the folder groups, never A-Z sorted. */
+export const UNASSIGNED = 'unassigned'
+
+/** Hide is offered on a folder or moved-to group's header; Pinned, Archived and Unassigned are not projects. */
+export const hideable = (g: Pick<ChatGroup, 'key'>): boolean => g.key !== 'pinned' && g.key !== 'archived' && g.key !== UNASSIGNED
+
+/**
+ * The groups a list shows once the hidden ones (a group's right-click → Hide, by its groupOrderKey) are
+ * out (owner, 2026-10-05: "I don't want to like archive because they're meant to be there, but I also
+ * don't feel like seeing"): with `show` (the Filter menu's Show hidden, or a typed search, which finds
+ * every row) they stay, marked `hidden`. The desk list and the cloud list both use it.
+ */
+export function dropHidden<T extends { hidden?: boolean }>(
+  groups: T[],
+  keyOf: (g: T) => string,
+  hidden: ReadonlySet<string> | undefined,
+  show: boolean
+): { shown: T[]; out: number } {
+  if (!hidden?.size) return { shown: groups, out: 0 }
+  const shown: T[] = []
+  for (const g of groups) {
+    if (!hidden.has(keyOf(g))) shown.push(g)
+    else if (show) shown.push(Object.assign(g, { hidden: true }))
+  }
+  return { shown, out: groups.length - shown.length }
+}
+
+/** The hidden keys after Hide (`on`) or Unhide on the group `key`. */
+export function setHidden(hidden: ReadonlySet<string>, key: string, on: boolean): Set<string> {
+  const next = new Set(hidden)
+  if (on) next.add(key)
+  else next.delete(key)
+  return next
+}
+
+const newestFirst = (a: SidebarEntry, b: SidebarEntry) => b.at - a.at
+export const NO_FOLDER = 'No folder'
+
+/** The marks a row is grouped by, whichever kind it is (an outside session's are Hydra Desk's overlay). */
+const marksOf = (e: SidebarEntry) => (e.kind === 'chat' ? e.chat : e.session)
+const entryCwd = (e: SidebarEntry) => (e.kind === 'chat' ? e.chat.cwd : (e.session.cwd ?? ''))
+/** On no account, in the Unassigned holding area (ExternalSession.unassigned): only an outside session can be. */
+const parkedOf = (e: SidebarEntry) => e.kind === 'external' && e.session.unassigned === true
+
+/**
+ * Active: Pinned first (its own group, newest first), then one group per folder, and one per group a
+ * row was moved to, listed A-Z by label (sortFolders); sessions running elsewhere sit in the same groups,
+ * except CliMayte's own workers and sessions that already are one of our chats. A moved-to group named
+ * like a folder group joins it. Archived: only the archived rows, grouped the same way. All: Active plus
+ * an Archived group last. Search drops rows; a group left empty is dropped. A `hidden` group (by its
+ * groupOrderKey, so a moved-to group that joined it goes with it) is left out unless `showHidden` or a
+ * search; a pinned row of it stays in Pinned.
+ */
+export function groupChats(
+  chats: ChatSummary[],
+  opts: {
+    query?: string
+    filter?: SidebarFilter
+    external?: ExternalSession[]
+    /** Whether the Apps scope lets an outside session's app through (cloud/logic.ts appShown); Desk's own chats are never filtered. */
+    showApp?: (s: ExternalSession) => boolean
+    order?: SidebarOrder
+    hidden?: ReadonlySet<string>
+    showHidden?: boolean
+  } = {}
+): SidebarGroups {
+  const query = (opts.query ?? '').trim().toLowerCase()
+  const filter = opts.filter ?? 'active'
+  const ours = new Set(chats.map((c) => c.sessionId).filter(Boolean))
+  const entries: SidebarEntry[] = [
+    ...chats.map((chat): SidebarEntry => ({ kind: 'chat', id: chat.id, at: chat.updatedAt, chat })),
+    ...(opts.external ?? [])
+      .filter((s) => s.source !== 'climayte' && !ours.has(s.id) && (opts.showApp?.(s) ?? true))
+      .map((session): SidebarEntry => ({ kind: 'external', id: session.id, at: session.lastActivityAt ?? 0, session }))
+  ].filter((e) => !query || marksOf(e).title.toLowerCase().includes(query))
+  const live = filter === 'archived' ? [] : entries.filter((e) => !marksOf(e).archived)
+  const archivedRows = filter === 'active' ? [] : entries.filter((e) => marksOf(e).archived)
+
+  const inGroups = filter === 'archived' ? archivedRows : live.filter((e) => !marksOf(e).pinned)
+  const pinned = live.filter((e) => marksOf(e).pinned).sort(newestFirst)
+  // One folder however its path is spelled (Windows paths ignore case and slash direction); the group
+  // shows the path of its newest row exactly as that row has it. Moved-to groups ignore case too.
+  const byFolder = new Map<string, SidebarEntry[]>()
+  const byGroup = new Map<string, SidebarEntry[]>()
+  const add = (map: Map<string, SidebarEntry[]>, key: string, e: SidebarEntry) => {
+    const list = map.get(key)
+    if (list) list.push(e)
+    else map.set(key, [e])
+  }
+  // Unassigned rows wait in their own group, whatever folder or moved-to group they had; Archived groups them by folder.
+  const parked: SidebarEntry[] = []
+  for (const e of inGroups) {
+    const group = marksOf(e).group
+    if (filter !== 'archived' && parkedOf(e)) parked.push(e)
+    else if (group) add(byGroup, group.toLowerCase(), e)
+    else add(byFolder, folderKey(entryCwd(e)), e)
+  }
+  const groups: ChatGroup[] = [...byFolder.values()].map((list) => {
+    const cwd = entryCwd(list.sort(newestFirst)[0]!)
+    return { key: cwd, label: cwd ? folderLabel(cwd) : NO_FOLDER, cwd: cwd || null, entries: list }
+  })
+  for (const [name, list] of byGroup) {
+    const folder = namesakeFolder(groups, name)
+    if (folder) folder.entries.push(...list)
+    else groups.push({ key: `group:${name}`, label: marksOf(list.sort(newestFirst)[0]!).group!, cwd: null, entries: list })
+  }
+  for (const g of groups) g.entries.sort(newestFirst)
+  const archived = filter === 'all' ? archivedRows.sort(newestFirst) : []
+  // A saved order wins over activity, so sending a message moves nothing (the owner, 2026-10-04). Groups are not saved: they are listed A-Z.
+  const order = opts.order
+  const rows = (list: SidebarEntry[]) => (order ? stableOrder(list, (e) => e.id, order.rows) : list)
+  for (const g of groups) g.entries = rows(g.entries)
+  const folders = dropHidden(sortFolders(groups), groupOrderKey, opts.hidden, !!opts.showHidden || !!query)
+  // The holding area goes after the folders: its chats are parked, not worked on.
+  const unassigned: ChatGroup[] = parked.length ? [{ key: UNASSIGNED, label: 'Unassigned', cwd: null, entries: rows(parked.sort(newestFirst)) }] : []
+
+  return nestChildren({
+    pinned: pinned.length ? { key: 'pinned', label: 'Pinned', cwd: null, entries: rows(pinned) } : null,
+    folders: [...folders.shown, ...unassigned],
+    archived: archived.length ? { key: 'archived', label: 'Archived', cwd: null, entries: archived } : null,
+    hiddenOut: folders.out
+  })
+}
+
+/** The keys a row answers to for nesting: a Desk chat by its id and its session id, an outside session by its own id. */
+const nestKeysOf = (e: SidebarEntry): string[] => (e.kind === 'chat' ? [e.chat.id, e.chat.sessionId] : [e.session.id]).filter((k): k is string => !!k)
+/** The key of the row a row sits under: an outside session's parentId, a Desk chat's parentId (its parent's Desk id). */
+const parentKeyOf = (e: SidebarEntry): string | undefined => (e.kind === 'chat' ? e.chat.parentId : e.session.parentId) || undefined
+/** A row's key in a list (as the template keys it), which `under` names. */
+export const entryKey = (e: SidebarEntry): string => `${e.kind}:${e.id}`
+
+/**
+ * Chats started from another chat's chip sit under it, as in the newest Claude Desktop (owner, 2026-10-09). A row whose
+ * parentId names a row shown in the same section (both live or both archived) moves into the parent's group, right after
+ * the parent and the parent's earlier children; a grandchild goes under the top of its chain, one level deeper (`depth`). A pinned row
+ * stays in Pinned; a child whose parent is not shown (archived, filtered out, hidden, another list) stays an ordinary row
+ * where it is. Runs on the groups as built, so search, filters and Hide already decided what is shown.
+ */
+export function nestChildren(groups: SidebarGroups): SidebarGroups {
+  const all = [groups.pinned, ...groups.folders, groups.archived].flatMap((g) => (g ? [g] : []))
+  const byKey = new Map<string, SidebarEntry>()
+  for (const g of all) for (const e of g.entries) for (const key of nestKeysOf(e)) byKey.set(key, e)
+  const parentOf = (e: SidebarEntry): SidebarEntry | undefined => {
+    const parentKey = parentKeyOf(e)
+    if (!parentKey || marksOf(e).pinned) return undefined
+    const parent = byKey.get(parentKey)
+    return parent && parent !== e && marksOf(parent).archived === marksOf(e).archived ? parent : undefined
+  }
+  // Each child's top row (its chain's last shown ancestor) and how many generations below it. A chain that loops back on itself stays ordinary rows.
+  const under = new Map<string, { top: SidebarEntry; depth: number }>()
+  for (const g of all) for (const e of g.entries) {
+    let top = e
+    let depth = 0
+    const seen = new Set<SidebarEntry>([e])
+    let cyclic = false
+    for (let p = parentOf(top); p; p = parentOf(top)) {
+      if (seen.has(p)) {
+        cyclic = true
+        break
+      }
+      seen.add(p)
+      top = p
+      depth += 1
+    }
+    if (top !== e && !cyclic) under.set(entryKey(e), { top, depth })
+  }
+  if (!under.size) return groups
+
+  // The children of each top, in the order the lists showed them (groups in order, each as its group lists them).
+  const kids = new Map<string, SidebarEntry[]>()
+  for (const g of all) for (const e of g.entries) {
+    const nest = under.get(entryKey(e))
+    if (!nest) continue
+    const topKey = entryKey(nest.top)
+    const list = kids.get(topKey)
+    const child: SidebarEntry = { ...e, under: topKey, depth: nest.depth }
+    if (list) list.push(child)
+    else kids.set(topKey, [child])
+  }
+  const place = (g: ChatGroup): ChatGroup => ({
+    ...g,
+    entries: g.entries.filter((e) => !under.has(entryKey(e))).flatMap((e) => [e, ...(kids.get(entryKey(e)) ?? [])])
+  })
+  const kept = (g: ChatGroup | null): ChatGroup | null => {
+    const placed = g && place(g)
+    return placed?.entries.length ? placed : null
+  }
+  return {
+    pinned: kept(groups.pinned),
+    folders: groups.folders.map(place).filter((g) => g.entries.length),
+    archived: kept(groups.archived),
+    hiddenOut: groups.hiddenOut
+  }
+}
+
+/**
+ * The folder group a moved-to group named `name` joins: of the folder groups with that name, the one whose
+ * folder sorts first. Two folders can share a name (C:/a/app, C:/b/app), and the desk list and the cloud
+ * list build their groups in different orders, so the first one found would differ between them.
+ */
+export function namesakeFolder<T extends { cwd: string | null; label: string }>(groups: readonly T[], name: string): T | undefined {
+  const lower = name.toLowerCase()
+  let best: { group: T; key: string } | undefined
+  for (const g of groups) {
+    if (!g.cwd || g.label.toLowerCase() !== lower) continue
+    const key = folderKey(g.cwd)
+    if (!best || key < best.key) best = { group: g, key }
+  }
+  return best?.group
+}
+
+/**
+ * The order the sidebar keeps (order.ts), each first to last: row keys, a desk row's id (a Desk chat's id, an
+ * outside session's session id) or the session id of a row only the cloud list has. Groups are not kept in it:
+ * the folder groups are listed A-Z (sortFolders). `cloud`: the rows the cloud list added at the end that the desk
+ * list has not shown since; the first time it does (a desk chat started in another PC's folder), it lifts them to
+ * the top as new.
+ */
+export interface SidebarOrder {
+  rows: readonly string[]
+  cloud?: readonly string[]
+}
+
+/** A group's key for Hide (hidden.ts): its folder however spelled, or its moved-to group key. */
+export function groupOrderKey(g: ChatGroup): string {
+  return g.cwd ? folderKey(g.cwd) : g.key
+}
+
+/**
+ * Folder groups in the order the lists show them: A-Z by the label shown, ignoring case, numbers in their own order
+ * (scratch-2 before scratch-10). Pinned and Archived are never among them.
+ */
+export function sortFolders<T extends { label: string }>(groups: readonly T[]): T[] {
+  return [...groups].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true }))
+}
+
+/**
+ * The folder a group's '+' starts a new chat in: its own folder, else the folder of its newest chat that has one (a
+ * moved-to group has none of its own). Null when no chat has one.
+ */
+export function newChatFolder(cwd: string | null, chats: readonly { cwd: string | null; at: number }[]): string | null {
+  if (cwd) return cwd
+  return [...chats].sort((a, b) => b.at - a.at).find((c) => c.cwd)?.cwd ?? null
+}
+
+/**
+ * The desk list's group's '+' folder (newChatFolder); Pinned and Archived are not folders, so they get none. Another
+ * PC's chat works in a folder of that PC, never one here, so it names none.
+ */
+export function deskNewFolder(group: ChatGroup): string | null {
+  if (group.key === 'pinned' || group.key === 'archived' || group.key === UNASSIGNED) return null
+  const here = group.entries.filter((e) => e.kind === 'chat' || !e.session.fromPc)
+  return newChatFolder(group.cwd, here.map((e) => ({ cwd: entryCwd(e) || null, at: e.at })))
+}
+
+/**
+ * The New screen's project a group's heading stands for (its icon goes left of the name). By folder first: the
+ * project whose folder holds the group's folder, the chats working in it or in a folder inside it (the deepest such
+ * project when several hold it). Else by name: the project whose name is the group's name. Null when neither matches.
+ */
+export function projectOfGroup(group: Pick<ChatGroup, 'key' | 'cwd' | 'label'>, projects: readonly ProjectEntry[]): ProjectEntry | null {
+  if (group.key === 'pinned' || group.key === 'archived' || group.key === UNASSIGNED) return null
+  if (group.cwd) {
+    const cwd = folderKey(group.cwd)
+    let best: ProjectEntry | null = null
+    let bestLength = -1
+    for (const p of projects) {
+      const key = folderKey(p.path)
+      if (key && (cwd === key || cwd.startsWith(`${key}/`)) && key.length > bestLength) {
+        best = p
+        bestLength = key.length
+      }
+    }
+    if (best) return best
+  }
+  const name = group.label.toLowerCase()
+  return projects.find((p) => p.name.toLowerCase() === name) ?? null
+}
+
+const ranks = new WeakMap<readonly string[], Map<string, number>>()
+/** Each saved key's place, built once per saved list (a list is replaced when it changes, never edited). */
+function rankOf(saved: readonly string[]): Map<string, number> {
+  let rank = ranks.get(saved)
+  if (!rank) ranks.set(saved, (rank = new Map(saved.map((k, i) => [k, i]))))
+  return rank
+}
+
+/**
+ * Items in their saved order; ones the order does not know yet go first, as they came (newest first),
+ * except the ones `last` picks, which go after the known ones (the cloud list's own rows).
+ */
+export function stableOrder<T>(items: T[], keyOf: (t: T) => string, saved: readonly string[], last: (t: T) => boolean = () => false): T[] {
+  const rank = rankOf(saved)
+  const fresh = items.filter((t) => !rank.has(keyOf(t)))
+  const known = items.filter((t) => rank.has(keyOf(t))).sort((a, b) => rank.get(keyOf(a))! - rank.get(keyOf(b))!)
+  return [...fresh.filter((t) => !last(t)), ...known, ...fresh.filter(last)]
+}
+
+/**
+ * The saved order after a list showed `shown`: the keys it lacks are added, at the top (the desk list's:
+ * a new desk row or group joins at the top) or at the end (the cloud list's own), in the order shown; a
+ * key already saved never moves. The two lists share one order (order.ts), so recording what one shows
+ * must not push the other's rows about (owner, 2026-10-04: "For some reason they change order").
+ */
+export function recordOrder(saved: readonly string[], shown: readonly string[], at: 'top' | 'end'): string[] {
+  const known = new Set(saved)
+  const added = [...new Set(shown.filter((k) => !known.has(k)))]
+  return at === 'top' ? [...added, ...saved] : [...saved, ...added]
+}
+
+/**
+ * The saved order after the desk list showed these rows: theirs join at the top, and a row the cloud list added
+ * (`cloud`) counts as new the first time the desk list shows it, so a row that gains a desk row (a desk chat
+ * started in another PC's folder) joins at the top whichever list saw it first.
+ */
+export function recordDeskOrder(order: SidebarOrder, shownRows: readonly string[]): SidebarOrder {
+  const cloud = new Set(order.cloud ?? [])
+  const lifted = new Set(shownRows.filter((k) => cloud.has(k)))
+  const unlifted = (saved: readonly string[]) => (lifted.size ? saved.filter((k) => !lifted.has(k)) : saved)
+  return {
+    rows: recordOrder(unlifted(order.rows), shownRows, 'top'),
+    cloud: unlifted(order.cloud ?? [])
+  }
+}
+
+/** The saved order after the cloud list showed its own rows (`rows`): at the end, marked as its. */
+export function recordCloudOrder(order: SidebarOrder, rows: readonly string[]): SidebarOrder {
+  const known = new Set(order.rows)
+  return {
+    rows: recordOrder(order.rows, rows, 'end'),
+    cloud: recordOrder(order.cloud ?? [], rows.filter((k) => !known.has(k)), 'end')
+  }
+}
+
+/** Whether a row shows an attention dot: yellow (waiting on you) or green (done, unread). Running sub-tasks no longer count. */
+export function isOrange(e: SidebarEntry): boolean {
+  const tone = (e.kind === 'chat' ? statusGlyph(e.chat) : externalGlyph(e.session)).tone
+  return tone === 'warning' || tone === 'success'
+}
+
+/** Whether a row's turn runs now: a folded group's heading counts these (RunningBadge.vue). */
+export function entryRunning(e: SidebarEntry): boolean {
+  return e.kind === 'chat' ? RUNNING.includes(e.chat.status) : e.session.status === 'working'
+}
+
+/** The sessions whose turn runs now, ours and those running elsewhere: the cloud list's folded groups count by them. */
+export function runningSessionIds(chats: Pick<ChatSummary, 'sessionId' | 'status'>[], external: Pick<ExternalSession, 'id' | 'status'>[]): Set<string> {
+  return new Set([
+    ...chats.flatMap((c) => (c.sessionId && RUNNING.includes(c.status) ? [c.sessionId] : [])),
+    ...external.flatMap((s) => (s.status === 'working' ? [s.id] : []))
+  ])
+}
+
+/**
+ * The desk rows' dots by session id (a chat's row before an outside session's, as groupChats has it): the
+ * cloud list draws the same dot on every row the desk list shows, the hollow ring of an idle one included.
+ */
+export function deskGlyphs(
+  chats: Pick<ChatSummary, 'sessionId' | 'status' | 'unread'>[],
+  external: Pick<ExternalSession, 'id' | 'status' | 'unread' | 'source'>[]
+): Map<string, StatusGlyph> {
+  const out = new Map<string, StatusGlyph>()
+  for (const [id, g] of [
+    ...chats.map((c) => [c.sessionId, statusGlyph(c)] as const),
+    ...external.filter((s) => s.source !== 'climayte').map((s) => [s.id, externalGlyph(s)] as const)
+  ])
+    if (id && !out.has(id)) out.set(id, g)
+  return out
+}
+
+/**
+ * The row order after rows turned orange (the owner, 2026-10-04: a chat that finishes and needs checking
+ * goes to the top of its project, the latest one first; nothing else moves). `wasOrange` is each row's
+ * state last time; a row it does not know yet is not raised (it joins at the top anyway).
+ */
+export function raiseNewlyOrange(rows: readonly string[], entries: SidebarEntry[], wasOrange: ReadonlyMap<string, boolean>): string[] {
+  const raised = entries.filter((e) => wasOrange.get(e.id) === false && isOrange(e)).map((e) => e.id)
+  if (!raised.length) return [...rows]
+  const set = new Set(raised)
+  return [...raised, ...rows.filter((k) => !set.has(k))]
+}
+
+/** `order` with `key` moved to just before `before` (null: to the end). */
+export function moveInOrder(order: readonly string[], key: string, before: string | null): string[] {
+  const rest = order.filter((k) => k !== key)
+  const at = before === null ? -1 : rest.indexOf(before)
+  return at < 0 ? [...rest, key] : [...rest.slice(0, at), key, ...rest.slice(at)]
+}
+
+/**
+ * Where a dragged row lands: the key it goes just before in the saved order (null: after every other), or
+ * undefined when the drop changes nothing. `keys` are the group's rows as shown; the drop is on `over`, on
+ * its lower half when `after`. Rows of other groups are never a target.
+ */
+export function rowDropBefore(keys: readonly string[], from: string, over: string, after: boolean): string | null | undefined {
+  if (from === over || !keys.includes(from) || !keys.includes(over)) return undefined
+  const rest = keys.filter((k) => k !== from)
+  const at = rest.indexOf(over) + (after ? 1 : 0)
+  const next = [...rest.slice(0, at), from, ...rest.slice(at)]
+  if (next.every((k, i) => k === keys[i])) return undefined
+  return next[next.indexOf(from) + 1] ?? null
+}
+
+/** Every group a row can be moved to, by name: the folder groups and the moved-to ones, each once, A-Z. */
+export function groupChoices(chats: Pick<ChatSummary, 'cwd' | 'group'>[], external: Pick<ExternalSession, 'cwd' | 'group' | 'source'>[] = []): string[] {
+  const names = new Map<string, string>()
+  const add = (name: string) => {
+    if (name && !names.has(name.toLowerCase())) names.set(name.toLowerCase(), name)
+  }
+  for (const r of [...chats, ...external.filter((s) => s.source !== 'climayte')]) {
+    if (r.group) add(r.group)
+    if (r.cwd) add(folderLabel(r.cwd))
+  }
+  return [...names.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+}
+
+/** The dot of a session running elsewhere: the same language, stale is a hollow ring, unread (marked here) green. */
+export function externalGlyph(s: Pick<ExternalSession, 'status' | 'unread'>): StatusGlyph {
+  switch (s.status) {
+    case 'working':
+      return { shape: 'dot', tone: 'muted', motion: 'blink', active: true, label: 'Running elsewhere' }
+    case 'needs_you':
+      return { shape: 'dot', tone: 'warning', motion: 'pulse', active: true, label: 'Needs you elsewhere' }
+    case 'stale':
+      return s.unread
+        ? { shape: 'dot', tone: 'success', motion: 'none', active: true, label: 'Unread' }
+        : { shape: 'ring', tone: 'muted', motion: 'none', active: false, label: 'Stale' }
+    default:
+      return s.unread
+        ? { shape: 'dot', tone: 'success', motion: 'none', active: true, label: 'Unread' }
+        : { shape: 'ring', tone: 'muted', motion: 'none', active: false, label: 'Idle elsewhere' }
+  }
+}
+
+/** "Claude Desktop", "Claude Code CLI", ... for the source glyph's tooltip. */
+export function sourceLabel(source: ExternalSession['source']): string {
+  return { desktop: 'Claude Desktop', cli: 'Claude Code CLI', climayte: 'CliMayte', codex: 'Codex', other: 'Another app' }[source]
+}
+
+/**
+ * The status dot. The real language: idle is a hollow ring, running a solid blinking dot. Yellow is
+ * for what needs the owner: a question or permission (pulsing). A finished turn not looked at yet is
+ * green (solid; the real app uses blue there). Error is red, a usage limit a pink hollow ring (it waits
+ * for the reset, not for you). A chat that replied while its workers still run is solid orange (THREADS_RUNNING),
+ * never green: green is done with nothing left running.
+ * Blue is HSwarm's alone: only a row that stands for a running HSwarm job has it (`swarm`, SWARM_RUNNING).
+ */
+export interface StatusGlyph {
+  shape: 'ring' | 'dot'
+  tone: 'muted' | 'warning' | 'success' | 'danger' | 'limited' | 'swarm'
+  motion: 'none' | 'blink' | 'pulse'
+  active: boolean // what Active only keeps (isActive): running, starting, background work still running, or waiting on you: a question, a reply not read yet, an error
+  label: string // aria-label of the dot, in words
+}
+
+/** Whether a row's dot says it is active (Active only). Undefined is a row with no dot known, drawn as an idle ring. */
+export function isActive(glyph: StatusGlyph | undefined): boolean {
+  return glyph?.active ?? false
+}
+
+/**
+ * Whether a row is quiet, so its title and its logo dim: nothing runs in it, none of its threads runs, nothing waits on
+ * the owner, and it has no unread reply (owner, 2026-10-10: "If the task is not running, the text should be dimmed and so
+ * should the icon"). The selected row is never dimmed. The title and the logo both read this one predicate, so they agree.
+ */
+export function isQuiet(glyph: StatusGlyph | undefined, selected: boolean): boolean {
+  return !isActive(glyph) && !selected
+}
+
+/** A CliMayte chat whose worker waits for an account: it is not launching, whatever its status says. */
+export const isWaitingForAccount = (chat: Pick<ChatSummary, 'status'> & { waiting?: ChatSummary['waiting'] }): boolean => chat.status === 'starting' && !!chat.waiting
+
+/** 'Waiting for an account, starts about 12:00': the time only when AgentHydra gave one still ahead. The line names the
+ *  CliMayte reason's kind: the machine's processor or memory is not an account. */
+export function waitingLine(wait: NonNullable<ChatSummary['waiting']>, now: number = Date.now()): string {
+  const what = wait.reason.startsWith('Waiting for CPU') ? 'Waiting for processor power' : wait.reason.startsWith('Waiting for memory') ? 'Waiting for free memory' : 'Waiting for an account'
+  return wait.until !== null && wait.until > now ? `${what}, starts about ${resetClock(wait.until, now)}` : what
+}
+
+export function statusGlyph(chat: Pick<ChatSummary, 'status' | 'unread'> & { waiting?: ChatSummary['waiting']; climayteActive?: number; backgroundActive?: number }): StatusGlyph {
+  switch (chat.status) {
+    case 'starting':
+      if (chat.waiting) return { shape: 'dot', tone: 'muted', motion: 'blink', active: true, label: 'Waiting' }
+      return { shape: 'dot', tone: 'muted', motion: 'blink', active: true, label: 'Starting' }
+    case 'working':
+      return { shape: 'dot', tone: 'muted', motion: 'blink', active: true, label: 'Running' }
+    case 'needs_you':
+      return { shape: 'dot', tone: 'warning', motion: 'pulse', active: true, label: 'Needs you' }
+    case 'error':
+      return { shape: 'dot', tone: 'danger', motion: 'none', active: true, label: 'Error' }
+    case 'limited':
+      return { shape: 'ring', tone: 'limited', motion: 'none', active: false, label: 'Usage limit' }
+    case 'closed':
+      return settledGlyph(chat, 'Closed')
+    default: // idle, stopped
+      return settledGlyph(chat, chat.status === 'stopped' ? 'Stopped' : 'Idle')
+  }
+}
+
+/**
+ * The dot of a row whose sub-tasks run while the row itself does not: its CliMayte tasks, its HSwarm jobs, its own
+ * background tasks less the long-lived ones (a dev server never ends, so it does not count), its nested rows that run.
+ * Solid orange, read or not: the chat the owner talks to has finished its reply and only its workers run (owner,
+ * 2026-10-14: "when my point of contact is done speaking, it changes to orange if there is still drones or
+ * sub-personalities managed by my point of contact"; green only when nothing is left running). A question keeps the
+ * pulsing orange, so the two differ by motion. It never looks idle or done while its workers run (owner, 2026-10-10).
+ */
+export const THREADS_RUNNING: StatusGlyph = { shape: 'dot', tone: 'warning', motion: 'none', active: true, label: 'Replied, workers still running' }
+
+/**
+ * A row's dot with its running sub-tasks counted (Sidebar.vue's runningThreads): a row whose own dot is not running,
+ * waits on the owner or errs, but which has `running` sub-tasks, shows THREADS_RUNNING. Yellow (needs you), red
+ * (error) and the usage limit's pink ring stay as they are, and so does a dot that already runs.
+ */
+export function withThreads(glyph: StatusGlyph, running: number): StatusGlyph {
+  if (!running || glyph.motion === 'blink' || glyph.tone === 'warning' || glyph.tone === 'danger' || glyph.tone === 'limited') return glyph
+  return THREADS_RUNNING
+}
+
+/**
+ * A chat that is not running. Its background work still running makes it orange, read or not: its CliMayte workers,
+ * and its own background tasks less the long-lived ones. Done with nothing running and not looked at is green.
+ */
+function settledGlyph(chat: Pick<ChatSummary, 'unread'> & { climayteActive?: number; backgroundActive?: number }, idle: string): StatusGlyph {
+  const background = (chat.climayteActive ?? 0) + (chat.backgroundActive ?? 0) > 0
+  if (background) return THREADS_RUNNING
+  return chat.unread
+    ? { shape: 'dot', tone: 'success', motion: 'none', active: true, label: 'Done, unread' }
+    : { shape: 'ring', tone: 'muted', motion: 'none', active: false, label: idle }
+}
+
+/** The dot of a row that stands for a running HSwarm job no chat is known to have called (tasks.ts AddedRow.job). */
+export const SWARM_RUNNING: StatusGlyph = { shape: 'dot', tone: 'swarm', motion: 'blink', active: true, label: 'HSwarm job running' }
+
+/** The rows nested under each row (nestChildren's `under`), by that row's entryKey, in the order the list shows them. */
+export function childrenByRow(groups: readonly ChatGroup[]): Map<string, SidebarEntry[]> {
+  const out = new Map<string, SidebarEntry[]>()
+  for (const g of groups)
+    for (const e of g.entries) {
+      if (!e.under) continue
+      const list = out.get(e.under)
+      if (list) list.push(e)
+      else out.set(e.under, [e])
+    }
+  return out
+}
+
+/**
+ * The list with the sub-chats of the folded rows left out (owner, 2026-10-10: "I need the ability to collapse
+ * subthreads of a subagent"): a nested row whose row is in `folded` goes, unless `keep` holds it (the open chat stays
+ * in sight). A folded row's own row always stays, so no group empties.
+ */
+export function foldChildren(groups: ChatGroup[], folded: ReadonlySet<string>, keep: (e: SidebarEntry) => boolean): ChatGroup[] {
+  if (!folded.size) return groups
+  return groups.map((g) => {
+    const entries = g.entries.filter((e) => !e.under || !folded.has(e.under) || keep(e))
+    return entries.length === g.entries.length ? g : { ...g, entries }
+  })
+}
+
+/** Active only's rows: each group's entries whose dot is active, a group with none left dropped (Sidebar.vue). */
+export function onlyActive(groups: ChatGroup[], glyphOf: (e: SidebarEntry) => StatusGlyph | undefined): ChatGroup[] {
+  return groups.flatMap((g) => {
+    const active = g.entries.filter((e) => isActive(glyphOf(e)))
+    // A nested row whose parent is not active any more shows as an ordinary row (nestChildren).
+    const shown = new Set(active.map(entryKey))
+    const entries = active.map((e): SidebarEntry => (e.under && !shown.has(e.under) ? { ...e, under: undefined, depth: undefined } : e))
+    return entries.length ? [{ ...g, entries }] : []
+  })
+}
+
+/**
+ * A running mark's classes: the one shared pulse (style.css .run-pulse, the working dot's blink, still under
+ * reduced motion) in its tone. Gray for a CliMayte task, as for a chat that works here or on another PC; blue for
+ * an HSwarm job, and for nothing else in the sidebar, where nothing spins (owner, 2026-10-05: "Only the HSwarm
+ * items should have blue ... a slow blue pulsing icon"). The tone is the text color: an icon takes it, a dot
+ * draws it with bg-current.
+ */
+export function runPulse(tone: 'gray' | 'blue'): string {
+  return `run-pulse ${tone === 'blue' ? 'text-accent-text' : 'text-[var(--status-working)]'}`
+}
+
+/** The 6px dot's classes for a glyph; every place that draws a status dot uses these. Working blinks with runPulse's pulse. */
+export function glyphDotClass(g: Pick<StatusGlyph, 'shape' | 'tone' | 'motion'>): string {
+  if (g.shape === 'ring') {
+    return g.tone === 'limited'
+      ? 'border-[1.5px] border-[var(--status-limited)]'
+      : 'border border-[color-mix(in_srgb,var(--status-idle)_50%,transparent)]'
+  }
+  const tone = {
+    muted: 'bg-[var(--status-working)]',
+    warning: 'bg-[var(--status-needs-you)]',
+    success: 'bg-[var(--status-done)]',
+    danger: 'bg-[var(--status-error)]',
+    limited: 'bg-[var(--status-limited)]',
+    swarm: 'bg-accent-text'
+  }[g.tone]
+  const motion = { none: '', blink: ' run-pulse', pulse: ' animate-dot-pulse' }[g.motion]
+  return tone + motion
+}
+
+/**
+ * The compact mode's ring round a row's project icon (ProjectRing.vue): like a story ring, only a chat with something
+ * going on has one (owner, 2026-10-10: "so I can still see which chats have activity, like which are active and which
+ * are waiting on me"). A 1.5px gradient per dot state, fading from the dot's colour at 80% to 40% (owner, 2026-10-10:
+ * "slightly more subtle" than the first 2px, full-strength ring): running (the dot's blinking gray, and an HSwarm job) is
+ * the live blue, needs you the dot's yellow, done-unread its green, an error its red; a usage limit keeps the
+ * dot's pink, flat. Idle, stale and closed-idle chats have none. Motion is the dot's own.
+ * Every class string is written out whole, so Tailwind sees each one.
+ */
+const RING_GRADIENT = {
+  muted: 'bg-[linear-gradient(135deg,color-mix(in_srgb,var(--accent-text)_80%,transparent),color-mix(in_srgb,var(--accent-text)_40%,transparent))]',
+  warning: 'bg-[linear-gradient(135deg,color-mix(in_srgb,var(--status-needs-you)_80%,transparent),color-mix(in_srgb,var(--status-needs-you)_40%,transparent))]',
+  success: 'bg-[linear-gradient(135deg,color-mix(in_srgb,var(--status-done)_80%,transparent),color-mix(in_srgb,var(--status-done)_40%,transparent))]',
+  danger: 'bg-[linear-gradient(135deg,color-mix(in_srgb,var(--status-error)_80%,transparent),color-mix(in_srgb,var(--status-error)_40%,transparent))]',
+  swarm: 'bg-[linear-gradient(135deg,color-mix(in_srgb,var(--accent-text)_80%,transparent),color-mix(in_srgb,var(--accent-text)_40%,transparent))]',
+  limited: 'bg-[color-mix(in_srgb,var(--status-limited)_70%,transparent)]'
+}
+export function glyphRingClass(g: Pick<StatusGlyph, 'shape' | 'tone' | 'motion'>): string {
+  if (g.shape === 'ring') return g.tone === 'limited' ? RING_GRADIENT.limited : ''
+  const motion = { none: '', blink: ' run-pulse', pulse: ' animate-dot-pulse' }[g.motion]
+  return RING_GRADIENT[g.tone] + motion
+}
+
+/** Elapsed time of a running turn, short: "12s", "4m", "1h 5m". */
+export function elapsedLabel(startedAt: number | null, now: number = Date.now()): string {
+  if (startedAt == null) return ''
+  const s = Math.max(0, Math.floor((now - startedAt) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`
+}
+
+const AGO_UNITS: [ms: number, unit: string][] = [
+  [365 * 86_400_000, 'year'],
+  [30.4375 * 86_400_000, 'month'],
+  [7 * 86_400_000, 'week'],
+  [86_400_000, 'day'],
+  [3_600_000, 'hour'],
+  [60_000, 'minute']
+]
+/** How long ago, in its largest whole unit: "just now", "5 minutes ago", "1 hour ago", "3 weeks ago", "4 months ago", "2 years ago". */
+export function timeAgo(at: number, now: number = Date.now()): string {
+  const ms = Math.max(0, now - at)
+  for (const [size, unit] of AGO_UNITS) {
+    const n = Math.floor(ms / size)
+    if (n >= 1) return `${n} ${unit}${n === 1 ? '' : 's'} ago`
+  }
+  return 'just now'
+}
+
+/** "14:05" (today) or "Mon 14:05", for a limited chat's reset time. */
+export function resetClock(at: number | null, now: number = Date.now()): string {
+  if (at == null) return ''
+  const d = new Date(at)
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  return new Date(now).toDateString() === d.toDateString()
+    ? time
+    : `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`
+}
+
+/** The row's hover tooltip: status in words, activity, elapsed, account. */
+export function rowTooltip(chat: ChatSummary, now: number = Date.now()): string {
+  const g = statusGlyph(chat)
+  const lines = [chat.title, g.label]
+  if (chat.activity) lines.push(chat.activity)
+  if (chat.status === 'working' && chat.turnStartedAt) lines.push(`Working for ${elapsedLabel(chat.turnStartedAt, now)}`)
+  if (chat.status === 'limited' && chat.limitResetsAt) lines.push(`Resets ${resetClock(chat.limitResetsAt, now)}`)
+  if (chat.status === 'error' && chat.lastError) lines.push(chat.lastError)
+  if (chat.climayteActive > 0) lines.push(`${chat.climayteActive} CliMayte ${chat.climayteActive === 1 ? 'worker' : 'workers'} active`)
+  lines.push(accountTitle(chat.account))
+  if (chat.note) lines.push(`Note: ${chat.note}`)
+  return lines.join('\n')
+}
+
+/** What the row menu needs to know of a row: one of our chats, or a session run outside (marked here). */
+export interface RowState {
+  outside: boolean
+  stoppable: boolean // a turn is running here
+  pinned: boolean
+  archived: boolean
+  unread: boolean
+  group: string | null
+  cwd: string
+  sessionId: string | null // null until the chat's session exists
+  claudeSession: boolean // `claude --resume` can open it
+  forkable: boolean
+  /** What the menu's first line names the row by and copies: its session id, else Desk's own id for a chat with no session yet. */
+  id: string
+  /** The account it runs under: AgentHydra's instance number, and the whole name when the row itself knows it (a chat's account). */
+  account: RowAccount | null
+  /**
+   * Which accounts Move to account can take it to: a Claude Code session of another app on this PC (Claude Desktop, a
+   * CLI) to a desktop account, a Codex chat on this PC to another Codex account; null, nowhere.
+   */
+  movable: 'desktop' | 'codex' | null
+  /** Whether the person muted this chat's sound (lib/chat-audio.ts); left out, the menu has no Mute entry (a row that cannot mute). */
+  muted?: boolean
+  /** The person's note on it: the menu offers Edit note… for one, Add note… otherwise. */
+  note?: string | null
+  /** In the Unassigned holding area (on no account): Move to account ticks Unassigned, and its first line says so. */
+  unassigned?: boolean
+  /** Which service the chat runs its turns on (Pin service): Claude unless pinned. Left out for a session run outside, which gets no Pin service entry. */
+  service?: ChatServiceKind
+  /** The account the pinned service runs the chat on, as the window names it; null when not known yet. */
+  serviceLabel?: string | null
+  /** When it last did something (a message sent, a reply, a tool call), epoch ms; null or left out when not known. */
+  lastActionAt?: number | null
+}
+export interface RowAccount {
+  num: number | null
+  title: string | null
+}
+
+/** An account Move to account offers (one of AgentHydra's desktop or Codex instances): the ref the move names it by, its number and name. */
+export interface AccountChoice {
+  ref: string
+  num: number
+  name: string
+  running: boolean
+  /** The name AgentHydra's session list gives the account's chats when it is not `#num` (the instance's own name). */
+  tag?: string
+}
+
+export function chatRow(chat: ChatSummary): RowState {
+  return {
+    outside: false,
+    stoppable: ACTIVE.includes(chat.status),
+    pinned: chat.pinned,
+    archived: chat.archived,
+    unread: chat.unread,
+    group: chat.group,
+    cwd: chat.cwd,
+    sessionId: chat.sessionId,
+    claudeSession: true,
+    forkable: Boolean(chat.sessionId ?? chat.forkedFrom),
+    id: chat.sessionId ?? chat.id,
+    account: { num: chat.account.number ?? null, title: accountTitle(chat.account) },
+    movable: null,
+    note: chat.note ?? null,
+    service: chat.service ?? 'claude',
+    serviceLabel: chat.service ? (chat.serviceThreads?.[chat.service]?.label ?? null) : null,
+    lastActionAt: chat.lastActionAt ?? null
+  }
+}
+
+export function externalRow(s: ExternalSession): RowState {
+  const claude = s.source === 'desktop' || s.source === 'cli'
+  const num = s.instance?.match(/^#(\d+)$/)
+  return {
+    outside: true,
+    stoppable: false,
+    pinned: s.pinned,
+    archived: s.archived,
+    unread: s.unread,
+    group: s.group,
+    cwd: s.cwd ?? '',
+    sessionId: s.id,
+    claudeSession: claude,
+    forkable: claude,
+    id: s.id,
+    account: s.instance ? (num ? { num: Number(num[1]), title: null } : { num: null, title: s.instance }) : null,
+    // A chat the chat sync brought from the other PC lives in that PC's apps: this PC's AgentHydra cannot move it.
+    movable: s.fromPc ? null : claude ? 'desktop' : s.source === 'codex' ? 'codex' : null,
+    note: s.note ?? null,
+    unassigned: s.unassigned === true,
+    lastActionAt: s.lastActivityAt
+  }
+}
+
+/**
+ * The row menu, as the real app's (three dots and right-click share it): Open in ›, Pin P, Mark as
+ * unread U, Rename R, Fork F, Move to group ›, Archive A, Delete D. `shortcut` is the letter that runs
+ * the item while the menu is open; `separator` draws a 1px rule; an entry with `items` is a submenu.
+ * AgentHydra 2.0 adds a first line naming the row (its id and account, a click copies the id) and, for a
+ * Claude session of another app, Move to account › (owner, 2026-10-08: "I need to be able to see what this
+ * thread ID is ... I'd love an option to, like, right-click and select... move to account"). Owner, 2026-10-13:
+ * Add note… N on every row; for a Claude session of another app, Move to account's Unassigned ("not assigned to an
+ * account, but it's not archived") and Duplicate to account › ("duplicate would be the right word").
+ */
+export type RowAction =
+  | 'open'
+  | 'reveal'
+  | 'copyResume'
+  | 'copySessionId'
+  | 'copyId'
+  | 'lastAction'
+  | 'picked'
+  | 'moveToAccount'
+  | 'unassign'
+  | 'duplicateToAccount'
+  | 'stop'
+  | 'pin'
+  | 'unpin'
+  | 'markUnread'
+  | 'markRead'
+  | 'mute'
+  | 'unmute'
+  | 'rename'
+  | 'note'
+  | 'fork'
+  | 'pinService'
+  | 'moveTo'
+  | 'newGroup'
+  | 'removeFromGroup'
+  | 'archive'
+  | 'unarchive'
+  | 'delete'
+export interface RowMenuItem {
+  action: RowAction
+  label: string // for moveTo, the group's name
+  shortcut?: string
+  danger?: boolean
+  disabled?: boolean
+  checked?: boolean
+  title?: string // the native tooltip
+  /** What the item acts on beyond its label: the id copyId copies, the account ref moveToAccount moves to and duplicateToAccount copies to. */
+  value?: string
+  /** Muted text at the item's end: the account on the first line, "closed" on an account whose app is not running. */
+  hint?: string
+  /** The menu's first line, drawn as an id rather than a command. */
+  identity?: boolean
+  /** The line under it: when the row last did something (epoch ms), drawn as how long ago, never a command. */
+  since?: number
+}
+export type RowMenuEntry = RowMenuItem | 'separator' | { label: string; items: (RowMenuItem | 'separator')[] }
+
+const OUTSIDE_ARCHIVE = 'Hides it in Hydra Desk. Sessions run outside are never deleted here: their files belong to the app that ran them.'
+
+/** The number of the account a row is on: its own, else the account whose chats go by its name (a Codex chat's). */
+export function accountNum(account: RowAccount | null, accounts: readonly AccountChoice[] | null): number | null {
+  if (!account) return null
+  return account.num ?? (account.title ? (accounts?.find((a) => a.tag === account.title)?.num ?? null) : null)
+}
+
+/** "#72 example": the account by its number and, when known, its name (the row's own, else AgentHydra's list's). */
+function accountText(account: RowAccount | null, accounts: readonly AccountChoice[] | null): string | null {
+  if (!account) return null
+  if (account.num === null) {
+    const tagged = account.title ? accounts?.find((a) => a.tag === account.title) : undefined
+    return tagged ? `#${tagged.num} ${tagged.name}` : account.title
+  }
+  if (account.title) return account.title
+  const name = accounts?.find((a) => a.num === account.num)?.name
+  return name ? `#${account.num} ${name}` : `#${account.num}`
+}
+
+/** The menu's first line: the id as the session header shows it (its first 8 characters) and the account; a click copies the whole id. */
+export function rowIdentity(id: string, account: RowAccount | null, accounts: readonly AccountChoice[] | null = null): RowMenuItem {
+  const hint = accountText(account, accounts)
+  return { action: 'copyId', label: id.slice(0, 8), value: id, identity: true, ...(hint ? { hint } : {}), title: `${id}\nClick to copy the whole ID` }
+}
+
+/** The line under the first: how long ago the row last did something (owner, 2026-10-14: "show how long ago ... The Last Action was performed"). */
+export function lastActionLine(at: number): RowMenuItem {
+  return { action: 'lastAction', label: 'Last action', since: at }
+}
+
+/** The accounts of a Move to or Duplicate to submenu: those whose app runs first, then a rule, then the closed ones, each by number. */
+function accountItems(accounts: readonly AccountChoice[], item: (a: AccountChoice) => RowMenuItem): (RowMenuItem | 'separator')[] {
+  const byNum = (a: AccountChoice, b: AccountChoice) => a.num - b.num
+  const running = accounts.filter((a) => a.running).sort(byNum).map(item)
+  const closed = accounts.filter((a) => !a.running).sort(byNum).map(item)
+  return running.length && closed.length ? [...running, 'separator', ...closed] : [...running, ...closed]
+}
+
+const UNASSIGN_TITLE = 'Takes it off its account without archiving it: it waits in the Unassigned group until you move it to an account'
+const CLOSED_DESKTOP_TITLE = 'Its app is not running: the chat lands in its store, ready when it starts'
+
+/**
+ * Move to account ›: every desktop (or, for a Codex chat, Codex) account, those whose app runs first, then by number;
+ * the one the session is on now is ticked and off. A closed desktop account's app is not started: the chat lands in
+ * its store for when it starts. A Codex move opens the destination's app to show the chat there.
+ * `accounts` null: AgentHydra's list is not read yet (or did not answer). `unassigned`: Unassigned first, the holding
+ * area on no account, ticked and off while the chat is there; null leaves it out.
+ */
+export function accountMenu(
+  current: number | null,
+  accounts: readonly AccountChoice[] | null,
+  kind: 'desktop' | 'codex' = 'desktop',
+  unassigned: boolean | null = null
+): { label: string; items: (RowMenuItem | 'separator')[] } {
+  const parked: (RowMenuItem | 'separator')[] =
+    unassigned === null ? [] : [{ action: 'unassign', label: 'Unassigned', checked: unassigned, disabled: unassigned, title: UNASSIGN_TITLE }, 'separator']
+  if (!accounts?.length)
+    return { label: 'Move to account', items: [...parked, { action: 'moveToAccount', label: accounts ? `No ${kind === 'codex' ? 'Codex' : 'desktop'} accounts` : 'Reading accounts…', disabled: true }] }
+  const closedTitle = kind === 'codex' ? 'Its app is not running: the move opens it to show the chat' : CLOSED_DESKTOP_TITLE
+  const item = (a: AccountChoice): RowMenuItem => ({
+    action: 'moveToAccount',
+    label: `#${a.num} ${a.name}`,
+    value: a.ref,
+    checked: a.num === current,
+    disabled: a.num === current,
+    ...(a.running ? {} : { hint: 'closed', title: closedTitle })
+  })
+  return { label: 'Move to account', items: [...parked, ...accountItems(accounts, item)] }
+}
+
+/**
+ * Duplicate to account ›: a second chat holding the whole conversation, landed on the account picked, the original left
+ * where it is. Every account of the chat's kind, the one it is on (`current`) marked "current": a desktop copy is a chat
+ * of its own there; a Codex copy cannot go to the account its original is on (the mover copies between two homes), so
+ * that one is off.
+ */
+export function duplicateMenu(
+  current: number | null,
+  accounts: readonly AccountChoice[] | null,
+  kind: 'desktop' | 'codex' = 'desktop'
+): { label: string; items: (RowMenuItem | 'separator')[] } {
+  if (!accounts?.length)
+    return {
+      label: 'Duplicate to account',
+      items: [{ action: 'duplicateToAccount', label: accounts ? `No ${kind === 'codex' ? 'Codex' : 'desktop'} accounts` : 'Reading accounts…', disabled: true }]
+    }
+  const closedTitle = kind === 'codex' ? 'Its app is not running: the copy opens it to show the chat' : CLOSED_DESKTOP_TITLE
+  const item = (a: AccountChoice): RowMenuItem => {
+    const hint = [a.num === current ? 'current' : '', a.running ? '' : 'closed'].filter(Boolean).join(' · ')
+    return {
+      action: 'duplicateToAccount',
+      label: `#${a.num} ${a.name}`,
+      value: a.ref,
+      ...(hint ? { hint } : {}),
+      ...(kind === 'codex' && a.num === current ? { disabled: true } : {}),
+      ...(a.running ? {} : { title: closedTitle })
+    }
+  }
+  return { label: 'Duplicate to account', items: accountItems(accounts, item) }
+}
+
+/** A service's name as the window shows it (the row's meta line, the session header, Pin service). */
+export const SERVICE_WORDS: Record<ChatServiceKind, string> = { claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT' }
+
+/**
+ * Pin service ›: Claude (the default), Codex, ChatGPT. A pinned service is ticked, and names the account it runs on.
+ * A non-Claude service is offered only when one of its accounts can take a chat now (`services`, AgentHydra's answer);
+ * `services` null: the answer is not in yet, so those two are off until it is.
+ */
+function serviceMenu(service: ChatServiceKind, serviceLabel: string | null, services: readonly ChatServiceInfo[] | null): RowMenuEntry {
+  const items = (['claude', 'codex', 'chatgpt'] as const).map((kind): RowMenuItem => {
+    const info = services?.find((s) => s.kind === kind)
+    const checked = service === kind
+    const unchecked = kind !== 'claude' && !info?.ready
+    const title = kind === 'claude' ? undefined : services ? info?.why : 'Checking which services are signed in…'
+    return {
+      action: 'pinService',
+      label: SERVICE_WORDS[kind],
+      value: kind,
+      checked,
+      disabled: unchecked,
+      ...(title ? { title } : {}),
+      ...(checked && kind !== 'claude' && serviceLabel ? { hint: serviceLabel } : {})
+    }
+  })
+  return { label: 'Pin service', items }
+}
+
+/** `codexAccounts` are a Codex chat's: its first line and Move to account name those instead of the desktop ones. `services`: Pin service's answer, null until it is in. */
+export function rowMenu(
+  row: RowState,
+  groups: string[] = [],
+  desktopAccounts: readonly AccountChoice[] | null = null,
+  codexAccounts: readonly AccountChoice[] | null = null,
+  services: readonly ChatServiceInfo[] | null = null
+): RowMenuEntry[] {
+  const accounts = row.movable === 'codex' ? codexAccounts : desktopAccounts
+  const current = (row.group ?? folderLabel(row.cwd)).toLowerCase()
+  const moveTo: (RowMenuItem | 'separator')[] = groups.map((g) => ({ action: 'moveTo', label: g, checked: g.toLowerCase() === current }))
+  if (moveTo.length) moveTo.push('separator')
+  moveTo.push({ action: 'newGroup', label: 'New group…' })
+  if (row.group) moveTo.push({ action: 'removeFromGroup', label: 'Remove from group' })
+
+  const identity = rowIdentity(row.id, row.account, accounts)
+  const out: RowMenuEntry[] = [
+    row.unassigned ? { ...identity, hint: 'Unassigned' } : identity,
+    ...(row.lastActionAt != null ? [lastActionLine(row.lastActionAt)] : []),
+    'separator',
+    {
+      label: 'Open in',
+      items: [
+        { action: 'reveal', label: 'File Explorer', disabled: !row.cwd },
+        { action: 'copyResume', label: 'Copy resume command', disabled: !row.sessionId || !row.claudeSession },
+        { action: 'copySessionId', label: 'Copy session ID', disabled: !row.sessionId }
+      ]
+    },
+    'separator'
+  ]
+  if (row.stoppable) out.push({ action: 'stop', label: 'Stop' })
+  out.push(row.pinned ? { action: 'unpin', label: 'Unpin', shortcut: 'P' } : { action: 'pin', label: 'Pin', shortcut: 'P' })
+  out.push(row.unread ? { action: 'markRead', label: 'Mark as read', shortcut: 'U' } : { action: 'markUnread', label: 'Mark as unread', shortcut: 'U' })
+  if (row.muted !== undefined) out.push(row.muted ? { action: 'unmute', label: 'Unmute chat', shortcut: 'M' } : { action: 'mute', label: 'Mute chat', shortcut: 'M' })
+  out.push({ action: 'rename', label: 'Rename', shortcut: 'R' })
+  out.push({ action: 'note', label: row.note ? 'Edit note…' : 'Add note…', shortcut: 'N' })
+  out.push({ action: 'fork', label: 'Fork', shortcut: 'F', disabled: !row.forkable })
+  // An Unassigned chat is on no account: none is ticked, and Unassigned is. A Codex one still has the account it left
+  // (archived there), which its copy cannot go to.
+  const home = accountNum(row.account, accounts)
+  const onAccount = row.unassigned ? null : home
+  // Duplicate to account sits with Fork, the other copy, never beside Move to account: both open the same account list,
+  // and a pointer that slid one row down from Move landed a copy (owner, 2026-10-14: a move "seems to duplicate it").
+  if (row.movable) out.push(duplicateMenu(row.movable === 'codex' ? home : onAccount, accounts, row.movable))
+  if (row.service) out.push(serviceMenu(row.service, row.serviceLabel ?? null, services))
+  out.push('separator', { label: 'Move to group', items: moveTo })
+  if (row.movable) out.push(accountMenu(onAccount, accounts, row.movable, !!row.unassigned))
+  out.push('separator')
+  out.push(
+    row.archived
+      ? { action: 'unarchive', label: 'Unarchive', shortcut: 'A' }
+      : { action: 'archive', label: 'Archive', shortcut: 'A', ...(row.outside ? { title: OUTSIDE_ARCHIVE } : {}) }
+  )
+  if (!row.outside) out.push({ action: 'delete', label: 'Delete', shortcut: 'D', danger: true })
+  return out
+}
+
+/**
+ * The menu of two or more rows picked together (Ctrl or Shift and a click, picked.ts): the row menu's items that make
+ * sense for many at once, each run on every picked row it fits. Its first line counts them. Pin, Mark as read and
+ * Archive go the way that changes a row (Pin while any is unpinned); Move to group ticks a group only when every row is
+ * in it; Move to account and Duplicate to account come only when every row can go to the same kind of account, ticking
+ * the account only when all are on it; Delete only when none runs outside.
+ */
+export function bulkMenu(
+  rows: readonly RowState[],
+  groups: string[] = [],
+  desktopAccounts: readonly AccountChoice[] | null = null,
+  codexAccounts: readonly AccountChoice[] | null = null
+): RowMenuEntry[] {
+  const out: RowMenuEntry[] = [{ action: 'picked', label: `${rows.length} selected` }, 'separator']
+  if (rows.some((r) => r.stoppable)) out.push({ action: 'stop', label: 'Stop' })
+  out.push(rows.some((r) => !r.pinned) ? { action: 'pin', label: 'Pin', shortcut: 'P' } : { action: 'unpin', label: 'Unpin', shortcut: 'P' })
+  out.push(rows.some((r) => r.unread) ? { action: 'markRead', label: 'Mark as read', shortcut: 'U' } : { action: 'markUnread', label: 'Mark as unread', shortcut: 'U' })
+  out.push({ action: 'copySessionId', label: 'Copy session IDs', disabled: !rows.some((r) => r.sessionId) })
+
+  const kinds = new Set(rows.map((r) => r.movable))
+  const kind = kinds.size === 1 ? [...kinds][0] : null
+  const accounts = kind === 'codex' ? codexAccounts : desktopAccounts
+  const homes = new Set(rows.map((r) => accountNum(r.account, accounts)))
+  const home = homes.size === 1 ? [...homes][0] : null
+  const onAccount = rows.some((r) => r.unassigned) ? null : home
+  // Away from Move to account, as on one row's menu (rowMenu).
+  if (kind) out.push(duplicateMenu(kind === 'codex' ? home : onAccount, accounts, kind))
+
+  const places = new Set(rows.map((r) => (r.group ?? folderLabel(r.cwd)).toLowerCase()))
+  const shared = places.size === 1 ? [...places][0] : null
+  const moveTo: (RowMenuItem | 'separator')[] = groups.map((g) => ({ action: 'moveTo', label: g, checked: g.toLowerCase() === shared }))
+  if (moveTo.length) moveTo.push('separator')
+  moveTo.push({ action: 'newGroup', label: 'New group…' })
+  if (rows.some((r) => r.group)) moveTo.push({ action: 'removeFromGroup', label: 'Remove from group' })
+  out.push('separator', { label: 'Move to group', items: moveTo })
+  if (kind) out.push(accountMenu(onAccount, accounts, kind, rows.every((r) => r.unassigned)))
+  out.push('separator')
+  out.push(rows.some((r) => !r.archived) ? { action: 'archive', label: 'Archive', shortcut: 'A' } : { action: 'unarchive', label: 'Unarchive', shortcut: 'A' })
+  if (rows.every((r) => !r.outside)) out.push({ action: 'delete', label: 'Delete', shortcut: 'D', danger: true })
+  return out
+}
+
+/** The item a key press runs while the menu is open (the letter hints), or null. */
+export function shortcutItem(entries: RowMenuEntry[], key: string): RowMenuItem | null {
+  if (key.length !== 1) return null
+  const letter = key.toUpperCase()
+  for (const e of entries) if (e !== 'separator' && !('items' in e) && e.shortcut === letter && !e.disabled) return e
+  return null
+}
+
+/** Moving to a folder group is moving back to the row's own folder (null) when it is that folder. */
+export function moveTarget(row: Pick<RowState, 'cwd'>, name: string): string | null {
+  return row.cwd && folderLabel(row.cwd).toLowerCase() === name.toLowerCase() ? null : name
+}
+
+/** The patch a menu item stands for (a chat's or an outside session's marks); null for the rest. */
+export function rowPatch(item: RowMenuItem, row: Pick<RowState, 'cwd'>): { pinned?: boolean; archived?: boolean; unread?: boolean; group?: string | null } | null {
+  switch (item.action) {
+    case 'pin':
+      return { pinned: true }
+    case 'unpin':
+      return { pinned: false }
+    case 'markUnread':
+      return { unread: true }
+    case 'markRead':
+      return { unread: false }
+    case 'archive':
+      return { archived: true }
+    case 'unarchive':
+      return { archived: false }
+    case 'moveTo':
+      return { group: moveTarget(row, item.label) }
+    case 'removeFromGroup':
+      return { group: null }
+    default:
+      return null
+  }
+}
+
+/** What "Copy resume command" puts on the clipboard. */
+export const resumeCommand = (sessionId: string): string => `claude --resume ${sessionId}`
+
+/** Footer account control: initial, name, plan (the real shows "E  eek · Max"). */
+export function accountFace(
+  defaultAccountId: string,
+  accounts: { id: string; label: string; plan: string | null }[]
+): { initial: string; name: string; plan: string | null } {
+  const acc = accounts.find((a) => a.id === defaultAccountId)
+  if (!acc) return { initial: 'A', name: 'Auto', plan: accounts.length ? `${accounts.length} accounts` : null }
+  // "#68 eek (Max 20x)" -> "eek"; emails never shown.
+  const name =
+    acc.label
+      .replace(/[^\s<>()@]+@[^\s<>()@]+\.[^\s<>()@]+/g, '')
+      .replace(/\([^)]*\)/g, '')
+      .replace(/^#\d+\s*/, '')
+      .trim() || (acc.id === 'default' ? 'Default' : `#${acc.id}`)
+  // The real footer names the plan family only: an eek on Max 20x reads "eek · Max".
+  return { initial: name[0]!.toUpperCase(), name, plan: acc.plan ? acc.plan.split(/\s+/)[0]! : null }
+}

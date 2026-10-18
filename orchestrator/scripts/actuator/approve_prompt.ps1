@@ -1,0 +1,1373 @@
+# approve_prompt.ps1 - answer a permission prompt in a chat that was never meant to be asked.
+#
+# WHY (owner, 2026-09-01: "there's literally like four chats currently pending on someone to
+# push enter, because they're not set to the proper bypass permissions"). Measured that moment:
+# six live chats whose newest transcript record was an unanswered tool call, each showing an
+# "Allow once" / "Always allow" prompt in its pane. Their permission mode ON DISK is
+# bypassPermissions - they booted before the stamp landed, so the app is running them under the
+# OLD mode and asking. The work is stopped dead and only a person can restart it.
+#
+# ⛔ WHAT THIS IS AND IS NOT. It is NOT a policy decision: the caller has already verified that
+# this chat's configured mode is bypassPermissions, i.e. the owner's standing doctrine says it
+# should never have been prompted at all. This presses the button that mode would have pressed
+# by itself. It refuses on anything else.
+#
+# THE AIM RAILS, all four required before a single Invoke:
+#   1. the instance matches (exact --user-data-dir for a path, substring for a bare name);
+#   2. the TARGET CHAT is the one open in that window - proved by its own kebab button
+#      ("More options for <Title>", or whatever that phrase is in the app's language: it is
+#      read off the sidebar, never listed - see RAIL 2 below) being present in the
+#      conversation pane. If the row must be selected first, -Select does that through the
+#      sidebar row and re-checks the receipt;
+#   2b. with -VerifyText, that chat's OWN WORDS are visible in the conversation pane. A title
+#      is not an identity (same-titled chats in two instances are a known fleet shape), so the
+#      caller passes a snippet of this chat's transcript tail and nothing is pressed unless the
+#      pane shows it - the same proof the courier's composer send demands (review 2026-09-01);
+#   3. the button is named "Always allow" or "Allow once" (localised list below) and is
+#      ENABLED - never a Deny, never a Reject, never anything else;
+#   4. it lives in the conversation pane, right of the sidebar, not in the sidebar chrome.
+# "Always allow" is preferred over "Allow once" so the same chat does not stop again.
+#
+# Exit: 0 pressed - 3 no prompt is showing for that chat - 4 that chat is not the open one and
+#       could not be selected - 1 error/no instance.
+
+param(
+  [Parameter(Mandatory = $true)][string]$Title,
+  [Parameter(Mandatory = $true)][string]$Instance,
+  [switch]$Select,
+  [switch]$OnceOnly,
+  # Verified pending permission-mode restorations, supplied by unblock_prompts.py.
+  # This selects the matching app card, never a nearby ordinary tool approval.
+  [string]$PermissionTargetsJson = '',
+  # A snippet of the target chat's own last words; when given, it MUST be visible in the pane.
+  [string]$VerifyText = '',
+  # -SetMode 'Bypass permissions': instead of pressing Allow, set the chat's PERMISSION MODE
+  # through the app's own picker (the Button in the composer toolbar named for the current
+  # mode; it opens a menu of the modes). Same aim rails as a press. This is how a LIVE chat
+  # gets the doctrine mode - a disk stamp cannot stick while the app holds the record in
+  # memory (2026-09-01: every deeplink-born chat stalled in default mode on its first shell
+  # call). Exit 0 set (or already), 3 no picker in the pane, 4 wrong chat, 6 did not take.
+  [string]$SetMode = ''
+)
+# THE PICKER'S OWN LABELS, read off a live window 2026-09-07 (probe: focus the composer's
+# mode button, press Space, enumerate the RadioButtons). The five it actually renders are
+# 'Auto', 'Manual', 'Accept edits', 'Plan', 'Bypass permissions'. Three names in the old list
+# ('Default permissions', 'Ask permissions', 'Auto-accept edits') exist nowhere in the app,
+# and 'Plan mode' has been 'Plan' for long enough that nobody noticed - which mattered,
+# because Find-ModeBtn matches the COMPOSER BUTTON against this list, so a chat sitting in
+# Auto or Manual reported "no permission picker is showing" and could never be moved to
+# bypass at all. The dead names are kept: an older build may still render them, and a name
+# that matches nothing costs one string comparison.
+$MODE_NAMES = @('Auto', 'Manual', 'Accept edits', 'Plan', 'Bypass permissions',
+                'Default permissions', 'Plan mode', 'Ask permissions', 'Auto-accept edits',
+                # SPANISH, read off instance #56 on 2026-09-10 with the same probe (composer button
+                # 'Omitir permisos' -> Space -> five RadioButtons). OBSERVED, never translated - the
+                # guess 'Cambiar nombre' sat in the rename table for weeks matching nothing.
+                'Aceptar ediciones', 'Omitir permisos')
+# The picker's localized names per CANONICAL (English) mode, so a caller can keep asking for
+# '-SetMode "Bypass permissions"' on any locale: Find-ModeItem tries every spelling here and,
+# on a hit, REBINDS $SetMode to the label the app actually renders, so every later comparison
+# ("did the mode take") reads the same string the window does. Add a locale by OBSERVING it
+# (the probe above), one row per canonical name; a name that matches nothing costs one compare.
+$MODE_ALIASES = @{
+  'Auto'               = @('Auto')
+  'Manual'             = @('Manual')
+  'Accept edits'       = @('Accept edits', 'Aceptar ediciones')
+  'Plan'               = @('Plan')
+  'Bypass permissions' = @('Bypass permissions', 'Omitir permisos')
+}
+function Mode-Spellings($canonical) {
+  $names = @($canonical) + @($MODE_ALIASES[$canonical])
+  return @($names | Where-Object { $_ } | Select-Object -Unique)
+}
+$ErrorActionPreference = 'Stop'
+# ⛔ UTF-8 ON THE WAY OUT, OR A NON-ASCII TITLE COMES BACK AS QUESTION MARKS (2026-09-10).
+# This script's stdout is a PIPE, read by the daemon (Bun) and by the Python toolbox. PowerShell
+# encodes a piped stream with [Console]::OutputEncoding, which defaults to the machine's OEM code
+# page rather than UTF-8 - so a chat titled 'Alcancé mi límite' left this process as
+# 'Alcanc? mi l?mite'. The accents were destroyed HERE, and a literal '?' is perfectly valid
+# UTF-8, so NO reader can detect the loss or recover from it: clilib.decode_console is already
+# UTF-8-first with an OEM fallback and still saw question marks. The visible symptom was a
+# refusal naming a chat that does not exist ("no sidebar row is named 'Alcanc? mi l?mite'"),
+# which reads as a missing chat rather than an encoding fault - and any non-Latin title (CJK,
+# Cyrillic, emoji) degrades to a row of question marks the same way.
+# $OutputEncoding is the mirror of the same setting for anything piped INTO a native exe.
+# Best-effort: a console handle that refuses the assignment must not take down a UIA act, which
+# is what this script is actually for - mojibake is a bad answer, no answer is a worse one.
+try {
+  $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  [Console]::OutputEncoding = $OutputEncoding
+} catch { }
+
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -Namespace Approve -Name Inv -MemberDefinition @'
+[DllImport("oleacc.dll")] public static extern int AccessibleObjectFromWindow(IntPtr hwnd, int id, ref System.Guid iid, ref System.IntPtr ppv);
+[DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr p);
+public delegate bool EnumProc(IntPtr h, IntPtr p);
+[DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+[DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+// ⛔ THE FOREGROUND GRAB IS LOAD-BEARING, NOT A COURTESY (measured 2026-09-07, owner:
+// "when you select bypass permissions, it ends up needing to have the click selected, and
+// it's not currently selecting it").
+//
+// Press-Space posts WM_KEYDOWN/WM_KEYUP straight at the render widget, and the header called
+// that focus-free - "no foreground change, no cursor". A minimized or background window
+// DROPS that key. No error, nothing rendered, and Press-Space still returned $true, because
+// all it ever checked was that PostMessage had been called. So the picker never opened, the
+// mode was never selected, and a person had to click it by hand.
+//
+// ⛔ AND THIS IS WHY IT LOOKED INTERMITTENT RATHER THAN BROKEN - the part that cost a whole
+// investigation. UIA SetFocus() on the button SOMETIMES activates the window as a side
+// effect and sometimes does not, so the same code on the same chat opens the picker on one
+// run and silently does nothing on the next. Measured on one live window, picker forced
+// closed and verified closed before every attempt (an earlier probe left it OPEN and the
+// next run counted its leftovers as a success - do not measure this without that guard):
+//
+//     minimized   0 of 2 opened
+//     background  1 of 2 opened   <- the one that opened, SetFocus had activated the window
+//     foreground  2 of 2 opened
+//
+// The rule that fits every row: the window must be non-iconic AND foreground at the moment
+// the key is posted. Do not "simplify" this back to SetFocus alone; that is the coin flip.
+// A previous fix aimed at a confirmation dialog that was never the problem - the dialog is
+// raised BY the menu, and the menu was not opening.
+//
+// SetForegroundWindow alone is a no-op for a background process, so attach to the target's
+// input queue first. Callers restore the previous foreground window afterwards.
+public static bool Foreground(IntPtr h) {
+  if (IsIconic(h)) ShowWindow(h, 9);
+  uint tgt = GetWindowThreadProcessId(h, IntPtr.Zero);
+  uint me = GetCurrentThreadId();
+  if (tgt == me) return SetForegroundWindow(h);
+  AttachThreadInput(me, tgt, true);
+  bool ok = SetForegroundWindow(h);
+  AttachThreadInput(me, tgt, false);
+  return ok;
+}
+public static IntPtr RenderWidget(IntPtr top) {
+  IntPtr found = IntPtr.Zero;
+  EnumChildWindows(top, (h, p) => {
+    var sb = new System.Text.StringBuilder(256); GetClassName(h, sb, 256);
+    if (sb.ToString() == "Chrome_RenderWidgetHostHWND") { found = h; return false; }
+    return true; }, IntPtr.Zero);
+  return found;
+}
+'@
+
+$ALLOW_ALWAYS_NAMES = @('Always allow', 'Immer erlauben', 'Permitir siempre', 'Toujours autoriser')
+$ALLOW_ONCE_NAMES = @('Allow once', 'Einmal erlauben', 'Permitir una vez', 'Autoriser une fois')
+$TREE = [System.Windows.Automation.TreeScope]::Descendants
+function TryPattern($e, $pat) { try { return $e.GetCurrentPattern($pat) } catch { return $null } }
+# Expand-SidebarGroups / Restore-SidebarGroups - the collapsed-group opener the delivery script has
+# used since 2026-09-01, shared since 2026-09-24 (to-do 5f8bde91: a chat in a collapsed group was
+# unreachable here, so its stuck permission prompt never cleared).
+. (Join-Path $PSScriptRoot 'sidebar_groups.ps1')
+
+$procs = Get-CimInstance Win32_Process -Filter "Name = 'claude.exe'" |
+  Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '--type=' } |
+  ForEach-Object {
+    $m = [regex]::Match($_.CommandLine, '"--user-data-dir=([^"]+)"')
+    if (-not $m.Success) { $m = [regex]::Match($_.CommandLine, '--user-data-dir=(\S+)') }
+    $dir = if ($m.Success) { $m.Groups[1].Value.Trim() } else { Join-Path $env:APPDATA 'Claude' }
+    [pscustomobject]@{ ProcId = $_.ProcessId; Dir = $dir }
+  }
+# RAIL: a BLANK -Instance is a refusal for any action that clicks, types or presses - this
+# script always ends in one of those, so blank is never accepted (review 2026-09-06).
+if (-not $Instance -or $Instance.Trim() -eq '') {
+  Write-Output 'FAIL: -Instance is blank - refusing to act without a positively identified window'
+  exit 1
+}
+$allDirs = @($procs | ForEach-Object { $_.Dir } | Sort-Object -Unique)
+if ($Instance -match '[\\/]') {
+  $procs = @($procs | Where-Object { $_.Dir.TrimEnd('\') -eq $Instance.TrimEnd('\') })
+} else {
+  # RAIL 1: a BARE -Instance matches the profile dir's LEAF folder name EXACTLY and
+  # case-insensitively - never '-like "*$Instance*"'. That substring match let
+  # '-Instance "pap3r rotate"' also match 'pap3r rotate2' (review 2026-09-06).
+  $procs = @($procs | Where-Object {
+    (Split-Path -Leaf $_.Dir.TrimEnd('\')).Equals($Instance, [System.StringComparison]::OrdinalIgnoreCase)
+  })
+}
+# RAIL 1b: ZERO or MORE THAN ONE match is a refusal that prints every candidate dir - never
+# take the first (review 2026-09-01/2026-09-06: the fleet already holds near-duplicate leaf
+# names like 'pap3r rotate' and 'pap3r rotate2', and CIM's enumeration order must never pick
+# the window for us). The caller passes the full --user-data-dir path to disambiguate.
+if ($procs.Count -ne 1) {
+  Write-Output "FAIL: '$Instance' matches $($procs.Count) running instances; candidates: $($allDirs -join '; ')"
+  exit 1
+}
+$proc = $procs | Select-Object -First 1
+
+# ⛔ WHICH WINDOW DID WE READ? (2026-09-17, after three permission passes in a row refused with
+# "the sidebar rendered NO chat rows at all in 6s" against an app whose rows were plainly on
+# screen the whole time.) `MainWindowHandle` answers with the first top-level window Windows
+# associates with the process, and an Electron app owns SEVERAL - a hidden helper, a zero-size
+# utility window, the real one - so "no rows" can mean "read the wrong window" and says nothing
+# about the sidebar. This inventory is what turns that refusal into a diagnosis: every
+# top-level window this process has, its size, whether it is on screen, and which one was read.
+function Window-Inventory([int]$procId) {
+  $out = @()
+  try {
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$procId)
+    foreach ($w in [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                     [System.Windows.Automation.TreeScope]::Children, $cond)) {
+      try {
+        $r = $w.Current.BoundingRectangle
+        $empty = $r.IsEmpty -or $r.Width -le 0 -or $r.Height -le 0
+        $out += [pscustomobject]@{
+          Hwnd = [int]$w.Current.NativeWindowHandle
+          Name = [string]$w.Current.Name
+          Offscreen = [bool]$w.Current.IsOffscreen
+          Area = if ($empty) { 0 } else { [int]($r.Width * $r.Height) }
+          Rect = if ($empty) { 'no size' } else { "$([int]$r.Width)x$([int]$r.Height)" }
+        }
+      } catch { continue }
+    }
+  } catch { }
+  return $out
+}
+function Window-Report([int]$procId, [int]$used) {
+  $inv = @(Window-Inventory $procId)
+  if ($inv.Count -eq 0) {
+    return "UIA sees NO top-level window for pid $procId at all - the app is minimized to tray, still starting, or on another desktop"
+  }
+  return ("pid $procId has $($inv.Count) top-level window(s): " + (($inv | ForEach-Object {
+    "'" + $_.Name + "' " + $_.Rect + $(if ($_.Offscreen) { ' OFFSCREEN' } else { '' }) +
+    $(if ($_.Hwnd -eq $used) { ' <- the one read' } else { '' })
+  }) -join ' | '))
+}
+
+$hwnd = (Get-Process -Id $proc.ProcId -ErrorAction SilentlyContinue).MainWindowHandle
+if (-not $hwnd -or $hwnd -eq [IntPtr]::Zero) {
+  # MainWindowHandle is 0 whenever the process's first top-level window is hidden - which an
+  # Electron app's helper windows routinely are. Take the biggest window that IS on screen
+  # rather than refusing outright, and say which one that was.
+  $best = @(Window-Inventory $proc.ProcId | Where-Object { -not $_.Offscreen -and $_.Area -gt 0 } |
+            Sort-Object Area -Descending) | Select-Object -First 1
+  if ($best) {
+    $hwnd = [IntPtr]$best.Hwnd
+    Write-Output "NOTE: that instance reports no main window; read its largest on-screen window instead ('$($best.Name)' $($best.Rect))"
+  }
+}
+if (-not $hwnd -or $hwnd -eq [IntPtr]::Zero) {
+  Write-Output ("FAIL: that instance has no window - " + (Window-Report $proc.ProcId 0))
+  exit 1
+}
+
+# ⛔ RESTORE AND ACTIVATE ONCE, HERE, BEFORE ANY RAIL READS THE TREE (2026-09-07).
+# This started life inside Press-Space, which is too late: measured on a MINIMIZED window,
+# the -Select path fails first with "selected the row but the pane still does not show
+# '<title>'" - the row's Invoke fires, but a minimized window does not re-render, so the
+# receipt the rail demands can never appear. Every step here (row select, the kebab receipt,
+# the pane's own words, the picker, the confirm dialog) reads a tree the app only keeps
+# current while it is actually drawing. So: one grab up front, one restore on the way out.
+# Whatever the person was working in is handed back by Restore-Foreground.
+$script:PriorFg = [IntPtr]::Zero
+function Restore-Foreground {
+  if ($script:PriorFg -ne [IntPtr]::Zero) {
+    [void][Approve.Inv]::Foreground($script:PriorFg)
+    $script:PriorFg = [IntPtr]::Zero
+  }
+}
+# Covers every `exit N` path below without wrapping the whole script in a try/finally. It also
+# folds back every sidebar group this run opened (owner ruling: leave the sidebar as it was found).
+[void](Register-EngineEvent PowerShell.Exiting -Action { Restore-SidebarGroups; Restore-Foreground })
+function Grab-Window {
+  if ($script:PriorFg -eq [IntPtr]::Zero) {
+    $fg = [Approve.Inv]::GetForegroundWindow()
+    if ($fg -ne $hwnd) { $script:PriorFg = $fg }
+  }
+  [void][Approve.Inv]::Foreground($hwnd)
+  Start-Sleep -Milliseconds 300
+}
+Grab-Window
+
+# Chromium builds its accessibility tree lazily; the MSAA poke switches the full tree on.
+function Wake($h, [int]$SleepMs = 900) {
+  $cb = [Approve.Inv+EnumProc]{
+    param($c, $lp)
+    $sb = New-Object System.Text.StringBuilder 256
+    [void][Approve.Inv]::GetClassName($c, $sb, 256)
+    if ($sb.ToString() -eq 'Chrome_RenderWidgetHostHWND') {
+      $iid = [Guid]'618736e0-3c3d-11cf-810c-00aa00389b71'; $ppv = [IntPtr]::Zero
+      [void][Approve.Inv]::AccessibleObjectFromWindow($c, -4, [ref]$iid, [ref]$ppv)
+    }
+    return $true
+  }
+  [void][Approve.Inv]::EnumChildWindows($h, $cb, [IntPtr]::Zero)
+  # $SleepMs defaults to 900 so the original call ($el = Wake $hwnd) keeps its exact prior
+  # behaviour; a caller polling for a post-condition passes 0 and sleeps itself between pokes.
+  if ($SleepMs -gt 0) { Start-Sleep -Milliseconds $SleepMs }
+  return [System.Windows.Automation.AutomationElement]::FromHandle($h)
+}
+
+$el = Wake $hwnd
+$BTN = [System.Windows.Automation.ControlType]::Button
+$btnCond = New-Object System.Windows.Automation.PropertyCondition(
+  [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $BTN)
+
+function PaneMinX($root) {
+  # Where the sidebar ends and the conversation pane begins. Every button's name and rectangle,
+  # read once, and the decision is Get-PaneBoundary's (in the tested region below): measured
+  # off the sidebar's own row/kebab pairs, with the old anchors only as fallbacks.
+  $descs = @()
+  try {
+    foreach ($b in $root.FindAll($TREE, $btnCond)) {
+      try {
+        $n = $b.Current.Name
+        if (-not $n) { continue }
+        $br = $b.Current.BoundingRectangle
+        if ($br.IsEmpty) { continue }
+        $descs += [pscustomobject]@{ Name = $n; Left = $br.Left; Top = $br.Top; Right = $br.Right; Bottom = $br.Bottom }
+      } catch { continue }
+    }
+  } catch {}
+  $r = $root.Current.BoundingRectangle
+  return (Get-PaneBoundary $descs $r.Left $r.Width)
+}
+
+# RAIL 2 MATCHES THE UI'S SHAPE, NEVER ITS LANGUAGE (rebuilt 2026-09-09).
+#
+# Found live on instance #56, a Claude Desktop rendering in Spanish. This file carried THREE
+# English literals for one job: the pane receipt wanted a Name starting 'More options for ',
+# and the -Select path wanted a row Name equal to the title once 'Idle ' or 'Running ' was
+# stripped. On that app the row's kebab reads 'Mas opciones para <Title>' and the row itself
+# carries a Spanish status word, so every chat refused with "no sidebar row ... (waited 6s
+# for it to render)" while -List printed the row plainly. ⛔ THE 6s POLL WAS NEVER THE
+# PROBLEM - that message sent readers hunting a rendering delay that did not exist, and the
+# refusals below now say which of the two it actually is.
+#
+# WHAT DOES NOT LOCALIZE: a chat row and ITS OWN kebab render the SAME title behind two
+# different decorations ('Idle X' + 'More options for X'; 'Inactivo X' + 'Mas opciones para
+# X'). Their longest common TAIL is therefore the title, read off this window on this run -
+# and what remains of the kebab's name is the kebab PHRASE. One phrase, measured, replaces
+# every English literal, and matching stays EXACT (name equality against phrase + title),
+# which is what the 2026-09-06 review demanded: a longer neighbour title that merely ENDS
+# with ours must never match. ⛔ Do not answer the next locale by adding its words here;
+# there is nothing to add. (The one list that still needs observed labels is $MODE_NAMES at
+# the top - a mode has no row/kebab pair to read itself off; see its refusal below.)
+#
+# >>> STRUCTURAL-MATCH REGION - extracted VERBATIM and unit-tested by
+#     orchestrator/scripts/tests/test_approve_prompt_matching.py. Keep it dependency-free:
+#     no UIA types, no window state, plain descriptors in and decisions out. >>>
+function Get-CommonTail([string]$a, [string]$b) {
+  if (-not $a -or -not $b) { return '' }
+  $i = $a.Length - 1; $j = $b.Length - 1; $n = 0
+  while ($i -ge 0 -and $j -ge 0 -and $a[$i] -ceq $b[$j]) { $i--; $j--; $n++ }
+  if ($n -le 0) { return '' }
+  return $a.Substring($a.Length - $n)
+}
+function Get-PairTitle([string]$rowName, [string]$kebabName) {
+  # The title of the chat this row/kebab pair belongs to - or '' when the pair cannot prove
+  # one. The tail is only trusted at a WORD BOUNDARY: either it is the row's whole name (an
+  # undecorated row) or it starts at the space that separates decoration from title.
+  # Anything else is a coincidental overlap of two prefixes, not a title.
+  $t = Get-CommonTail $rowName $kebabName
+  if (-not $t) { return '' }
+  if ($t -ceq $rowName) { return $t.Trim() }
+  if ($t.StartsWith(' ')) { return $t.Trim() }
+  return ''
+}
+function Get-OwningRow($buttons, $kebab) {
+  # The ROW that owns this kebab: it takes Invoke (that is what selects the chat) and never
+  # ExpandCollapse (that is the kebab), it begins at or left of the kebab, and the kebab
+  # renders inside its band. One candidate is the answer; several are settled by geometric
+  # containment (a row contains its own kebab, a neighbouring control does not) and never
+  # by picking the first.
+  $cy = ($kebab.Top + $kebab.Bottom) / 2.0
+  $band = @($buttons | Where-Object {
+    $_.HasInvoke -and -not $_.HasExpand -and $_.Left -le $kebab.Left -and
+    $_.Top -le ($cy + 2) -and $_.Bottom -ge ($cy - 2)
+  })
+  if ($band.Count -eq 0) { return $null }
+  if ($band.Count -eq 1) { return $band[0] }
+  $holds = @($band | Where-Object {
+    $_.Right -ge $kebab.Right -and $_.Top -le $kebab.Top -and $_.Bottom -ge $kebab.Bottom
+  })
+  if ($holds.Count -eq 1) { return $holds[0] }
+  return $null
+}
+function Get-PaneBoundary($buttons, [double]$winLeft, [double]$winWidth) {
+  # ⛔ THE COMPOSER'S 'Model: ' BUTTON NO LONGER MARKS THE PANE'S LEFT EDGE (measured live
+  # 2026-09-22 on three windows of Claude Desktop 2.2553.13). It moved to the RIGHT end of the
+  # composer, beside Effort and Usage, so 'Model: ' minus 40 put the boundary almost at the
+  # window's right edge. Everything left of it then counted as SIDEBAR, including the open
+  # chat's own header kebab, which is named exactly like its sidebar kebab. That one mistake
+  # produced both false alarms of 2026-09-22: Select-SidebarChat saw TWO kebabs named
+  # '<phrase><title>' and refused as 'ambiguous:2' while the sidebar showed one row, and
+  # Test-PaneShows looked for the header kebab only right of the boundary and reported
+  # "the pane still does not show the title" for a chat that was open.
+  #
+  # MEASURED INSTEAD: the sidebar's right edge is where its chat rows end. A row and its own
+  # kebab share one horizontal band, the row CONTAINS the kebab (row [260-513], kebab
+  # [490-510]), and the two names carry the same title behind two decorations (Get-PairTitle).
+  # The open chat's header kebab has no such partner: beside it sits '<title>, rename session',
+  # which neither contains it nor shares its tail. No names, no language, no layout constant.
+  $edge = $null
+  foreach ($k in $buttons) {
+    if (-not $k.Name) { continue }
+    $cy = ($k.Top + $k.Bottom) / 2.0
+    foreach ($row in $buttons) {
+      if ($row -eq $k -or -not $row.Name) { continue }
+      if ($row.Left -gt $k.Left -or $row.Right -lt $k.Right) { continue }
+      if ($row.Top -gt ($cy + 2) -or $row.Bottom -lt ($cy - 2)) { continue }
+      $t = Get-PairTitle $row.Name $k.Name
+      if (-not $t -or $k.Name.Length -le $t.Length) { continue }
+      if ($null -eq $edge -or $row.Right -gt $edge) { $edge = $row.Right }
+    }
+  }
+  if ($null -ne $edge) { return $edge + 4 }
+  # FALLBACKS, for a sidebar with no readable pairs (collapsed, or still empty). The composer
+  # anchor is honoured only where it was measured to work (2026-09-05): in the window's LEFT
+  # half. Otherwise the documented fraction.
+  $model = @($buttons | Where-Object { $_.Name -and $_.Name.StartsWith('Model: ') }) | Select-Object -First 1
+  if ($model -and $model.Left -lt ($winLeft + $winWidth / 2.0)) { return $model.Left - 40 }
+  return $winLeft + ($winWidth * 0.38)
+}
+function Get-KebabPhrase($buttons) {
+  # Every kebab on screen reads '<phrase> <title>' with the SAME phrase, whatever the app's
+  # language. Read each pair's title off the pair itself, and the phrase is what is left.
+  # The phrase most rows agree on wins; a single unreadable row cannot move it.
+  $seen = @{}
+  foreach ($k in @($buttons | Where-Object { $_.HasExpand -and $_.Name })) {
+    $row = Get-OwningRow $buttons $k
+    if (-not $row) { continue }
+    $t = Get-PairTitle $row.Name $k.Name
+    if (-not $t) { continue }
+    if ($k.Name.Length -le $t.Length) { continue }
+    $p = $k.Name.Substring(0, $k.Name.Length - $t.Length)
+    if (-not $p.EndsWith(' ')) { continue }
+    if ($seen.ContainsKey($p)) { $seen[$p] = $seen[$p] + 1 } else { $seen[$p] = 1 }
+  }
+  $best = ''; $bestN = 0
+  foreach ($p in $seen.Keys) {
+    if ($seen[$p] -gt $bestN -or ($seen[$p] -eq $bestN -and $p.Length -gt $best.Length)) { $best = $p; $bestN = $seen[$p] }
+  }
+  return $best
+}
+function Get-FoldedTitle([string]$s) {
+  # Case-folded, accent-folded, whitespace-collapsed, with a trailing ellipsis (the sidebar's
+  # own truncation mark - the glyph or a literal run of dots) stripped first. Used ONLY by the
+  # normalised fallback below; the exact pass above never calls this.
+  if (-not $s) { return '' }
+  $t = $s.Trim() -replace '\s*(…|\.\.\.+)\s*$', ''
+  $decomposed = $t.Normalize([System.Text.NormalizationForm]::FormD)
+  $sb = New-Object System.Text.StringBuilder
+  foreach ($ch in $decomposed.ToCharArray()) {
+    $cat = [System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch)
+    if ($cat -ne [System.Globalization.UnicodeCategory]::NonSpacingMark) { [void]$sb.Append($ch) }
+  }
+  $folded = $sb.ToString().Normalize([System.Text.NormalizationForm]::FormC).ToLowerInvariant()
+  return ($folded -replace '\s+', ' ').Trim()
+}
+function Test-FoldedPrefixMatch([string]$a, [string]$b) {
+  $na = Get-FoldedTitle $a
+  $nb = Get-FoldedTitle $b
+  if (-not $na -or -not $nb) { return $false }
+  $n = [Math]::Min($na.Length, $nb.Length)
+  return $na.Substring(0, $n) -ceq $nb.Substring(0, $n)
+}
+function Select-SidebarChat($buttons, [double]$minX, [string]$title, [string]$phrase) {
+  # EXACT: the sidebar kebab whose name IS phrase + title. Never EndsWith/Contains - the
+  # 2026-09-06 review's hazard ('todo list' must not match 'GlimmerAC todo list') is exactly
+  # what an inexact tail test would reopen. Two exact hits is a refusal, not a guess.
+  $side = @($buttons | Where-Object { $_.Left -lt $minX -and $_.Name })
+  $rendered = @()
+  $candidates = @()   # (Kebab, StrippedName) pairs, phrase already peeled off - feeds the fallback
+  foreach ($b in @($side | Where-Object { $_.HasExpand })) {
+    if ($phrase -and $b.Name.Length -gt $phrase.Length -and $b.Name.StartsWith($phrase)) {
+      $s = $b.Name.Substring($phrase.Length)
+    } else {
+      $s = $b.Name            # verbatim: a kebab we could not read is still evidence
+    }
+    $rendered += $s
+    $candidates += [pscustomobject]@{ Kebab = $b; Name = $s }
+  }
+  $hits = @($side | Where-Object { $_.HasExpand -and $_.Name -eq ($phrase + $title.Trim()) })
+  if ($hits.Count -eq 0) {
+    # NORMALISED FALLBACK (2026-09-10 - the Spanish, sentence-shaped title): a long row can be
+    # rendered TRUNCATED with an ellipsis, so its accessibility Name is only ever a PREFIX of
+    # the stored title and can never satisfy the exact test above; separately, accented
+    # characters can reach the two sides of the compare in different Unicode forms. Reached
+    # ONLY when the exact pass found nothing - it never second-guesses a title that already
+    # resolved. Compares case-folded, accent-folded, whitespace-collapsed, ellipsis-stripped,
+    # on the SHORTER of the two strings as a prefix, so truncation on either side still matches.
+    $loose = @($candidates | Where-Object { Test-FoldedPrefixMatch $_.Name $title })
+    if ($loose.Count -gt 1) {
+      # AMBIGUITY MUST STAY A REFUSAL in the loosened pass too - never guess between two rows
+      # that could each be a truncated prefix of the wanted title.
+      return @{ Row = $null; Kebab = $null; Rendered = $rendered; Why = "ambiguous:$($loose.Count)" }
+    }
+    if ($loose.Count -eq 1) { $hits = @($loose[0].Kebab) }
+  }
+  if ($hits.Count -eq 0) { return @{ Row = $null; Kebab = $null; Rendered = $rendered; Why = 'no-row' } }
+  if ($hits.Count -gt 1) { return @{ Row = $null; Kebab = $null; Rendered = $rendered; Why = "ambiguous:$($hits.Count)" } }
+  $row = Get-OwningRow $buttons $hits[0]
+  if (-not $row) { return @{ Row = $null; Kebab = $hits[0]; Rendered = $rendered; Why = 'no-owning-row' } }
+  return @{ Row = $row; Kebab = $hits[0]; Rendered = $rendered; Why = 'ok' }
+}
+function Test-PaneShows($buttons, [double]$minX, [string]$title, [string]$phrase) {
+  # The receipt: the conversation pane's own header kebab, right of the sidebar boundary.
+  foreach ($b in $buttons) {
+    if ($b.Left -lt $minX -or -not $b.Name) { continue }
+    if ($b.Name -eq ($phrase + $title.Trim())) { return $true }
+  }
+  return $false
+}
+# <<< STRUCTURAL-MATCH REGION <<<
+
+# The phrase to use when the sidebar renders nothing to read one off (collapsed, or still
+# empty). It is the ENGLISH app's measured phrase - the literal this file used to hardcode -
+# and deliberately not a translation of anything: an unreadable sidebar is not a licence to
+# guess. Only a MEASURED phrase is ever cached, so a sidebar that renders one second later
+# still gets read properly.
+$KEBAB_PHRASE_FALLBACK = 'More options for '
+$script:KebabPhrase = ''
+
+# UIA -> plain descriptors, in one pass. Patterns are probed ONLY for the sidebar and only
+# while the phrase is still unknown: each probe is a cross-process call, and the pane receipt
+# needs names alone once the phrase has been measured.
+function Read-Buttons($root, [double]$minX, [bool]$withPatterns) {
+  $out = @()
+  foreach ($b in $root.FindAll($TREE, $btnCond)) {
+    try {
+      $n = $b.Current.Name
+      if (-not $n) { continue }
+      $r = $b.Current.BoundingRectangle
+      if ($r.IsEmpty) { continue }
+      $he = $false; $hi = $false
+      if ($withPatterns -and $r.Left -lt $minX) {
+        $he = $null -ne (TryPattern $b ([System.Windows.Automation.ExpandCollapsePattern]::Pattern))
+        $hi = $null -ne (TryPattern $b ([System.Windows.Automation.InvokePattern]::Pattern))
+      }
+      $out += [pscustomobject]@{
+        Name = $n; Left = $r.Left; Top = $r.Top; Right = $r.Right; Bottom = $r.Bottom
+        HasExpand = $he; HasInvoke = $hi; El = $b
+      }
+    } catch { continue }
+  }
+  return $out
+}
+function Resolve-Phrase($buttons) {
+  if ($script:KebabPhrase) { return $script:KebabPhrase }
+  $p = Get-KebabPhrase $buttons
+  if ($p) { $script:KebabPhrase = $p; return $p }
+  return $KEBAB_PHRASE_FALLBACK
+}
+
+# RAIL 2: is OUR chat the open one? Its kebab renders in the conversation pane header.
+function OpenChatIs($root, $title) {
+  $minX = PaneMinX $root
+  $btns = Read-Buttons $root $minX (-not $script:KebabPhrase)
+  return (Test-PaneShows $btns $minX $title (Resolve-Phrase $btns))
+}
+
+if (-not (OpenChatIs $el $Title)) {
+  if (-not $Select) { Write-Output "REFUSED: '$Title' is not the chat open in $($proc.Dir)"; exit 4 }
+  # Bring it up through its own sidebar row, then re-check the receipt - never press a button
+  # in a pane we have not proved belongs to this chat.
+  function Find-Rows($root) {
+    $mx = PaneMinX $root
+    $btns = Read-Buttons $root $mx $true
+    return (Select-SidebarChat $btns $mx $Title (Resolve-Phrase $btns))
+  }
+  # ⛔ A CHAT THAT LANDED A SECOND AGO IS NOT YET A ROW (measured 2026-09-07: five of the six
+  # chats in the Andreea drain refused with "no sidebar row" while the row existed moments
+  # later - the import posts the record and the app renders its list on its own clock). One
+  # instant look turned a rendering delay into "that chat does not exist here", and the whole
+  # permission stamp was lost with it. Poll instead; a genuinely absent row still refuses,
+  # just 6s later, and a row already on screen costs one scan exactly as before.
+  $pick = Find-Rows $el
+  $rowDeadline = (Get-Date).AddMilliseconds(6000)
+  # Only a row that is genuinely ABSENT can still arrive; an ambiguous or unownable match is
+  # already decided, and re-scanning that for six seconds just delays the refusal.
+  while (-not $pick.Row -and $pick.Why -eq 'no-row' -and (Get-Date) -lt $rowDeadline) {
+    Start-Sleep -Milliseconds 400
+    $pick = Find-Rows $el
+  }
+  # A COLLAPSED GROUP IS A CLOSED DRAWER, NOT A REACH LIMIT (to-do 5f8bde91, board ruling
+  # 2026-09-24). Still absent after the poll: open the collapsed project groups the way the
+  # delivery script does and look ONCE more. Every group opened here is folded back on exit. A
+  # row that is still not rendered after this is virtualized out of reach - the exit-4 dump below
+  # and the incident filed after 3 failed presses are the backstop; no scroll driver is attempted.
+  $groupsExpanded = -1
+  if (-not $pick.Row -and $pick.Why -eq 'no-row') {
+    $groupsExpanded = Expand-SidebarGroups $el
+    if ($groupsExpanded -gt 0) {
+      Start-Sleep -Milliseconds 900
+      $el = Wake $hwnd 0
+      $pick = Find-Rows $el
+    }
+  }
+  $expandNote = if ($groupsExpanded -gt 0) { "expanded $groupsExpanded group(s); row still not rendered (virtualized out of reach) - " }
+                elseif ($groupsExpanded -eq 0) { "expanded 0 group(s), none was collapsed - " } else { "" }
+  if (-not $pick.Row) {
+    # ⛔ SAY WHICH FAILURE THIS IS. One message used to blame the 6s poll for all of them,
+    # which is how a pure MATCHING break (the Spanish app, 2026-09-09) read as a rendering
+    # delay for a whole session and sent the reader after the wrong thing.
+    $rendered = @($pick.Rendered)
+    $lens = if ($script:KebabPhrase) { "(rows read by the kebab phrase '$($script:KebabPhrase)', measured off this window)" }
+            else { "(no kebab phrase could be read off this window - fell back to '$KEBAB_PHRASE_FALLBACK')" }
+    if ($pick.Why -like 'ambiguous:*') {
+      Write-Output "REFUSED: $($pick.Why.Split(':')[1]) sidebar rows are named exactly '$Title' in $($proc.Dir) - refusing to guess which"
+      exit 4
+    }
+    if ($pick.Why -eq 'no-owning-row') {
+      Write-Output "REFUSED: the sidebar row for '$Title' IS rendered in $($proc.Dir), but no button owning it takes Invoke - the app's sidebar markup changed"
+      exit 4
+    }
+    if ($rendered.Count -eq 0) {
+      # ⛔ AND SAY WHICH WINDOW WAS READ (2026-09-17). "No rows at all" has two very different
+      # causes and this message used to name only one of them: the sidebar really is empty
+      # (still loading, collapsed), or the window we read is not the app's real one - an
+      # Electron process owns several, and MainWindowHandle picks the first, not the visible.
+      # Three permission passes refused this way against an app whose rows were on screen, and
+      # nothing in the refusal could tell the two apart. The inventory does.
+      # THE FUNNEL, IN NUMBERS. "No rows" is the END of a four-stage scan (buttons in this
+      # window -> left of the sidebar boundary -> row-shaped -> named like the title), and
+      # which stage emptied is the whole diagnosis: zero buttons is a window/tree fault, zero
+      # left-of-boundary is a mis-read pane boundary, zero row-shaped is the sidebar genuinely
+      # empty or collapsed. Re-scanned here, on the refusal path only.
+      $mxNow = PaneMinX $el
+      $allNow = @(Read-Buttons $el $mxNow $true)
+      $leftNow = @($allNow | Where-Object { $_.Left -lt $mxNow })
+      $expNow = @($leftNow | Where-Object { $_.HasExpand })
+      $sample = (@($leftNow | Select-Object -First 6 | ForEach-Object { "'" + $_.Name + "'" }) -join ', ')
+      Write-Output ("REFUSED: $($expandNote)the sidebar in $($proc.Dir) rendered NO chat rows at all in 6s, so " +
+        "'$Title' could not be looked for. " + (Window-Report $proc.ProcId ([int]$hwnd)) +
+        ". The scan saw $($allNow.Count) button(s) in that window, $($leftNow.Count) left of the " +
+        "sidebar boundary (x<$([int]$mxNow)), $($expNow.Count) of them row-shaped" +
+        $(if ($leftNow.Count -gt 0) { " - left-of-boundary names: $sample" } else { "" }) +
+        ". $lens")
+      exit 4
+    }
+    Write-Output ("REFUSED: $($expandNote)no sidebar row is named '$Title' in $($proc.Dir) - a MATCH failure, not a timing one: $($rendered.Count) rows are rendered right now $lens. Rows: " +
+      ((@($rendered | Select-Object -First 12) | ForEach-Object { "'" + $_ + "'" }) -join ' | '))
+    exit 4
+  }
+  $row = $pick.Row.El
+  $inv = TryPattern $row ([System.Windows.Automation.InvokePattern]::Pattern)
+  if (-not $inv) { Write-Output 'REFUSED: that row exposes no Invoke'; exit 4 }
+  $inv.Invoke()
+  # LATENCY (review 2026-09-06): poll for the row's chat to become the open one instead of a
+  # flat 1200ms + 900ms wait - same 2100ms total ceiling. The accessibility poke inside Wake
+  # still runs on every look; only the sleep after it is skipped mid-poll.
+  $selectDeadline = (Get-Date).AddMilliseconds(2100)
+  $el = Wake $hwnd 0
+  while (-not (OpenChatIs $el $Title) -and (Get-Date) -lt $selectDeadline) {
+    Start-Sleep -Milliseconds 200
+    $el = Wake $hwnd 0
+  }
+  if (-not (OpenChatIs $el $Title)) {
+    Write-Output "REFUSED: selected the row but the pane still does not show '$Title'"; exit 4
+  }
+}
+
+# RAIL 2b: THE CHAT'S OWN WORDS ON SCREEN. The kebab proves a chat with this TITLE is open;
+# this proves it is THIS chat. Any rendered element right of the sidebar whose name carries the
+# snippet counts (the pane exposes message text through element names, as the courier's
+# actuator relies on). Absent = refuse; a title alone never earns a press.
+# -SetMode is CONFIGURATION, not an act on the chat's work: bypass is the wanted state for
+# every chat, so a same-titled neighbour getting it instead is not a wrong press - and the
+# title-collision pass renames such neighbours anyway. The words rail stays for pressing
+# Allow, where the wrong chat would be a real mistake (2026-09-01: the rail blocked the mode
+# fix on most chats because the pane exposes fragments, not lines).
+# A CHIP ON THE WAY PAST (2026-09-01): the chat is open now, so if its pane carries a
+# 'Suggested task' card, say so - the chips lane (scripts/chips.py) starts it locally on its
+# own clock. One line, never an act here.
+try {
+  $minXc = PaneMinX $el
+  $cardLabel = $null
+  # LATENCY (review 2026-09-06): push the Name/ControlType filter into a PropertyCondition
+  # passed to FindAll instead of walking TrueCondition and filtering every element client-side.
+  $chipNameCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::NameProperty, 'Suggested task')
+  foreach ($e in $el.FindAll($TREE, $chipNameCond)) {
+    try {
+      $rc = $e.Current.BoundingRectangle
+      if ($rc.IsEmpty -or $rc.Left -lt $minXc) { continue }
+      $cardLabel = $e; break
+    } catch { continue }
+  }
+  if ($cardLabel) {
+    $ly = $cardLabel.Current.BoundingRectangle.Y
+    $chipTitle = ''
+    $chipTextCond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+      [System.Windows.Automation.ControlType]::Text)
+    foreach ($e in $el.FindAll($TREE, $chipTextCond)) {
+      try {
+        $rc = $e.Current.BoundingRectangle
+        if ($rc.IsEmpty -or $rc.Left -lt $minXc -or $rc.Y -le $ly -or $rc.Y -gt ($ly + 60)) { continue }
+        $t = $e.Current.Name
+        if ($t -and $t -notmatch '^[a-z0-9]+-[a-z0-9-]+$') { $chipTitle = $t; break }
+      } catch { continue }
+    }
+    if ($chipTitle) { Write-Output "CHIP: $chipTitle" }
+  }
+} catch {}
+
+if ($VerifyText -and -not $SetMode) {
+  $minXv = PaneMinX $el
+  $wordsSeen = $false
+  # Several candidate snippets may be passed, separated by '|||' (its last words, its first
+  # prompt as the pane renders it): the pane shows the END of a long message and renders
+  # markdown, so any one of the chat's own lines on screen proves it is this chat.
+  $alts = @($VerifyText -split '\|\|\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  # THE PANE EXPOSES FRAGMENTS, NOT LINES (measured 2026-09-01 on a live window: message text
+  # arrives as Text elements split at every inline-code/bold boundary - "just refuses any
+  # live pid.", "= pid 55980). Delivering both decisions."). An exact snippet therefore
+  # almost never sits inside one element's Name, and the rail refused real chats all
+  # evening. So: the pane's names are joined into one text, an exact hit anywhere passes,
+  # and failing that the chat's DISTINCTIVE words (5+ letters) must mostly be present -
+  # at least four of them and at least 60% - which a same-titled other chat does not share.
+  $paneParts = New-Object System.Collections.Generic.List[string]
+  foreach ($e in $el.FindAll($TREE, [System.Windows.Automation.Condition]::TrueCondition)) {
+    try {
+      $n = $e.Current.Name
+      if (-not $n) { continue }
+      $r = $e.Current.BoundingRectangle
+      if ($r.IsEmpty -or $r.Left -lt $minXv) { continue }
+      $paneParts.Add($n)
+    } catch { continue }
+  }
+  $paneText = (($paneParts -join ' ') -replace '\s+', ' ')
+  $paneLower = $paneText.ToLowerInvariant()
+  foreach ($a in $alts) {
+    if ($paneText.Contains($a)) { $wordsSeen = $true; break }
+    $words = @(($a.ToLowerInvariant() -split '[^a-z0-9]+') | Where-Object { $_.Length -ge 5 } | Select-Object -Unique)
+    if ($words.Count -lt 4) { continue }
+    $hits = @($words | Where-Object { $paneLower.Contains($_) }).Count
+    if ($hits -ge 4 -and $hits -ge [Math]::Ceiling($words.Count * 0.6)) { $wordsSeen = $true; break }
+  }
+  if (-not $wordsSeen) {
+    Write-Output "REFUSED: '$Title' is open by title, but its pane does not show its own words ('$VerifyText') - not pressing on a title alone"
+    exit 4
+  }
+}
+
+# -SetMode: the permission picker in the conversation pane, driven positively by name.
+if ($SetMode) {
+  $minXm = PaneMinX $el
+  # ⛔ THE COMPOSER ROW IS THE ANCHOR, NOT A FRACTION OF THE WINDOW WIDTH (measured
+  # 2026-09-05 on a live 1082px-wide window): 'Bypass permissions' rendered at x=2678 while
+  # PaneMinX computed 2782, so the `-lt $minXm` guard rejected the very button it was hunting
+  # and every chat came back "no permission picker is showing". That is why the whole in-app
+  # mechanism looked wired and did nothing: mode-confirmed.json held TWO rows for the entire
+  # fleet and the mode ledger held ZERO, so the one thing that can set a live chat's mode had
+  # never once aimed successfully. The 38% rule is calibrated for a wide window; a narrow one
+  # (or a collapsed sidebar) pushes the line right of the composer's left-hand controls.
+  # The composer toolbar is ONE ROW - 'Bypass permissions', 'Model: ...' and 'Effort: ...'
+  # all render at the same Y - so the Model button is a structural anchor no window width can
+  # move. The fraction stays only as the fallback for a window with no anchor on screen.
+  function ComposerRowY($root) {
+    foreach ($b in $root.FindAll($TREE, $btnCond)) {
+      try {
+        $n = $b.Current.Name
+        if (-not $n -or -not $n.StartsWith('Model: ')) { continue }
+        $r = $b.Current.BoundingRectangle
+        if ($r.IsEmpty) { continue }
+        return $r.Top
+      } catch { continue }
+    }
+    return $null
+  }
+  $rowY = ComposerRowY $el
+  function Find-ModeBtn($root) {
+    $midY = $root.Current.BoundingRectangle.Top + ($root.Current.BoundingRectangle.Height * 0.5)
+    foreach ($b in $root.FindAll($TREE, $btnCond)) {
+      try {
+        $n = $b.Current.Name
+        if (-not $n -or ($MODE_NAMES -notcontains $n)) { continue }
+        $r = $b.Current.BoundingRectangle
+        if ($r.IsEmpty) { continue }
+        if ($null -ne $rowY) {
+          if ([Math]::Abs($r.Top - $rowY) -gt 40) { continue }   # a different row is a different control
+        } else {
+          # RAIL (review 2026-09-06): no composer-row anchor is on screen - keep the name
+          # allow-list AND require the candidate to sit in the composer's vertical band
+          # (below the pane's midline), never "any button anywhere". No hit here means
+          # refuse (exit 3 below), not "accept whatever matched the name".
+          if ($r.Left -lt $minXm -or $r.Top -lt $midY) { continue }
+        }
+        return $b
+      } catch { continue }
+    }
+    return $null
+  }
+  $modeBtn = Find-ModeBtn $el
+  if (-not $modeBtn) {
+    # ⛔ $MODE_NAMES IS ENGLISH, AND ON A NON-ENGLISH APP THAT IS WHY YOU ARE READING THIS
+    # (measured 2026-09-09 on instance #56, whose composer button reads 'Aceptar ediciones').
+    # A chat ROW can be matched structurally - it has its own kebab to read its title off,
+    # see RAIL 2 - but a MODE has no such pair: the five modes are sibling radio items whose
+    # only distinguishing feature is their text, and position is not a discriminator when
+    # 'Bypass permissions' sits beside 'Plan'. Translating them is the guess that left
+    # 'Cambiar nombre' in the rename table for weeks matching nothing (the app says
+    # 'Renombrar'), so this refusal DOES THE PROBE INSTEAD: it prints the composer row
+    # verbatim, and the labels on that line - observed, never looked up - are the ones to
+    # add here. -SetMode also compares the picker's own name to $SetMode to prove the mode
+    # took, so a localized app needs the caller to ask for the mode by the name it renders.
+    # (If a live dump ever shows the bypass item carrying its own CSS palette the way the
+    # row menu's Delete does, THAT is the structural route - Manage-DesktopChat's
+    # StructuralMenuItem is the pattern to copy.)
+    $onRow = @()
+    foreach ($b in $el.FindAll($TREE, $btnCond)) {
+      try {
+        $n = $b.Current.Name
+        if (-not $n) { continue }
+        $r = $b.Current.BoundingRectangle
+        if ($r.IsEmpty) { continue }
+        if ($null -ne $rowY) { if ([Math]::Abs($r.Top - $rowY) -gt 40) { continue } }
+        elseif ($r.Left -lt $minXm) { continue }
+        if ($null -ne (TryPattern $b ([System.Windows.Automation.ExpandCollapsePattern]::Pattern))) { $n = "$n(opens a menu)" }
+        $onRow += $n
+      } catch { continue }
+    }
+    $onRow = @($onRow | Select-Object -Unique | Select-Object -First 12)
+    $where = if ($null -ne $rowY) { 'the composer row' } else { 'the composer half of the window (no Model: anchor on screen)' }
+    Write-Output ("no permission picker is showing in '$Title' (looked for a button named one of: $($MODE_NAMES -join ', ')). " +
+      "$where renders: " + (($onRow | ForEach-Object { "'" + $_ + "'" }) -join ' | ') +
+      " - if this app's UI is not in English its mode names are localized, and these OBSERVED labels are the ones to add to `$MODE_NAMES; never a translated guess.")
+    exit 3
+  }
+  $before = $modeBtn.Current.Name
+  # WHERE THE COMPOSER'S OWN PICKER SITS, read BEFORE the menu opens. The confirmation dialog
+  # below carries a button with the SAME NAME as the mode being set ('Bypass permissions'),
+  # so the only thing separating the dialog's confirm from the picker that raised it is
+  # position. The composer toolbar does not move while a modal is up, and a rect survives the
+  # React re-render that a RuntimeId does not, which is why this is the discriminator.
+  $pickerRect = $modeBtn.Current.BoundingRectangle
+  if ((Mode-Spellings $SetMode) -contains $before) { Write-Output "MODE already '$before' for '$Title' in $($proc.Dir)"; exit 0 }
+  # OPENING THE PICKER (measured 2026-09-01 on a live window): the picker Button exposes
+  # ExpandCollapse and ScrollItem, NOT Invoke - so requiring Invoke refused every chat whose
+  # mode was wrong ("the permission picker ('Accept edits') exposes no Invoke"). Its parent
+  # Group is the element that exposes Invoke. Try each way the control offers, in order.
+  $opened = $false
+  $pi = TryPattern $modeBtn ([System.Windows.Automation.InvokePattern]::Pattern)
+  if ($pi) { try { $pi.Invoke(); $opened = $true } catch {} }
+  if (-not $opened) {
+    $ecp = TryPattern $modeBtn ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+    if ($ecp) { try { $ecp.Expand(); $opened = $true } catch {} }
+  }
+  if (-not $opened) {
+    try {
+      $parentBtn = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($modeBtn)
+      if ($parentBtn) {
+        # RAIL (review 2026-09-06): only invoke the PARENT when $modeBtn is its ONE invokable
+        # descendant - else the parent could hold a sibling control and invoking it would press
+        # something we never aimed at. Skip this fallback rather than guess.
+        $modeRid = $modeBtn.GetRuntimeId()
+        $invokableKids = @($parentBtn.FindAll($TREE, $btnCond) | Where-Object {
+          $null -ne (TryPattern $_ ([System.Windows.Automation.InvokePattern]::Pattern))
+        })
+        $isOnlyKid = ($invokableKids.Count -eq 1) -and
+                     (-not (Compare-Object $invokableKids[0].GetRuntimeId() $modeRid))
+        if ($isOnlyKid) {
+          $ppi = TryPattern $parentBtn ([System.Windows.Automation.InvokePattern]::Pattern)
+          if ($ppi) { $ppi.Invoke(); $opened = $true }
+        }
+      }
+    } catch {}
+  }
+  # MEASURED 2026-09-01 on a live window: none of the patterns open this popover - Expand
+  # throws "not valid in the current state", the parent's Invoke does nothing. What DOES
+  # open it is what a person does: focus the button and press Space. UIA SetFocus plus a
+  # WM_KEYDOWN/WM_KEYUP for VK_SPACE posted to the render widget - no foreground change,
+  # no cursor. The menu is then five RadioButtons whose names are the label FOLLOWED BY a
+  # description ('Bypass permissions Accepts all permissions Default'), which is why an
+  # exact-name match found "no item"; SelectionItem.Select on the radio switches the mode.
+  function Find-ModeItem($root) {
+    $spellings = Mode-Spellings $SetMode
+    foreach ($e in $root.FindAll($TREE, [System.Windows.Automation.Condition]::TrueCondition)) {
+      try {
+        $n = $e.Current.Name
+        if (-not $n) { continue }
+        $hit = $spellings | Where-Object { $n.StartsWith($_) } | Select-Object -First 1
+        if (-not $hit) { continue }
+        $ct = $e.Current.ControlType.ProgrammaticName
+        if ($ct -notmatch 'RadioButton|MenuItem|ListItem') { continue }
+        $r = $e.Current.BoundingRectangle
+        if ($r.IsEmpty) { continue }
+        # Rebind to the label this window RENDERS: every comparison below ("did it take", the
+        # confirm-dialog hunt, the receipt line) reads $SetMode, and on a localized app the
+        # canonical English name would never equal what the picker shows.
+        $script:SetMode = $hit
+        return $e
+      } catch { continue }
+    }
+    return $null
+  }
+  function Press-Space($target) {
+    # Re-assert the grab: the window was activated up front, but a person can click away
+    # mid-run and a posted key is dropped the moment it is not foreground. Cheap when it is
+    # already ours; PriorFg is captured once, so this never overwrites the real prior window.
+    Grab-Window
+    try { $target.SetFocus() } catch { return $false }
+    Start-Sleep -Milliseconds 150
+    # RAIL 4 (review 2026-09-06): never post a key into unknown focus - this is the most
+    # likely way the project selector got activated by a misdirected key. Confirm focus
+    # actually landed on the element we meant before posting anything; retry SetFocus once,
+    # then refuse loudly and name what actually had focus.
+    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+    $targetRid = $target.GetRuntimeId()
+    if (-not $focused -or (Compare-Object $focused.GetRuntimeId() $targetRid)) {
+      try { $target.SetFocus() } catch {}
+      Start-Sleep -Milliseconds 150
+      $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+      if (-not $focused -or (Compare-Object $focused.GetRuntimeId() $targetRid)) {
+        $seenName = try { $focused.Current.Name } catch { '<unknown>' }
+        Write-Output "REFUSED: focus did not land on the intended control before pressing Space (focus is on '$seenName')"
+        return $false
+      }
+    }
+    $rw = [Approve.Inv]::RenderWidget($hwnd)
+    if ($rw -eq [IntPtr]::Zero) { return $false }
+    [void][Approve.Inv]::PostMessage($rw, 0x0100, [IntPtr]0x20, [IntPtr]0)
+    Start-Sleep -Milliseconds 60
+    [void][Approve.Inv]::PostMessage($rw, 0x0101, [IntPtr]0x20, [IntPtr]0)
+    return $true
+  }
+  if (-not $opened) { $opened = Press-Space $modeBtn }
+  if (-not $opened) { Write-Output "REFUSED: the permission picker ('$before') could not be opened (no Invoke, no Expand, and the focused Space key found no render widget)"; exit 6 }
+  # LATENCY (review 2026-09-06): the picker's menu populates asynchronously - poll for it
+  # instead of a flat 700ms wait followed by four 400ms retries; same 2300ms total ceiling.
+  $item = $null
+  $itemDeadline = (Get-Date).AddMilliseconds(2300)
+  while ($true) {
+    $item = Find-ModeItem ([System.Windows.Automation.AutomationElement]::FromHandle($hwnd))
+    if ($item -or (Get-Date) -ge $itemDeadline) { break }
+    Start-Sleep -Milliseconds 175
+  }
+  if (-not $item) {
+    # ⛔ DISTINGUISH "the menu opened and lacked my item" FROM "the menu never opened"
+    # (2026-09-07). Press-Space returns true when it POSTED the key, not when anything
+    # happened, so the old single message blamed the item list for a picker that had not
+    # opened at all - and sent two investigations hunting for a locale/label problem that
+    # did not exist. Count what is on screen and say which failure this actually is.
+    $anyItems = 0
+    $namesSeen = @()
+    foreach ($e in ([System.Windows.Automation.AutomationElement]::FromHandle($hwnd)).FindAll(
+                     $TREE, [System.Windows.Automation.Condition]::TrueCondition)) {
+      try {
+        if ($e.Current.ControlType.ProgrammaticName -notmatch 'RadioButton|MenuItem|ListItem') { continue }
+        $en = $e.Current.Name
+        if (-not $en -or $e.Current.BoundingRectangle.IsEmpty) { continue }
+        $anyItems++
+        if ($namesSeen.Count -lt 8) { $namesSeen += ($en -split '\s{2,}')[0] }
+      } catch { continue }
+    }
+    if ($anyItems -eq 0) {
+      Write-Output ("REFUSED: the picker ('$before') never opened - the Space key was posted and " +
+        "nothing rendered. The window must be non-minimized AND foreground for its render widget " +
+        "to take a posted key. This is NOT a missing label; do not add one.")
+      exit 6
+    }
+    Write-Output ("REFUSED: opened the picker ('$before') but no item starting with any of '$((Mode-Spellings $SetMode) -join ""' / '"")' appeared" +
+      " (menu showed: $($namesSeen -join ' | ') - if this is a locale not in `$MODE_ALIASES, these OBSERVED labels are the ones to add)")
+    exit 6
+  }
+  # RAIL (review 2026-09-06): snapshot every button's RuntimeId BEFORE the mode item is
+  # invoked by ANY method (Select, Invoke or Press-Space), so the confirmation-dialog hunt
+  # below can require its match to be NEW rather than trusting a name match alone against
+  # whatever button already happened to be on screen.
+  # THE APP'S WINDOWS, main first. The confirmation dialog is its own top-level HWND owned by
+  # the same process, so a hunt rooted at MainWindowHandle alone never sees it. `IsMain` is
+  # carried because Find-Confirm's positional guards only make sense in the main window: the
+  # composer's picker and the sidebar chips live THERE, so a mode-named button in a separate
+  # dialog window cannot be either of them and must not be rejected for sitting in the wrong
+  # place. Never widens WHAT may be pressed - the deny list and the must-be-new rail are
+  # unchanged, and the snapshot below covers these same roots so nothing pre-existing qualifies.
+  # ⛔ DEFINED HERE, ABOVE ITS FIRST USE: PowerShell binds functions as the script runs, so a
+  # definition further down would leave the snapshot call in a catch{} with an EMPTY set -
+  # which silently disarms must-be-new and lets an unrelated button be pressed as the confirm.
+  function Get-ProcRoots($procId, $mainHwnd) {
+    $roots = @()
+    $mainEl = $null
+    try { if ($mainHwnd) { $mainEl = [System.Windows.Automation.AutomationElement]::FromHandle($mainHwnd) } } catch {}
+    # ⛔ THE CONFIRMATION IS AN IN-PAGE MODAL, NOT A TOP-LEVEL WINDOW (measured 2026-09-07 on a
+    # live window - the run that finally reproduced it end to end). Everything below assumed
+    # the dialog owns its own HWND. It does not: it renders as a ControlType.Window element
+    # INSIDE the main window's tree (name 'Bypass all permissions?', a 'Cancel' and a confirm
+    # button named for the mode), and while it is up the composer toolbar is dropped from the
+    # tree entirely - which is what every failing run reported as "the picker now reads 'gone'".
+    #
+    # ⛔ AND THIS IS WHY THE HUNT SAW IT AND THREW IT AWAY. A modal is CENTRED: its confirm sat
+    # at x=1312 while $minXm (the 'Model: ...' anchor minus 40) was 1586, so Find-Confirm's
+    # `-ge $minXm` guard rejected the one button it came for - the exact defect this file's
+    # -SetMode header already records for Find-ModeBtn, repeated one function down. The
+    # positional guards exist only to tell this confirm from the composer's own picker and the
+    # sidebar chips; INSIDE a modal Window element there is nothing to confuse it with, which
+    # is the same carve-out a separate dialog window already gets, so a modal is handed over as
+    # a NON-main root. Scanned FIRST: a modal on screen is unambiguously the thing to answer.
+    if ($mainEl) {
+      try {
+        $winCond = New-Object System.Windows.Automation.PropertyCondition(
+          [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+          [System.Windows.Automation.ControlType]::Window)
+        foreach ($w in $mainEl.FindAll($TREE, $winCond)) {
+          try {
+            if ($w.Current.IsOffscreen -or $w.Current.BoundingRectangle.IsEmpty) { continue }
+            $roots += [pscustomobject]@{ Elem = $w; IsMain = $false }
+          } catch { continue }
+        }
+      } catch {}
+      $roots += [pscustomobject]@{ Elem = $mainEl; IsMain = $true }
+    }
+    try {
+      $pidCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$procId)
+      foreach ($w in [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                       [System.Windows.Automation.TreeScope]::Children, $pidCond)) {
+        try {
+          $h = $w.Current.NativeWindowHandle
+          if ($mainHwnd -and $h -eq [int]$mainHwnd) { continue }
+          if ($w.Current.IsOffscreen) { continue }
+          $roots += [pscustomobject]@{ Elem = $w; IsMain = $false }
+        } catch { continue }
+      }
+    } catch {}
+    return $roots
+  }
+  # ⛔ AND IT MUST COVER EVERY TOP-LEVEL WINDOW OF THE APP, NOT JUST ITS MAIN ONE (owner,
+  # 2026-09-07: "stuck on the popup again. I had to click it"). This dialog is an OWNED
+  # top-level window with its own HWND, so it is NOT a descendant of MainWindowHandle and a
+  # scan rooted there cannot see it however long it polls. Both failures read the same way -
+  # "waited 9s for a confirmation, pressed 0" while the diagnostic listed the main frame's own
+  # Minimize/Maximize - which looks like "no dialog appeared" and was really "looked in the
+  # wrong window". Roots are recomputed each look because the dialog does not exist yet here.
+  $preInvokeIds = New-Object System.Collections.Generic.HashSet[string]
+  try {
+    foreach ($root in (Get-ProcRoots $proc.ProcId $hwnd)) {
+      try {
+        foreach ($b in $root.Elem.FindAll($TREE, $btnCond)) {
+          try { [void]$preInvokeIds.Add(($b.GetRuntimeId() -join ',')) } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+  $picked = $false
+  $sp = TryPattern $item ([System.Windows.Automation.SelectionItemPattern]::Pattern)
+  if ($sp) { try { $sp.Select(); $picked = $true } catch {} }
+  if (-not $picked) {
+    $ii = TryPattern $item ([System.Windows.Automation.InvokePattern]::Pattern)
+    if ($ii) { try { $ii.Invoke(); $picked = $true } catch {} }
+  }
+  if (-not $picked) { $picked = Press-Space $item }
+  if (-not $picked) { Write-Output "REFUSED: the '$SetMode' item took neither Select, Invoke nor a focused Space"; exit 6 }
+  # LATENCY (review 2026-09-06): the confirm-dialog poll below already waits for the dialog or
+  # the picker to change; the flat 250ms here bought it nothing extra, so it is removed rather
+  # than folded.
+  # THE CONFIRMATION POPUP, AND WHY THIS IS A POLL AND NOT THREE ROUNDS (owner, 2026-09-06:
+  # "a pop-up opens ... otherwise everything hangs. The pop-up happened, I accepted them for
+  # you"). Switching to bypass raises the app's acceptance dialog - the desktop's form of the
+  # CLI's "Yes, I accept" gate - and until it is answered the mode never takes and the chat
+  # sits there waiting for a human. Two defects put it there, both measured on the 5-chat
+  # Carlos migration of 2026-09-06 where two of five landed `disk-only`:
+  #
+  #   1. THE RETRY LOOP NEVER RETRIED. `foreach ($round in 1..3) { ... if (-not $dlgBtn)
+  #      { break } }` left the loop the FIRST time a round found nothing, so the comment
+  #      promising three rounds "since the dialog can arrive after the picker already reads
+  #      the new mode" described behaviour the code did not have: after one 800ms sleep it
+  #      gave up forever. A dialog that renders slower than that was never seen at all.
+  #   2. THE GUARD SKIPPED THE VERY BUTTON IT NEEDED. This dialog's confirm is named for the
+  #      MODE - 'Bypass permissions' - and `if ($MODE_NAMES -contains $n) { continue }` threw
+  #      it away as though it were the composer's picker. The failing run's own diagnostic
+  #      printed it on screen ("... | Cancel | Bypass p") while reporting the mode did not
+  #      take, which is the tell.
+  #
+  # So: poll until the picker actually reads the target mode, take a mode-named button only
+  # when it is NOT where the composer's picker sits, and answer POSITIVELY by name only.
+  # ⛔ NOTHING IN $DENY_NAMES IS EVER PRESSED. Dismissing this dialog is a refusal to enable
+  # bypass, not a way past it, and pressing one would be inventing the opposite of consent.
+  $ACCEPT_NAMES = @('Yes, I accept', 'I accept', 'Accept', 'Yes, enable', 'Enable', 'Turn on',
+                    'Confirm', 'Continue', 'I understand', 'Got it', 'OK', 'Yes',
+                    'Ja, ich akzeptiere', 'Akzeptieren', 'Aktivieren', 'Bestätigen', 'Weiter', 'Ja')
+  $DENY_NAMES = @('Cancel', 'Dismiss', 'No', 'Deny', 'Not now', 'Never', 'Exit', 'Abbrechen',
+                  'Nein', 'Cancelar', 'Annuler', 'Reject')
+  # How long the dialog is given to render before we call it absent. Costs nothing on the
+  # common path: the loop leaves the moment the picker reads $SetMode, which for a chat that
+  # needs no confirmation is the first look.
+  $CONFIRM_WAIT_MS = 9000
+  $CONFIRM_MAX_CLICKS = 4
+  function Same-Spot($r1, $r2) {
+    if ($r1.IsEmpty -or $r2.IsEmpty) { return $false }
+    return ([Math]::Abs($r1.Left - $r2.Left) -lt 8) -and ([Math]::Abs($r1.Top - $r2.Top) -lt 8)
+  }
+  # One tree scan per look, not one PER CANDIDATE NAME. The old shape ran FindAll once for
+  # each of eighteen accept labels - eighteen full descendant walks of an Electron tree, every
+  # round - which is a real part of why a batch of these felt slow.
+  function Find-Confirm($root, $pRect, $preIds, $isMain = $true) {
+    $byName = @{}
+    $modeHit = $null
+    foreach ($b in $root.FindAll($TREE, $btnCond)) {
+      try {
+        $n = $b.Current.Name
+        if (-not $n) { continue }
+        $n = $n.Trim()
+        if (-not $b.Current.IsEnabled -or $b.Current.IsOffscreen) { continue }
+        $r = $b.Current.BoundingRectangle
+        if ($r.IsEmpty) { continue }
+        if ($DENY_NAMES -contains $n) { continue }
+        if ($n -eq $SetMode) {
+          # The dialog's confirm carries the mode's own name. The composer's picker carries it
+          # too once the mode has taken, so position - not the name - is what tells them apart.
+          # ⛔ AND THE SIDEBAR CHIPS CARRY IT AS WELL: a row's chip reads out its chat's mode
+          # (chip.ps1), so a name-only match could click ANOTHER CHAT'S ROW and select it.
+          # Same pane guard Find-ModeBtn uses - a modal is in the conversation pane, a chip
+          # never is - which is why dropping the old $MODE_NAMES guard needs this in its place.
+          # AND IT MUST BE NEW (review 2026-09-06): the same snapshot rule the named-accept
+          # branch below obeys. A mode-named button that already existed before the item was
+          # invoked - the picker itself after the mode took, a chip, a second composer's picker
+          # - is not this dialog's confirm whatever its position says.
+          $rid = ($b.GetRuntimeId() -join ',')
+          # The pane/position guards discriminate the dialog's confirm from the composer's own
+          # picker and the sidebar chips - all of which live in the MAIN window. In a separate
+          # dialog window there is nothing to confuse it with, so requiring it to sit right of
+          # the pane would reject the very button we came for. Must-be-new still applies.
+          $placeOk = if ($isMain) { $r.Left -ge $minXm -and -not (Same-Spot $r $pRect) } else { $true }
+          if ($placeOk -and -not $preIds.Contains($rid)) {
+            if (-not $modeHit) { $modeHit = $b }
+          }
+          continue
+        }
+        if ($MODE_NAMES -contains $n) { continue }   # a picker/sidebar row is never a confirm
+        if (-not $byName.ContainsKey($n)) {
+          # RAIL (review 2026-09-06): only a button that is NEW since before the mode item was
+          # invoked qualifies as this dialog's confirm - a same-named button already on screen
+          # beforehand (unrelated to this action) must never be pressed as though it were.
+          $rid = ($b.GetRuntimeId() -join ',')
+          if (-not $preIds.Contains($rid)) { $byName[$n] = $b }
+        }
+      } catch { continue }
+    }
+    foreach ($want in $ACCEPT_NAMES) { if ($byName.ContainsKey($want)) { return $byName[$want] } }
+    return $modeHit
+  }
+  $confirmNote = ''
+  $clicks = 0
+  $confirmDeadline = (Get-Date).AddMilliseconds($CONFIRM_WAIT_MS)
+  while ($true) {
+    $fresh = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+    $cur = Find-ModeBtn $fresh
+    # THE ONLY SUCCESS CONDITION. Not "a dialog was clicked" and not "no dialog appeared" -
+    # the picker itself reading the mode we asked for.
+    if ($cur -and $cur.Current.Name -eq $SetMode) { break }
+    # Look in the main window FIRST (the common case, and the cheapest), then in any other
+    # top-level window the app owns - which is where this dialog actually lives.
+    $dlgBtn = $null
+    foreach ($root in (Get-ProcRoots $proc.ProcId $hwnd)) {
+      $dlgBtn = Find-Confirm $root.Elem $pickerRect $preInvokeIds $root.IsMain
+      if ($dlgBtn) { break }
+    }
+    if (-not $dlgBtn) {
+      if ((Get-Date) -ge $confirmDeadline) { break }
+      Start-Sleep -Milliseconds 300
+      continue
+    }
+    $label = $dlgBtn.Current.Name
+    if ($DENY_NAMES -contains $label.Trim()) {
+      Write-Output "REFUSED: the only confirmation on screen was '$label', which is a refusal - not pressing it"; exit 6
+    }
+    $done = $false
+    $dpi = TryPattern $dlgBtn ([System.Windows.Automation.InvokePattern]::Pattern)
+    if ($dpi) { try { $dpi.Invoke(); $done = $true } catch {} }
+    if (-not $done) { $done = Press-Space $dlgBtn }
+    if (-not $done) { Write-Output "REFUSED: a confirmation asked ('$label') and it took neither Invoke nor a focused Space"; exit 6 }
+    $clicks++
+    $confirmNote = " (confirmed the app's '$label' prompt)"
+    if ($clicks -ge $CONFIRM_MAX_CLICKS) { break }
+    # LATENCY (review 2026-09-06): poll for the picker to read the new mode instead of a flat
+    # 500ms wait - same 500ms ceiling.
+    $postClickDeadline = (Get-Date).AddMilliseconds(500)
+    while ($true) {
+      $probe = Find-ModeBtn ([System.Windows.Automation.AutomationElement]::FromHandle($hwnd))
+      if (($probe -and $probe.Current.Name -eq $SetMode) -or (Get-Date) -ge $postClickDeadline) { break }
+      Start-Sleep -Milliseconds 200
+    }
+  }
+  $el = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+  $after = Find-ModeBtn $el
+  $now = if ($after) { $after.Current.Name } else { 'gone' }
+  if ($now -ne $SetMode) {
+    # Name what is on screen so an UNKNOWN confirmation dialog (a button label in neither
+    # ACCEPT_NAMES nor DENY_NAMES) can be read off the lane's log and added, instead of
+    # failing mutely. Disabled and offscreen buttons are marked rather than hidden: the last
+    # failure's list looked complete and was not.
+    # ⛔ AND IT MUST LIST EVERY WINDOW THE APP OWNS, not just the main one (2026-09-07). This
+    # scan used to root at $el, so when the confirm sat in its own top-level dialog the list
+    # came back as the main frame's Minimize/Maximize and read as "no dialog appeared" - the
+    # message that sent the last two investigations down the wrong path. A button found
+    # outside the main window is tagged so the two can never be confused again.
+    $seenBtns = @()
+    $diagRoots = @()
+    try { $diagRoots = Get-ProcRoots $proc.ProcId $hwnd } catch { $diagRoots = @([pscustomobject]@{ Elem = $el; IsMain = $true }) }
+    foreach ($dr in $diagRoots) {
+    foreach ($b in $dr.Elem.FindAll($TREE, $btnCond)) {
+      try {
+        $n = $b.Current.Name
+        if (-not $n) { continue }
+        $n = $n.Trim()
+        if ($n.Length -gt 60) { $n = $n.Substring(0, 60) }
+        # Sidebar rows are noise in a dialog hunt. Drop them by the kebab phrase THIS window
+        # renders (measured by RAIL 2) so the list is about dialogs on a Spanish app too; the
+        # English patterns stay for the case where no phrase could be read.
+        if ($script:KebabPhrase -and $n.StartsWith($script:KebabPhrase)) { continue }
+        if ($n -like 'More options*' -or $n -like 'Idle *' -or $n -like 'Running *') { continue }
+        if ($b.Current.IsOffscreen) { $n = "$n(offscreen)" }
+        elseif (-not $b.Current.IsEnabled) { $n = "$n(disabled)" }
+        if (-not $dr.IsMain) { $n = "$n[dialog]" }
+        $seenBtns += $n
+      } catch { continue }
+    }
+    }
+    $seenBtns = @($seenBtns | Select-Object -Unique | Select-Object -First 30)
+    Write-Output "REFUSED: picked '$SetMode' but the picker now reads '$now' - the mode did not take$confirmNote (waited $([int]($CONFIRM_WAIT_MS/1000))s for a confirmation, pressed $clicks; buttons on screen: $($seenBtns -join ' | '))"
+    exit 6
+  }
+  Write-Output "MODE SET '$before' -> '$SetMode' for '$Title' in $($proc.Dir)$confirmNote"
+  exit 0
+}
+
+# >>> PERMISSION-CARD MATCH REGION >>>
+function Test-PermissionModeCard($parts, $targets) {
+  # Claude 2.19675.0's renderer emits this explanatory sentence (Vxe in
+  # ion-dist/assets/v1/cd5a31703-DiwdunLT.js). It is separate from localized labels.
+  # Keep matching conservative when future builds change the card's wording.
+  $text = (($parts -join ' ') -replace '\s+', ' ')
+  foreach ($t in $targets) {
+    $who = if ($t.isSelf) { 'this session' } else { 'a session' }
+    $pattern = 'This one switches ' + $who + '(?: from [^.]+)? to Bypass permissions \(bypassPermissions\) mode\.'
+    if ($text -cnotmatch $pattern) { continue }
+    if ($t.isSelf) { return $true }
+    $label = if ($t.title) { [string]$t.title } else { [string]$t.sessionId }
+    if ($label -and @($parts | Where-Object { $_ -ceq $label }).Count -gt 0) { return $true }
+  }
+  return $false
+}
+
+# One ancestor of an enabled Allow once button, read as a card: 'match', 'reject' (stop climbing)
+# or 'climb' (no mode sentence here yet). The card is the FIRST ancestor that carries a mode
+# sentence: text further out belongs to other messages (an earlier card's sentence or session
+# chip), so a card naming an unverified target can never borrow a verified target's title from
+# them. An ancestor holding two sentences or two Allow once buttons spans cards and is refused.
+function Get-PermissionCardLevel($parts, $onceCount, $targets) {
+  if ($onceCount -gt 1) { return 'reject' }
+  $text = (($parts -join ' ') -replace '\s+', ' ')
+  $sentences = ([regex]::Matches($text, 'This one switches ')).Count
+  if ($sentences -eq 0) { return 'climb' }
+  if ($sentences -gt 1 -or $onceCount -ne 1) { return 'reject' }
+  if (Test-PermissionModeCard $parts $targets) { return 'match' }
+  return 'reject'
+}
+# <<< PERMISSION-CARD MATCH REGION <<<
+
+$permissionTargets = @()
+if ($PermissionTargetsJson) {
+  $permissionTargets = @($PermissionTargetsJson | ConvertFrom-Json)
+  if (-not $OnceOnly -or $permissionTargets.Count -eq 0) {
+    Write-Output 'REFUSED: permission-mode cards require verified targets and -OnceOnly'; exit 1
+  }
+}
+
+function Test-ButtonPermissionCard($button, $targets) {
+  $node = $button
+  for ($depth = 0; $depth -lt 12; $depth++) {
+    $node = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($node)
+    if (-not $node) { return $false }
+    $rect = $node.Current.BoundingRectangle
+    if ($rect.IsEmpty -or $rect.Left -lt $minX) { return $false }
+    $parts = @(); $onceCount = 0
+    foreach ($child in $node.FindAll($TREE, [System.Windows.Automation.Condition]::TrueCondition)) {
+      try {
+        if ($child.Current.IsOffscreen) { continue }
+        $name = $child.Current.Name
+        $ct = $child.Current.ControlType
+        # Session chips can expose their title as a button/link rather than a text leaf.
+        if ($ct -eq [System.Windows.Automation.ControlType]::Text -or
+            $ct -eq [System.Windows.Automation.ControlType]::Button -or
+            $ct -eq [System.Windows.Automation.ControlType]::Hyperlink) { $parts += $name }
+        if ($ct -eq [System.Windows.Automation.ControlType]::Button -and $child.Current.IsEnabled) {
+          foreach ($label in $ALLOW_ONCE_NAMES) { if ($name -and $name.StartsWith($label)) { $onceCount++; break } }
+        }
+      } catch { return $false }
+    }
+    $level = Get-PermissionCardLevel $parts $onceCount $targets
+    if ($level -ne 'climb') { return $level -eq 'match' }
+  }
+  return $false
+}
+
+# RAILS 3 + 4: a visible, enabled allow button in the conversation pane.
+# A permission-mode restoration only uses Allow once on its matched app card.
+$minX = PaneMinX $el
+# ⛔ NAME THESE APART FROM THE NAME LISTS. PowerShell variables are CASE-INSENSITIVE, so
+# `$once = $null` silently ERASED the `$ONCE` list of button names and the match loop then
+# iterated nothing - the button was found, reported as a candidate, and never matched.
+$hitAlways = $null; $hitOnce = $null
+foreach ($b in $el.FindAll($TREE, $btnCond)) {
+  try {
+    $n = $b.Current.Name
+    if (-not $n) { continue }
+    $r = $b.Current.BoundingRectangle
+    if ($r.IsEmpty -or $r.Left -lt $minX) { continue }
+    if (-not $b.Current.IsEnabled -or $b.Current.IsOffscreen) { continue }
+    if ($permissionTargets.Count -gt 0) {
+      $isOnce = @($ALLOW_ONCE_NAMES | Where-Object { $n.StartsWith($_) }).Count -gt 0
+      if (-not $isOnce -or -not (Test-ButtonPermissionCard $b $permissionTargets)) { continue }
+      if ($hitOnce) { Write-Output 'REFUSED: multiple matching permission-mode cards are visible'; exit 1 }
+      $hitOnce = $b
+      continue
+    }
+    foreach ($a in $ALLOW_ALWAYS_NAMES) { if ($n.StartsWith($a) -and -not $hitAlways) { $hitAlways = $b } }
+    foreach ($o in $ALLOW_ONCE_NAMES) { if ($n.StartsWith($o) -and -not $hitOnce) { $hitOnce = $b } }
+  } catch { continue }
+}
+$target = if ($OnceOnly) { $hitOnce } elseif ($hitAlways) { $hitAlways } else { $hitOnce }
+if (-not $target) {
+  if ($permissionTargets.Count -gt 0) {
+    Write-Output "REFUSED: no matching visible permission-mode card for '$Title'"; exit 6
+  }
+  Write-Output "no permission prompt is showing for '$Title'"; exit 3
+}
+$inv = TryPattern $target ([System.Windows.Automation.InvokePattern]::Pattern)
+if (-not $inv) { Write-Output 'REFUSED: the allow button exposes no Invoke'; exit 1 }
+$approvedLabel = $target.Current.Name
+$approvedId = $target.GetRuntimeId()
+$inv.Invoke()
+if ($permissionTargets.Count -gt 0) {
+  # Cleared means neither the pressed button nor any Allow once still matching a verified card is
+  # enabled on screen. A re-render gives the card's button a new runtime id, so the id alone would
+  # read a still-pending card as cleared; and a window that can no longer be read proves nothing.
+  $deadline = (Get-Date).AddSeconds(5)
+  do {
+    Start-Sleep -Milliseconds 200
+    $stillShowing = $true
+    try {
+      $fresh = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+      if ($fresh) {
+        $stillShowing = $false
+        foreach ($b in $fresh.FindAll($TREE, $btnCond)) {
+          try {
+            if (-not $b.Current.IsEnabled -or $b.Current.IsOffscreen) { continue }
+            if (-not (Compare-Object $b.GetRuntimeId() $approvedId)) { $stillShowing = $true; break }
+            $n = $b.Current.Name
+            if ($n -and @($ALLOW_ONCE_NAMES | Where-Object { $n.StartsWith($_) }).Count -gt 0 -and
+                (Test-ButtonPermissionCard $b $permissionTargets)) { $stillShowing = $true; break }
+          } catch { continue }
+        }
+      }
+    } catch { $stillShowing = $true }
+  } while ($stillShowing -and (Get-Date) -lt $deadline)
+  if ($stillShowing) { Write-Output 'REFUSED: the permission-mode card did not clear after Invoke (or the window could not be read)'; exit 6 }
+}
+Write-Output "APPROVED '$approvedLabel' for '$Title' in $($proc.Dir)"
+exit 0

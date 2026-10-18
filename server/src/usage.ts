@@ -1,0 +1,813 @@
+// server/src/usage.ts — read an account's remaining Claude subscription quota.
+//
+// There is no `claude usage` subcommand and `/usage` is REPL-only, so the only non-interactive
+// route is `claude -p "/usage"` in print mode. Auth is injected the SAME way dispatch-runner.ts
+// does it (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY env — the account secret from the sqlite
+// `accounts` table), so any account already registered for queue dispatch can be polled with no
+// extra login. Value-blind: this module surfaces only the numbers `/usage` reports, never a token.
+//
+// The PURE, TESTED foundation (`parseUsageOutput` + the binding-cap helpers) is at the top; the
+// live half (`checkUsage` — spawn `claude -p "/usage"`) + a small on-disk snapshot cache follow.
+// `checkUsage` reuses the repo's `claude` binary resolution (config.ts) and the SAME auth-injection
+// dispatch-runner.ts uses (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY), so any account already
+// registered for queue dispatch is pollable with no extra login; CLAUDE_CONFIG_DIR is the fallback.
+
+import { createHash } from 'node:crypto'
+import { mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import {
+  CLAUDE_PROBE_NO_MCP_ARGS,
+  CLAUDE_PROJECTS_ROOT,
+  DATA_DIR,
+  resolveClaudeExe,
+} from './config'
+import { cliConfigDirCredentialState, resolveCliConfigDirToken } from './core/accounts'
+import { pinHaikuModel } from './core/haiku-pin'
+import { spawnCaptured } from './core/process.ts'
+import { encodeCwdKey } from './transcript'
+import type { UsageAdvice, UsageSnapshot } from './types'
+import { fetchUsageApi } from './usage-api'
+
+// The DTO types (UsageLimit / UsageSnapshot) are defined in the web-safe types hub (./types) and
+// re-exported here so existing `from './usage'` importers keep resolving.
+export type { UsageAdvice, UsageLimit, UsageSnapshot } from './types'
+
+// The `/usage` block looks like (note the U+00B7 middle-dot separator):
+//   Current session: 0% used · resets Jul 13, 11:49pm (America/Chicago)
+//   Current week (all models): 97% used · resets Jul 14, 2:59am (America/Chicago)
+//   Current week (Fable): 89% used · resets Jul 14, 3am (America/Chicago)
+// The "· resets …" clause is OPTIONAL: at 0% a window hasn't started, so the CLI prints just
+// "Current session: 0% used" with no reset time. Verified against real output 2026-07-14.
+const RE_SESSION = /Current session:\s*(\d+)%\s*used(?:\s*[·|-]?\s*resets\s+([^\r\n(]+))?/i
+const RE_WEEK_ALL =
+  /Current week \(all models\):\s*(\d+)%\s*used(?:\s*[·|-]?\s*resets\s+([^\r\n(]+))?/i
+const RE_WEEK_MODEL =
+  /Current week \((?!all models\))([^)]+)\):\s*(\d+)%\s*used(?:\s*[·|-]?\s*resets\s+([^\r\n(]+))?/i
+
+/**
+ * Parse the text output of `claude -p "/usage"` into a typed snapshot. Missing lines become null
+ * (an unauthenticated or empty run yields all-null, which callers must treat as "no data", never
+ * as "0% used"). Pure and side-effect-free so it is unit-tested against a captured fixture.
+ */
+export function parseUsageOutput(
+  raw: string,
+  account: string | null = null,
+  now = new Date(),
+): UsageSnapshot {
+  const s = RE_SESSION.exec(raw)
+  const wa = RE_WEEK_ALL.exec(raw)
+  const wm = RE_WEEK_MODEL.exec(raw)
+  return {
+    account,
+    session: s ? { pct: Number(s[1]), resets: (s[2] ?? '').trim() } : null,
+    weekAll: wa ? { pct: Number(wa[1]), resets: (wa[2] ?? '').trim() } : null,
+    weekModel: wm
+      ? { label: wm[1].trim(), pct: Number(wm[2]), resets: (wm[3] ?? '').trim() }
+      : null,
+    capturedAt: now.toISOString(),
+    // The text screen carries no ISO timestamps and no severity — that is exactly what the direct
+    // API path (source: 'api') adds. Tagging the source lets consumers know which they're holding.
+    source: 'cli',
+  }
+}
+
+/**
+ * The all-models weekly % is the real ceiling; the fresh 5-hour session % is a red herring when
+ * weekly is near 100. Returns null when unknown — callers must NOT treat unknown as "plenty left".
+ */
+export function bindingWeeklyPct(snap: UsageSnapshot): number | null {
+  return snap.weekAll?.pct ?? null
+}
+
+/** True when the snapshot has no usable data (all limits null) — an unverified read, not "empty quota". */
+export function isNoData(snap: UsageSnapshot): boolean {
+  return !snap.session && !snap.weekAll && !snap.weekModel
+}
+
+/**
+ * The exact reset instant for a limit, as ISO. Prefers the API path's real `resetsAt` timestamp;
+ * falls back to re-parsing the CLI path's yearless human string (parseResetTime). Returns null when
+ * neither is available (a window that hasn't started prints no reset at all).
+ *
+ * Use this — not parseResetTime directly — anywhere a decision is scheduled against a reset.
+ */
+export function resetTimeIso(
+  limit: { resets?: string; resetsAt?: string | null } | null | undefined,
+  now = new Date(),
+): string | null {
+  if (!limit) return null
+  if (limit.resetsAt) {
+    const d = new Date(limit.resetsAt)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  return parseResetTime(limit.resets ?? '', now)
+}
+
+/**
+ * A banked reset turns "wait for the weekly reset" into "the windows can be cleared at the wall".
+ * Spending one early wastes what the windows had left, so the note says WHEN, per provider: a
+ * Claude count is read from the app (and carried while it is closed), so it says when it was read;
+ * only Claude snapshots carry `claudeApp`, so a count without one is Codex's.
+ */
+function bankedResetNote(snap: UsageSnapshot): string {
+  const n = snap.resetCredits ?? 0
+  if (n <= 0) return ''
+  const resets = `${n} banked usage reset${n === 1 ? '' : 's'}`
+  if (snap.claudeApp) {
+    const until = snap.resetCreditsExpiresAt
+      ? ` until ${snap.resetCreditsExpiresAt.slice(0, 10)}`
+      : ''
+    const read = snap.claudeApp.checkedAt.slice(0, 16).replace('T', ' ')
+    return ` The Claude app (read ${read} UTC) showed ${resets}${until}: once this account hits its limit, a person can spend one in the app (Settings > Usage > Resets) to clear the 5-hour and weekly windows instead of waiting.`
+  }
+  return ` This account holds ${resets}: once a window is at 100%, redeem_codex_reset_credit restores the full 5-hour and weekly windows (before that it refuses unless forced, since redeeming early wastes most of one).`
+}
+
+/**
+ * Turn a snapshot into an actionable verdict for an AI agent that is about to do expensive work.
+ *
+ * The audience is a Claude Code session checking its OWN quota mid-run (see docs/AI_USAGE_SELFCHECK.md):
+ * it needs to know not just "what %" but "should I keep going, wind down, or dump my state NOW".
+ * That last case is the one that actually costs the user: an agent that runs out of quota mid-task
+ * dies holding un-saved context. `should_offload` is the signal to write that context to disk first.
+ *
+ * The weekly ALL-MODELS % is the binding cap — a fresh 5-hour session near 0% is a red herring when
+ * weekly is near 100 (session resets in hours; weekly does not). Pure + tested.
+ */
+export function usageAdvice(snap: UsageSnapshot): UsageAdvice {
+  const pct = bindingWeeklyPct(snap)
+  if (pct === null) {
+    return {
+      severity: 'unknown',
+      bindingPct: null,
+      shouldOffload: false,
+      safeToFanOut: false,
+      // Unknown is NOT "plenty left" — refuse to greenlight a fan-out on an unverified read.
+      advice:
+        'Usage could not be read. Treat remaining quota as UNKNOWN — do not assume headroom, and do not start a heavy fan-out on this account.',
+    }
+  }
+  // Trust the server's own severity when the API path supplied one; otherwise derive it. The
+  // thresholds mirror the CLI's own color bands (warn approaching the cap, critical at the edge).
+  const severity =
+    snap.weekAll?.severity ?? (pct >= 95 ? 'critical' : pct >= 80 ? 'warning' : 'normal')
+  const resets = snap.weekAll?.resets ? ` Weekly resets ${snap.weekAll.resets}.` : ''
+  // Only near a wall is a banked reset worth an agent's attention: the weekly one (warning and
+  // critical), or a 5-hour window that is already full while the week still has room.
+  const nearWall = resets + bankedResetNote(snap)
+  const sessionFull = (snap.session?.pct ?? 0) >= 100
+  if (severity === 'critical') {
+    return {
+      severity,
+      bindingPct: pct,
+      shouldOffload: true,
+      safeToFanOut: false,
+      advice: `CRITICAL: weekly (all models) is ${pct}% used. You may be cut off mid-task. OFFLOAD NOW: write your working context, findings, and next steps to a file before doing anything else. Do not fan out.${nearWall}`,
+    }
+  }
+  if (severity === 'warning') {
+    return {
+      severity,
+      bindingPct: pct,
+      shouldOffload: false,
+      safeToFanOut: false,
+      advice: `WARNING: weekly (all models) is ${pct}% used. Wind down: finish the current task, keep a written checkpoint, and shrink or postpone any fan-out.${nearWall}`,
+    }
+  }
+  return {
+    severity: 'normal',
+    bindingPct: pct,
+    shouldOffload: false,
+    safeToFanOut: true,
+    advice: `OK: weekly (all models) is ${pct}% used. Normal operation; a fan-out is safe.${sessionFull ? nearWall : resets}`,
+  }
+}
+
+/** Context the caller knows and a snapshot cannot: whether WHOSE quota this is was ever settled. */
+export interface NextStepOpts {
+  /** True when the identification behind this reading is assumed, contradictory, or missing. */
+  identityUncertain?: boolean
+  /** How to name the account in a reply, e.g. `instance #11 (Pro)`. Null when unknown. */
+  instanceLabel?: string | null
+}
+
+/**
+ * ONE line telling the caller what to DO next. Attached to every usage tool result.
+ *
+ * `usageAdvice` above already describes the SITUATION; this is the instruction. They are separate
+ * because an agent reading a nested `advice` object has to decide for itself what a severity
+ * implies, and the decision that matters (save your work before you are cut off) is exactly the
+ * one it will skip when it is busy. Putting a verb at the top level of every response is the
+ * cheapest way to make the right move the obvious one.
+ *
+ * Deliberately ONE line: guidance that runs long stops being read, and this rides on every call.
+ * Pure + tested; ordered by urgency, so the most expensive mistake is always the sentence shown.
+ */
+export function nextStep(advice: UsageAdvice, opts: NextStepOpts = {}): string {
+  const who = opts.instanceLabel
+    ? ` Report this as ${opts.instanceLabel}, never as a bare percentage.`
+    : ''
+  // An unconfirmed identity is said FIRST and always: a correct number attributed to the wrong
+  // account is worse than no number, because it gets acted on.
+  const attribution = opts.identityUncertain
+    ? ' WHOSE quota this is could not be confirmed — say so rather than naming an account.'
+    : who
+
+  if (advice.shouldOffload) {
+    return `SAVE YOUR WORK NOW: write your context, findings and next steps to a file before doing anything else, then wind down. Do not start a fan-out.${attribution}`
+  }
+  if (advice.severity === 'unknown') {
+    return `Treat remaining quota as UNKNOWN — this is not "plenty left". Do not start a fan-out or a long task on an unverified read; retry the check or ask which account to use.${attribution}`
+  }
+  if (!advice.safeToFanOut) {
+    return `Wind down: finish what you are on, keep a written checkpoint, and shrink or postpone any fan-out.${attribution}`
+  }
+  return `Fine to continue, including a fan-out — but gate it on CURRENT + PROJECTED cost, since a fan-out cannot be recalled once launched and solo work can be stopped at any tool call.${attribution}`
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  may: 4,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11,
+}
+
+// "Jul 14, 2:59am", "Oct 3, 3am (America/Chicago)" — searched anywhere, as before.
+const RESET_DATED =
+  /(?<mon>[A-Za-z]{3})[a-z]*\s+(?<day>\d{1,2}),?\s+(?<hour>\d{1,2})(?::(?<min>\d{2}))?\s*(?<ap>[ap]m)?(?:\s*\((?<tz>[^)]+)\))?/i
+// "4am", "9:10am (America/Chicago)" — anchored, so free text like "Tomorrow 9am" stays unparsed.
+const RESET_TIME_ONLY =
+  /^(?:resets\s+)?(?<hour>\d{1,2})(?::(?<min>\d{2}))?\s*(?<ap>[ap]m)?(?:\s*\((?<tz>[^)]+)\))?[\s.]*$/i
+
+/** A formatter for an IANA zone, or null when the zone is missing or unknown to this runtime. */
+function zoneFormatter(tz: string | undefined): Intl.DateTimeFormat | null {
+  if (!tz?.trim()) return null
+  try {
+    // Read back as numbers by wallAsUtc, never shown: Latin digits and the Gregorian calendar
+    // whatever the machine's own locale is.
+    return new Intl.DateTimeFormat(undefined, {
+      numberingSystem: 'latn',
+      calendar: 'gregory',
+      timeZone: tz.trim(),
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    })
+  } catch {
+    return null
+  }
+}
+
+/** The wall clock `fmt`'s zone shows at instant `ms`, read back as if it were UTC. */
+function wallAsUtc(fmt: Intl.DateTimeFormat, ms: number): number {
+  const p: Record<string, number> = {}
+  for (const x of fmt.formatToParts(ms)) if (x.type !== 'literal') p[x.type] = Number(x.value)
+  return Date.UTC(p.year!, p.month! - 1, p.day!, p.hour! % 24, p.minute!, p.second!)
+}
+
+/** The instant of a wall-clock time in `fmt`'s zone, or in the daemon's local time without one. */
+function wallToMs(
+  fmt: Intl.DateTimeFormat | null,
+  y: number,
+  mo: number,
+  d: number,
+  h: number,
+  mi: number,
+): number {
+  if (!fmt) return new Date(y, mo, d, h, mi, 0, 0).getTime()
+  const guess = Date.UTC(y, mo, d, h, mi)
+  // Take the zone's offset at the guess, then again at the corrected instant: the second pass
+  // fixes a guess that landed on the other side of a DST change from the real answer.
+  let ms = guess - (wallAsUtc(fmt, guess) - guess)
+  ms = guess - (wallAsUtc(fmt, ms) - ms)
+  return ms
+}
+
+/**
+ * Best-effort parse of a reset string into an ISO timestamp; null if it can't be parsed. Shapes:
+ * `/usage`'s "Jul 14, 2:59am" and the CLI limit notice's "4am" / "9:10am (America/Chicago)",
+ * minutes optional ("3am"), a leading "resets" tolerated. The CLI prints the reset in the ACCOUNT
+ * OWNER's zone, which need not be the daemon's, so a parenthesised IANA zone is honoured (DST
+ * included); without one, or with a zone this runtime doesn't know, it is the daemon's local time.
+ * With a date, the year is inferred from `now` and a result more than a day in the past (a reset
+ * across the year boundary) rolls forward a year. Time only means the next such clock time strictly
+ * after `now`. Pure + tested so the monitor and CliMayte schedule against it, not a fuzzy Date.parse.
+ */
+export function parseResetTime(resets: string, now = new Date()): string | null {
+  if (!resets) return null
+  const s = resets.trim()
+  const g = (RESET_DATED.exec(s) ?? RESET_TIME_ONLY.exec(s))?.groups
+  if (!g) return null
+  // A bare number ("Jul 14, 2026") is not a time: it needs minutes or am/pm.
+  if (g.min === undefined && !g.ap) return null
+  let hour = Number(g.hour)
+  const min = Number(g.min ?? 0)
+  const ampm = g.ap?.toLowerCase()
+  if (ampm === 'pm' && hour < 12) hour += 12
+  if (ampm === 'am' && hour === 12) hour = 0
+  const fmt = zoneFormatter(g.tz)
+  // Today's date where the reset is measured (the named zone, else local).
+  const today = fmt ? new Date(wallAsUtc(fmt, now.getTime())) : null
+  const year = today ? today.getUTCFullYear() : now.getFullYear()
+  let ms: number
+  if (g.mon !== undefined) {
+    const mon = MONTHS[g.mon.toLowerCase()]
+    if (mon === undefined) return null
+    const day = Number(g.day)
+    ms = wallToMs(fmt, year, mon, day, hour, min)
+    // A reset that reads as "in the past" by more than a day is really next year (Dec→Jan wrap).
+    if (ms < now.getTime() - 24 * 3600 * 1000) ms = wallToMs(fmt, year + 1, mon, day, hour, min)
+  } else {
+    const mon = today ? today.getUTCMonth() : now.getMonth()
+    const day = today ? today.getUTCDate() : now.getDate()
+    ms = wallToMs(fmt, year, mon, day, hour, min)
+    if (ms <= now.getTime()) ms = wallToMs(fmt, year, mon, day + 1, hour, min)
+  }
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString()
+}
+
+// --- live check: spawn `claude -p "/usage"` -----------------------------------
+
+/**
+ * The OAuth scope string `claude` must see alongside an injected CLAUDE_CODE_OAUTH_TOKEN.
+ *
+ * THIS IS LOAD-BEARING (verified 2026-07-14): without CLAUDE_CODE_OAUTH_SCOPES in the child env,
+ * `claude -p "/usage"` does NOT treat the injected token as usage-capable — it silently stops
+ * handling `/usage` as a slash command, runs it as a plain prompt, and prints a ~200-byte cost
+ * summary with NO percentages (exit 0, no error). It only "worked" during development because the
+ * daemon happened to inherit this var from a Claude Code session; a tray launched from Explorer has
+ * a clean env and never does. A PARTIAL scope string (e.g. just `user:inference`) is NOT enough —
+ * the full grant scope list is required.
+ */
+export const DEFAULT_OAUTH_SCOPES =
+  'user:inference user:file_upload user:profile user:sessions:claude_code'
+
+/** Auth to inject for the probe (the SAME shape dispatch-runner.ts reads from the accounts table). */
+export type UsageAuth = {
+  authType: 'oauth_token' | 'api_key'
+  secret: string
+  /** Scopes of the grant the token came from; defaults to DEFAULT_OAUTH_SCOPES. See above. */
+  scopes?: string
+}
+
+export type UsageCheckOpts = {
+  /** Display label stamped onto the snapshot — `/usage` text never names the account. */
+  account?: string | null
+  /** CLAUDE_CONFIG_DIR to point the probe at (a dir `/login`'d once); the fallback path per §7-Q1. */
+  configDir?: string
+  /** A dispatch-account credential to inject (the primary path — no separate CLI login needed). */
+  auth?: UsageAuth
+  /** Hard cap on the probe (default 60s) — a hung `claude` never wedges the daemon. */
+  timeoutMs?: number
+  /** Skip the fast direct-API path and always spawn `claude`. Escape hatch + used by tests. */
+  forceCli?: boolean
+  /** Ignore the CLI-spawn cooldown below. For a human pressing "check now", never for a timer. */
+  bypassCooldown?: boolean
+}
+
+/**
+ * Minimum gap between CLI-SPAWN probes for the same label.
+ *
+ * ⛔ WHY THIS EXISTS - a failing fast path must never become a process mill. The API read is
+ * ~300ms and spawns nothing; the CLI fallback boots the ~250 MB binary for ~9s. Fine as a
+ * fallback, ruinous on a timer: the monitor ticks every 30 SECONDS (MONITOR_POLL_MS), so the
+ * moment the fast path stops working, every tick becomes a CLI boot, indefinitely.
+ *
+ * That is not hypothetical. Measured on MPC-HELL 2026-09-07: the ambient config dir's OAuth
+ * token had `expiresAt: 0` - permanently expired - so the API read 401'd on EVERY call and the
+ * daemon had been booting a Claude CLI every ~30s for as long as that credential sat there. The
+ * owner saw it as "something is mass spawning CLI", and nothing in the logs named it, because
+ * each spawn is individually correct behaviour.
+ *
+ * The cooldown is per label, so one broken account cannot silence the others, and it returns the
+ * LAST CACHED READING rather than a fresh no-data: a poller asking "what is the quota" gets the
+ * last true answer instead of a false "no data", which callers must not read as 0%.
+ */
+const CLI_PROBE_COOLDOWN_MS = 5 * 60_000
+const lastCliProbeAt = new Map<string, number>()
+const lastCliSnapshot = new Map<string, UsageSnapshot>()
+
+/** Test seam: forget every cooldown stamp and remembered reading. */
+export function resetCliProbeCooldowns(): void {
+  lastCliProbeAt.clear()
+  lastCliSnapshot.clear()
+}
+
+/**
+ * May a CLI probe run for `key` right now? Exported so the rule can be tested directly - the
+ * spawn around it cannot be exercised in a unit test, and an untested rate limiter is how the
+ * thing it prevents comes back.
+ *
+ * Returns the remembered reading when it refuses, so a caller always has the best answer
+ * available rather than a hole. `null` there means "refused and nothing remembered yet".
+ */
+export function cliProbeGate(
+  key: string,
+  now: number,
+): { allow: boolean; cached: UsageSnapshot | null } {
+  const last = lastCliProbeAt.get(key)
+  if (last !== undefined && now - last < CLI_PROBE_COOLDOWN_MS) {
+    return { allow: false, cached: lastCliSnapshot.get(key) ?? null }
+  }
+  return { allow: true, cached: null }
+}
+
+/** Stamp that a CLI probe just ran for `key`, and remember its reading if it said anything. */
+export function rememberCliProbe(key: string, now: number, snap?: UsageSnapshot): void {
+  lastCliProbeAt.set(key, now)
+  if (snap && !isNoData(snap)) lastCliSnapshot.set(key, snap)
+}
+
+/*
+ * Read one account's remaining quota.
+ *
+ * TWO PATHS, fast first:
+ *
+ *  1. **Direct API** (usage-api.ts) — a plain `GET /api/oauth/usage` with the OAuth access token.
+ *     This is the same endpoint the CLI's own `/usage` screen reads. ~300ms, spawns nothing, and
+ *     returns richer data (ISO reset timestamps + server-computed severity). Used whenever we can
+ *     get an OAuth token: one injected via `auth`, or one read from `configDir`'s `.credentials.json`.
+ *
+ *  2. **CLI spawn** (the original path) — `claude -p "/usage"`, parsed from text. ~9s, because it
+ *     boots the whole ~250 MB Claude Code binary. Still the fallback, and still the ONLY path that
+ *     works when the API rejects our token (expired: the CLI refreshes its own credentials, we
+ *     deliberately don't) or when auth is an API key rather than an OAuth token.
+ *
+ * Windows-safe: the binary is spawned DIRECTLY with an args array (never through Git Bash — MSYS
+ * would mangle the `/usage` arg into a path), reusing config.ts `resolveClaudeExe()` exactly as
+ * dispatch does. Auth is env-injected the same way dispatch-runner.ts does it. Value-blind on both
+ * paths: only the parsed numbers are returned, never a token. A spawn failure / timeout / empty
+ * output yields an all-null snapshot (`isNoData` true) — callers must treat that as "no data",
+ * never as "0% used".
+ */
+/**
+ * A directory that exists only so the `/usage` probe has somewhere harmless to be.
+ *
+ * Created lazily and never written to by us — the CLI is what puts a transcript under the matching
+ * `~/.claude/projects/<encoded-cwd>` folder. Returns null if it cannot be created, in which case the
+ * probe simply runs where it always did (a stub transcript is worth far less than a failed read).
+ */
+let probeCwdCache: string | null | undefined
+export function usageProbeCwd(): string | null {
+  if (probeCwdCache !== undefined) return probeCwdCache
+  const dir = join(DATA_DIR, 'usage-probe')
+  try {
+    mkdirSync(dir, { recursive: true })
+    probeCwdCache = dir
+  } catch {
+    probeCwdCache = null
+  }
+  return probeCwdCache
+}
+
+/**
+ * Delete the transcripts the probe leaves behind.
+ *
+ * Safe by construction: it only ever touches the ONE project folder whose key encodes our own
+ * scratch directory, so it cannot reach a real session even if the encoding changes underneath us
+ * (a changed key just means the folder is not found and nothing is deleted). Best-effort — a file
+ * the CLI still holds open is skipped and collected on the next sweep.
+ */
+export function pruneUsageProbeTranscripts(): number {
+  const dir = usageProbeCwd()
+  if (!dir) return 0
+  const folder = join(CLAUDE_PROJECTS_ROOT, encodeCwdKey(dir))
+  let removed = 0
+  try {
+    for (const name of readdirSync(folder)) {
+      if (!name.endsWith('.jsonl')) continue
+      try {
+        rmSync(join(folder, name))
+        removed++
+      } catch {
+        // still locked by the CLI; the next sweep gets it
+      }
+    }
+  } catch {
+    // folder does not exist yet — nothing has been probed from there
+  }
+  return removed
+}
+
+/**
+ * The last direct-API failure per account label, so a no-data result can say WHAT went wrong
+ * instead of "check failed".
+ *
+ * The API read is the path that normally succeeds; when it stops, the CLI fallback almost always
+ * fails too (same rejected credential), and the user is told nothing useful. `status` is the HTTP
+ * status - 401 the token was refused, 429 rate-limited, 0 the request never completed.
+ */
+const lastApiFailure = new Map<string, { status: number; error: string; retryAfterSec?: number }>()
+
+/** The last API failure recorded for `label`, or null. Cleared as soon as that label reads OK. */
+export function lastUsageApiFailure(
+  label: string | null,
+): { status: number; error: string; retryAfterSec?: number } | null {
+  return lastApiFailure.get(label ?? '(ambient)') ?? null
+}
+
+/**
+ * Server-issued backoff per label: the earliest instant the usage API may be called again, and the
+ * 429 body to keep reporting until then.
+ *
+ * ⛔ WHY THIS EXISTS - a rate limit you keep hitting never lifts. `/api/oauth/usage` limits per
+ * account, and when it says 429 it hands back a `Retry-After` measured in TENS OF MINUTES. That is
+ * the server telling us when to come back; a request made before then cannot succeed, and on a
+ * rolling/penalty limiter each early hit re-arms the very window we are waiting out. The fleet has
+ * several independent pollers (the 30-min sweep, the reset watcher, the resume monitor, the open
+ * web app), so an account that trips a 429 was being re-hit every ~30s and could NEVER recover -
+ * its usage read as a permanent "rate limited", which is exactly the "not reading usage for the
+ * active accounts" the owner saw (2026-09-11). Measured that day: accounts last read fine ~2h
+ * earlier sat 429 the whole time while every poller kept knocking.
+ *
+ * Honored at the single chokepoint (checkUsage) so every caller backs off together, and it defers
+ * to the SERVER's own number - we are not inventing a limit, we are obeying the one it stated.
+ *
+ * ⛔ KEYED BY LABEL *AND* TOKEN, NOT BY LABEL ALONE. One desktop profile holds several grants, and a
+ * REVOKED one answers this endpoint 429 with an hour's Retry-After while the live grant beside it
+ * answers 200 (measured 2026-09-14, instance #3). Keyed per label, the dead grant's window silenced
+ * the live one too, so a working account could not read its usage at all. The token part is a
+ * digest (tokenFingerprint), never the token.
+ */
+const apiBackoffUntil = new Map<string, Map<string, { until: number; error: string }>>()
+
+/** A token's identity inside this process: a short digest, so no map ever holds a credential. */
+function tokenFingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16)
+}
+
+/** Milliseconds until `label`'s usage API backoff lifts, or 0 if it may be called now - the LONGEST
+ *  window across the label's tokens. Exported so the rule is testable without a live endpoint - an
+ *  untested backoff is how the mill comes back. */
+export function usageApiBackoffMsRemaining(label: string | null, now = Date.now()): number {
+  let remaining = 0
+  for (const entry of apiBackoffUntil.get(label ?? '(ambient)')?.values() ?? []) {
+    remaining = Math.max(remaining, entry.until - now)
+  }
+  return remaining
+}
+
+/** Test seam: forget every recorded API failure and server-issued backoff. */
+export function resetUsageApiBackoff(): void {
+  lastApiFailure.clear()
+  apiBackoffUntil.clear()
+}
+
+/**
+ * The fast path: a direct OAuth-token API read, whenever we can lay hands on a token. Returns a
+ * snapshot when this path has a final answer (success, an obeyed backoff, or an injected token
+ * whose failure must not fall back to the CLI); returns `undefined` when `checkUsage` should
+ * continue on to the CLI spawn (no token, `forceCli`, or a config-dir token that failed but may
+ * still succeed by refreshing its own login).
+ */
+async function fastApiUsageRead(
+  opts: UsageCheckOpts,
+  label: string | null,
+): Promise<UsageSnapshot | undefined> {
+  // See CLI_PROBE_COOLDOWN_MS / forceCli: this flag means "skip the API read", checked here at the
+  // single chokepoint so no caller can spawn around it by accident.
+  if (opts.forceCli) return undefined
+
+  // An API key is not accepted by the OAuth usage endpoint, so only an oauth_token qualifies. A
+  // CLI config dir keeps its token in PLAIN JSON, so a `/login`'d dir is usable directly.
+  const injected = opts.auth && opts.auth.authType === 'oauth_token' ? opts.auth.secret : null
+  const fromDir = !injected && opts.configDir ? resolveCliConfigDirToken(opts.configDir) : null
+  const token = injected ?? fromDir?.token ?? null
+  if (!token) return undefined
+
+  const labelKey = label ?? '(ambient)'
+  const fingerprint = tokenFingerprint(token)
+
+  // ⛔ OBEY A 429 WE ALREADY HAVE. If the server told this label to come back later and that
+  // window has not lifted, do NOT call the endpoint again - it cannot succeed, and re-hitting a
+  // rolling limiter is what keeps the account stuck at "rate limited" forever (see
+  // apiBackoffUntil). Re-assert the failure with the REMAINING seconds so the UI still reads
+  // "rate_limited, retry in N min" and counts down, and hand back no-data (the caller serves
+  // the last cached reading, never a fresh "0%"). Skipping the fetch here is the whole fix.
+  const backoff = apiBackoffUntil.get(labelKey)?.get(fingerprint)
+  const nowMs = Date.now()
+  if (backoff && backoff.until > nowMs) {
+    lastApiFailure.set(labelKey, {
+      status: 429,
+      error: backoff.error,
+      retryAfterSec: Math.max(1, Math.ceil((backoff.until - nowMs) / 1000)),
+    })
+    return parseUsageOutput('', label)
+  }
+
+  const res = await fetchUsageApi({ token, account: label, timeoutMs: opts.timeoutMs })
+  // A good read clears this token's backoff: the limit has lifted, resume normal polling.
+  if (res.ok) {
+    apiBackoffUntil.get(labelKey)?.delete(fingerprint)
+    return res.snapshot
+  }
+
+  // Not fatal for a CONFIG-DIR token: its CLI can still succeed by refreshing its own login (a
+  // 401 here just means "this token can't read usage"). An injected token stops below.
+  //
+  // ⛔ BUT RECORD WHY. Discarding this was the single thing that made every usage problem
+  // undiagnosable: whatever the endpoint said - 401 rejected, 429 rate-limited, 0 no network -
+  // the user saw the same "Claude returned no usage numbers for this instance", and so did
+  // anyone reading the code. Kept per label (not returned) so the snapshot type and every
+  // caller stay unchanged; usage-service reads it when it builds the no-data result.
+  lastApiFailure.set(labelKey, {
+    status: res.status,
+    error: res.error,
+    ...(res.retryAfterSec === undefined ? {} : { retryAfterSec: res.retryAfterSec }),
+  })
+
+  // ⛔ A 429 IS NOT A REASON TO SPAWN. The CLI would present the same credential to the same
+  // rate-limited endpoint and fail identically, ~9s and a process later - and on a fleet that
+  // turns one rate limit into a burst of doomed processes. Answer no-data now; the caller
+  // reports it as rate-limited (usage-service) instead of pretending the account is broken.
+  //
+  // AND ARM THE BACKOFF so the NEXT poll skips this endpoint until the window lifts. The server
+  // usually names the delay; when it does not, wait a conservative minute rather than resume the
+  // 30-second knocking that turns one 429 into a stuck one.
+  if (res.status === 429) {
+    const waitSec = res.retryAfterSec && res.retryAfterSec > 0 ? res.retryAfterSec : 60
+    const windows = apiBackoffUntil.get(labelKey) ?? new Map()
+    windows.set(fingerprint, { until: Date.now() + waitSec * 1000, error: res.error })
+    apiBackoffUntil.set(labelKey, windows)
+    return parseUsageOutput('', label)
+  }
+
+  // ⛔ AN *INJECTED* TOKEN NEVER FALLS BACK TO THE CLI, WHATEVER THE API SAID.
+  //
+  // The CLI's `/usage` screen is this same GET with this same token (see usage-api.ts), so it
+  // cannot succeed where the read above failed - and when the spawn DID print numbers, they were
+  // some other login's. Measured in usage-history.json: on 2026-09-11 at 20:00 ten desktop
+  // instances whose API reads had failed each "read" 86% weekly with no reset instant (what
+  // 5claude's and test9's own API reads said that hour), and at 21:00 seven of them "read" 20%
+  // resetting Sep 18 (another_meh's, which its own API read had reported all afternoon). Those
+  // seven were still showing that 20% as their own on 2026-09-14. No reading beats another
+  // account's reading. A config-dir token still falls through, because that CLI owns its login
+  // and can refresh it; so does an API key, which this endpoint refuses outright.
+  if (injected) return parseUsageOutput('', label)
+  return undefined
+}
+
+/** A snapshot the cooldown gate wants returned immediately, or `undefined` to let the probe run. */
+function cooldownGateResult(
+  opts: UsageCheckOpts,
+  cooldownKey: string,
+  label: string | null,
+): UsageSnapshot | undefined {
+  if (opts.bypassCooldown || opts.auth) return undefined
+  const gate = cliProbeGate(cooldownKey, Date.now())
+  if (gate.allow) return undefined
+  // The last real reading, not a fresh no-data: callers are told never to read no-data as 0%,
+  // and a stale-but-true number is strictly better information than none.
+  return gate.cached ?? parseUsageOutput('', label)
+}
+
+/** The spawn environment for the `/usage` probe: ambient env, minus any auth we override. Only
+ *  overrides the ambient auth when we actually have a credential to inject (mirrors
+ *  dispatch-runner: clear all three inherited auth vars, then set the one for this account). */
+function usageProbeEnv(opts: UsageCheckOpts): Record<string, string> {
+  const env: Record<string, string> = { ...(process.env as Record<string, string>) }
+  if (opts.auth) {
+    delete env.ANTHROPIC_API_KEY
+    delete env.ANTHROPIC_AUTH_TOKEN
+    delete env.CLAUDE_CODE_OAUTH_TOKEN
+    if (opts.auth.authType === 'api_key') {
+      env.ANTHROPIC_API_KEY = opts.auth.secret
+    } else {
+      env.CLAUDE_CODE_OAUTH_TOKEN = opts.auth.secret
+      // MUST accompany the token, or `/usage` silently degrades to a cost summary — see
+      // DEFAULT_OAUTH_SCOPES. Set it explicitly so the probe never depends on the daemon's
+      // ambient environment (a tray launched from Explorer has none of these vars).
+      env.CLAUDE_CODE_OAUTH_SCOPES = opts.auth.scopes?.trim() || DEFAULT_OAUTH_SCOPES
+    }
+  }
+  if (opts.configDir) env.CLAUDE_CONFIG_DIR = opts.configDir
+  return pinHaikuModel(env) // never Haiku 4.5 behind the alias (core/haiku-pin.ts)
+}
+
+/**
+ * The fallback: spawn `claude -p "/usage"` and parse the text screen.
+ *
+ * Run in a scratch directory of our own: `claude -p` opens a real session and writes a real
+ * transcript keyed by the CWD it ran in, and with the probe inheriting the daemon's cwd, every
+ * quota check filed a ~3 KB stub into whatever project folder that mapped to. Quota is
+ * account-scoped, not directory-scoped, so where this runs makes no difference to what it reads;
+ * pointing it here keeps every stub in one folder we own and can sweep (pruneUsageProbeTranscripts)
+ * instead of scattering them through real work.
+ */
+async function spawnUsageProbe(
+  opts: UsageCheckOpts,
+  label: string | null,
+  cooldownKey: string,
+): Promise<UsageSnapshot> {
+  const env = usageProbeEnv(opts)
+  const probeCwd = usageProbeCwd()
+  if (probeCwd) env.PWD = probeCwd
+
+  // Bounded through the one bounded spawn (swept 2026-09-18): the old timer killed the process
+  // but the await sat on the DRAIN, which ends when the PIPE closes, not when the child does.
+  // It is spawned hidden (windowsHide matters more here than at the other spawn sites:
+  // resolveClaudeExe() falls back to `claude.cmd` when the packaged claude.exe is absent, a .cmd
+  // runs THROUGH cmd.exe, and this refresh is periodic, so an unhidden spawn is a CMD window that
+  // flashes on its own schedule).
+  // ⛔ NO MCP SERVERS - see CLAUDE_PROBE_NO_MCP_ARGS in config.ts. `/usage` reads a number off a
+  // screen and uses no tools, so booting the machine's whole MCP roster to ask it was 7 child
+  // processes per probe, on a periodic schedule, for nothing.
+  // On its own spawn-worker lane (2026-10-11): starting claude.exe held the daemon's thread for
+  // 2.2 s at a time (STALL profiles, spawnUsageProbe), and on the shared lane a 250 MB start would
+  // queue every netstat and taskkill capture behind it.
+  let out = ''
+  try {
+    const r = await spawnCaptured(
+      [resolveClaudeExe(), '-p', '/usage', ...CLAUDE_PROBE_NO_MCP_ARGS],
+      {
+        env,
+        cwd: probeCwd ?? undefined,
+        timeoutMs: opts.timeoutMs ?? 60_000,
+        wantStderr: false,
+        lane: 'usage-probe',
+      },
+    )
+    // Never even launched: no data, and no cooldown started for a probe that did not run.
+    if (r.code === null && !r.timedOut && !r.stdout) return parseUsageOutput('', label)
+    out = r.stdout
+  } finally {
+    // The probe has exited, so its transcript is closed and safe to drop. Swept every time rather
+    // than on a schedule: the stub has no value the moment the numbers above are parsed, and the
+    // cost is one readdir of a folder that holds at most a handful of files.
+    pruneUsageProbeTranscripts()
+  }
+  const snapshot = parseUsageOutput(out, label)
+  // Remember only a reading that actually says something. Caching a no-data result would make the
+  // cooldown hand back "no data" for five minutes after one hiccup, which reads like a broken
+  // account rather than a skipped probe.
+  rememberCliProbe(cooldownKey, Date.now(), snapshot)
+  return snapshot
+}
+
+export async function checkUsage(opts: UsageCheckOpts = {}): Promise<UsageSnapshot> {
+  const label = opts.account ?? null
+
+  // ⛔ THE RECORD DESCRIBES *THIS* ATTEMPT, SO CLEAR IT FIRST.
+  //
+  // It used to be cleared only on success, which made it a permanent verdict: one 429 recorded for
+  // a label stuck to that label forever, and every LATER no-data result - including "this instance
+  // has no login at all", which never even reaches the network - was reported as a rate limit.
+  // The owner caught exactly that (2026-09-07): an account he had never signed in was being
+  // described as rate-limited, and the rate limit outranked the truth. A stale diagnosis is worse
+  // than none, because it is confidently specific and sends you to fix the wrong thing.
+  lastApiFailure.delete(label ?? '(ambient)')
+
+  // --- fast path: the direct API read, whenever we can lay hands on an OAuth token ---------------
+  const fastResult = await fastApiUsageRead(opts, label)
+  if (fastResult !== undefined) return fastResult
+
+  // ⛔ AND THE INJECTED-TOKEN RULE IS CHECKED HERE TOO, WHERE NOTHING CAN GO ROUND IT. The fast
+  // path above skips its own read when `forceCli` is set, so `{ forceCli: true, auth: <oauth
+  // token> }` - a combination the options type allows and no caller makes today - would land on
+  // the spawn, which is the exact path that printed another account's numbers on 2026-09-11. An
+  // invariant stated in capitals has to be enforced on every input the signature permits, not on
+  // the inputs the current callers happen to pass.
+  if (opts.auth?.authType === 'oauth_token') return parseUsageOutput('', label)
+
+  // --- futility gate: never spawn a probe that cannot possibly authenticate ----------------------
+  // Cheaper and more honest than rate-limiting it. A config dir whose access AND refresh tokens are
+  // both expired gives the CLI nothing to work with, so the spawn burns ~9s and a process to return
+  // the same all-null snapshot forever. See cliConfigDirCredentialState for the incident behind it:
+  // a leftover ambient login did exactly this, every 30 seconds, for weeks. An injected credential
+  // bypasses the check - that is a token we brought ourselves, not one the dir has to supply.
+  if (!opts.auth && opts.configDir && cliConfigDirCredentialState(opts.configDir) === 'dead') {
+    return parseUsageOutput('', label)
+  }
+
+  // --- cooldown gate: a broken fast path must not turn a 30s poller into a CLI mill ---------------
+  // ⛔ THE COOLDOWN IS FOR THE CREDENTIAL-LESS PATH ONLY. An `auth` here is a token WE resolved for
+  // a specific account - a desktop instance's decrypted grant, a dispatch account's secret - so the
+  // spawn has a real credential and a real chance of returning numbers. Rate-limiting those turns a
+  // human pressing "check usage" twice into "Claude returned no usage numbers for this instance",
+  // which is a lie about the account rather than a message about the button (reported by the owner,
+  // 2026-09-07, and caused by the first cut of this cooldown). The mill it exists to stop was the
+  // AMBIENT probe - no injected credential, nothing to authenticate with, spawning every 30s
+  // forever - and that is exactly the case this still covers.
+  const cooldownKey = label ?? opts.configDir ?? '(ambient)'
+  const cooldownResult = cooldownGateResult(opts, cooldownKey, label)
+  if (cooldownResult !== undefined) return cooldownResult
+  if (!opts.auth) rememberCliProbe(cooldownKey, Date.now())
+
+  return spawnUsageProbe(opts, label, cooldownKey)
+}
+
+// Re-export the small cache API so existing imports keep working. Its implementation lives in a
+// dependency-light module that the instance-only daemon can load without the live probe graph.
+export { allCachedUsage, dropCachedUsage, getCachedUsage, setCachedUsage } from './usage-cache'

@@ -1,0 +1,416 @@
+// What the transcript lays out, after nesting: runs of tool calls fold into one status row
+// ("Ran 3 commands, read screen-half.png"), as the real Claude Code desktop does. Pure: no Vue, no DOM.
+import { CONTINUED_LINE, type TranscriptItem } from '@shared/protocol'
+import { formatElapsed, isSendFileTool, parseBrowserCall, parseMcpName, shortPath, toolFamily } from './tools'
+import { toolDiff } from './diff'
+
+export type ToolItem = Extract<TranscriptItem, { kind: 'tool_use' }>
+export type TaskItem = Extract<TranscriptItem, { kind: 'task' }>
+export type ThinkingItem = Extract<TranscriptItem, { kind: 'thinking' }>
+/** One step of a tool run: a tool call, or a thinking block that folds into the run around it. */
+export type RunItem = ToolItem | ThinkingItem
+
+const isTool = (it: RunItem): it is ToolItem => it.kind === 'tool_use'
+const isThinking = (it: RunItem): it is ThinkingItem => it.kind === 'thinking'
+
+/** The user message that started a turn: what Retry under its finished reply sends again. */
+export interface TurnPrompt {
+  /** The message's item id (Undo goes back to before it). */
+  id: string
+  text: string
+  images: Extract<TranscriptItem, { kind: 'user' }>['images']
+}
+
+// One prompt object per user message, so a row's prompt keeps its identity while the list is laid out again.
+const prompts = new WeakMap<TranscriptItem, TurnPrompt>()
+
+export type DisplayRow =
+  | { id: string; kind: 'item'; item: TranscriptItem; endOfTurn: boolean; prompt?: TurnPrompt | null }
+  /** A tool run, its steps in order (tool calls and the thinking blocks folded in); `tasks` are background tasks that settled inside it ("finished 2 background tasks"). */
+  | { id: string; kind: 'tools'; items: RunItem[]; tasks?: TaskItem[] }
+  /** A run of the AI's browser calls: one Browser card showing the latest (its own card, never folded into a tool run). */
+  | { id: string; kind: 'browser'; items: ToolItem[] }
+  /** Settled background tasks in a row: "18 background commands completed". */
+  | { id: string; kind: 'tasks'; items: TaskItem[] }
+
+/** Sub-agent calls keep their own card and handed-over files their own row; every other tool call, MCP ones included, folds into a status row. */
+function folds(it: TranscriptItem): it is ToolItem {
+  return it.kind === 'tool_use' && toolFamily(it.name) !== 'agent' && !isSendFileTool(it.name) && toolFamily(it.name, it.input) !== 'browser' && toolFamily(it.name) !== 'redesign'
+}
+
+/** The browser row of this profile in the current turn (after the last user message or note), if any. */
+function openBrowserRun(out: DisplayRow[], profile: string): Extract<DisplayRow, { kind: 'browser' }> | null {
+  for (let i = out.length - 1; i >= 0; i--) {
+    const r = out[i]
+    if (r.kind === 'item' && (r.item.kind === 'user' || r.item.kind === 'note')) return null
+    if (r.kind === 'browser') {
+      const f = r.items[0]
+      if (parseBrowserCall(f.name, f.input).profile === profile) return r
+    }
+  }
+  return null
+}
+
+/** Status rows: a folded tool run, settled tasks, a thinking block, a finished-turn line. They sit tighter than prose. */
+export function isStatusRow(r: DisplayRow): boolean {
+  return r.kind === 'tools' || r.kind === 'tasks' || (r.kind === 'item' && (r.item.kind === 'thinking' || r.item.kind === 'result' || r.item.kind === 'system'))
+}
+
+/**
+ * How a background task shows in the flow, as the real app does: a workflow that runs, or settled in the
+ * last turn, is its own card; any other running task is left to the running-tasks row under the
+ * transcript; settled ones fold into the tool run they sit in, else into one muted line. A workflow that
+ * finished in an earlier turn is a muted line (owner, 2026-10-05: "the chat literally shows ... two
+ * running somethings").
+ */
+function taskPlace(it: TaskItem, lastTurn: boolean): 'card' | 'hidden' | 'settled' {
+  if (it.taskKind === 'workflow' && (it.status === 'running' || lastTurn)) return 'card'
+  return it.status === 'running' ? 'hidden' : 'settled'
+}
+
+/**
+ * Consecutive tool calls become one 'tools' row (id `tools:<first id>`, stable while the run grows); the thinking blocks
+ * between them join it as its steps, and a lone thinking block keeps its own row.
+ * Background tasks are placed by taskPlace. The last turn starts at the latest of the last user message
+ * and the last settle time (ts + durationMs) of a task: each settle woke the session with a
+ * <task-notification>, which starts a new turn. A settled workflow with a settle time is in the last
+ * turn when it settled at or after that start; one without keeps the index rule (after the last user
+ * message). The last assistant text before the next user message (or the end) is marked endOfTurn: it
+ * carries the message actions toolbar, unless it is still streaming.
+ */
+function settledAt(it: TranscriptItem): number | undefined {
+  return it.kind === 'task' && it.status !== 'running' && it.durationMs !== undefined ? it.ts + it.durationMs : undefined
+}
+
+function turnPromptOf(it: Extract<TranscriptItem, { kind: 'user' }>): TurnPrompt {
+  let p = prompts.get(it)
+  if (!p || p.text !== it.text || p.images !== it.images) prompts.set(it, (p = { id: it.id, text: it.text, images: it.images }))
+  return p
+}
+
+/** The index of the last message (a program's note starts a turn as a message does) and when the last turn started. */
+function turnBounds(items: TranscriptItem[]): { lastUser: number; turnStart: number } {
+  let lastUser = -1
+  let turnStart = -Infinity
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.kind === 'user' || it.kind === 'note') {
+      lastUser = i
+      turnStart = Math.max(turnStart, it.ts)
+    }
+    const s = settledAt(it)
+    if (s !== undefined) turnStart = Math.max(turnStart, s)
+  }
+  return { lastUser, turnStart }
+}
+
+function placeBrowser(out: DisplayRow[], it: ToolItem): void {
+  // One card per browser per turn: a run of the same profile's calls joins across other rows, and the card moves down to its newest call.
+  const run = openBrowserRun(out, parseBrowserCall(it.name, it.input).profile)
+  if (!run) {
+    out.push({ id: `browser:${it.id}`, kind: 'browser', items: [it] })
+    return
+  }
+  out.splice(out.indexOf(run), 1)
+  run.items.push(it)
+  out.push(run)
+}
+
+function placeTask(out: DisplayRow[], it: TaskItem, i: number, bounds: { lastUser: number; turnStart: number }): void {
+  const last = out[out.length - 1]
+  const s = settledAt(it)
+  const place = taskPlace(it, s !== undefined ? s >= bounds.turnStart : i > bounds.lastUser)
+  if (place === 'hidden') return
+  if (place === 'card') out.push({ id: it.id, kind: 'item', item: it, endOfTurn: false })
+  else if (last?.kind === 'tools') (last.tasks ??= []).push(it)
+  else if (last?.kind === 'tasks') last.items.push(it)
+  else out.push({ id: `tasks:${it.id}`, kind: 'tasks', items: [it] })
+}
+
+// A handoff's continuation right after CliMayte's move line says nothing that line has not (owner,
+// 2026-10-05: only the move line). The move line's id is `moved:<ts>` (server chat-manager systemLine).
+function isHandoffContinuation(it: TranscriptItem, last: DisplayRow | undefined): boolean {
+  return it.kind === 'system' && it.text.startsWith(CONTINUED_LINE) && last?.kind === 'item' && last.item.id.startsWith('moved:')
+}
+
+// A tool call joins the run before it. A thinking block right before it (its own row until now) opens the run,
+// so the run's first step is that block; with thinking not folded, the block stays its own row and breaks the run.
+function joinRun(out: DisplayRow[], it: ToolItem, foldThinking: boolean): void {
+  const last = out[out.length - 1]
+  if (last?.kind === 'tools') last.items.push(it)
+  else if (foldThinking && last?.kind === 'item' && last.item.kind === 'thinking') out.splice(out.length - 1, 1, { id: `tools:${last.id}`, kind: 'tools', items: [last.item, it] })
+  else out.push({ id: `tools:${it.id}`, kind: 'tools', items: [it] })
+}
+
+function placeRow(out: DisplayRow[], it: TranscriptItem, i: number, bounds: { lastUser: number; turnStart: number }, prompt: TurnPrompt | null, foldThinking: boolean): void {
+  const last = out[out.length - 1]
+  if (it.kind === 'tool_use' && toolFamily(it.name, it.input) === 'browser') placeBrowser(out, it)
+  else if (folds(it)) joinRun(out, it, foldThinking)
+  // A thinking block alone stays a row of its own: only one that follows a tool run joins it.
+  else if (it.kind === 'thinking' && foldThinking && last?.kind === 'tools') last.items.push(it)
+  else if (it.kind === 'task') placeTask(out, it, i, bounds)
+  else out.push(it.kind === 'assistant_text' ? { id: it.id, kind: 'item', item: it, endOfTurn: false, prompt } : { id: it.id, kind: 'item', item: it, endOfTurn: false })
+}
+
+/**
+ * Rows of a transcript. `foldThinking` (default) lets each thinking block join the tool run around it; off, every block is
+ * its own row. `running`: the last turn is still going (the chat works or waits on the person), so no reply of it ends it.
+ */
+export function groupRows(items: TranscriptItem[], foldThinking = true, running = false): DisplayRow[] {
+  const out: DisplayRow[] = []
+  const bounds = turnBounds(items)
+  let prompt: TurnPrompt | null = null
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.kind === 'user' && !it.parentToolUseId && !it.queued) prompt = turnPromptOf(it)
+    // A reply to a note has no prompt of the person's to send again.
+    if (it.kind === 'note') prompt = null
+    if (isHandoffContinuation(it, out[out.length - 1])) continue
+    placeRow(out, it, i, bounds, prompt, foldThinking)
+  }
+  // A step after the turn's last reply (a tool run, a browser card, a sub-agent, a thinking block) means the turn is still
+  // going, so that reply is not its end and keeps no room for the end-of-turn actions (owner, 2026-10-08: a reply over a
+  // running command stood 28px further off than any other row). A result row closes the turn: steps before it do not count.
+  let seenText = false
+  let stepAfter = running
+  let closed = false
+  for (let i = out.length - 1; i >= 0; i--) {
+    const r = out[i]
+    if (r.kind === 'tools' || r.kind === 'browser') {
+      stepAfter ||= !closed
+      continue
+    }
+    if (r.kind !== 'item') continue
+    const k = r.item.kind
+    if (k === 'user' || k === 'note') seenText = stepAfter = closed = false
+    else if (k === 'result') closed = true
+    else if (k === 'tool_use' || k === 'thinking') stepAfter ||= !closed
+    else if (k === 'assistant_text' && !seenText) {
+      seenText = true
+      r.endOfTurn = !r.item.streaming && !stepAfter
+    }
+  }
+  return out
+}
+
+/**
+ * Space under a row: the 20px turn gap, 8px less on each side that is a status row and 8px less under a
+ * user message (its hidden actions toolbar overlaps). Measured on whole-window.png and user/window.webp:
+ * prose to status row 12, status row to prose 12, user bubble to status row 4 below the toolbar.
+ */
+export function rowGap(rows: DisplayRow[], i: number): number {
+  if (i >= rows.length - 1) return 0
+  const a = rows[i]
+  const user = a.kind === 'item' && a.item.kind === 'user'
+  // Prose to the settled-tasks line: 15 (line centres 37 apart in real-markdown-and-file-card.png).
+  if (rows[i + 1].kind === 'tasks' && !isStatusRow(a) && !user) return 15
+  return Math.max(0, 20 - (isStatusRow(a) || user ? 8 : 0) - (isStatusRow(rows[i + 1]) ? 8 : 0))
+}
+
+/**
+ * The one row that shimmers (owner, 2026-10-10: the run's line and the working line both shimmered; Claude Desktop has
+ * one, "the upper one. And then as it changes, it would ... step down"): the newest live row of the turn, a tool run
+ * with a call running or thinking streaming, a thinking row streaming, a file being sent. Null, and the working line
+ * shimmers. Only the last turn is looked at: rows above the newest message the person sent are done.
+ */
+export function liveRow(rows: DisplayRow[]): string | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i]!
+    if (r.kind === 'tools' && r.items.some((it) => (isThinking(it) ? !!it.streaming : it.status === 'running'))) return r.id
+    if (r.kind !== 'item') continue
+    const it = r.item
+    if (it.kind === 'user' && !it.parentToolUseId && !it.queued) return null
+    if ((it.kind === 'thinking' && it.streaming) || (it.kind === 'tool_use' && it.status === 'running' && isSendFileTool(it.name))) return r.id
+  }
+  return null
+}
+
+/** One clause of a status row: muted text, an optional target in primary text ("read" + "a.png"), then a muted note ("(1 failed)"). */
+export interface Phrase {
+  text: string
+  target?: string
+  after?: string
+}
+
+export interface ToolSummary {
+  phrases: Phrase[]
+  running: boolean
+  failed: number
+  added: number
+  removed: number
+}
+
+const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
+const base = (p: string) => p.split('/').pop() || p
+const clip = (s: string, n = 48) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+const str = (v: unknown) => (typeof v === 'string' ? v : '')
+
+type Cat = 'bash' | 'read' | 'edit' | 'write' | 'search' | 'fetch' | 'websearch' | 'todo' | 'tool' | 'thinking'
+
+function category(it: RunItem): Cat {
+  if (isThinking(it)) return 'thinking'
+  if (it.name === 'WebFetch') return 'fetch'
+  if (it.name === 'WebSearch') return 'websearch'
+  const f = toolFamily(it.name)
+  return f === 'bash' || f === 'read' || f === 'edit' || f === 'write' || f === 'search' || f === 'todo' ? f : 'tool'
+}
+
+const n = (k: number, one: string, many: string) => (k === 1 ? one : `${k} ${many}`)
+
+function host(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return clip(url)
+  }
+}
+
+type Verb = (past: string, now: string) => string
+
+function groupByCategory(items: RunItem[]): Map<Cat, RunItem[]> {
+  const byCat = new Map<Cat, RunItem[]>()
+  for (const it of items) {
+    const c = category(it)
+    if (!byCat.has(c)) byCat.set(c, [])
+    byCat.get(c)!.push(it)
+  }
+  return byCat
+}
+
+function verbFor(list: ToolItem[]): Verb {
+  const live = list.some((i) => i.status === 'running')
+  return (past, now) => (live ? now : past)
+}
+
+// An image read is a primary-text target (screen-half.png in whole-window.png); a code file is
+// muted like the rest of the row (index.ts in user/window.webp).
+function filePhrase(c: 'read' | 'edit' | 'write', v: Verb, list: ToolItem[], cwd?: string | null): Phrase {
+  const verb = c === 'read' ? v('read', 'reading') : c === 'edit' ? v('edited', 'editing') : v('wrote', 'writing')
+  const files = [...new Set(list.map((i) => shortPath(str(i.input.file_path || i.input.notebook_path), cwd)))]
+  if (files.length === 1 && IMAGE.test(files[0])) return { text: verb, target: base(files[0]) }
+  if (files.length === 1) return { text: `${verb} ${base(files[0])}` }
+  return { text: `${verb} ${files.length} files` }
+}
+
+function otherPhrase(v: Verb, list: ToolItem[], items: ToolItem[]): Phrase {
+  const mcp = items.length === 1 ? parseMcpName(list[0].name) : null
+  if (mcp) return { text: `${v('used', 'using')} ${mcp.server}: ${mcp.tool.replace(/_/g, ' ')}` }
+  if (items.length === 1) return { text: `${v('used', 'using')} ${list[0].name}` }
+  return { text: `${v('used', 'using')} ${n(list.length, 'a tool', 'tools')}` }
+}
+
+/** "thought" for one thinking block, "thought 3 times"; "thinking" while one of them streams. */
+function thinkingPhrase(list: ThinkingItem[]): Phrase {
+  if (list.some((i) => i.streaming)) return { text: 'thinking' }
+  return { text: list.length === 1 ? 'thought' : `thought ${list.length} times` }
+}
+
+function phraseFor(c: Exclude<Cat, 'thinking'>, list: ToolItem[], items: ToolItem[], cwd?: string | null): Phrase {
+  const v = verbFor(list)
+  const k = list.length
+  switch (c) {
+    case 'bash':
+      return { text: `${v('ran', 'running')} ${n(k, 'a command', 'commands')}` }
+    case 'read':
+    case 'edit':
+    case 'write':
+      return filePhrase(c, v, list, cwd)
+    case 'search':
+      return { text: `${v('searched', 'searching')} code` }
+    case 'fetch':
+      if (k === 1) return { text: v('fetched', 'fetching'), target: host(str(list[0].input.url)) }
+      return { text: `${v('fetched', 'fetching')} ${k} pages` }
+    case 'websearch':
+      return { text: `${v('searched', 'searching')} the web${k > 1 ? ` ${k} times` : ''}` }
+    case 'todo':
+      return { text: `${v('updated', 'updating')} the to-do list` }
+    default:
+      return otherPhrase(v, list, items)
+  }
+}
+
+function finishedTasksPhrase(tasks: TaskItem[]): Phrase {
+  const bad = tasks.filter((t) => t.status === 'failed').length
+  const p: Phrase = { text: `finished ${n(tasks.length, 'a background task', 'background tasks')}` }
+  if (bad) p.after = `(${bad} failed)`
+  return p
+}
+
+/** The status row's sentence for a run of steps, in first-seen order; present tense while a call runs or a thinking block streams. */
+export function toolSummary(items: RunItem[], cwd?: string | null, tasks: TaskItem[] = []): ToolSummary {
+  const calls = items.filter(isTool)
+  const phrases: Phrase[] = []
+  for (const [c, list] of groupByCategory(items)) {
+    if (c === 'thinking') {
+      phrases.push(thinkingPhrase(list.filter(isThinking)))
+      continue
+    }
+    const run = list.filter(isTool)
+    const p = phraseFor(c, run, calls, cwd)
+    const bad = run.filter((i) => i.status === 'error').length
+    phrases.push(bad ? { ...p, after: `(${bad} failed)` } : p)
+  }
+  if (tasks.length) phrases.push(finishedTasksPhrase(tasks))
+  if (phrases.length) phrases[0] = { ...phrases[0], text: phrases[0].text[0].toUpperCase() + phrases[0].text.slice(1) }
+
+  let added = 0
+  let removed = 0
+  for (const it of calls) {
+    const f = toolFamily(it.name)
+    if (f !== 'edit' && f !== 'write') continue
+    const d = toolDiff(it.name, it.input)
+    if (d) {
+      added += d.added
+      removed += d.removed
+    }
+  }
+  return {
+    phrases,
+    running: items.some((i) => (isTool(i) ? i.status === 'running' : !!i.streaming)),
+    failed: calls.filter((i) => i.status === 'error').length,
+    added,
+    removed,
+  }
+}
+
+const TASK_NOUN: Record<NonNullable<TaskItem['taskKind']>, [string, string]> = {
+  bash: ['background command', 'background commands'],
+  workflow: ['workflow', 'workflows'],
+  agent: ['agent', 'agents'],
+  other: ['background task', 'background tasks'],
+}
+
+/** The muted line for settled background tasks: "18 background commands completed", "1 workflow and 2 agents completed (1 failed)". */
+export function tasksLine(items: TaskItem[]): string {
+  const order: NonNullable<TaskItem['taskKind']>[] = []
+  const count = new Map<NonNullable<TaskItem['taskKind']>, number>()
+  for (const t of items) {
+    const k = t.taskKind ?? 'other'
+    if (!count.has(k)) order.push(k)
+    count.set(k, (count.get(k) ?? 0) + 1)
+  }
+  const parts = order.map((k) => {
+    const c = count.get(k)!
+    return `${c} ${TASK_NOUN[k][c === 1 ? 0 : 1]}`
+  })
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : (parts[0] ?? '')
+  const bad = items.filter((t) => t.status === 'failed').length
+  return `${list} completed${bad ? ` (${bad} failed)` : ''}`
+}
+
+export type DotState = 'done' | 'running' | 'pending' | 'failed'
+
+/** One progress square per agent (3 when the count is not known yet): accent while running, settled blue when done. */
+export function workflowDots(t: TaskItem): DotState[] {
+  const n = Math.max(1, Math.min(12, t.agents ?? 3))
+  const fill: DotState = t.status === 'running' ? 'running' : t.status === 'completed' || t.status === 'failed' ? 'done' : 'pending'
+  const dots: DotState[] = Array.from({ length: n }, () => fill)
+  if (t.status === 'failed') dots[n - 1] = 'failed'
+  return dots
+}
+
+/** "11m 00s": the run time it reported, else the time since it started while it runs. */
+export function workflowElapsed(t: TaskItem, now: number): string {
+  if (t.durationMs !== undefined) return formatElapsed(t.durationMs)
+  return t.status === 'running' ? formatElapsed(Math.max(0, now - t.ts)) : ''
+}

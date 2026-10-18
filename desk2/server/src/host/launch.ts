@@ -1,0 +1,288 @@
+// Starting, finding and ending chat hosts (SPEC "Chat hosts").
+//
+// A host must not be a child of the server: a server restart, or launcher/stop.ps1's `taskkill /T`, would take
+// it and the chat along. On Windows neither `detached` nor `.unref()` takes a child out of the parent's tree, so
+// the start is handed to WMI (Win32_Process.Create, driven by a short-lived powershell), as AgentHydra's
+// server/src/detached-spawn.mjs does: the host is born outside our tree, gets a hidden console, and inherits
+// none of our handles (a child that inherits the server's listening socket keeps its port taken after the
+// server is gone). WMI starts it with the user's default environment, so the chat's own environment travels in
+// the spec file (the host deletes it once read). Elsewhere a detached spawn is a real detach.
+
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import type { HostFile, HostSpec } from './protocol'
+import { renameOver, writeFlushed } from '../write-flushed'
+
+/** The host program. */
+export const HOST_ENTRY = join(import.meta.dir, 'chat-host.ts')
+
+export function hostsDir(home: string): string {
+  return join(home, 'hosts')
+}
+
+export function hostFilePath(dir: string, chatId: string): string {
+  return join(dir, `${chatId}.json`)
+}
+
+/** One argv element as a Windows command-line token (CommandLineToArgvW rules): WMI takes a single string. */
+export function quoteWinArg(arg: string): string {
+  if (arg.length > 0 && !/[ \t\n\v"]/.test(arg)) return arg
+  let out = '"'
+  for (let i = 0; i < arg.length; i++) {
+    let slashes = 0
+    while (i < arg.length && arg[i] === '\\') {
+      slashes++
+      i++
+    }
+    if (i === arg.length) {
+      out += '\\'.repeat(slashes * 2) // a trailing run doubles, so the closing quote stays a quote
+      break
+    }
+    if (arg[i] === '"') out += `${'\\'.repeat(slashes * 2 + 1)}"`
+    else out += '\\'.repeat(slashes) + arg[i]
+  }
+  return `${out}"`
+}
+
+const psLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`
+
+/**
+ * The command that starts argv outside our process tree, hidden. Windows: a powershell asking WMI, with
+ * Start-Process as the fallback when WMI refuses (a leaked handle beats a chat that never starts). The fallback
+ * still outlives Desk: Bun's job ends only its own children, and lets theirs go (measured 2026-10-13: a
+ * Start-Process child of a bun's powershell ran on after the bun exited and after it was killed); it stays in
+ * any job above Desk's, as a chat's or fairjob's. When both refuse, the powershell says why on stderr and exits 1.
+ * Every argument goes in as data: single-quoted for powershell, then quoted for CommandLineToArgvW.
+ */
+export function detachedCommand(platform: NodeJS.Platform, argv: string[]): { argv: string[]; detached: boolean } {
+  if (platform !== 'win32') return { argv: [...argv], detached: true }
+  const commandLine = argv.map(quoteWinArg).join(' ')
+  const wmiArguments = `@{ CommandLine = ${psLiteral(commandLine)}; ProcessStartupInformation = (New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [UInt16]0 }) }`
+  const rest = argv.slice(1).map((a) => psLiteral(quoteWinArg(a)))
+  const startProcess = `Start-Process -FilePath ${psLiteral(argv[0]!)}${rest.length ? ` -ArgumentList @(${rest.join(', ')})` : ''} -WindowStyle Hidden`
+  const ps = [
+    "$ErrorActionPreference = 'Stop'",
+    '$why = $null',
+    `try { $rc = (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments ${wmiArguments}).ReturnValue; if ($rc -ne 0) { $why = "WMI refused it (Win32_Process.Create returned $rc)" } } catch { $why = "WMI failed: $($_.Exception.Message)" }`,
+    `if ($null -ne $why) { try { ${startProcess} } catch { [Console]::Error.WriteLine("$why, and Start-Process failed: $($_.Exception.Message)"); exit 1 } }`,
+    'exit 0',
+  ].join('; ')
+  return { argv: ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps], detached: false }
+}
+
+/**
+ * Starts argv outside our process tree, hidden (detachedCommand), and hands `failed` the reason when that could not
+ * happen: the launcher did not start, or (Windows) it exited saying WMI and Start-Process both refused. A start that
+ * happened says nothing; whether the program then runs is the caller's to watch. Off Windows the launcher is the
+ * program itself, so only a failed spawn counts, and nothing of it is piped (a pipe would break at Desk's restart).
+ */
+export function startDetached(argv: string[], failed: (reason: string) => void, platform: NodeJS.Platform = process.platform): void {
+  const plan = detachedCommand(platform, argv)
+  let told = false
+  const fail = (reason: string): void => {
+    if (told) return
+    told = true
+    failed(reason)
+  }
+  const windows = platform === 'win32'
+  const child = spawn(plan.argv[0]!, plan.argv.slice(1), { stdio: ['ignore', 'ignore', windows ? 'pipe' : 'ignore'], windowsHide: true, detached: plan.detached })
+  let err = ''
+  child.stderr?.setEncoding('utf8').on('data', (text: string) => {
+    if (err.length < 4096) err += text
+  })
+  child.on('error', (e) => fail(e.message))
+  // On failure nothing was started, so nothing holds the pipe and close comes at once. (A Start-Process child may keep
+  // it open after a start that worked, which is never waited for.)
+  if (windows)
+    child.on('close', (code) => {
+      if (code !== 0 && code !== null) fail(err.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).at(-1) ?? `its launcher exited ${code}`)
+    })
+  child.unref()
+}
+
+function validHostFile(file: HostFile | null, chatId: string): HostFile | null {
+  return file && file.chatId === chatId && typeof file.port === 'number' && typeof file.token === 'string' ? file : null
+}
+
+/** The host file of a chat, when one is there and readable. */
+export function readHostFile(dir: string, chatId: string): HostFile | null {
+  try {
+    return validHostFile(JSON.parse(readFileSync(hostFilePath(dir, chatId), 'utf8')) as HostFile, chatId)
+  } catch {
+    return null
+  }
+}
+
+/** readHostFile without blocking the loop: for a poll on a server that serves other requests. */
+export async function readHostFileAsync(dir: string, chatId: string): Promise<HostFile | null> {
+  try {
+    return validHostFile(JSON.parse(await Bun.file(hostFilePath(dir, chatId)).text()) as HostFile, chatId)
+  } catch {
+    return null
+  }
+}
+
+/** Writes a host's file whole (temp file + rename): a server never reads half of one. */
+export function writeHostFile(dir: string, file: HostFile): void {
+  mkdirSync(dir, { recursive: true })
+  const path = hostFilePath(dir, file.chatId)
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFlushed(tmp, JSON.stringify(file))
+  renameOver(tmp, path)
+}
+
+/** Every host file in dir (live or left behind by a host that died). */
+export function listHostFiles(dir: string): HostFile[] {
+  if (!existsSync(dir)) return []
+  const out: HostFile[] = []
+  for (const name of readdirSync(dir)) {
+    const m = /^(.+)\.json$/.exec(name)
+    if (!m || name.endsWith('.spec.json')) continue
+    const file = readHostFile(dir, m[1]!)
+    if (file) out.push(file)
+  }
+  return out
+}
+
+/** True while a process with this pid exists. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+// A recorded pid is only a number. Once the process that wrote it has gone (a crash, a reboot), Windows
+// hands the number to the next process that starts, so a host or service file left behind names a stranger,
+// and `taskkill /T /F` on it ends that stranger and everything under it. Idea from stablyai/orca's
+// windows-pty-root-identity.ts (MIT), which classifies a pid before its tree kill; here the proof is the
+// start time: the process that wrote `startedAt` was already running when it wrote it, and a process that
+// took its pid later started later.
+
+/** How far a process's own start may lag the `startedAt` its file records (one-second `ps` precision, a
+ *  file stamped by the launcher just before the start). */
+const START_SLACK_MS = 5000
+
+type Kernel = {
+  OpenProcess(access: number, inherit: number, pid: number): unknown
+  GetProcessTimes(h: unknown, creation: unknown, exit: unknown, kernel: unknown, user: unknown): number
+  CloseHandle(h: unknown): number
+}
+let kernel: { k: Kernel; ptr: (b: BigUint64Array) => unknown } | null | undefined
+
+async function openKernel(): Promise<typeof kernel> {
+  if (kernel !== undefined) return kernel
+  try {
+    const { dlopen, FFIType, ptr } = await import('bun:ffi')
+    const lib = dlopen('kernel32.dll', {
+      OpenProcess: { args: [FFIType.u32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
+      GetProcessTimes: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+      CloseHandle: { args: [FFIType.ptr], returns: FFIType.i32 }
+    })
+    kernel = { k: lib.symbols as unknown as Kernel, ptr: (b) => ptr(b) }
+  } catch {
+    kernel = null
+  }
+  return kernel
+}
+
+/** `[[dd-]hh:]mm:ss`, ps's elapsed time, in seconds; null when it is not one. */
+function parseEtime(text: string): number | null {
+  const m = /^\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*$/.exec(text)
+  if (!m) return null
+  return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3]) * 60 + Number(m[4])
+}
+
+/** When the process at `pid` started, in epoch ms; null when that cannot be read (gone, another user's). */
+export async function processStartedAt(pid: number): Promise<number | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  if (process.platform !== 'win32') {
+    const r = spawnSync('ps', ['-o', 'etime=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true })
+    const secs = r.status === 0 ? parseEtime(r.stdout) : null
+    return secs === null ? null : Date.now() - secs * 1000
+  }
+  const kk = await openKernel()
+  if (!kk) return null
+  const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+  const h = kk.k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+  if (!h) return null
+  try {
+    const t = new BigUint64Array(4)
+    if (!kk.k.GetProcessTimes(h, kk.ptr(t.subarray(0, 1)), kk.ptr(t.subarray(1, 2)), kk.ptr(t.subarray(2, 3)), kk.ptr(t.subarray(3, 4)))) return null
+    // FILETIME: 100 ns ticks since 1601-01-01.
+    return Number(t[0]! / 10_000n) - 11_644_473_600_000
+  } finally {
+    kk.k.CloseHandle(h)
+  }
+}
+
+/** Is the process at `pid` still the one that recorded `startedAt`? 'unknown' (its start cannot be read)
+ *  is never permission to kill. */
+export async function recordedPidOwner(
+  pid: number,
+  startedAt: number,
+  startOf: (pid: number) => Promise<number | null> = processStartedAt
+): Promise<'ours' | 'foreign' | 'unknown'> {
+  const started = await startOf(pid)
+  if (started === null || !Number.isFinite(startedAt)) return 'unknown'
+  return started > startedAt + START_SLACK_MS ? 'foreign' : 'ours'
+}
+
+/** Ends a host's process tree (the host and the Claude Code under it), when it will not end itself. Given the
+ *  `startedAt` its file recorded, it first proves the pid still belongs to that process and leaves a
+ *  stranger (or one it cannot prove) alone; answers whether it killed. */
+export async function killHostTree(pid: number, startedAt?: number): Promise<boolean> {
+  if (startedAt !== undefined && (await recordedPidOwner(pid, startedAt)) !== 'ours') return false
+  try {
+    if (process.platform === 'win32') {
+      const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      await new Promise<void>((done) => {
+        child.once('error', () => done())
+        child.once('close', () => done())
+      })
+    } else process.kill(pid, 'SIGKILL')
+  } catch {
+    // already gone
+  }
+  return true
+}
+
+export interface LaunchOptions {
+  /** The bun that runs the host (default: the one running the server). */
+  bun?: string
+  timeoutMs?: number
+  platform?: NodeJS.Platform
+}
+
+/** Writes the spec, starts the host and waits for its host file (the one naming our token). */
+export async function launchHost(spec: HostSpec, o: LaunchOptions = {}): Promise<HostFile> {
+  mkdirSync(spec.dir, { recursive: true })
+  const specPath = join(spec.dir, `${spec.chatId}.spec.json`)
+  const tmp = `${specPath}.${process.pid}.tmp`
+  writeFlushed(tmp, JSON.stringify(spec))
+  renameOver(tmp, specPath)
+  let failure: string | null = null
+  try {
+    // The powershell itself is a console program: hidden. It exits once WMI has started the host.
+    startDetached([o.bun ?? process.execPath, HOST_ENTRY, '--spec', specPath], (reason) => (failure = reason), o.platform ?? process.platform)
+  } catch (err) {
+    failure = (err as Error).message
+  }
+  const deadline = Date.now() + (o.timeoutMs ?? 30_000)
+  // Looked at every 50 ms at first, then more slowly: a cold start takes seconds.
+  for (let tries = 0; Date.now() < deadline; tries++) {
+    if (failure !== null) {
+      rmSync(specPath, { force: true })
+      throw new Error(`could not start the chat process: ${failure}`)
+    }
+    const file = await readHostFileAsync(spec.dir, spec.chatId)
+    if (file?.token === spec.token) return file
+    await Bun.sleep(Math.min(200, 50 + tries * 25))
+  }
+  // Never leave the chat's environment on disk.
+  rmSync(specPath, { force: true })
+  throw new Error(`the chat process did not start within ${Math.round((o.timeoutMs ?? 30_000) / 1000)} s (see ${join(spec.dir, `${spec.chatId}.host.log`)})`)
+}

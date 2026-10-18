@@ -1,0 +1,17 @@
+{
+  // Desk 2's base, so its modules the core imports (desk2/shared, desk2/server/src) check as they do there.
+  "extends": "../desk2/tsconfig.base.json",
+  "compilerOptions": {
+    // The core has no packages of its own: Bun's types (and the Agent SDK) are Desk 2's server's.
+    "typeRoots": ["../desk2/server/node_modules/@types"],
+    "types": ["bun"],
+    "lib": ["ESNext", "DOM"],
+    "paths": {
+      "@shared/*": ["../desk2/shared/*"],
+      "@anthropic-ai/claude-agent-sdk": [
+        "../desk2/server/node_modules/@anthropic-ai/claude-agent-sdk"
+      ]
+    }
+  },
+  "include": ["src"]
+}

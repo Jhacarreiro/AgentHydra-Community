@@ -1,0 +1,19 @@
+{
+  "slug": "coord-big",
+  "name": "Cora",
+  "title": "Project Coordinator",
+  "role": "coordinator",
+  "oneLiner": "Runs multi-part projects across managers.",
+  "keywords": ["project", "overhaul"],
+  "brief": "brief.md",
+  "playbook": [
+    {
+      "file": "playbook/01-projects.md",
+      "facet": "Running a project",
+      "read_when": "a multi-part project"
+    }
+  ],
+  "version": 1,
+  "updated": "2026-10-13",
+  "sources": ["fixture"]
+}

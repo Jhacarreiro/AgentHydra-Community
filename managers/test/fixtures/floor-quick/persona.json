@@ -1,0 +1,15 @@
+{
+  "slug": "floor-quick",
+  "name": "Fred",
+  "title": "Floor Manager",
+  "role": "floor",
+  "oneLiner": "Gets quick one-step asks done.",
+  "keywords": ["quick", "status"],
+  "brief": "brief.md",
+  "playbook": [
+    { "file": "playbook/01-quick.md", "facet": "Quick asks", "read_when": "a one-step ask" }
+  ],
+  "version": 1,
+  "updated": "2026-10-13",
+  "sources": ["fixture"]
+}

@@ -1,0 +1,490 @@
+// tests/githooks/pre-push-public-guard.test.ts - the pre-push gate. A PUBLIC remote, or one whose
+// visibility cannot be proven, refuses the push and prints the heading; AGENTHYDRA_PUSH_PUBLIC=1
+// announces and proceeds; a private remote is untouched; a release tag is refused while
+// docs/todo/TODO.md has an open section, and nothing overrides that; and a release tag that
+// scripts/release-notes.mjs would refuse (below 2.0.0, or a long section with no TL;DR) never lands.
+//
+// Drives the real, on-disk `.githooks/pre-push` and `.githooks/check-public-push.mjs` (copied
+// fresh at test time, never duplicated by hand) against a throwaway repo pushing to a throwaway
+// bare origin. The visibility lookup is stubbed through the environment, so nothing here reaches
+// the network; the real lookup was proven by hand on 2026-09-12 (LunarWerxs/AgentHydra answered
+// 200 + public, a private repo answered 404). It never touches this repo's own remote or index.
+//
+// Lives under tests/, not .githooks/tests/: `bun test` skips dot-directories, so a suite parked
+// there passes by hand and never runs (see hook-tests-live-here.test.ts).
+//
+// Revert check: delete the `if (verdict !== "private")` block in check-public-push.mjs and the
+// first four tests fail; delete the release-tag block and the tag tests fail.
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { execFileSync, spawnSync } from 'node:child_process'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  openTodoSections,
+  parseGithubSlug,
+  parseRefLines,
+} from '../../.githooks/check-public-push.mjs'
+import { REPO_ROOT } from '../repo-root'
+
+// Real git init/commit/push, each push through Git for Windows' sh and one or two node starts. Not the
+// ~1 s once noted here: on a loaded Windows box a push took 4-9 s alone and a one-push test up to 27.7 s
+// in the parallel suite (2026-10-11). A test that pushes more than once gets this per push; past the
+// bound bun kills the push in flight, which reads as a refused push.
+const HOOK_TEST_TIMEOUT = 45_000
+
+// A single root for every scratch dir this file creates: at most one mkdtempSync may root
+// directly in the OS temp dir per file. realpathSync.native up front resolves the 8.3-short-path
+// issue once, so every nested mkdirSync below it is already long-path.
+//
+// ROOT holds what mkdtempSync returned and is what afterAll reaps: inline, a throw from
+// realpathSync.native would leave no reference to the directory at all, leaking it forever.
+const ROOT = mkdtempSync(join(tmpdir(), 'ah-prepush-'))
+const FILE_ROOT = realpathSync.native(ROOT)
+let prepushSeq = 0
+function prepushRoot(name: string) {
+  const dir = join(FILE_ROOT, `${name}-${prepushSeq++}`)
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+afterAll(() => {
+  rmSync(ROOT, { recursive: true, force: true })
+})
+const HEADING = '# WARNING: THIS REPOSITORY IS **PUBLIC**'
+
+const REAL_PREPUSH = join(REPO_ROOT, '.githooks', 'pre-push')
+const REAL_GUARD = join(REPO_ROOT, '.githooks', 'check-public-push.mjs')
+const REAL_KIT_SYNC = join(REPO_ROOT, '.githooks', 'check-kit-sync-pushed.mjs')
+
+type Env = Record<string, string>
+
+/** The test's own environment never leaks a real override or stub into the sandbox. */
+function envFor(overrides: Env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  delete env.AGENTHYDRA_PUSH_PUBLIC
+  delete env.AGENTHYDRA_VISIBILITY_STUB
+  return { ...env, ...overrides }
+}
+
+function git(cwd: string, env: Env, ...args: string[]): string {
+  return execFileSync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args],
+    { cwd, encoding: 'utf8', timeout: HOOK_TEST_TIMEOUT, env: envFor(env) },
+  )
+}
+
+interface PushResult {
+  status: number
+  output: string
+}
+
+/** spawnSync rather than execFileSync: the hook speaks on stderr, and a push that SUCCEEDS with
+ *  the override must still show the heading, which execFileSync's return value (stdout only)
+ *  would hide. */
+function push(repo: string, env: Env, ...refs: string[]): PushResult {
+  const r = spawnSync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=t', 'push', 'origin', ...refs],
+    { cwd: repo, encoding: 'utf8', timeout: HOOK_TEST_TIMEOUT, env: envFor(env) },
+  )
+  return { status: r.status ?? 1, output: `${r.stdout ?? ''}${r.stderr ?? ''}` }
+}
+
+function originHas(origin: string, ref: string): boolean {
+  try {
+    git(origin, {}, 'rev-parse', '--verify', '--quiet', ref)
+    return true
+  } catch {
+    return false
+  }
+}
+
+describe('.githooks/pre-push: a public remote is announced and refused', () => {
+  let sandbox: string
+  let repo: string
+  let origin: string
+
+  beforeEach(() => {
+    // realpathSync.native: GitHub's Windows runner hands out an 8.3 temp path (RUNNER~1) while git
+    // reports the worktree by its long name, and every path comparison in a hook test then misses.
+    sandbox = prepushRoot('sandbox')
+    repo = join(sandbox, 'repo')
+    origin = join(sandbox, 'origin')
+    mkdirSync(join(repo, '.githooks'), { recursive: true })
+    git(sandbox, {}, 'init', '-q', '--bare', origin)
+
+    // Byte-identical copies of the REAL hook files, read fresh every run.
+    writeFileSync(join(repo, '.githooks', 'pre-push'), readFileSync(REAL_PREPUSH))
+    writeFileSync(join(repo, '.githooks', 'check-public-push.mjs'), readFileSync(REAL_GUARD))
+    chmodSync(join(repo, '.githooks', 'pre-push'), 0o755) // git on POSIX refuses a non-executable hook
+
+    git(repo, {}, 'init', '-q', '-b', 'main')
+    git(repo, {}, 'config', 'core.hooksPath', '.githooks')
+    git(repo, {}, 'remote', 'add', 'origin', origin)
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    git(repo, {}, 'add', 'a.txt')
+    git(repo, {}, 'commit', '-q', '-m', 'init')
+  }, HOOK_TEST_TIMEOUT)
+
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true })
+  })
+
+  test(
+    'PUBLIC without the override: heading printed, push refused, nothing lands',
+    () => {
+      const r = push(repo, { AGENTHYDRA_VISIBILITY_STUB: 'public' }, 'main')
+      expect(r.status).not.toBe(0)
+      expect(r.output).toContain(HEADING)
+      expect(r.output).toContain('AGENTHYDRA_PUSH_PUBLIC=1')
+      expect(originHas(origin, 'refs/heads/main')).toBe(false)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    'PUBLIC with AGENTHYDRA_PUSH_PUBLIC=1: heading STILL printed, then the push proceeds',
+    () => {
+      const r = push(
+        repo,
+        { AGENTHYDRA_VISIBILITY_STUB: 'public', AGENTHYDRA_PUSH_PUBLIC: '1' },
+        'main',
+      )
+      expect(r.status).toBe(0)
+      expect(r.output).toContain(HEADING)
+      expect(r.output).toContain('announced, proceeding')
+      expect(originHas(origin, 'refs/heads/main')).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    'PRIVATE: no heading, no friction',
+    () => {
+      const r = push(repo, { AGENTHYDRA_VISIBILITY_STUB: 'private' }, 'main')
+      expect(r.status).toBe(0)
+      expect(r.output).not.toContain(HEADING)
+      expect(originHas(origin, 'refs/heads/main')).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    'UNKNOWN is fail-closed: refused, and the output says it could not be proven private',
+    () => {
+      const r = push(repo, { AGENTHYDRA_VISIBILITY_STUB: 'unknown' }, 'main')
+      expect(r.status).not.toBe(0)
+      expect(r.output).toContain(HEADING)
+      expect(r.output).toContain('could not be proven private')
+      expect(originHas(origin, 'refs/heads/main')).toBe(false)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    'no stub and a remote that is not GitHub: unknown, so refused without any network',
+    () => {
+      const r = push(repo, {}, 'main')
+      expect(r.status).not.toBe(0)
+      expect(r.output).toContain('is not a GitHub remote')
+      expect(originHas(origin, 'refs/heads/main')).toBe(false)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  describe('a release tag is refused while the work queue has an open section', () => {
+    const PRIVATE = { AGENTHYDRA_VISIBILITY_STUB: 'private' }
+
+    function writeTodo(repo: string, body: string) {
+      mkdirSync(join(repo, 'docs', 'todo'), { recursive: true })
+      writeFileSync(join(repo, 'docs', 'todo', 'TODO.md'), body)
+    }
+
+    test(
+      'open section: refused by name, no override exists, the tag never lands',
+      () => {
+        writeTodo(repo, '# q\n\n## Contents\n\n- x\n\n## 1. Still open thing\n\nbody\n')
+        git(repo, {}, 'tag', 'v1.2.3')
+        const r = push(repo, { ...PRIVATE, AGENTHYDRA_PUSH_PUBLIC: '1' }, 'v1.2.3')
+        expect(r.status).not.toBe(0)
+        expect(r.output).toContain('release refused')
+        expect(r.output).toContain('1. Still open thing')
+        expect(originHas(origin, 'refs/tags/v1.2.3')).toBe(false)
+      },
+      HOOK_TEST_TIMEOUT,
+    )
+
+    test(
+      'only the Contents heading left: the tag ships',
+      () => {
+        writeTodo(repo, '# q\n\n## Contents\n\n(nothing open)\n')
+        git(repo, {}, 'tag', 'v1.2.3')
+        const r = push(repo, PRIVATE, 'v1.2.3')
+        expect(r.status).toBe(0)
+        expect(originHas(origin, 'refs/tags/v1.2.3')).toBe(true)
+      },
+      HOOK_TEST_TIMEOUT,
+    )
+
+    test(
+      'no queue file on this machine: nothing to gate on, the tag ships',
+      () => {
+        git(repo, {}, 'tag', 'v1.2.3')
+        const r = push(repo, PRIVATE, 'v1.2.3')
+        expect(r.status).toBe(0)
+        expect(originHas(origin, 'refs/tags/v1.2.3')).toBe(true)
+      },
+      HOOK_TEST_TIMEOUT,
+    )
+
+    test(
+      "release-notes.mjs's refusals stop the tag: a 1.x version, or a long section with no TL;DR",
+      () => {
+        // The real script beside the hook, as in this repo; the throwaway repo above has none.
+        mkdirSync(join(repo, 'scripts'), { recursive: true })
+        writeFileSync(
+          join(repo, 'scripts', 'release-notes.mjs'),
+          readFileSync(join(REPO_ROOT, 'scripts', 'release-notes.mjs')),
+        )
+        const bullets = '### Added\n\n- **One.** a\n- **Two.** b\n- **Three.** c\n'
+        const tldr = '**TL;DR**\n\n- **One**\n\n**Everything in 2.0.0**\n\n'
+        writeFileSync(
+          join(repo, 'CHANGELOG.md'),
+          `# Changelog\n\n## [2.0.0] - 2026-10-07\n\n${bullets}\n## [1.14.0] - 2026-10-06\n\n${bullets}`,
+        )
+        git(repo, {}, 'add', 'CHANGELOG.md')
+        git(repo, {}, 'commit', '-q', '-m', 'notes')
+        git(repo, {}, 'tag', 'v1.14.0')
+        git(repo, {}, 'tag', 'v2.0.0')
+        const old = push(repo, PRIVATE, 'v1.14.0')
+        expect(old.status).not.toBe(0)
+        expect(old.output).toContain('below 2.0.0')
+        expect(originHas(origin, 'refs/tags/v1.14.0')).toBe(false)
+        const wall = push(repo, PRIVATE, 'v2.0.0')
+        expect(wall.status).not.toBe(0)
+        expect(wall.output).toContain('no TL;DR')
+
+        // The same section with its TL;DR ships.
+        writeFileSync(
+          join(repo, 'CHANGELOG.md'),
+          `# Changelog\n\n## [2.0.0] - 2026-10-07\n\n${tldr}${bullets}`,
+        )
+        git(repo, {}, 'commit', '-q', '-am', 'tldr')
+        git(repo, {}, 'tag', '-f', 'v2.0.0')
+        const ok = push(repo, PRIVATE, 'v2.0.0')
+        expect(ok.status).toBe(0)
+        expect(originHas(origin, 'refs/tags/v2.0.0')).toBe(true)
+      },
+      3 * HOOK_TEST_TIMEOUT, // three pushes
+    )
+
+    test(
+      'a tag that is not a release (no v-semver name) is not gated',
+      () => {
+        writeTodo(repo, '# q\n\n## Contents\n\n## 1. Open\n')
+        git(repo, {}, 'tag', 'checkpoint')
+        const r = push(repo, PRIVATE, 'checkpoint')
+        expect(r.status).toBe(0)
+        expect(originHas(origin, 'refs/tags/checkpoint')).toBe(true)
+      },
+      HOOK_TEST_TIMEOUT,
+    )
+  })
+})
+
+describe('.githooks/pre-push: the lanes run free of the hook git environment', () => {
+  test(
+    'a push from a linked worktree hands the lanes no GIT_DIR, so their own git finds their own repo',
+    () => {
+      // The hook only reaches its lanes with a kit beside the checkout (../../lunarwerx-ui), and that
+      // kit's stand-in sync.mjs, which the kit drift lane runs, records the git variables it inherits.
+      // Pushing the 1.5.0 tag from a worktree, every git-backed test and the kit check inherited
+      // GIT_DIR and looked at the pushing checkout instead of their own repos (2026-10-01).
+      const base = prepushRoot('lanes')
+      const repo = join(base, 'ah', 'repo')
+      const wt = join(base, 'ah', 'wt')
+      const origin = join(base, 'origin')
+      const seen = join(base, 'seen.txt').replace(/\\/g, '/')
+      mkdirSync(join(base, 'lunarwerx-ui'), { recursive: true })
+      writeFileSync(
+        join(base, 'lunarwerx-ui', 'sync.mjs'),
+        [
+          "import { writeFileSync } from 'node:fs'",
+          `const git = Object.keys(process.env).filter((k) => k.startsWith('GIT_')).map((k) => k + '=' + process.env[k])`,
+          `writeFileSync(${JSON.stringify(seen)}, git.join(String.fromCharCode(10)))`,
+          '',
+        ].join('\n'),
+      )
+
+      mkdirSync(join(repo, '.githooks'), { recursive: true })
+      git(base, {}, 'init', '-q', '--bare', origin)
+      writeFileSync(join(repo, '.githooks', 'pre-push'), readFileSync(REAL_PREPUSH))
+      writeFileSync(join(repo, '.githooks', 'check-public-push.mjs'), readFileSync(REAL_GUARD))
+      writeFileSync(
+        join(repo, '.githooks', 'check-kit-sync-pushed.mjs'),
+        readFileSync(REAL_KIT_SYNC),
+      )
+      chmodSync(join(repo, '.githooks', 'pre-push'), 0o755)
+      git(repo, {}, 'init', '-q', '-b', 'main')
+      git(repo, {}, 'config', 'core.hooksPath', '.githooks')
+      git(repo, {}, 'remote', 'add', 'origin', origin)
+      git(repo, {}, 'add', '-A')
+      git(repo, {}, 'commit', '-q', '-m', 'init')
+      git(repo, {}, 'worktree', 'add', '-q', '--detach', wt)
+
+      const r = push(wt, { AGENTHYDRA_VISIBILITY_STUB: 'private' }, 'HEAD:refs/heads/side')
+      expect(r.status).toBe(0)
+      const inherited = readFileSync(seen, 'utf8')
+      expect(inherited).not.toMatch(/^GIT_(DIR|WORK_TREE|INDEX_FILE)=/m)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+})
+
+// The kit drift lane refuses a push only for drift the push itself carries. Drift it does not carry is
+// another session's work in the shared tree. On 2026-10-11 one session's untracked probe test under the
+// kit-synced server/tests/server-lib/ ("! orphan" in the kit's report) refused every other session's
+// push, because the lane read only "! differs" lines and took the rest for a failed check.
+describe('check-kit-sync-pushed.mjs: only drift the push carries refuses it', () => {
+  let repo: string
+  let refs: string
+  const at = (rel: string) => join(repo, rel).replace(/\\/g, '/')
+
+  beforeAll(() => {
+    const base = prepushRoot('kitdrift')
+    repo = join(base, 'ah', 'repo')
+    const origin = join(base, 'origin')
+    // A stand-in kit beside the checkout, as the lane finds it: its --check prints the report it is handed.
+    mkdirSync(join(base, 'lunarwerx-ui'), { recursive: true })
+    writeFileSync(
+      join(base, 'lunarwerx-ui', 'sync.mjs'),
+      'const r = process.env.KIT_STUB_REPORT ?? ""\nconsole.log(r)\nprocess.exit(r ? 1 : 0)\n',
+    )
+    mkdirSync(join(repo, 'server', 'lib'), { recursive: true })
+    git(base, {}, 'init', '-q', '--bare', origin)
+    git(repo, {}, 'init', '-q', '-b', 'main')
+    git(repo, {}, 'remote', 'add', 'origin', origin)
+    writeFileSync(join(repo, 'server', 'lib', 'carried.ts'), 'one\n')
+    writeFileSync(join(repo, 'server', 'lib', 'edited.ts'), 'one\n')
+    git(repo, {}, 'add', '-A')
+    git(repo, {}, 'commit', '-q', '-m', 'on the remote')
+    git(repo, {}, 'push', '-q', 'origin', 'main')
+    // What this push carries: a changed synced file and a new one.
+    writeFileSync(join(repo, 'server', 'lib', 'carried.ts'), 'two\n')
+    writeFileSync(join(repo, 'server', 'lib', 'added.ts'), 'new\n')
+    git(repo, {}, 'add', '-A')
+    git(repo, {}, 'commit', '-q', '-m', 'the push')
+    // What it does not: another session's uncommitted edit and its untracked probe.
+    writeFileSync(join(repo, 'server', 'lib', 'edited.ts'), 'unfinished\n')
+    writeFileSync(join(repo, 'server', 'lib', 'probe.test.ts'), 'scratch\n')
+    const head = git(repo, {}, 'rev-parse', 'HEAD').trim()
+    refs = `refs/heads/main ${head} refs/heads/main 0000000000000000000000000000000000000000\n`
+  }, HOOK_TEST_TIMEOUT)
+
+  test.each([
+    [
+      'an untracked orphan the push does not add',
+      'orphan  ',
+      'server/lib/probe.test.ts',
+      0,
+      'left alone',
+    ],
+    [
+      'an uncommitted edit the push does not carry',
+      'differs ',
+      'server/lib/edited.ts',
+      0,
+      'left alone',
+    ],
+    ['a synced file the push changes', 'differs ', 'server/lib/carried.ts', 1, 'this push carries'],
+    [
+      'a file the push adds that the kit does not ship',
+      'orphan  ',
+      'server/lib/added.ts',
+      1,
+      'this push carries',
+    ],
+  ])(
+    '%s',
+    (_name, kind, rel, status, said) => {
+      const r = spawnSync('node', [REAL_KIT_SYNC, 'origin', 'agenthydra'], {
+        cwd: repo,
+        input: refs,
+        encoding: 'utf8',
+        timeout: HOOK_TEST_TIMEOUT,
+        env: { ...envFor({}), KIT_STUB_REPORT: `[check] agenthydra\n      ! ${kind} ${at(rel)}\n` },
+      })
+      expect(r.status).toBe(status)
+      expect(r.stderr).toContain(said)
+      expect(r.stderr).toContain(at(rel))
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    'a failed check that names no file still refuses',
+    () => {
+      const r = spawnSync('node', [REAL_KIT_SYNC, 'origin', 'agenthydra'], {
+        cwd: repo,
+        input: refs,
+        encoding: 'utf8',
+        timeout: HOOK_TEST_TIMEOUT,
+        env: { ...envFor({}), KIT_STUB_REPORT: 'sync.mjs: kit.config.json could not be read' },
+      })
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('kit check for agenthydra failed')
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+})
+
+describe('check-public-push.mjs: the parsers', () => {
+  test('parseGithubSlug accepts every URL shape git uses for GitHub, with or without .git', () => {
+    for (const url of [
+      'https://github.com/LunarWerxs/AgentHydra.git',
+      'https://github.com/LunarWerxs/AgentHydra',
+      'git@github.com:LunarWerxs/AgentHydra.git',
+      'ssh://git@github.com/LunarWerxs/AgentHydra.git',
+      'https://github.com/LunarWerxs/AgentHydra/',
+    ]) {
+      expect(parseGithubSlug(url)).toEqual({ owner: 'LunarWerxs', repo: 'AgentHydra' })
+    }
+    expect(parseGithubSlug('https://gitlab.com/o/r.git')).toBeNull()
+    expect(parseGithubSlug('C:/tmp/origin')).toBeNull()
+  })
+
+  test('parseRefLines tells a deletion (all-zero local sha) from a push', () => {
+    const refs = parseRefLines(
+      'refs/heads/main abc123 refs/heads/main 000\n' +
+        '(delete) 0000000000000000000000000000000000000000 refs/tags/v0.8.0 def456\n',
+    )
+    expect(refs).toHaveLength(2)
+    expect(refs[0]?.isDelete).toBe(false)
+    expect(refs[1]?.isDelete).toBe(true)
+    expect(refs[1]?.remoteRef).toBe('refs/tags/v0.8.0')
+  })
+
+  test('openTodoSections counts headings after Contents, or all but the state of play without it', () => {
+    const dir = prepushRoot('todo')
+    try {
+      const file = join(dir, 'TODO.md')
+      writeFileSync(file, '# t\n\n## ⭐ STATE OF PLAY\n\n## Contents\n\n## 1. A\n\n## 2. B\n')
+      expect(openTodoSections(file)).toEqual(['1. A', '2. B'])
+      writeFileSync(file, '# t\n\n## ⭐ STATE OF PLAY, 2026-09-12\n\n## Only thing\n')
+      expect(openTodoSections(file)).toEqual(['Only thing'])
+      expect(openTodoSections(join(dir, 'missing.md'))).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

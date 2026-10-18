@@ -1,0 +1,2503 @@
+// server/src/analytics.ts — per-session totals, computed once and kept.
+//
+// WHY THIS COSTS ALMOST NOTHING TO STORE, which is the whole reason it is allowed to exist. The
+// scanner already opens every transcript and reads every line to build the session list; it works
+// out the title and the message count and throws the rest away. This keeps a handful of TOTALS per
+// session instead: tokens per model, a sparse day and hour histogram, tool counts, and four
+// counters. About 600 bytes a session, so a five-thousand-session store is a couple of megabytes.
+//
+// IT IS NOT THE FULL-TEXT INDEX, and must not become it. Nothing here stores a single word of a
+// message. Every field is a number or a key that came from a tool name, a model id or a date. If a
+// future field needs message text to be useful, it belongs in that other decision, not this one.
+//
+// WHY A SEPARATE PASS FROM THE LIST SCANNER. `parseMeta` reads the last 12 MB of a transcript,
+// which is the right trade for a title and a preview and the wrong one for a total: a session's
+// spend is the whole file. This streams the file end to end, like server/src/session-usage.ts does
+// for one session on demand, and runs as a background warm so nobody waits for it.
+//
+// SPEND IS NOT READ FROM THESE ROWS. spendReport asks the analytics toolkit (kit/query.ts), which
+// holds one row per model call with its own timestamp, so a window is exact to the hour and covers
+// every account and tool the toolkit ingests. What stays here is per-SESSION analysis (tools, edits,
+// sinks, hour-of-week), windowed by a session's last turn.
+
+import {
+  DEEP_CONTEXT_TOKENS,
+  emptySinks,
+  foldSinkLine,
+  mcpServerOfTool,
+  type SinkScan,
+  type StoredSinks,
+  storedSinks,
+} from './analytics-sinks'
+import { timeSlice, yieldToLoop } from './core/loop-yield'
+import { db } from './db'
+import { readDshUsage } from './dsh-sessions'
+import {
+  type AgentWrite,
+  captureWrite,
+  type EditSurvival,
+  measureEditSurvival,
+} from './edit-survival'
+import { readHermesUsage } from './hermes-sessions'
+import { findDesktopChat, instanceSessionMap } from './instance-sessions'
+import { sharedKitStore, type UsageRow, usageQueryAsync } from './kit/query'
+import type { KitStore } from './kit/store'
+import { readOpenCodeUsage } from './opencode-sessions'
+import { priceSource, pricesAsOf } from './pricing'
+import { anyDiscount, atYourRate, type Discounts, readRoutingSettings } from './routing-cost'
+import { streamLines } from './session-search'
+import {
+  decodeProjectKey,
+  ensureTranscriptIndex,
+  listTranscriptFiles,
+  type TranscriptFile,
+} from './transcript'
+import type {
+  ActivityReport,
+  AnalyticsCoverage,
+  ConcurrencyPoint,
+  EditEntry,
+  ModelSpend,
+  SessionSource,
+  SpendBucket,
+  SpendReport,
+  TokenBreakdown,
+  TokenDaySource,
+  TokenSink,
+  TokenSinkReport,
+  TokensByDay,
+} from './types'
+import {
+  addTurn,
+  type CodexTurn,
+  CodexUsageReader,
+  openCodeSpend,
+  weighTurnCounts,
+} from './usage-foreign'
+import {
+  accumulateUsageLine,
+  emptySpend,
+  modelMultiplier,
+  newUsageSeen,
+  parseUsageLine,
+  reweighModels,
+  W_CACHE_READ,
+  W_CACHE_WRITE_1H,
+  W_CACHE_WRITE_5M,
+  W_OUTPUT,
+  weighCounts,
+} from './usage-tokens'
+
+/**
+ * Bumped when the extracted shape changes, which forces every row to be recomputed.
+ *
+ * 2: Codex and OpenCode totals. Version 1 stored zero for both, and the freshness check is
+ *    (mtime, size) — neither of which moves when the PARSER changes — so every one of those
+ *    sessions would have kept its empty row forever. Caught by shipping it: the live daemon
+ *    reported one Codex session where the store has 136.
+ * 3: Every rollout in a Codex conversation, not just the newest. Codex writes one file per
+ *    execution thread and the transcript index keeps one ROW per conversation, so the totals were
+ *    reading a single file out of hundreds. On this machine that was 5,283 rollouts collapsing to
+ *    146, and the reported Codex spend was a fraction of the real figure.
+ * 4: Codex turns that spend before their rollout names a model are attributed to that rollout's
+ *    model instead of to a placeholder id. 2,067 of 4,860 rollouts here do this, and the 331B
+ *    tokens involved were landing under a fake model called "codex" that no price table matches.
+ * 5: Version 3 was WRONG and this undoes it. Codex's `total_token_usage` is a session-wide counter
+ *    that every execution thread replays into its own rollout file, so summing a conversation's
+ *    files multiplies its spend by the number of threads. It reported 637B tokens where the store
+ *    holds 11.9B, a 53x overcount, and named Codex the largest provider on this machine when it is
+ *    the second. A conversation is now the LARGEST of its rollouts, never the sum.
+ * 6: One Claude API response is charged once. Claude Code writes a transcript record per CONTENT
+ *    BLOCK and stamps the same complete usage object on each, so summing records charged a reply
+ *    with two tool calls three times: 148.8B tokens reported here against a real 64.6B, 57% high.
+ * 7: Claude subagent transcripts are counted. A Task subagent writes its own file nested under the
+ *    session that spawned it and makes its own API calls; the index globbed one level deep, so
+ *    16,552 files holding 89.8B tokens were invisible against the top level's 64.5B. The freshness
+ *    check is (mtime, size) and neither moves when a session merely GAINS sibling files, so only a
+ *    version bump forces the recount.
+ * 8: Edit survival (server/src/edit-survival.ts). Every row written before it has no survival
+ *    column, and a NULL there reads as "not measured yet" rather than as a missing field only if the
+ *    row was written by a scanner that knew about it. Token-sink evidence (sinks_json) came in the
+ *    same version: the skill listings and MCP servers a session loaded, what it invoked, calls past
+ *    DEEP_CONTEXT_TOKENS, and subagent spend. A row scanned before this has none of it, and nothing
+ *    about the file changes to say so.
+ * 9: Token weights fitted to the subscription meter (usage-tokens.ts). Per-model `weighted` is
+ *    re-weighed from its counts on read, but sinks_json holds weighted totals (deep calls, subagent
+ *    spend, dead skill loads) that only a rescan can recompute.
+ * 10: The deep-context sink is the prompt read past DEEP_CONTEXT_TOKENS (deepExcess), not the
+ *    whole weight of every deep call: that charged a 151k call's reply, thinking and first 150k to
+ *    the sink and showed it as 61% of 30 days when the part a compaction could save was a tenth
+ *    of that. Only the transcript holds each call's prompt, so only a rescan can recompute it.
+ */
+export const ANALYTICS_VERSION = 10
+
+/**
+ * Gaps longer than this are not work, they are a lunch break with the window left open.
+ *
+ * "Agent-minutes" has to mean something, and wall-clock span does not: a session opened at 09:00
+ * and touched again at 17:00 spans eight hours of which maybe twenty minutes were real. Summing
+ * inter-turn gaps with each one capped gives a figure that tracks engaged time, and the cap is what
+ * stops one overnight pause from dwarfing everything else in the chart.
+ */
+const ACTIVE_GAP_CAP_MS = 5 * 60_000
+
+/** Tools whose use means a file changed. `MultiEdit` is gone from current CLIs but old transcripts
+ *  still carry it, and a feed that silently skipped those would be wrong about history. */
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'str_replace_editor'])
+/** Where each of them keeps the path. Checked in order; the first present wins. */
+const PATH_KEYS = ['file_path', 'notebook_path', 'path']
+
+/** How many edits one session may contribute to the feed. The feed is a recent-activity surface,
+ *  not a version history, and an unbounded list would be the one field here that grows without a
+ *  ceiling. */
+const MAX_EDITS_PER_SESSION = 40
+
+export interface SessionEdit {
+  path: string
+  /** Index of the turn that made the change, so the UI can open the transcript at it. */
+  turn: number
+  ts: number | null
+}
+
+export interface SessionAnalytics {
+  /** Per-model token totals, the same shape server/src/usage-tokens.ts produces. */
+  tokens: Record<string, ModelSpend>
+  /** YYYY-MM-DD (local) -> weighted tokens spent that day. */
+  days: Record<string, number>
+  /** Hour of week, 0 = Sunday 00:00, 167 = Saturday 23:00 -> turns. */
+  hours: Record<string, number>
+  /** Tool name -> times used. */
+  tools: Record<string, number>
+  toolErrors: number
+  /** Longest run of consecutive failing tool results. A streak is the signal that something was
+   *  actually stuck, which a raw count of scattered failures is not. */
+  toolErrorStreak: number
+  editCount: number
+  /** Lines the session ADDED and REMOVED across its edits, counted off the tool inputs. A rough but
+   *  honest measure of how much code a chat actually moved — "40 edits" says nothing about whether
+   *  they were typo fixes or a rewrite. Both are zero for a session that only read. */
+  linesAdded: number
+  linesRemoved: number
+  /** Distinct files the session touched, which `editCount` (a count of EDIT CALLS) is not. */
+  filesTouched: Set<string>
+  edits: SessionEdit[]
+  compactions: number
+  /** Engaged time, in milliseconds. See ACTIVE_GAP_CAP_MS. */
+  activeMs: number
+  firstTs: number | null
+  lastTs: number | null
+  /** A cost the PROVIDER computed itself (OpenCode does). Null when nobody but us can price it. */
+  providerCostUsd: number | null
+  /** The text the edit tools wrote, held ONLY until the scan scores it and then emptied: this is the
+   *  one field that carries message text, and it never reaches the database. */
+  writes: AgentWrite[]
+  /** Share of the session's written code still in its files some hours later. See edit-survival.ts. */
+  editSurvival: EditSurvival
+  /** Token-sink evidence. Filled from Claude Code transcripts; empty for every other store. */
+  sinks: SinkScan
+}
+
+function emptyAnalytics(): SessionAnalytics {
+  return {
+    tokens: {},
+    days: {},
+    hours: {},
+    tools: {},
+    toolErrors: 0,
+    toolErrorStreak: 0,
+    editCount: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
+    filesTouched: new Set<string>(),
+    edits: [],
+    compactions: 0,
+    activeMs: 0,
+    firstTs: null,
+    lastTs: null,
+    providerCostUsd: null,
+    writes: [],
+    editSurvival: { score: null, measured: 0, dueAt: null },
+    sinks: emptySinks(),
+  }
+}
+
+/** Local date key. Local, not UTC: a chart of "what did I spend on Tuesday" has to agree with the
+ *  reader's own calendar, and the daemon runs on the reader's machine. */
+function dayKey(ms: number): string {
+  const d = new Date(ms)
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
+/** 0 = Sunday 00:00 … 167 = Saturday 23:00. */
+function hourKey(ms: number): number {
+  const d = new Date(ms)
+  return d.getDay() * 24 + d.getHours()
+}
+
+/**
+ * Lines an edit added and removed, off the tool's own input.
+ *
+ * The edit tools carry the text they are replacing: `old_string`/`new_string` for Edit,
+ * `content` for Write, `new_source` for a notebook cell. Counting newlines in each is a cheap,
+ * local approximation of a diff — it cannot know that a rewritten line is one removed and one
+ * added rather than a change, so treat these as a MAGNITUDE of churn rather than as `git diff`.
+ * Nothing is read from disk and no diff is computed; this is arithmetic on strings already in
+ * the transcript.
+ */
+function countEditLines(input: unknown, out: SessionAnalytics): void {
+  if (!input || typeof input !== 'object') return
+  const rec = input as Record<string, unknown>
+  const lines = (v: unknown) => (typeof v === 'string' && v ? v.split('\n').length : 0)
+  // A whole-file write has no "old" side in the input, so it counts as pure addition — which is
+  // what it is from the transcript's point of view.
+  out.linesRemoved += lines(rec.old_string)
+  out.linesAdded += lines(rec.new_string) + lines(rec.content) + lines(rec.new_source)
+}
+
+function firstPath(input: unknown): string | null {
+  if (!input || typeof input !== 'object') return null
+  const rec = input as Record<string, unknown>
+  for (const key of PATH_KEYS) {
+    const v = rec[key]
+    if (typeof v === 'string' && v.trim()) return v
+  }
+  return null
+}
+
+/**
+ * OpenCode has already totalled its own session: the numbers are columns on its row, not events in
+ * a log, so there is nothing to stream. See openCodeSpend for why `reasoning` is kept out of
+ * `output` rather than added to it.
+ */
+async function scanOpenCodeAnalytics(
+  sessionId: string | undefined,
+  /** The store's database - the row's own, not the default OpenCode one: Kilo, MiMo Code and
+   *  IcodeMate are separate OpenCode-format databases (audit AH-34). */
+  path: string,
+  out: SessionAnalytics,
+): Promise<SessionAnalytics> {
+  const row = sessionId ? await readOpenCodeUsage(sessionId, path) : null
+  if (row) {
+    const spend = openCodeSpend(row)
+    out.tokens = spend.byModel
+    out.providerCostUsd = spend.costUsd
+    // No per-turn timestamps exist, so the session's own clock places it on the day chart. That
+    // puts a session's whole spend on the day it last ran rather than spreading it, which for a
+    // provider that records no turn times is the only honest placement.
+    const at = typeof row.time_updated === 'number' ? row.time_updated : null
+    if (at) {
+      out.firstTs = at
+      out.lastTs = at
+      const weighted = Object.values(spend.byModel).reduce((n, m) => n + m.weighted, 0)
+      out.days[dayKey(at)] = weighted
+      out.hours[String(hourKey(at))] = 1
+    }
+  }
+  return out
+}
+
+/**
+ * Hermes has already totalled its own session, by model, in `session_model_usage` — nothing to
+ * stream, same as OpenCode above. `providerCostUsd` is deliberately left null: unlike OpenCode's own
+ * passthrough cost, Hermes' totals are priced through THIS repo's catalog (the kit's per-call
+ * pricing, in server/src/pricing.ts) so a model the catalog has no price for is flagged
+ * unpriced rather than taken on Hermes' own estimated/actual cost for a provider we cannot verify.
+ * See the header of server/src/hermes-sessions.ts.
+ */
+function scanHermesAnalytics(
+  sessionId: string | undefined,
+  dbPath: string,
+  out: SessionAnalytics,
+): SessionAnalytics {
+  const rows = sessionId ? readHermesUsage(sessionId, dbPath) : []
+  if (rows.length === 0) return out
+  let latestMs = 0
+  for (const row of rows) {
+    addTurn(out.tokens, row.model, {
+      input: row.input_tokens,
+      cacheRead: row.cache_read_tokens,
+      cacheWrite: row.cache_write_tokens,
+      output: row.output_tokens,
+    })
+    const m = out.tokens[row.model]
+    // addTurn counts one call per invocation; corrected to the real API call count so "N replies"
+    // does not read as 1 for a session that made hundreds — the same fix openCodeSpend applies.
+    if (m) m.turns = Math.max(1, row.api_call_count)
+    if (row.last_seen_ms !== null && row.last_seen_ms > latestMs) latestMs = row.last_seen_ms
+  }
+  // No per-turn timestamps exist below the model-usage aggregate, so — like OpenCode — the
+  // session's own clock places its whole spend on one day rather than spreading it across turns
+  // that were never individually timed.
+  if (latestMs > 0) {
+    out.firstTs = latestMs
+    out.lastTs = latestMs
+    const weighted = Object.values(out.tokens).reduce((n, m) => n + m.weighted, 0)
+    out.days[dayKey(latestMs)] = weighted
+    out.hours[String(hourKey(latestMs))] = 1
+  }
+  return out
+}
+
+/**
+ * DeepSeek Harness: per-turn usage, which is the first non-Claude store here that has any.
+ *
+ * OpenCode and Hermes hand back one aggregate per session, so their whole spend lands on a single
+ * day; DSH timestamps every assistant message, so its turns are apportioned to the days and hours
+ * they actually happened in, exactly as a Claude or Codex transcript's are. The weighting matches
+ * applyCodexTurnToAnalytics's, which matches addTurn's, so a DSH session is comparable with every
+ * other row on the same chart rather than merely present on it.
+ *
+ * REASONING TOKENS ARE NOT ADDED TO OUTPUT. DeepSeek's own type documents the counts as disjoint,
+ * and `reasoningTokens` is a SUBSET breakdown of the output it already reported — folding it in
+ * would bill thinking twice. Same call openCodeSpend makes for the same reason.
+ */
+function scanDshAnalytics(path: string, out: SessionAnalytics): SessionAnalytics {
+  const rows = readDshUsage(path)
+  if (rows.length === 0) return out
+  let prevTs: number | null = null
+  for (const row of rows) {
+    const model = row.model ?? 'unknown'
+    const t = {
+      input: row.tokens_input ?? 0,
+      cacheRead: row.tokens_cache_read ?? 0,
+      cacheWrite: row.tokens_cache_write ?? 0,
+      output: row.tokens_output ?? 0,
+    }
+    addTurn(out.tokens, model, t)
+    const ts = row.time_ms
+    if (ts === null) continue
+    const day = dayKey(ts)
+    out.days[day] = (out.days[day] ?? 0) + weighTurnCounts(model, t)
+    const hour = String(hourKey(ts))
+    out.hours[hour] = (out.hours[hour] ?? 0) + 1
+    if (out.firstTs === null || ts < out.firstTs) out.firstTs = ts
+    if (out.lastTs === null || ts > out.lastTs) out.lastTs = ts
+    if (prevTs !== null && ts > prevTs) out.activeMs += Math.min(ts - prevTs, ACTIVE_GAP_CAP_MS)
+    prevTs = ts
+  }
+  return out
+}
+
+type TranscriptEventForAnalytics = {
+  type?: string
+  isCompactSummary?: boolean
+  timestamp?: string
+  message?: { role?: string; content?: unknown }
+}
+
+type AnalyticsContentBlock = {
+  type?: string
+  name?: string
+  input?: unknown
+  is_error?: boolean
+}
+
+/**
+ * Fold one content block (a tool_use or tool_result entry) into `out`/the running error streak.
+ * Pure aside from mutating `out`'s counters/collections — split out of
+ * applyTranscriptEventToAnalytics, which was carrying this branch inline inside its own loop.
+ *
+ * Returns the streak to carry into the next block (matching the original inline reassignment of
+ * `nextStreak`).
+ */
+function foldContentBlock(
+  block: unknown,
+  nextTurn: number,
+  atMs: number | null,
+  streak: number,
+  out: SessionAnalytics,
+): number {
+  if (!block || typeof block !== 'object') return streak
+  const b = block as AnalyticsContentBlock
+  if (b.type === 'tool_use') {
+    const name = typeof b.name === 'string' && b.name ? b.name : 'tool'
+    out.tools[name] = (out.tools[name] ?? 0) + 1
+    if (name === 'Skill' && b.input && typeof b.input === 'object') {
+      const skill = (b.input as { skill?: unknown }).skill
+      if (typeof skill === 'string' && skill)
+        out.sinks.skillUses[skill] = (out.sinks.skillUses[skill] ?? 0) + 1
+    }
+    if (EDIT_TOOLS.has(name)) {
+      const p = firstPath(b.input)
+      if (p) {
+        out.editCount++
+        out.filesTouched.add(p)
+        countEditLines(b.input, out)
+        captureWrite(out.writes, p, b.input, atMs)
+        if (out.edits.length < MAX_EDITS_PER_SESSION)
+          out.edits.push({ path: p, turn: nextTurn, ts: atMs })
+      }
+    }
+    return streak
+  }
+  if (b.type === 'tool_result') {
+    if (b.is_error === true) {
+      const nextStreak = streak + 1
+      if (nextStreak > out.toolErrorStreak) out.toolErrorStreak = nextStreak
+      out.toolErrors++
+      return nextStreak
+    }
+    return 0
+  }
+  return streak
+}
+
+/**
+ * Fold one parsed transcript event (an assistant/tool message) into `out`, given the running
+ * turn index and tool-error streak. Pure aside from mutating `out`'s counters/collections — no
+ * I/O, no awaits — so it can run synchronously wherever the line-parsing loop reaches it.
+ *
+ * Returns the next `{ turn, streak }` when the event carried message content (matching the
+ * original inline `turn++`), or null when it did not (matching the original inline `continue`,
+ * which left `turn`/`streak` untouched for that line).
+ */
+function applyTranscriptEventToAnalytics(
+  ev: TranscriptEventForAnalytics,
+  turn: number,
+  streak: number,
+  out: SessionAnalytics,
+): { turn: number; streak: number } | null {
+  if (ev.isCompactSummary === true) out.compactions++
+  const content = ev.message?.content
+  if (!Array.isArray(content)) return null
+  const nextTurn = turn + 1
+  const at = ev.timestamp ? Date.parse(ev.timestamp) : Number.NaN
+  const atMs = Number.isFinite(at) ? at : null
+  let nextStreak = streak
+
+  for (const block of content) {
+    nextStreak = foldContentBlock(block, nextTurn, atMs, nextStreak, out)
+  }
+  return { turn: nextTurn, streak: nextStreak }
+}
+
+/**
+ * Read one transcript end to end and total it up.
+ *
+ * Streamed, never held whole: these files reach hundreds of megabytes, and this runs over every one
+ * of them. The usage arithmetic is delegated to accumulateUsageLine so there is exactly one parser
+ * for what a turn cost; everything else here is counting.
+ */
+export async function scanSessionAnalytics(
+  path: string,
+  source: SessionSource,
+  sessionId?: string,
+  /** Other files belonging to the same session. Codex writes one rollout per execution thread and
+   *  each carries its own token counter, so a total that reads only `path` reports a fraction of
+   *  the truth. See TranscriptFile.siblingPaths. */
+  siblingPaths: string[] = [],
+): Promise<SessionAnalytics> {
+  const out = emptyAnalytics()
+  const other = await scanNonClaudeAnalytics(path, source, sessionId, siblingPaths, out)
+  if (other) return other
+
+  const st: ClaudeScanState = {
+    spend: emptySpend(),
+    // One API response is one charge, however many transcript records Claude Code split it across.
+    // See newUsageSeen: without this a session's tokens read ~2.3x high.
+    seen: newUsageSeen(),
+    lastWeighted: 0,
+    prevTs: null,
+    turn: -1,
+    streak: 0,
+    ownWeighted: 0,
+  }
+
+  // The session's own transcript FIRST, then every subagent it spawned. A Task subagent makes its
+  // own API calls into its own file, and those files hold 89.8B tokens against the top level's
+  // 64.5B on this machine — leaving them out reported 42% of real Claude spend as the total.
+  // Summing is safe here in a way it is not for Codex: every record carries its own request id and
+  // `seen` is shared across the files, so nothing can be charged twice.
+  //
+  // Sliced by the clock (core/loop-yield.ts): a buffered stream chunk resumes this loop without
+  // ever reaching the event loop, so one large transcript otherwise parses as a single block.
+  const slice = timeSlice()
+  for await (const { line: raw, sub } of streamSessionLines(path, siblingPaths)) {
+    if (slice.due()) await slice.pause()
+    const line = raw.trim()
+    if (!line) continue
+    foldClaudeUsageLine(line, sub, st, out)
+    if (foldSinkLine(line, out.sinks)) continue
+    foldClaudeEventLine(line, st, out)
+  }
+
+  out.tokens = st.spend.byModel
+  out.sinks.subWeighted = st.spend.weighted - st.ownWeighted
+  return scoreWrites(out)
+}
+
+/**
+ * Every source whose analytics are not read from a Claude transcript, or null for a Claude one.
+ */
+async function scanNonClaudeAnalytics(
+  path: string,
+  source: SessionSource,
+  sessionId: string | undefined,
+  siblingPaths: string[],
+  out: SessionAnalytics,
+): Promise<SessionAnalytics | null> {
+  // OpenCode has already totalled its own session: the numbers are columns on its row, not events
+  // in a log, so there is nothing to stream. See openCodeSpend for why `reasoning` is kept out of
+  // `output` rather than added to it.
+  if (source === 'opencode') return scanOpenCodeAnalytics(sessionId, path, out)
+  if (source === 'hermes') return scanHermesAnalytics(sessionId, path, out)
+  // DSH's `path` is the session's own log, and unlike the two above it records a cost per turn.
+  if (source === 'dsh') return scanDshAnalytics(path, out)
+  // HSwarm's dollars are real, but they are not THIS account's tokens: a job is paid straight out of
+  // the swarm's provider keys, never against a Claude/Codex weekly cap, so it does not belong in the
+  // per-account token spend this scan builds. Its cost lives in its own source (server/src/hswarm-
+  // cost.ts, summing the ledger by day/model/backend) rather than being folded in here - same
+  // "listed and readable, contributes nothing to THIS chart" posture as foreign below.
+  if (source === 'zswarm') return out
+  // Not one of these stores records what a turn cost — Copilot bills credits and never writes a
+  // token count, and Grok, Kimi and Zed simply do not persist one. So a foreign session is listed
+  // and readable and contributes nothing to the spend charts. A zero would claim it was free.
+  if (source === 'foreign') return out
+  if (source === 'codex') return scoreWrites(await scanCodexAnalytics([path, ...siblingPaths], out))
+  return null
+}
+
+/** The running state of one Claude transcript scan, carried from line to line. */
+type ClaudeScanState = {
+  spend: ReturnType<typeof emptySpend>
+  seen: ReturnType<typeof newUsageSeen>
+  lastWeighted: number
+  prevTs: number | null
+  turn: number
+  streak: number
+  /** Weighted spend when the session's OWN transcript ended; the rest is its subagents'. */
+  ownWeighted: number
+}
+
+/**
+ * The usage pass, run first and on the RAW line: it has its own cheap pre-filter and its own
+ * JSON.parse, and letting it skip the ~90% of lines with no `"usage"` in them is most of why this
+ * is fast enough to run over a whole store.
+ */
+function foldClaudeUsageLine(
+  line: string,
+  sub: boolean,
+  st: ClaudeScanState,
+  out: SessionAnalytics,
+): void {
+  const spend = st.spend
+  const promptBefore = spend.input + spend.cacheRead + spend.cacheCreation
+  const weightedBefore = spend.weighted
+  const ts = accumulateUsageLine(spend, line, 0, st.seen)
+  // A new request's whole prompt lands in one step, so the step IS the call's context size. A
+  // streaming record's final form adds output only, and a prompt of 0 never reads as deep.
+  const prompt = spend.input + spend.cacheRead + spend.cacheCreation - promptBefore
+  if (prompt >= DEEP_CONTEXT_TOKENS) {
+    out.sinks.deepCalls++
+    out.sinks.deepWeighted += spend.weighted - weightedBefore
+    out.sinks.deepExcess += deepExcessOf(line, prompt)
+  }
+  if (!sub) st.ownWeighted = spend.weighted
+  if (ts !== null) foldClaudeTimestamp(ts, st, out)
+}
+
+/** What a deep call paid to read its prompt past DEEP_CONTEXT_TOKENS: the prompt's weight at the
+ *  call's own rates (cache reads, writes and fresh input, never the reply) times the share of it
+ *  above the line. The part a compaction or a fresh session at the line could have saved. */
+function deepExcessOf(line: string, prompt: number): number {
+  const turn = parseUsageLine(line)
+  if (!turn) return 0
+  const { input, cacheRead, w5m, w1h } = turn.usage
+  const promptWeighted = weighCounts(turn.model, {
+    input,
+    cacheRead,
+    cacheWrite5m: w5m,
+    cacheWrite1h: w1h,
+    output: 0,
+  })
+  return (promptWeighted * (prompt - DEEP_CONTEXT_TOKENS)) / prompt
+}
+
+/** Charge the spend since the last dated line to `ts`'s day and hour, and extend the active time. */
+function foldClaudeTimestamp(ts: number, st: ClaudeScanState, out: SessionAnalytics): void {
+  const weighted = st.spend.weighted - st.lastWeighted
+  st.lastWeighted = st.spend.weighted
+  const day = dayKey(ts)
+  out.days[day] = (out.days[day] ?? 0) + weighted
+  const hour = String(hourKey(ts))
+  out.hours[hour] = (out.hours[hour] ?? 0) + 1
+  if (out.firstTs === null) out.firstTs = ts
+  out.lastTs = ts
+  if (st.prevTs !== null && ts > st.prevTs)
+    out.activeMs += Math.min(ts - st.prevTs, ACTIVE_GAP_CAP_MS)
+  st.prevTs = ts
+}
+
+/**
+ * Everything that needs the parsed event. Skip lines that cannot carry one rather than parsing
+ * every line twice. A subagent's tool use IS the parent's work and counts; its edits are
+ * attributed to the parent's turn index, which is the only turn a reader can jump to.
+ */
+function foldClaudeEventLine(line: string, st: ClaudeScanState, out: SessionAnalytics): void {
+  if (!line.includes('"tool_use"') && !line.includes('"tool_result"') && !line.includes('Compact'))
+    return
+  let ev: TranscriptEventForAnalytics
+  try {
+    ev = JSON.parse(line)
+  } catch {
+    return
+  }
+  const next = applyTranscriptEventToAnalytics(ev, st.turn, st.streak, out)
+  if (next) {
+    st.turn = next.turn
+    st.streak = next.streak
+  }
+}
+
+/**
+ * Score the session's writes against the files on disk, then drop the text. The scan is the only
+ * moment the written text is in hand, so the measurement happens here and only its number is kept.
+ */
+async function scoreWrites(out: SessionAnalytics): Promise<SessionAnalytics> {
+  out.editSurvival = await measureEditSurvival(out.writes)
+  out.writes = []
+  return out
+}
+
+/**
+ * Every line of a session: its own transcript, then each of the extra files it owns, with `sub`
+ * set on the extra files' lines so the subagent share of the spend can be told apart.
+ *
+ * One generator rather than a loop per file so the scan body stays a single pass over "lines of
+ * this session". A file that vanished (Claude Code prunes old subagent transcripts) is skipped;
+ * losing the whole session over one missing child would be a far larger error than the child.
+ */
+async function* streamSessionLines(
+  path: string,
+  siblingPaths: string[],
+): AsyncGenerator<{ line: string; sub: boolean }> {
+  for await (const line of streamLines(path)) yield { line, sub: false }
+  for (const extra of siblingPaths) {
+    try {
+      for await (const line of streamLines(extra)) yield { line, sub: true }
+    } catch {
+      // gone between the index build and now
+    }
+  }
+}
+
+/*
+ * Codex rollouts: the same totals, from a completely different log.
+ *
+ * Separate from the Claude walk above rather than bolted into it, because almost nothing is shared.
+ * Codex announces its model in `turn_context`, reports usage as a running cumulative in
+ * `token_count`, files tool calls under `response_item` shapes of its own, and has no notion of a
+ * `tool_result.is_error` block at all. Forcing one loop to serve both would be a function with two
+ * unrelated halves and a flag.
+ */
+/**
+ * A Codex conversation's totals: the LARGEST of its rollouts, never the sum of them.
+ *
+ * THE MISTAKE THIS EXISTS TO PREVENT, because it was made here and shipped. Codex writes one
+ * rollout file per execution thread, and it looks exactly like each file carries that thread's own
+ * spend — so summing them looks like the fix for an undercount. It is not. `total_token_usage` is a
+ * SESSION-WIDE running total that every thread writes into its own file, so each rollout replays
+ * the whole conversation's counter from the beginning.
+ *
+ * Measured, not reasoned: in one real conversation the main rollout and three subagent rollouts all
+ * open at exactly `18558 input / 11008 cached / 480 output`, and three subagents that ran inside a
+ * nine-minute window each record 5,090 counter events climbing to 552 MILLION tokens. No nine-minute
+ * thread makes five thousand API calls. They are one counter seen four times. Summing 679 files
+ * turned a 700M-token conversation into 92.9B, and the store total from 11.9B into 637B.
+ *
+ * So: read each file, keep the one that reached the highest total, discard the rest. Across 109
+ * conversations that is the main rollout 107 times; the two exceptions are conversations whose main
+ * rollout stopped being written before a subagent did, and taking the maximum gets those right too.
+ */
+async function scanCodexAnalytics(
+  paths: string[],
+  out: SessionAnalytics,
+): Promise<SessionAnalytics> {
+  let best: SessionAnalytics | null = null
+  let bestTotal = -1
+  for (const path of paths) {
+    const one = emptyAnalytics()
+    // Per FILE. Codex moves rollouts between `sessions/` and `archived_sessions/` while the daemon
+    // is scanning, so one vanishing mid-read is expected rather than exceptional.
+    try {
+      await scanOneCodexRollout(path, one)
+    } catch {
+      continue
+    }
+    let total = 0
+    for (const s of Object.values(one.tokens))
+      total += s.input + s.cacheRead + s.cacheCreation5m + s.output
+    if (total > bestTotal) {
+      bestTotal = total
+      best = one
+    }
+  }
+  if (best) {
+    // providerCostUsd is set by the OpenCode path only and is null here; everything else on `out`
+    // is still the empty shell this was handed.
+    Object.assign(out, best, { providerCostUsd: out.providerCostUsd })
+  }
+  return out
+}
+
+/**
+ * Fold one dated Codex usage turn into `out`'s day/hour/activity charts and returns the new
+ * `prevTs` for the caller's activity-gap tracking. Pure aside from mutating `out` — no I/O, no
+ * awaits — split out of scanOneCodexRollout's per-line loop where it was inline before.
+ */
+function applyCodexTurnToAnalytics(
+  t: CodexTurn,
+  out: SessionAnalytics,
+  prevTs: number | null,
+): number | null {
+  if (t.ts === null) return prevTs
+  const day = dayKey(t.ts)
+  // Weighted so the day chart apportions a Codex session the same way it does a Claude one.
+  out.days[day] = (out.days[day] ?? 0) + weighTurnCounts(t.model ?? 'unknown', t)
+  const hour = String(hourKey(t.ts))
+  out.hours[hour] = (out.hours[hour] ?? 0) + 1
+  if (out.firstTs === null || t.ts < out.firstTs) out.firstTs = t.ts
+  if (out.lastTs === null || t.ts > out.lastTs) out.lastTs = t.ts
+  if (prevTs !== null && t.ts > prevTs) out.activeMs += Math.min(t.ts - prevTs, ACTIVE_GAP_CAP_MS)
+  return t.ts
+}
+
+/**
+ * Record one Codex tool-call response item into `out.tools`/`out.edits`, mirroring the
+ * `tool_use` handling in applyTranscriptEventToAnalytics for the Claude format. Pure aside from
+ * mutating `out` — split out of scanOneCodexRollout's per-line loop where it was inline before.
+ */
+function recordCodexToolCall(
+  payload: { type?: string; name?: string; arguments?: unknown; call_id?: string },
+  turn: number,
+  lastTs: number | null,
+  out: SessionAnalytics,
+): void {
+  // Codex has TWO call shapes and both are tool use: `function_call` for a declared tool, and
+  // `custom_tool_call` for its sandbox (`exec`, `wait`). Counting only the first missed the two
+  // most-used tools in a real rollout entirely.
+  //
+  // NOTE ON EDITS: no edit is recorded for Codex, deliberately. Its file changes happen INSIDE
+  // the `exec` sandbox as free-form code rather than as a tool call with a path argument, so
+  // there is nothing structured to read. Guessing a path out of a code string would produce a
+  // feed that is wrong in ways nobody could check, which is worse than one that is empty.
+  if (
+    !(payload.type === 'function_call' || payload.type === 'custom_tool_call') ||
+    typeof payload.name !== 'string'
+  )
+    return
+  const name = payload.name || 'tool'
+  out.tools[name] = (out.tools[name] ?? 0) + 1
+  if (!(EDIT_TOOLS.has(name) || /apply_patch|edit_file|write_file/i.test(name))) return
+  let input: unknown = payload.arguments
+  if (typeof input === 'string') {
+    try {
+      input = JSON.parse(input)
+    } catch {
+      input = null
+    }
+  }
+  const p = firstPath(input)
+  if (p) {
+    out.editCount++
+    out.filesTouched.add(p)
+    countEditLines(input, out)
+    captureWrite(out.writes, p, input, lastTs)
+    if (out.edits.length < MAX_EDITS_PER_SESSION) out.edits.push({ path: p, turn, ts: lastTs })
+  }
+}
+
+/**
+ * Attribute unattributed token totals to a model.
+ */
+function attributeUnattributed(
+  tokens: Record<string, ModelSpend>,
+  unattributed: Array<{
+    input: number
+    cacheRead: number
+    cacheWrite: number
+    output: number
+  }>,
+  model: string,
+): void {
+  for (const t of unattributed) addTurn(tokens, model, t)
+  unattributed.length = 0
+}
+
+/**
+ * Process one parsed Codex event line, updating usage, turns, timestamps, and tool calls.
+ */
+function processCodexEvent(
+  ev: {
+    type?: string
+    timestamp?: string
+    payload?: { type?: string; name?: string; arguments?: unknown; call_id?: string }
+  },
+  reader: CodexUsageReader,
+  out: SessionAnalytics,
+  unattributed: Array<{
+    input: number
+    cacheRead: number
+    cacheWrite: number
+    output: number
+  }>,
+  turn: number,
+  prevTs: number | null,
+): { turn: number; prevTs: number | null } {
+  const t = reader.push(ev)
+  if (t) {
+    // The day/hour/activity work below is model-independent, so an unnamed turn still lands
+    // on the charts at full weight — only its per-model row waits.
+    if (t.model === null) unattributed.push(t)
+    else {
+      attributeUnattributed(out.tokens, unattributed, t.model)
+      addTurn(out.tokens, t.model, t)
+    }
+    prevTs = applyCodexTurnToAnalytics(t, out, prevTs)
+  }
+
+  const payload = ev.payload
+  if (payload) {
+    // Codex logs a compaction as its own top-level event type rather than a flag on a turn.
+    if (ev.type === 'compacted') out.compactions++
+    if (ev.type === 'response_item') {
+      turn++
+      recordCodexToolCall(payload, turn, out.lastTs, out)
+    }
+  }
+  return { turn, prevTs }
+}
+
+async function scanOneCodexRollout(path: string, out: SessionAnalytics): Promise<SessionAnalytics> {
+  const paths = [path]
+  let turn = -1
+  // Turns that spent tokens before their rollout named a model (see CodexTurn.model). Held rather
+  // than dropped or guessed: they are real spend, and the file usually names its model a few lines
+  // later, at which point they are attributed to it retroactively. Anything still unattributed
+  // when the conversation ends falls back to the model the REST of the conversation used, which is
+  // a fact about this conversation rather than an invented id.
+  const unattributed: Array<{
+    input: number
+    cacheRead: number
+    cacheWrite: number
+    output: number
+  }> = []
+
+  const slice = timeSlice()
+  for (const path of paths) {
+    const reader = new CodexUsageReader()
+    let prevTs: number | null = null
+    for await (const raw of streamLines(path)) {
+      if (slice.due()) await slice.pause()
+      const line = raw.trim()
+      if (!line) continue
+      let ev: {
+        type?: string
+        timestamp?: string
+        payload?: { type?: string; name?: string; arguments?: unknown; call_id?: string }
+      }
+      try {
+        ev = JSON.parse(line)
+      } catch {
+        continue
+      }
+      const res = processCodexEvent(ev, reader, out, unattributed, turn, prevTs)
+      turn = res.turn
+      prevTs = res.prevTs
+    }
+  }
+  // Whatever else this rollout established, applied to the turns that named no model themselves.
+  // `codex` only when NOTHING in the file ever did — a genuinely unknown model, reported as
+  // unpriced rather than dressed up as one we could bill.
+  if (unattributed.length)
+    attributeUnattributed(out.tokens, unattributed, dominantModel(out.tokens) ?? 'codex')
+  return out
+}
+
+/** The model carrying the most weighted spend so far, or null when none has any. Weighted rather
+ *  than raw tokens so a model that only ever read cache cannot outvote the one doing the work. */
+function dominantModel(tokens: Record<string, ModelSpend>): string | null {
+  let best: string | null = null
+  let bestWeight = -1
+  for (const [model, spend] of Object.entries(tokens)) {
+    if (spend.weighted > bestWeight) {
+      best = model
+      bestWeight = spend.weighted
+    }
+  }
+  return best
+}
+
+// --- persistence -------------------------------------------------------------------------------
+// Stored on session_scan_cache, keyed by the same (path, mtime, size) revision the list scanner
+// uses, so a transcript that gains a turn invalidates its analytics along with its title. That is
+// why there is no separate staleness bookkeeping here: there is only one notion of "this row
+// describes this file as it is now", and it already existed.
+
+interface AnalyticsRow {
+  cache_key: string
+  session_id: string
+  source: string
+  project: string
+  cwd: string
+  analytics_at: number | null
+  analytics_version: number | null
+  tokens_json: string | null
+  days_json: string | null
+  hours_json: string | null
+  tools_json: string | null
+  tool_errors: number | null
+  tool_error_streak: number | null
+  edit_count: number | null
+  compactions: number | null
+  active_ms: number | null
+  first_ts: number | null
+  last_ts: number | null
+  provider_cost_usd: number | null
+  edit_survival: number | null
+  edit_survival_n: number | null
+  edit_survival_due_at: number | null
+  sinks_json: string | null
+}
+
+const selectRows = db.query<AnalyticsRow, []>(
+  'select cache_key, session_id, source, project, cwd, analytics_at, analytics_version, ' +
+    'tokens_json, days_json, hours_json, tools_json, tool_errors, tool_error_streak, ' +
+    'edit_count, compactions, active_ms, first_ts, last_ts, provider_cost_usd, sinks_json, ' +
+    'edit_survival, edit_survival_n, edit_survival_due_at ' +
+    'from session_scan_cache ' +
+    'where analytics_at is not null',
+)
+
+/**
+ * The permanent per-session record (db.ts session_stats). Upsert on a stable session key, never a
+ * file key: one row per conversation for its whole life.
+ *
+ * It holds no tokens and no money: those are the kit's (kit/), per call. The token, weighted, cost
+ * and per-day columns stay in the table for the history the kit's legacy ingest read, and are no
+ * longer written.
+ *
+ * `first_seen_at` is written only on INSERT (the excluded value is ignored on conflict), so it keeps
+ * meaning "when this machine first saw this chat" rather than drifting forward on every rescan.
+ */
+const upsertPermanentStats = db.query(
+  'insert into session_stats (session_key, session_id, source, tool, project, cwd, title, ' +
+    'instance, first_ts, last_ts, turns, active_ms, tool_calls, tool_errors, compactions, ' +
+    'edit_count, files_touched, lines_added, lines_removed, size_bytes, ' +
+    'first_seen_at, last_scanned_at, gone_at) ' +
+    'values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null) ' +
+    'on conflict(session_key) do update set ' +
+    'tool = excluded.tool, project = excluded.project, cwd = excluded.cwd, title = excluded.title, ' +
+    'instance = coalesce(excluded.instance, session_stats.instance), ' +
+    'first_ts = excluded.first_ts, last_ts = excluded.last_ts, turns = excluded.turns, ' +
+    'active_ms = excluded.active_ms, ' +
+    'tool_calls = excluded.tool_calls, tool_errors = excluded.tool_errors, ' +
+    'compactions = excluded.compactions, edit_count = excluded.edit_count, ' +
+    'files_touched = excluded.files_touched, lines_added = excluded.lines_added, ' +
+    'lines_removed = excluded.lines_removed, size_bytes = excluded.size_bytes, ' +
+    'last_scanned_at = excluded.last_scanned_at, gone_at = null',
+)
+
+/** Stamp a session as no longer on disk, keeping every number it ever had. Called by the prune in
+ *  sessions.ts INSTEAD of forgetting the chat. */
+export const markSessionGone = db.query(
+  'update session_stats set gone_at = ? where session_key = ? and gone_at is null',
+)
+
+const upsertAnalytics = db.query(
+  'update session_scan_cache set analytics_at = ?, analytics_version = ?, ' +
+    'analytics_mtime_ms = ?, analytics_size_bytes = ?, provider_cost_usd = ?, session_id = ?, ' +
+    'source = ?, project = ?, tokens_json = ?, days_json = ?, hours_json = ?, tools_json = ?, ' +
+    'tool_errors = ?, tool_error_streak = ?, edit_count = ?, compactions = ?, active_ms = ?, ' +
+    'first_ts = ?, last_ts = ?, sinks_json = ?, edit_survival = ?, edit_survival_n = ?, ' +
+    'edit_survival_due_at = ? where cache_key = ?',
+)
+
+/** A listing is keyed by a hash of its own content, so the first writer wins and every later one
+ *  is the same bytes. */
+const insertListing = db.query(
+  'insert into skill_listings (hash, entries_json) values (?, ?) on conflict(hash) do nothing',
+)
+
+/**
+ * A placeholder row, so analytics can be stored for a transcript the LIST scanner has not parsed yet
+ * (the two warms run independently, and the list only warms the newest few hundred).
+ *
+ * `mtime_ms` and `size_bytes` are -1 ON PURPOSE. The list scanner validates its own cache by
+ * comparing those against the file on disk, so an impossible pair guarantees it treats this row as
+ * stale and re-parses. Writing the REAL pair here looked harmless and was not: the row satisfied the
+ * list's freshness check, so the list read this placeholder as a finished parse with a uuid for a
+ * title and zero substantive turns — and a session with zero substantive turns is DROPPED from the
+ * list. Analytics would have silently deleted sessions from the sessions view.
+ */
+const insertShell = db.query(
+  'insert into session_scan_cache (cache_key, path, mtime_ms, size_bytes, title, cwd, git_branch, ' +
+    'message_count, created_at, last_activity_at, last_role, last_text_preview, ' +
+    'substantive_turns, scanned_at) values (?, ?, -1, -1, ?, ?, null, 0, null, ?, null, null, 0, ?) ' +
+    'on conflict(cache_key) do nothing',
+)
+
+const deleteEdits = db.query('delete from session_edits where cache_key = ?')
+const insertEdit = db.query(
+  'insert into session_edits (cache_key, session_id, source, project, path, turn, ts) ' +
+    'values (?, ?, ?, ?, ?, ?, ?)',
+)
+
+/** Matches the key server/src/sessions.ts builds; kept in step by the test that pins both. */
+export function analyticsCacheKey(tf: TranscriptFile): string {
+  return `${tf.source}:${tf.session_id}:${tf.path}`
+}
+
+const selectRevision = db.query<
+  {
+    analytics_mtime_ms: number | null
+    analytics_size_bytes: number | null
+    analytics_at: number | null
+    analytics_version: number | null
+    edit_survival_due_at: number | null
+  },
+  [string]
+>(
+  'select analytics_mtime_ms, analytics_size_bytes, analytics_at, analytics_version, ' +
+    'edit_survival_due_at from session_scan_cache where cache_key = ?',
+)
+
+/** Compared against the ANALYTICS stamp, never the list scanner's: the two are written by different
+ *  passes, and reading the other one's stamp would make each rescan whenever the other ran.
+ *
+ *  The one exception to "an unchanged file needs no rescan": edit survival is measured some hours
+ *  AFTER a session stops, which is exactly when its transcript stops changing. A row whose
+ *  measurement has come due is rescanned once for it, then carries a null due date again. */
+function needsScan(tf: TranscriptFile, now = Date.now()): boolean {
+  const row = selectRevision.get(analyticsCacheKey(tf))
+  if (!row) return true
+  if (row.analytics_at === null || row.analytics_version !== ANALYTICS_VERSION) return true
+  if (row.edit_survival_due_at !== null && row.edit_survival_due_at <= now) return true
+  return row.analytics_mtime_ms !== tf.mtime_ms || row.analytics_size_bytes !== tf.size_bytes
+}
+
+function persist(tf: TranscriptFile, a: SessionAnalytics): void {
+  const key = analyticsCacheKey(tf)
+  // The list scanner owns this row and may not have written it yet (analytics can warm first on a
+  // cold store), so a placeholder carries the not-null columns until the real parse fills them in.
+  // Its revision is hard-coded to (-1, -1) in the statement itself: see the comment on insertShell
+  // for why writing the file's real mtime and size here silently deleted sessions from the list.
+  insertShell.run(key, tf.path, tf.session_id, tf.cwd ?? '', tf.mtime_ms, Date.now())
+  db.transaction(() => {
+    upsertAnalytics.run(
+      Date.now(),
+      ANALYTICS_VERSION,
+      tf.mtime_ms,
+      tf.size_bytes,
+      a.providerCostUsd,
+      tf.session_id,
+      tf.source,
+      tf.project,
+      JSON.stringify(a.tokens),
+      JSON.stringify(a.days),
+      JSON.stringify(a.hours),
+      JSON.stringify(a.tools),
+      a.toolErrors,
+      a.toolErrorStreak,
+      a.editCount,
+      a.compactions,
+      a.activeMs,
+      a.firstTs,
+      a.lastTs,
+      JSON.stringify(storedSinks(a.sinks)),
+      a.editSurvival.score,
+      a.editSurvival.measured,
+      a.editSurvival.dueAt,
+      key,
+    )
+    for (const [hash, entries] of a.sinks.listings) insertListing.run(hash, JSON.stringify(entries))
+    deleteEdits.run(key)
+    for (const e of a.edits)
+      insertEdit.run(
+        key,
+        tf.session_id,
+        tf.source,
+        tf.cwd || decodeProjectKey(tf.project),
+        e.path,
+        e.turn,
+        e.ts,
+      )
+    recordPermanentStats(tf, a)
+  })()
+}
+
+/**
+ * Mirror this scan into the PERMANENT record (see the session_stats table in db.ts).
+ *
+ * The row above is a cache keyed to a file revision and is deleted the moment the transcript is —
+ * which, with Claude Code's 30-day cleanup, is how a year of history became one month of it. This
+ * write is the copy that survives. It is an upsert on a stable per-session key rather than on the
+ * file's cache key, so a session that gains turns updates its own row instead of accumulating one
+ * per revision, and `first_seen_at` records when this machine FIRST saw the chat even after the
+ * transcript is long gone.
+ *
+ * `gone_at` is explicitly cleared here: a transcript that comes back (restored from an archive, or
+ * a store remounted) is present again, and a row still flagged as gone would keep saying otherwise.
+ */
+function recordPermanentStats(tf: TranscriptFile, a: SessionAnalytics): void {
+  projectsCache = null
+  const turns = Object.values(a.tokens).reduce((n, m) => n + m.turns, 0)
+  const toolCalls = Object.values(a.tools).reduce((n, v) => n + v, 0)
+  upsertPermanentStats.run(
+    `${tf.source}:${tf.session_id}`,
+    tf.session_id,
+    tf.source,
+    tf.tool ?? null,
+    tf.project ?? null,
+    tf.cwd || decodeProjectKey(tf.project),
+    tf.title ?? null,
+    // Which desktop instance (and therefore which ACCOUNT) ran it. The single most perishable fact
+    // here: once the transcript is gone nothing else on this machine remembers who paid for it.
+    findDesktopChat(tf.session_id)?.instance ?? null,
+    a.firstTs,
+    a.lastTs,
+    turns,
+    a.activeMs,
+    toolCalls,
+    a.toolErrors,
+    a.compactions,
+    a.editCount,
+    a.filesTouched.size,
+    a.linesAdded,
+    a.linesRemoved,
+    tf.size_bytes ?? null,
+    Date.now(),
+    Date.now(),
+  )
+}
+
+/**
+ * The global cap on the edits feed.
+ *
+ * Every other field here is bounded per session, so the store grows with the number of sessions and
+ * nothing else. Edits are the one list, so they get a ceiling of their own: the feed answers "what
+ * has been touched lately", and ten thousand rows is far more than that question needs.
+ */
+const MAX_EDIT_ROWS = 10_000
+
+function pruneEdits(): void {
+  try {
+    db.run(
+      'delete from session_edits where id not in (select id from session_edits order by ts desc, id desc limit ?)',
+      [MAX_EDIT_ROWS],
+    )
+  } catch {
+    // Housekeeping only. A store that grew past the cap is a much smaller problem than a warm-up
+    // that aborts.
+  }
+}
+
+export interface AnalyticsRefresh {
+  scanned: number
+  skipped: number
+  /** Transcripts that could not be totalled. Reported rather than swallowed — see the catch below. */
+  failed: number
+  budgetExhausted: boolean
+}
+
+/**
+ * Bring the stored totals up to date, newest transcript first, under a wall-clock budget.
+ *
+ * Newest-first because the charts are read from the recent end: a store that is only half-scanned
+ * should be right about this week and missing last year, never the other way round. The budget is
+ * what keeps this from monopolising a daemon that is also serving a UI.
+ */
+export async function refreshAnalytics(
+  files: TranscriptFile[],
+  opts: { budgetMs?: number; concurrency?: number } = {},
+): Promise<AnalyticsRefresh> {
+  const deadline = Date.now() + (opts.budgetMs ?? 60_000)
+  const concurrency = Math.max(1, opts.concurrency ?? 4)
+  knownTranscripts = files.length
+  const queue = [...files].sort((a, b) => b.mtime_ms - a.mtime_ms)
+  let scanned = 0
+  let skipped = 0
+  let failed = 0
+  let next = 0
+  let budgetExhausted = false
+
+  const worker = async () => {
+    for (;;) {
+      const i = next++
+      if (i >= queue.length) return
+      if (Date.now() > deadline) {
+        budgetExhausted = true
+        return
+      }
+      const tf = queue[i]
+      if (!tf) return
+      if (!needsScan(tf)) {
+        skipped++
+        continue
+      }
+      try {
+        const a = await scanSessionAnalytics(tf.path, tf.source, tf.session_id, tf.siblingPaths)
+        persist(tf, a)
+        scanned++
+      } catch (err) {
+        // An unreadable or half-written transcript is skipped, not fatal: it will be retried on the
+        // next refresh, by which point the writer has usually finished.
+        //
+        // COUNTED AND REPORTED, though, because a silent catch here hid a real bug during
+        // development — a mismatched statement meant every single file failed, and the only symptom
+        // was a warm that reported nothing and a table that stayed empty. A failure that happens to
+        // EVERY file is not the transient case this catch is for, and `failed` is what makes the
+        // difference visible.
+        failed++
+        if (process.env.AGENTHYDRA_DEBUG_ANALYTICS) console.error('[analytics]', err)
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  if (scanned > 0) {
+    pruneEdits()
+    refreshCoverageStats()
+  }
+  return { scanned, skipped, failed, budgetExhausted }
+}
+
+let warming: Promise<void> | null = null
+
+/** A pause between chunks, so a long warm leaves the disk to whatever the user is actually doing.
+ *  Long enough to be polite, short enough that a full store still finishes within an hour. */
+const WARM_CHUNK_GAP_MS = 3_000
+
+/**
+ * Warm in the background until the store is actually covered, one bounded chunk at a time.
+ *
+ * WHY IT LOOPS. This used to be a single 120-second burst, which covered a whole store back when
+ * the scan read 1,229 Claude transcripts. It now also reads their 16,579 subagent transcripts, so
+ * one burst reaches about a third of the store and then stops — leaving the analytics tab showing
+ * a partial answer with no indication that anything would ever finish it, and a Rescan button the
+ * user is expected to keep pressing.
+ *
+ * Chunked rather than one unbounded pass so a slow store cannot hold the daemon's I/O for an hour
+ * without interruption, and it stops the moment a chunk makes no progress, which is the honest end
+ * condition: either everything is scanned, or the remainder is failing and hammering it will not
+ * help.
+ */
+export function warmAnalyticsInBackground(budgetMs = 120_000): void {
+  if (warming) return
+  warming = (async () => {
+    try {
+      for (;;) {
+        const r = await refreshAnalytics(await ensureTranscriptIndex(), { budgetMs })
+        if (!r.budgetExhausted || r.scanned === 0) break
+        await new Promise((resolve) => setTimeout(resolve, WARM_CHUNK_GAP_MS))
+      }
+    } catch {
+      // Analytics are an addition; the rest of the daemon does not depend on them.
+    } finally {
+      warming = null
+    }
+  })()
+}
+
+// --- aggregates --------------------------------------------------------------------------------
+
+function parseJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
+}
+
+/** Which account dispatched a given session, when we dispatched it at all. */
+function accountBySession(): Map<string, string> {
+  const out = new Map<string, string>()
+  try {
+    const rows = db
+      .query<{ session_id: string; label: string | null }, []>(
+        "select q.session_id as session_id, coalesce(a.label, q.instance_ref, '') as label " +
+          'from queue_items q left join accounts a on a.id = q.account_id',
+      )
+      .all()
+    for (const r of rows) if (r.session_id && r.label) out.set(r.session_id, r.label)
+  } catch {
+    // A schema that does not carry these columns simply yields no account breakdown.
+  }
+  return out
+}
+
+const NON_MODELS = new Set(['<synthetic>', 'unknown'])
+
+/**
+ * A stored row's per-model spend, re-weighed under the current weights, without the entries that
+ * are not models.
+ *
+ * RE-WEIGHED because the permanent record keeps chats whose transcripts are gone and can never be
+ * rescanned, so their `weighted` would otherwise stay in whatever unit was current when they were
+ * scanned.
+ *
+ * NOT MODELS: the CLI attributes its own synthetic notices (an API error, a cancellation) to a
+ * pseudo-model `<synthetic>`, which carries turns and no tokens. Left in, it shows up as a
+ * zero-dollar row in a chart of models, where a reader has to work out that it is not one. The
+ * stored row keeps it, because that is what the transcript said; only the report leaves it out.
+ */
+function storedModelSpend(json: string | null): Record<string, ModelSpend> {
+  const out: Record<string, ModelSpend> = {}
+  for (const [k, v] of Object.entries(
+    reweighModels(parseJson<Record<string, ModelSpend>>(json, {})),
+  ))
+    if (!NON_MODELS.has(k) || v.weighted > 0) out[k] = v
+  return out
+}
+
+/**
+ * Group projects case-insensitively, and remember the first spelling for display.
+ *
+ * Windows paths are case-insensitive, and the two sources these come from disagree about the drive
+ * letter: `D:\NEWProjects\...` from a session's own cwd, `d:\NEWProjects\...` from the decoded store
+ * folder. Grouping on the raw string put one project on the chart twice, which is exactly the kind
+ * of mistake a chart makes look authoritative. Caught on real data, not in review.
+ */
+function projectKeyOf(display: Map<string, string>, path: string): string {
+  const key = path.toLowerCase()
+  if (!display.has(key)) display.set(key, path)
+  return key
+}
+
+/** The four categories, zeroed. */
+function emptyTokens(): TokenBreakdown {
+  return { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 }
+}
+
+/** Fold one model's counts into a running breakdown. The two cache-write TTL slots are summed:
+ *  only Anthropic distinguishes them, and a reader asking "how much did I write to cache" wants
+ *  one number. */
+function addTokens(into: TokenBreakdown, m: ModelSpend): void {
+  const write = m.cacheCreation5m + m.cacheCreation1h
+  into.input += m.input
+  into.cacheRead += m.cacheRead
+  into.cacheWrite += write
+  into.output += m.output
+  into.total += m.input + m.cacheRead + write + m.output
+}
+
+/** The kit's `source` as the provider key this report has always grouped by. All three Claude
+ *  sources are the one provider; HSwarm's workers are the successor of the zswarm key. */
+const KIT_PROVIDER: Record<string, SessionSource> = {
+  cli: 'claude',
+  desktop: 'claude',
+  climayte: 'claude',
+  codex: 'codex',
+  opencode: 'opencode',
+  dsh: 'dsh',
+  hermes: 'hermes',
+  hswarm: 'zswarm',
+}
+
+/** cwd (else the decoded store folder) of every session either stored table knows, by session id. */
+async function sessionProjects(): Promise<Map<string, string>> {
+  // Sessions change slowly and reading the scan cache costs ~100 us a row, so a minute's answer is kept.
+  if (projectsCache && projectsCache.at > Date.now() - PROJECTS_TTL_MS) return projectsCache.map
+  if (!projectsInflight) {
+    projectsInflight = readSessionProjects().finally(() => {
+      projectsInflight = null
+    })
+  }
+  return projectsInflight
+}
+const PROJECTS_TTL_MS = 60_000
+let projectsCache: { at: number; map: Map<string, string> } | null = null
+
+/** Forget the session-to-project map spendReport reads for up to five minutes. For tests only: a test
+ *  that reads the spend report against its own database leaves an empty map behind otherwise. */
+export function resetSessionProjects(): void {
+  projectsCache = null
+}
+let projectsInflight: Promise<Map<string, string>> | null = null
+
+async function readSessionProjects(): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  const read = async (table: string, where: string) => {
+    try {
+      await scanRowids<{ session_id: string; cwd: string | null; project: string | null }>(
+        table,
+        'session_id, cwd, project',
+        where,
+        [],
+        (rows) => {
+          for (const r of rows) {
+            const path = r.cwd || (r.project ? decodeProjectKey(r.project) : '')
+            if (r.session_id && path) out.set(r.session_id, path)
+          }
+        },
+      )
+    } catch {
+      // A store without these tables simply attributes nothing to a project.
+    }
+  }
+  await read('session_stats', '1')
+  await read('session_scan_cache', 'analytics_at is not null')
+  projectsCache = { at: Date.now(), map: out }
+  return out
+}
+
+/**
+ * Read a table of the app database in rowid ranges sized to take about 10 ms each, handing the loop
+ * a turn between them: one statement over the scan cache (rows with kilobytes of JSON each) would
+ * hold the daemon for as long as the table is big. Rows written meanwhile may or may not be seen.
+ */
+async function scanRowids<T>(
+  table: string,
+  columns: string,
+  where: string,
+  args: (string | number)[],
+  onRows: (rows: T[]) => void,
+): Promise<void> {
+  const top = db.query<{ m: number | null }, []>(`select max(rowid) as m from ${table}`).get()?.m
+  if (top == null) return
+  const q = db.query<T, (string | number)[]>(
+    `select ${columns} from ${table} where rowid > ? and rowid <= ? and ${where}`,
+  )
+  let size = 200
+  for (let lo = 0; lo < top; ) {
+    const hi = lo + size
+    const t0 = performance.now()
+    onRows(q.all(lo, hi, ...args))
+    const ms = performance.now() - t0
+    lo = hi
+    // Grows by at most half again a step: a stretch of empty rowids says nothing about the next one.
+    size = Math.max(50, Math.min(50_000, Math.round(size * Math.min(1.5, ms > 0 ? 10 / ms : 1.5))))
+    await yieldToLoop()
+  }
+}
+
+/** A set of buckets keyed by name, counting each session once per bucket however many rows it has. */
+class BucketSet {
+  private readonly rows = new Map<string, { b: SpendBucket; sessions: Set<string> }>()
+
+  add(
+    key: string,
+    r: { weighted: number; cost: number | null; calls: number; tokens: TokenBreakdown },
+    session: string | null,
+  ): void {
+    let e = this.rows.get(key)
+    if (!e) {
+      e = {
+        b: { key, weighted: 0, costUsd: null, sessions: 0, turns: 0, tokens: emptyTokens() },
+        sessions: new Set(),
+      }
+      this.rows.set(key, e)
+    }
+    e.b.weighted += r.weighted
+    if (r.cost !== null) e.b.costUsd = (e.b.costUsd ?? 0) + r.cost
+    e.b.turns += r.calls
+    const t = e.b.tokens ?? emptyTokens()
+    t.input += r.tokens.input
+    t.cacheRead += r.tokens.cacheRead
+    t.cacheWrite += r.tokens.cacheWrite
+    t.output += r.tokens.output
+    t.total += r.tokens.total
+    if (session) e.sessions.add(session)
+  }
+
+  /** Count `session` in a bucket that already exists (its numbers came from another query). */
+  touch(key: string, session: string | null): void {
+    if (session) this.rows.get(key)?.sessions.add(session)
+  }
+
+  /** The buckets, most expensive first, with their session counts filled in. */
+  list(order: 'spend' | 'key' = 'spend'): SpendBucket[] {
+    const out = [...this.rows.values()].map((e) => ({ ...e.b, sessions: e.sessions.size }))
+    return order === 'key'
+      ? out.sort((a, b) => a.key.localeCompare(b.key))
+      : out.sort((a, b) => (b.costUsd ?? b.weighted) - (a.costUsd ?? a.weighted))
+  }
+}
+
+export interface SpendReportOptions {
+  /** Window start (epoch ms); null = everything. */
+  sinceMs?: number | null
+  /** Kit sources to count (cli, desktop, climayte, codex, ...); absent = all. */
+  sources?: readonly string[] | null
+  /** `self` = only this machine's calls (the kit's pc=self); absent = every PC. */
+  pc?: 'self' | null
+  /** Test seams: the kit store to read and the clock. */
+  store?: KitStore
+  now?: number
+}
+
+/**
+ * The whole spend report, read from the analytics toolkit (kit/query.ts) in one query so every
+ * breakdown sums to the same total.
+ *
+ * What a row costs: what a provider actually charged (`billed_usd`: OpenCode, HSwarm) when it
+ * reported one, else the list-price value (`list_usd`). A subscription call has only the latter.
+ *
+ * Projects: a kit row names its session, and the session's cwd comes from the per-session tables.
+ * Past the kit's raw window (35 days) only the hourly rollup remains and it keeps no session, so
+ * that spend is in every other breakdown but lands under the project "unknown" (the result's
+ * `notes` say so). Sessions are counted from raw rows only for the same reason; `calls` counts
+ * every call, rollup included.
+ */
+export async function spendReport(opts: SpendReportOptions = {}): Promise<SpendReport> {
+  // The last answer to each question is kept per store, and a read answers it at once. Inside
+  // SPEND_FRESH_MS of its build it is the answer; older, up to SPEND_STALE_MAX_MS, it is still answered at
+  // once and ONE rebuild starts behind it (the read after that rebuild shows the new rows); older than that,
+  // or a question's first read, waits for the build. The spend card waited 2.6-3.5 s on every open (2.6 s
+  // cold, measured 2026-10-11), since the old key moved each minute and with every usage row written.
+  const store = opts.store ?? sharedKitStore()
+  const clock = opts.now ?? Date.now()
+  // Keyed by the window's LENGTH (the card's cutoff moves with the clock, its length does not), so a kept
+  // answer is exactly the report of that window as it stood when it was built.
+  const key = `${opts.sinceMs == null ? 'all' : Math.round((clock - opts.sinceMs) / 60_000)}|${opts.sources ? [...opts.sources].sort().join(',') : '*'}|${opts.pc ?? ''}`
+  let byKey = spendKept.get(store)
+  if (!byKey) {
+    byKey = new Map()
+    spendKept.set(store, byKey)
+  }
+  let kept = byKey.get(key)
+  if (!kept) {
+    kept = { at: 0, report: null, rebuild: null }
+    byKey.set(key, kept)
+  }
+  if (kept.report && clock - kept.at < SPEND_FRESH_MS) return kept.report
+  // Too old to show while a rebuild runs: a card opened after a long pause waits once rather than draw old spend.
+  if (kept.report && clock - kept.at >= SPEND_STALE_MAX_MS) kept.report = null
+  const entry = kept
+  entry.rebuild ??= buildSpendReport({ ...opts, store })
+    .then((report) => {
+      entry.report = report
+      entry.at = clock
+      return report
+    })
+    .finally(() => {
+      entry.rebuild = null
+    })
+  if (!entry.report) return entry.rebuild
+  entry.rebuild.catch(() => undefined)
+  return entry.report
+}
+/** How long a built spend report answers without a rebuild. Three minutes: a 30-day total grows by
+ *  three minutes of spend out of 43,200 (under 0.01%) in that time, so an answer that old is within
+ *  the card's rounding, and one 2.6 s rebuild is paid at most once per three minutes, not once a
+ *  minute. */
+const SPEND_FRESH_MS = 3 * 60_000
+/** The oldest kept report still answered while its rebuild runs behind it. */
+const SPEND_STALE_MAX_MS = 30 * 60_000
+interface SpendKept {
+  at: number
+  report: SpendReport | null
+  rebuild: Promise<SpendReport> | null
+}
+const spendKept = new WeakMap<KitStore, Map<string, SpendKept>>()
+
+const HOUR_MS = 60 * 60 * 1000
+/** The longest window that also gets `byHour`. */
+const HOURLY_MAX_MS = 48 * HOUR_MS
+
+/** One kit row's figures, or null for the CLI's own notices, which ride on a pseudo-model with no
+ *  tokens: not a model, not a row. */
+function readSpendRow(row: UsageRow) {
+  const model = (row.model as string | null) ?? 'unknown'
+  const weighted = Number(row.weighted ?? 0)
+  const tokens: TokenBreakdown = {
+    input: Number(row.input ?? 0),
+    cacheRead: Number(row.cache_read ?? 0),
+    cacheWrite: Number(row.cache_write ?? 0),
+    output: Number(row.output ?? 0),
+    total: Number(row.tokens ?? 0),
+  }
+  if (NON_MODELS.has(model) && weighted <= 0 && tokens.total === 0) return null
+  const billed = row.billed_usd as number | null
+  // A group can hold billed and unbilled calls: cost_usd is summed per call (billed, else list), so the
+  // billed part alone is never taken for the whole. Null when no call in the group has a price at all.
+  const cost = billed === null && row.list_usd === null ? null : Number(row.cost_usd ?? 0)
+  const source = (row.source as string | null) ?? 'unknown'
+  return {
+    model,
+    billed,
+    source,
+    account: row.account as string | null,
+    r: { weighted, cost, calls: Number(row.calls ?? 0), tokens },
+  }
+}
+type SpendRow = NonNullable<ReturnType<typeof readSpendRow>>
+type SpendTotals = SpendRow['r']
+type ProviderSpend = { tokens: TokenBreakdown; sessions: Set<string>; costUsd: number | null }
+
+/** The report's breakdowns while its rows are read. */
+interface SpendTally {
+  byModel: BucketSet
+  byProject: BucketSet
+  byDay: BucketSet
+  byAccount: BucketSet
+  bySource: BucketSet
+  byProvider: Map<SessionSource, ProviderSpend>
+  sessions: Set<string>
+  billedModels: Set<string>
+  totals: SpendTotals
+  totalAtRate: number
+  discounts: Discounts
+  /** The session ledger's share of the totals. */
+  attributed: SpendTotals
+  projects: Map<string, string>
+  projectDisplay: Map<string, string>
+}
+
+function sumTokens(into: TokenBreakdown, t: TokenBreakdown): void {
+  into.input += t.input
+  into.cacheRead += t.cacheRead
+  into.cacheWrite += t.cacheWrite
+  into.output += t.output
+  into.total += t.total
+}
+
+function addSpend(into: SpendTotals, r: SpendTotals): void {
+  into.weighted += r.weighted
+  into.calls += r.calls
+  if (r.cost !== null) into.cost = (into.cost ?? 0) + r.cost
+  sumTokens(into.tokens, r.tokens)
+}
+
+function addProviderSpend(byProvider: Map<SessionSource, ProviderSpend>, x: SpendRow): void {
+  const provider = KIT_PROVIDER[x.source] ?? 'claude'
+  const pv = byProvider.get(provider) ?? {
+    tokens: emptyTokens(),
+    sessions: new Set<string>(),
+    costUsd: null,
+  }
+  sumTokens(pv.tokens, x.r.tokens)
+  if (x.r.cost !== null) pv.costUsd = (pv.costUsd ?? 0) + x.r.cost
+  byProvider.set(provider, pv)
+}
+
+/** The figures, whole from the hourly rollup: by day, model, source, account and provider. */
+function foldFigures(rows: UsageRow[], t: SpendTally): void {
+  for (const row of rows) {
+    const x = readSpendRow(row)
+    if (!x) continue
+    if (x.billed !== null) t.billedModels.add(x.model)
+    t.byModel.add(x.model, x.r, null)
+    t.bySource.add(x.source, x.r, null)
+    t.byDay.add(row.day as string, x.r, null)
+    if (x.account) t.byAccount.add(x.account, x.r, null)
+    addProviderSpend(t.byProvider, x)
+    addSpend(t.totals, x.r)
+    if (x.r.cost !== null) t.totalAtRate += atYourRate(x.model, x.r.cost, t.discounts)
+  }
+}
+
+/** The session ledger's view of the same calls: who they belong to. What it does not attribute (usage
+ *  past the raw window, kept only in the hourly rollup) is the difference to the figures. */
+function foldSessions(rows: UsageRow[], t: SpendTally): void {
+  for (const row of rows) {
+    const x = readSpendRow(row)
+    if (!x) continue
+    const session = (row.session as string | null) ?? null
+    t.byModel.touch(x.model, session)
+    t.bySource.touch(x.source, session)
+    if (x.account) t.byAccount.touch(x.account, session)
+    if (session) {
+      t.byProvider.get(KIT_PROVIDER[x.source] ?? 'claude')?.sessions.add(session)
+      t.sessions.add(session)
+    }
+    const path = (session && t.projects.get(session)) || 'unknown'
+    t.byProject.add(projectKeyOf(t.projectDisplay, path), x.r, session)
+    addSpend(t.attributed, x.r)
+  }
+}
+
+/** What the totals hold beyond the session ledger's share. */
+function unattributedSpend(totals: SpendTotals, attributed: SpendTotals): SpendTotals {
+  const t = totals.tokens
+  const u = attributed.tokens
+  return {
+    weighted: totals.weighted - attributed.weighted,
+    cost: totals.cost === null ? null : Math.max(0, totals.cost - (attributed.cost ?? 0)),
+    calls: totals.calls - attributed.calls,
+    tokens: {
+      input: t.input - u.input,
+      cacheRead: t.cacheRead - u.cacheRead,
+      cacheWrite: t.cacheWrite - u.cacheWrite,
+      output: t.output - u.output,
+      total: t.total - u.total,
+    },
+  }
+}
+
+/** Every hour of the window, a quiet one as an empty bar, so the axis is the clock. */
+function hourlyBuckets(rows: UsageRow[], sinceMs: number, now: number): SpendBucket[] {
+  const hours = new BucketSet()
+  for (const row of rows) {
+    const x = readSpendRow(row)
+    if (x) hours.add(row.hour as string, x.r, null)
+  }
+  const got = new Map(hours.list('key').map((b) => [b.key, b]))
+  const byHour: SpendBucket[] = []
+  for (let h = Math.floor(sinceMs / HOUR_MS) * HOUR_MS; h <= now; h += HOUR_MS) {
+    const key = new Date(h).toISOString()
+    byHour.push(
+      got.get(key) ?? {
+        key,
+        weighted: 0,
+        costUsd: null,
+        sessions: 0,
+        turns: 0,
+        tokens: emptyTokens(),
+      },
+    )
+  }
+  return byHour
+}
+
+function spendFilter(sources: readonly string[] | null, pc: SpendReportOptions['pc']) {
+  return sources || pc
+    ? { ...(sources ? { source: [...sources] } : {}), ...(pc ? { pc } : {}) }
+    : undefined
+}
+
+async function buildSpendReport(opts: SpendReportOptions): Promise<SpendReport> {
+  const sources = opts.sources ?? null
+  const measures = [
+    'tokens',
+    'weighted',
+    'calls',
+    'list_usd',
+    'billed_usd',
+    'cost_usd',
+    'input',
+    'output',
+    'cache_read',
+    'cache_write',
+  ] as const
+  // To the minute, so a window cut from the clock (now - 30d) asks the same question for a minute and
+  // the kit's result cache answers repeats.
+  const window = { from: Math.floor((opts.sinceMs ?? 0) / 60_000) * 60_000 }
+  const filter = spendFilter(sources, opts.pc)
+  const qopts = { store: opts.store, now: opts.now }
+  // Two queries, because a session in the grouping makes the kit read every raw row of a window: the
+  // figures (by day, model, source, account) come whole from the hourly rollup, and the sessions
+  // (projects, session counts) from the session ledger.
+  const res = await usageQueryAsync(
+    { window, filter, groupBy: ['day', 'model', 'source', 'account'], measures: [...measures] },
+    qopts,
+  )
+  const sess = await usageQueryAsync(
+    { window, filter, groupBy: ['session', 'model', 'source', 'account'], measures: [...measures] },
+    qopts,
+  )
+  // A window of two days or less is also drawn by the hour: by the day it is two bars, yesterday and
+  // today, that hardly move (owner, 2026-10-04).
+  const now = opts.now ?? Date.now()
+  const hourly = opts.sinceMs != null && now - opts.sinceMs <= HOURLY_MAX_MS
+  const hourRes = hourly
+    ? await usageQueryAsync({ window, filter, groupBy: ['hour'], measures: [...measures] }, qopts)
+    : null
+  const projects = await sessionProjects()
+  const t: SpendTally = {
+    byModel: new BucketSet(),
+    byProject: new BucketSet(),
+    byDay: new BucketSet(),
+    byAccount: new BucketSet(),
+    bySource: new BucketSet(),
+    byProvider: new Map(),
+    sessions: new Set(),
+    billedModels: new Set(),
+    totals: { weighted: 0, cost: null, calls: 0, tokens: emptyTokens() },
+    totalAtRate: 0,
+    discounts: readRoutingSettings().discounts,
+    attributed: { weighted: 0, cost: null, calls: 0, tokens: emptyTokens() },
+    projects,
+    projectDisplay: new Map(),
+  }
+  const { byModel, byProject, byDay, byAccount, bySource, byProvider, totals, discounts } = t
+  foldFigures(res.rows, t)
+  foldSessions(sess.rows, t)
+  const rest = totals.calls - t.attributed.calls
+  if (rest > 0) {
+    byProject.add(
+      projectKeyOf(t.projectDisplay, 'unknown'),
+      unattributedSpend(totals, t.attributed),
+      null,
+    )
+  }
+  const notes = [...new Set([...res.notes, ...sess.notes])]
+  if (rest > 0) {
+    notes.push('usage before the raw retention line has no session or ref: it groups under null')
+  }
+
+  const days = byDay.list('key')
+  const byHour =
+    hourRes && opts.sinceMs != null ? hourlyBuckets(hourRes.rows, opts.sinceMs, now) : undefined
+  return {
+    from: days[0]?.key ?? null,
+    to: days[days.length - 1]?.key ?? null,
+    totalCostUsd: totals.cost,
+    totalCostAtRateUsd: totals.cost === null ? null : t.totalAtRate,
+    hasRateDiscount: anyDiscount(discounts),
+    totalWeighted: totals.weighted,
+    tokens: totals.tokens,
+    byProvider: [...byProvider.entries()]
+      .map(([key, p]) => ({
+        key,
+        tokens: p.tokens,
+        sessions: p.sessions.size,
+        costUsd: p.costUsd,
+      }))
+      .sort((a, b) => b.tokens.total - a.tokens.total),
+    sessions: t.sessions.size,
+    calls: totals.calls,
+    byModel: byModel.list().map((b) => ({
+      ...b,
+      costAtRateUsd: b.costUsd === null ? null : atYourRate(b.key, b.costUsd, discounts),
+    })),
+    // Re-labelled with the spelling the reader will recognise, now that grouping is done.
+    byProject: byProject
+      .list()
+      .slice(0, 25)
+      .map((b) => ({ ...b, key: t.projectDisplay.get(b.key) ?? b.key })),
+    byDay: days,
+    ...(byHour ? { byHour } : {}),
+    byAccount: byAccount.list(),
+    bySource: bySource.list(),
+    // A model whose provider charged for it IS priced, even without a list price.
+    unpricedModels: res.unpriced.filter((m) => !t.billedModels.has(m)),
+    // Where these dollars came from and how old that source is. A cost figure without its price
+    // date is a number nobody can audit, and "downloaded" versus "shipped with the build" is the
+    // difference between last week's rate card and this release's.
+    pricesAsOf: pricesAsOf(),
+    priceSource: priceSource(),
+    coverage: analyticsCoverage(),
+    kitCoverage: res.coverage,
+    notes,
+  }
+}
+
+// --- the Instances card's daily tokens ---------------------------------------------------------
+// The per-source bars of the Instances usage card. The card used to ask spendReport for 30 days once
+// per source, and spendReport keeps ONE answer keyed by the store's write generation: the four asks
+// evicted each other, so every open rebuilt four 30-day reports to draw 14 bars. This reads the same
+// rows once, and keeps the answer for five minutes, because a day's total needs no fresher figure.
+
+const TOKEN_DAY_SOURCES: readonly TokenDaySource[] = ['desktop', 'cli', 'climayte', 'hswarm']
+const TOKENS_BY_DAY_TTL_MS = 5 * 60_000
+/** Keyed by the day count only. Process-wide, so tests that vary the store call resetTokensByDay. */
+const tokensByDayCache = new Map<number, { at: number; value: Promise<TokensByDay> }>()
+
+export interface TokensByDayOptions {
+  days: number
+  /** Test seams, as on SpendReportOptions. */
+  store?: KitStore
+  now?: number
+}
+
+/** Forget every answer. For tests only. */
+export function resetTokensByDay(): void {
+  tokensByDayCache.clear()
+}
+
+/**
+ * Weighted tokens per local day over the last `days` days, per source. The same figures spendReport's
+ * byDay holds for each source: same rows, same weighting, same source attribution (readSpendRow).
+ *
+ * A concurrent asker shares the computation in flight, and a failed one is not kept, so the next ask
+ * retries it.
+ */
+export function tokensByDay(opts: TokensByDayOptions): Promise<TokensByDay> {
+  const hit = tokensByDayCache.get(opts.days)
+  if (hit && Date.now() - hit.at < TOKENS_BY_DAY_TTL_MS) return hit.value
+  const value = buildTokensByDay(opts)
+  tokensByDayCache.set(opts.days, { at: Date.now(), value })
+  value.catch(() => {
+    if (tokensByDayCache.get(opts.days)?.value === value) tokensByDayCache.delete(opts.days)
+  })
+  return value
+}
+
+function isTokenDaySource(s: string): s is TokenDaySource {
+  return (TOKEN_DAY_SOURCES as readonly string[]).includes(s)
+}
+
+async function buildTokensByDay(opts: TokensByDayOptions): Promise<TokensByDay> {
+  const store = opts.store ?? sharedKitStore()
+  const now = new Date(opts.now ?? Date.now())
+  // Local midnights, so a day is the same day the chart's reader sees (the kit's day key is local too).
+  const dayStart = (ago: number) =>
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() - ago).getTime()
+  const days = Array.from({ length: opts.days }, (_, i) => {
+    const key = dayKey(dayStart(opts.days - 1 - i))
+    return { key, bySource: { desktop: 0, cli: 0, climayte: 0, hswarm: 0 } }
+  })
+  const byKey = new Map(days.map((d) => [d.key, d]))
+  const res = await usageQueryAsync(
+    {
+      window: { from: Math.floor(dayStart(opts.days - 1) / 60_000) * 60_000 },
+      groupBy: ['day', 'model', 'source'],
+      measures: ['tokens', 'weighted'],
+    },
+    { store, now: opts.now },
+  )
+  for (const row of res.rows) {
+    const x = readSpendRow(row)
+    const day = byKey.get(row.day as string)
+    if (!x || !day || !isTokenDaySource(x.source)) continue
+    day.bySource[x.source] += x.r.weighted
+  }
+  return { days }
+}
+
+/** Below this share kept, a session is worth a second look: most of what it wrote is gone. */
+const LOW_SURVIVAL = 0.5
+/** ...but only over at least this many scored writes, so one discarded scratch edit is not a flag. */
+const MIN_SURVIVAL_N = 2
+
+export function activityReport(opts: { sinceMs?: number | null } = {}): ActivityReport {
+  const since = opts.sinceMs ?? null
+  const rows = selectRows.all()
+  const hours = new Array<number>(168).fill(0)
+  const tools = new Map<string, number>()
+  let agentMs = 0
+  const health: ActivityReport['health'] = []
+  const now = Date.now()
+  let survivalSum = 0
+  let survivalSessions = 0
+  let survivalOverdue = 0
+
+  for (const row of rows) {
+    if (row.analytics_version !== ANALYTICS_VERSION) continue
+    if (since !== null && (row.last_ts ?? 0) < since) continue
+    for (const [k, v] of Object.entries(parseJson<Record<string, number>>(row.hours_json, {}))) {
+      const i = Number(k)
+      if (Number.isInteger(i) && i >= 0 && i < 168) hours[i] = (hours[i] ?? 0) + v
+    }
+    for (const [k, v] of Object.entries(parseJson<Record<string, number>>(row.tools_json, {})))
+      tools.set(k, (tools.get(k) ?? 0) + v)
+    agentMs += row.active_ms ?? 0
+    const toolErrors = row.tool_errors ?? 0
+    const streak = row.tool_error_streak ?? 0
+    const compactions = row.compactions ?? 0
+    const survival = row.edit_survival
+    if (survival !== null) {
+      survivalSum += survival
+      survivalSessions++
+    }
+    if (row.edit_survival_due_at !== null && row.edit_survival_due_at <= now) survivalOverdue++
+    const lowSurvival =
+      survival !== null && survival < LOW_SURVIVAL && (row.edit_survival_n ?? 0) >= MIN_SURVIVAL_N
+    // Only sessions with something to say. A list of every session with zero problems is not a
+    // health signal, it is the session list again.
+    if (streak >= 3 || toolErrors >= 10 || compactions >= 1 || lowSurvival)
+      health.push({
+        session_id: row.session_id,
+        source: (row.source as SessionSource) ?? 'claude',
+        project: row.cwd || row.project || '',
+        toolErrors,
+        toolErrorStreak: streak,
+        edits: row.edit_count ?? 0,
+        compactions,
+        editSurvival: survival,
+      })
+  }
+
+  health.sort(
+    (a, b) =>
+      b.toolErrorStreak - a.toolErrorStreak ||
+      b.compactions - a.compactions ||
+      b.toolErrors - a.toolErrors ||
+      (a.editSurvival ?? 1) - (b.editSurvival ?? 1),
+  )
+
+  return {
+    hours,
+    tools: [...tools.entries()]
+      .map(([key, count]) => ({ key, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20),
+    agentMinutes: Math.round(agentMs / 60_000),
+    health: health.slice(0, 50),
+    editSurvival: {
+      sessions: survivalSessions,
+      average: survivalSessions > 0 ? survivalSum / survivalSessions : null,
+      overdue: survivalOverdue,
+    },
+    coverage: analyticsCoverage(),
+  }
+}
+
+// --- token sinks -------------------------------------------------------------------------------
+// WHY: the spend report says how much and where; this says WHY a session was expensive. Five
+// lenses on the same weighted total, each tagged structural (configuration) or behavioral (how the
+// sessions were run), with the evidence basis and a one-line fix.
+// The idea (dead-skill load, deep-context turns, subagent pressure, cache efficiency) comes from
+// the learn report in JuliusBrussee/caveman; no code was copied, this is written fresh against
+// AgentHydra's own stored per-session totals.
+
+const SINK_FIXES: Record<TokenSink['id'], string> = {
+  'dead-skills':
+    'Uninstall the skills these sessions never invoke, or scope them to the projects that do: each one is re-read on every call.',
+  'dead-mcp':
+    'Disable MCP servers these sessions never call, or scope them per project: their instructions and tool names ride along on every call.',
+  'deep-context': `Compact or start a fresh session before the prompt passes ${DEEP_CONTEXT_TOKENS / 1000}k tokens: every call past it re-reads the whole history. Counted: only the part read past the line.`,
+  // The largest kind on the meter (31x a cache read per token; 43% of the weight on 2026-10-06)
+  // and in no other sink, so without it the list hid where most of the weight went.
+  output:
+    'Use a lower effort and a smaller model for routine work, and ask for short replies: reply and thinking tokens weigh the most per token of anything on the meter.',
+  subagents:
+    'Spawn subagents for wide, parallel searches only: each one pays for its own prefix and history.',
+  // Every cache write, each session's first unavoidable one included, so this is an upper bound on
+  // what the fix can save, not the avoidable part alone.
+  'cache-writes':
+    'Keep gaps between turns inside the cache window and avoid editing instructions mid-session: each session pays one cache write it cannot avoid, and every rewrite after it is billed at a premium.',
+}
+
+const selectListing = db.query<{ entries_json: string }, [string]>(
+  'select entries_json from skill_listings where hash = ?',
+)
+
+interface LoadAcc {
+  loadTokens: number
+  sessionsLoaded: number
+  sessionsUsed: number
+  uses: number
+  deadTokens: number
+}
+
+function foldLoad(
+  into: Map<string, LoadAcc>,
+  key: string,
+  loadTokens: number,
+  uses: number,
+  calls: number,
+): void {
+  const r = into.get(key) ?? {
+    loadTokens: 0,
+    sessionsLoaded: 0,
+    sessionsUsed: 0,
+    uses: 0,
+    deadTokens: 0,
+  }
+  r.loadTokens = Math.max(r.loadTokens, loadTokens)
+  r.sessionsLoaded++
+  r.uses += uses
+  if (uses > 0) r.sessionsUsed++
+  else r.deadTokens += loadTokens * calls
+  into.set(key, r)
+}
+
+const rankLoad = (m: Map<string, LoadAcc>) =>
+  [...m.entries()]
+    .map(([key, r]) => ({ key, ...r, deadTokens: Math.round(r.deadTokens) }))
+    .sort((a, b) => b.deadTokens - a.deadTokens || b.loadTokens - a.loadTokens)
+    .slice(0, 30)
+
+/**
+ * Where the window's tokens went, ranked.
+ *
+ * Windowed per session, on its last turn (like the activity report): a session counts whole when
+ * it was active inside the window. The spend panel reads the toolkit per call instead, so the two
+ * totals can differ at the window's edge. Dead load is an ESTIMATE: the injected text's length at
+ * four characters a token, re-read on every call at the cache-read rate of the model that made the
+ * call. The rest is measured off recorded usage.
+ */
+export function sinkReport(opts: { sinceMs?: number | null } = {}): TokenSinkReport {
+  const since = opts.sinceMs ?? null
+  const listings = new Map<string, Record<string, number>>()
+  const listing = (hash: string): Record<string, number> => {
+    let entries = listings.get(hash)
+    if (!entries) {
+      entries = parseJson<Record<string, number>>(selectListing.get(hash)?.entries_json ?? null, {})
+      listings.set(hash, entries)
+    }
+    return entries
+  }
+  const accounts = accountBySession()
+  let instances = new Map<string, string>()
+  try {
+    instances = instanceSessionMap()
+  } catch {
+    // No desktop instances to attribute to: every session falls in the unlinked bucket.
+  }
+  const lookups: SinkLookups = { listing, accounts, instances }
+
+  const acc: SinkAcc = {
+    skills: new Map(),
+    servers: new Map(),
+    cache: new Map(),
+    sessions: 0,
+    calls: 0,
+    totalWeighted: 0,
+    deadSkills: 0,
+    deadMcp: 0,
+    cacheWrites: 0,
+    deepCalls: 0,
+    deepWeighted: 0,
+    deepExcess: 0,
+    output: 0,
+    subWeighted: 0,
+    spawns: 0,
+  }
+
+  for (const row of selectRows.all()) {
+    const windowed = sinkRowInWindow(row, since)
+    if (windowed) foldSinkRow(row, windowed.scale, windowed.tokens, acc, lookups)
+  }
+
+  return sinkReportOf(acc)
+}
+
+/** Every running total sinkReport builds across the window's sessions. */
+interface SinkAcc {
+  skills: Map<string, LoadAcc>
+  servers: Map<string, LoadAcc>
+  cache: Map<string | null, { sessions: number; cacheRead: number; prompt: number }>
+  sessions: number
+  calls: number
+  totalWeighted: number
+  deadSkills: number
+  deadMcp: number
+  cacheWrites: number
+  deepCalls: number
+  deepWeighted: number
+  deepExcess: number
+  output: number
+  subWeighted: number
+  spawns: number
+}
+
+/** What sinkReport looks a session up in: skill listings by hash, and its account. */
+interface SinkLookups {
+  listing: (hash: string) => Record<string, number>
+  accounts: Map<string, string>
+  instances: Map<string, string>
+}
+
+/** The share of the session's weighted tokens spent on days inside the window (null: no day data). */
+function sinkDayShare(daysJson: string | null, since: number | null): number | null {
+  if (since === null) return 1
+  const sinceDay = dayKey(since)
+  let total = 0
+  let inWindow = 0
+  for (const [day, weighted] of Object.entries(parseJson<Record<string, number>>(daysJson, {}))) {
+    total += weighted
+    if (day >= sinceDay) inWindow += weighted
+  }
+  return total > 0 ? inWindow / total : null
+}
+
+/** The row's in-window share with its per-model spend scaled to it, or null when the row is out of
+ *  the window or has no sink data. A row without day data falls back to its last turn. */
+function sinkRowInWindow(
+  row: AnalyticsRow,
+  since: number | null,
+): { scale: number; tokens: Record<string, ModelSpend> } | null {
+  if (row.analytics_version !== ANALYTICS_VERSION || !row.sinks_json) return null
+  const share = sinkDayShare(row.days_json, since)
+  if (share === null) {
+    if (since !== null && (row.last_ts ?? 0) < since) return null
+  } else if (share <= 0) return null
+  const scale = share ?? 1
+  const stored = storedModelSpend(row.tokens_json)
+  if (Object.keys(stored).length === 0) return null
+  const tokens: Record<string, ModelSpend> = {}
+  for (const [model, m] of Object.entries(stored))
+    tokens[model] =
+      scale >= 1
+        ? m
+        : {
+            ...m,
+            weighted: m.weighted * scale,
+            output: m.output * scale,
+            turns: Math.round(m.turns * scale),
+            input: m.input * scale,
+            cacheRead: m.cacheRead * scale,
+            cacheCreation5m: m.cacheCreation5m * scale,
+            cacheCreation1h: m.cacheCreation1h * scale,
+          }
+  return { scale, tokens }
+}
+
+/** Fold one in-window session into every sink total. */
+function foldSinkRow(
+  row: AnalyticsRow,
+  scale: number,
+  tokens: Record<string, ModelSpend>,
+  acc: SinkAcc,
+  lookups: SinkLookups,
+): void {
+  const s = parseJson<Partial<StoredSinks>>(row.sinks_json, {})
+  acc.sessions++
+
+  const { sessionCalls, prefixRate, t } = foldSinkModels(tokens, acc)
+  acc.calls += sessionCalls
+
+  foldSkillSinks(s, lookups.listing, sessionCalls, prefixRate, acc)
+  const tools = parseJson<Record<string, number>>(row.tools_json, {})
+  foldMcpSinks(s, tools, sessionCalls, prefixRate, acc)
+
+  acc.deepCalls += (s.deepCalls ?? 0) * scale
+  acc.deepWeighted += (s.deepWeighted ?? 0) * scale
+  acc.deepExcess += (s.deepExcess ?? 0) * scale
+  acc.subWeighted += (s.subWeighted ?? 0) * scale
+  // Task is the older name of the Agent tool; both spawn a subagent.
+  acc.spawns += ((tools.Task ?? 0) + (tools.Agent ?? 0)) * scale
+
+  const account =
+    lookups.accounts.get(row.session_id) ?? lookups.instances.get(row.session_id) ?? null
+  const c = acc.cache.get(account) ?? { sessions: 0, cacheRead: 0, prompt: 0 }
+  c.sessions++
+  c.cacheRead += t.cacheRead
+  c.prompt += t.input + t.cacheRead + t.cacheWrite
+  acc.cache.set(account, c)
+}
+
+/**
+ * A session's calls and prefix rate, and its token breakdown. Per model, because a prefix token
+ * re-read by Opus costs more than one re-read by Sonnet (modelMultiplier).
+ */
+function foldSinkModels(
+  tokens: Record<string, ModelSpend>,
+  acc: SinkAcc,
+): { sessionCalls: number; prefixRate: number; t: TokenBreakdown } {
+  let sessionCalls = 0
+  let prefixRate = 0 // weighted cost of carrying ONE prefix token through this session
+  const t = emptyTokens()
+  for (const [model, m] of Object.entries(tokens)) {
+    const mult = modelMultiplier(model)
+    sessionCalls += m.turns
+    prefixRate += m.turns * W_CACHE_READ * mult
+    acc.cacheWrites +=
+      (m.cacheCreation5m * W_CACHE_WRITE_5M + m.cacheCreation1h * W_CACHE_WRITE_1H) * mult
+    acc.output += m.output * W_OUTPUT * mult
+    acc.totalWeighted += m.weighted
+    addTokens(t, m)
+  }
+  return { sessionCalls, prefixRate, t }
+}
+
+/** Each skill the session's listings loaded, and the dead load of the ones it never used. */
+function foldSkillSinks(
+  s: Partial<StoredSinks>,
+  listing: (hash: string) => Record<string, number>,
+  sessionCalls: number,
+  prefixRate: number,
+  acc: SinkAcc,
+): void {
+  const loaded = new Map<string, number>()
+  for (const hash of s.listings ?? [])
+    for (const [name, n] of Object.entries(listing(hash)))
+      loaded.set(name, Math.max(loaded.get(name) ?? 0, n))
+  for (const [name, n] of loaded) {
+    const uses = s.skillUses?.[name] ?? 0
+    foldLoad(acc.skills, name, n, uses, sessionCalls)
+    if (uses === 0) acc.deadSkills += n * prefixRate
+  }
+}
+
+/** Each MCP server the session loaded, and the dead load of the ones it never called. */
+function foldMcpSinks(
+  s: Partial<StoredSinks>,
+  tools: Record<string, number>,
+  sessionCalls: number,
+  prefixRate: number,
+  acc: SinkAcc,
+): void {
+  const serverCalls = new Map<string, number>()
+  for (const [tool, n] of Object.entries(tools)) {
+    const server = mcpServerOfTool(tool)
+    if (server) serverCalls.set(server, (serverCalls.get(server) ?? 0) + n)
+  }
+  for (const [server, n] of Object.entries(s.mcpLoad ?? {})) {
+    const uses = serverCalls.get(server) ?? 0
+    foldLoad(acc.servers, server, n, uses, sessionCalls)
+    if (uses === 0) acc.deadMcp += n * prefixRate
+  }
+}
+
+function tokenSink(
+  id: TokenSink['id'],
+  kind: TokenSink['kind'],
+  basis: TokenSink['basis'],
+  weighted: number,
+  totalWeighted: number,
+): TokenSink {
+  return {
+    id,
+    kind,
+    basis,
+    weighted: Math.round(weighted),
+    share: totalWeighted > 0 ? weighted / totalWeighted : 0,
+    fix: SINK_FIXES[id],
+  }
+}
+
+/** The report the folded totals make, sinks ranked by weight. */
+function sinkReportOf(acc: SinkAcc): TokenSinkReport {
+  const total = acc.totalWeighted
+  return {
+    sessions: acc.sessions,
+    calls: Math.round(acc.calls),
+    totalWeighted: Math.round(total),
+    sinks: [
+      tokenSink('dead-skills', 'structural', 'estimated', acc.deadSkills, total),
+      tokenSink('dead-mcp', 'structural', 'estimated', acc.deadMcp, total),
+      tokenSink('deep-context', 'behavioral', 'measured', acc.deepExcess, total),
+      tokenSink('output', 'behavioral', 'measured', acc.output, total),
+      tokenSink('subagents', 'behavioral', 'measured', acc.subWeighted, total),
+      tokenSink('cache-writes', 'behavioral', 'measured', acc.cacheWrites, total),
+    ].sort((a, b) => b.weighted - a.weighted),
+    skills: rankLoad(acc.skills),
+    mcpServers: rankLoad(acc.servers),
+    deepContext: {
+      threshold: DEEP_CONTEXT_TOKENS,
+      calls: Math.round(acc.deepCalls),
+      weighted: Math.round(acc.deepWeighted),
+      excess: Math.round(acc.deepExcess),
+    },
+    subagents: { weighted: Math.round(acc.subWeighted), spawns: Math.round(acc.spawns) },
+    cacheByAccount: [...acc.cache.entries()]
+      .map(([key, c]) => ({
+        key,
+        sessions: c.sessions,
+        cacheRead: Math.round(c.cacheRead),
+        prompt: Math.round(c.prompt),
+        ratio: c.prompt > 0 ? c.cacheRead / c.prompt : 0,
+      }))
+      .sort((a, b) => b.prompt - a.prompt),
+    coverage: analyticsCoverage(),
+  }
+}
+
+/**
+ * How many sessions were alive at the same time, bucketed.
+ *
+ * Built from the first and last turn of each session rather than from any stored timeline: two
+ * numbers per session is all an overlap count needs, so this costs no storage at all.
+ */
+export function concurrencyReport(opts: {
+  sinceMs?: number | null
+  bucketMs?: number
+}): ConcurrencyPoint[] {
+  const bucket = opts.bucketMs ?? 60 * 60_000
+  const since = opts.sinceMs ?? Date.now() - 7 * 24 * 60 * 60_000
+  const rows = selectRows.all()
+  const counts = new Map<number, number>()
+  for (const row of rows) {
+    if (row.analytics_version !== ANALYTICS_VERSION) continue
+    const first = row.first_ts
+    const last = row.last_ts
+    if (first === null || last === null) continue
+    if (last < since) continue
+    const start = Math.max(first, since)
+    for (let t = Math.floor(start / bucket) * bucket; t <= last; t += bucket)
+      counts.set(t, (counts.get(t) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([at, sessions]) => ({ at, sessions }))
+    .sort((a, b) => a.at - b.at)
+}
+
+/** The recent-edits feed, newest first, grouped by the caller. */
+export function recentEdits(limit = 200): EditEntry[] {
+  try {
+    return db
+      .query<EditEntry, [number]>(
+        'select session_id, source, project, path, turn, ts from session_edits ' +
+          'order by ts desc, id desc limit ?',
+      )
+      .all(Math.max(1, Math.min(limit, 1000)))
+  } catch {
+    return []
+  }
+}
+
+/** What the scan cache holds, counted off the request path (see analyticsCoverage). */
+let coverageStats: { sessions: number; bytes: number; at: number } | null = null
+let coverageScan: Promise<void> | null = null
+/** Transcript files the last refresh was handed: the denominator, without listing the disk again. */
+let knownTranscripts = 0
+const COVERAGE_STALE_MS = 5 * 60_000
+
+async function scanCoverageStats(): Promise<void> {
+  let sessions = 0
+  let bytes = 0
+  try {
+    await scanRowids<{ n: number; b: number }>(
+      'session_scan_cache',
+      "count(*) as n, coalesce(sum(length(coalesce(tokens_json, '')) + " +
+        "length(coalesce(days_json, '')) + length(coalesce(hours_json, '')) + " +
+        "length(coalesce(tools_json, ''))), 0) as b",
+      'analytics_at is not null and analytics_version = ?',
+      [ANALYTICS_VERSION],
+      (rows) => {
+        for (const r of rows) {
+          sessions += r.n
+          bytes += r.b
+        }
+      },
+    )
+  } catch {
+    // A database that predates the migration reports nothing rather than throwing.
+  }
+  coverageStats = { sessions, bytes, at: Date.now() }
+}
+
+function refreshCoverageStats(): void {
+  coverageScan ??= scanCoverageStats().finally(() => {
+    coverageScan = null
+  })
+}
+
+/**
+ * How much of the transcript store the totals cover. Never blocks: the session and byte counts are
+ * the last ones counted, refreshed in slices off this call (a count over the scan cache reads every
+ * row of kilobyte JSON, and listing the transcript directories took 25 to 54 seconds on a large
+ * store), so the very first call after a start answers zeros with `refreshing` set.
+ */
+export function analyticsCoverage(): AnalyticsCoverage {
+  if (!coverageStats || Date.now() - coverageStats.at > COVERAGE_STALE_MS) refreshCoverageStats()
+  const sessions = coverageStats?.sessions ?? 0
+  return {
+    sessions,
+    total: Math.max(knownTranscripts, sessions),
+    refreshing: warming !== null || coverageScan !== null,
+    bytes: coverageStats?.bytes ?? 0,
+  }
+}
+
+/**
+ * analyticsCoverage once the counts are current, for a one-shot process (the `--spend` command)
+ * that has no later call to read them on. `files` is the transcript count the caller has listed.
+ */
+export async function analyticsCoverageSettled(files = 0): Promise<AnalyticsCoverage> {
+  knownTranscripts = Math.max(knownTranscripts, files)
+  // A scan already in flight may have counted before the caller's last write: let it land, then
+  // count again, or this answers the stale count (CI, 2026-10-04: 1 session where 3 were stored).
+  await coverageScan
+  refreshCoverageStats()
+  await coverageScan
+  return analyticsCoverage()
+}
+
+/** Forget every stored total. The next warm rebuilds them; nothing else depends on them. */
+export function dropAnalytics(): boolean {
+  projectsCache = null
+  try {
+    db.run(
+      'update session_scan_cache set analytics_at = null, analytics_version = null, ' +
+        'tokens_json = null, days_json = null, hours_json = null, tools_json = null, ' +
+        'tool_errors = null, tool_error_streak = null, edit_count = null, compactions = null, ' +
+        'active_ms = null, first_ts = null, last_ts = null, provider_cost_usd = null, ' +
+        'edit_survival = null, edit_survival_n = null, edit_survival_due_at = null, ' +
+        'analytics_mtime_ms = null, ' +
+        'analytics_size_bytes = null, sinks_json = null',
+    )
+    coverageStats = { sessions: 0, bytes: 0, at: Date.now() }
+    db.run('delete from session_edits')
+    db.run('delete from skill_listings')
+    return true
+  } catch {
+    return false
+  }
+}

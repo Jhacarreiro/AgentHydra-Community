@@ -1,0 +1,33 @@
+{
+  "name": "hydra-desk",
+  "//": "Hydra Desk 2: the other owner's copy of ../desk (2026-10-04), plus hydra/, its own copy of AgentHydra's window (served at /ah/).",
+  "private": true,
+  "version": "2.0.4",
+  "workspaces": ["server", "web", "hydra"],
+  "scripts": {
+    "dev": "bun run --parallel dev:server dev:web",
+    "dev:server": "bun --watch server/src/index.ts",
+    "dev:web": "bun run --cwd web dev",
+    "start": "bun server/src/index.ts",
+    "build": "bun run --cwd web build && bun run --cwd hydra build",
+    "typecheck": "bun run --cwd server typecheck && bun run --cwd web typecheck && bun run --cwd hydra typecheck",
+    "test": "bun test ./server/test ./web/test && bun test ./hydra/src",
+    "test:py": "python -m pytest -o pythonpath=server/src/free-instances/harness server/test/free-instances -q",
+    "screenshots": "bun scripts/window-shots.ts",
+    "e2e:engine": "bun e2e/engine.e2e.ts",
+    "e2e:hosts": "bun e2e/hosts.e2e.ts",
+    "e2e:gestures": "bun e2e/gestures.e2e.ts",
+    "e2e:scroll": "bun e2e/scroll-follow.e2e.ts",
+    "e2e:rail": "bun e2e/rail.e2e.ts",
+    "e2e:outside": "bun e2e/outside-composer.e2e.ts",
+    "e2e:frame-click": "bun e2e/frame-click.e2e.ts",
+    "e2e:clipboard": "bun e2e/browser-clipboard.e2e.ts",
+    "e2e:browser-speed": "bun e2e/browser-speed.e2e.ts",
+    "e2e:host-audio": "bun e2e/host-audio.e2e.ts",
+    "e2e:manager-avatar": "bun e2e/manager-avatar.e2e.ts",
+    "e2e:multi-select": "bun e2e/multi-select.e2e.ts"
+  },
+  "devDependencies": {
+    "puppeteer": "^25.12.0"
+  }
+}

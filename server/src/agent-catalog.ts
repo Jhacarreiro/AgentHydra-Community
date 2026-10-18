@@ -1,0 +1,934 @@
+// server/src/agent-catalog.ts — every coding agent we know where to look for.
+//
+// WHY A TABLE. AgentHydra grew up reading three stores whose paths were three constants, which is
+// fine until the fourth. There are now dozens of coding agents and each keeps its conversations
+// somewhere on disk; the only thing that differs between "supported" and "not" for most of them is
+// whether anyone has written the path down. So the paths are data, and adding a tool is a row.
+//
+// WHERE THE PATHS COME FROM. Compiled from the agent registry in kenn-io/agentsview (MIT, Kenn
+// Software LLC) — an inventory maintained against real installs across Windows, macOS and Linux.
+// Their code is not used here; this is the factual part, re-expressed for this codebase's shapes.
+// Anything wrong in it is wrong here too, which is why nothing in this file is load-bearing: a path
+// that does not exist costs one `stat` and produces nothing.
+//
+// TWO TIERS, AND THE DIFFERENCE IS HONESTY.
+//
+//   * A tool with a `format` writes something we can already read — because it IS one of the three
+//     stores, or a fork that kept the format. Those are INDEXED: real sessions, real transcripts,
+//     real analytics. OpenClaude forked Claude Code and kept its JSONL; TraeX is a closed-source
+//     fork of codex-rs writing byte-compatible rollouts; Kilo, MiMoCode and IcodeMate are built on
+//     an OpenCode core and keep the same SQLite schema under a different filename.
+//
+//   * A tool with `format: null` is DETECTED ONLY: we can say it is installed and roughly how much
+//     is in it, and we do not pretend to read it. That is deliberately visible in the UI rather
+//     than hidden — "Gemini CLI: 214 files, we cannot read these yet" is useful and true, where
+//     silently omitting it lets a user believe AgentHydra looked and found nothing.
+//
+// THESE ARE SPECULATIVE AND THAT IS THE POINT. Most of these tools are not installed on any given
+// machine, and the format claims for the forks are made from documentation rather than from a local
+// install. The failure mode is bounded by construction: a wrong path finds nothing, and a wrong
+// format claim yields a store that parses to zero sessions. Neither can corrupt the three stores
+// that were here first, because nothing here changes how they are read.
+
+import { type Dirent, existsSync } from 'node:fs'
+import { readdir, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { fsSlot } from './core/fs-slots'
+import type { AgentPresence, SessionSource } from './types'
+
+export type { AgentPresence }
+
+/** A store shape we have a reader for. Identical to SessionSource by construction: a format IS the
+ *  parser that reads it, and adding a fourth means writing a fourth reader. */
+export type StoreFormat = SessionSource
+
+export interface AgentTool {
+  /** Stable key. Used in the API, in settings, and as the i18n suffix. */
+  id: string
+  /** What the user calls it. */
+  name: string
+  /** Who makes it — the axis the analytics "filter by provider" control offers. */
+  vendor: string
+  /** Environment variable that relocates the store, honoured before `dirs`. */
+  envVar?: string
+  /**
+   * Home-relative store locations, every platform's spelling in one list.
+   *
+   * Not split per-OS on purpose: the check is `existsSync`, a Windows path cannot exist on Linux,
+   * and a per-OS split would silently drop the case that matters most here — a store carried
+   * across platforms, or a layout that moved between releases.
+   */
+  dirs: string[]
+  /** Which of `dirs` hold ARCHIVED conversations, for stores that separate them. */
+  archivedDirs?: string[]
+  /** How to read it, or null when we can find it but not yet parse it. */
+  format: StoreFormat | null
+  /** For a SQLite-backed tool (`opencode` or `hermes` format): the database file inside the root. */
+  dbName?: string
+  /**
+   * Count presence under THIS subdirectory instead of the whole root.
+   *
+   * The Gemini row below says the rule: "a store root has to be where the CONVERSATIONS are",
+   * because a detection walk over a root that holds other things reports a file count that is not
+   * about this tool at all. Gemini could obey it by pointing `dirs` one level deeper; DeepSeek
+   * Harness cannot — its READER needs the home itself (the projection cache and the archived-session
+   * list live beside `sessions/`, not inside it), while its home also contains a 216 MB Chromium
+   * profile when launched as a desktop app. So the root stays the home and the COUNT moves down.
+   */
+  detectSubdir?: string
+  /**
+   * Transcript glob under the root, when the tool does not use its format's usual layout.
+   *
+   * Claude Code is `<project>/<session-id>.jsonl` and that is the default. Cowork writes the very
+   * same records, but one sandbox directory deep and under a fixed filename, so it needs its own
+   * pattern rather than its own parser.
+   */
+  glob?: string
+  /**
+   * Where the session id lives in a matched path. 'basename' (the default) is the filename without
+   * its extension; 'parent-dir' is the directory holding it, which is what a store using a fixed
+   * transcript filename needs.
+   */
+  idFrom?: 'basename' | 'parent-dir'
+  /** Stripped from the front of an extracted session id. Cowork's directories are `local_<uuid>`. */
+  idPrefix?: string
+  /**
+   * The one filename that IS a session, for a store that keeps other transcripts beside it.
+   *
+   * Cowork's sandbox contains a whole Claude Code home of its own, so a run's directory holds the
+   * run's `audit.jsonl` AND the CLI's own transcript AND that CLI's subagent transcripts. Naming
+   * the session file is what lets the rest be attached to it rather than listed as sessions or
+   * dropped on the floor.
+   */
+  sessionFile?: string
+  /** Shown beside a detected-but-unreadable tool, so "why not?" has an answer. */
+  note?: string
+  /**
+   * Where this row's paths were READ FROM, when they were read from the tool's own source rather
+   * than taken from the agentsview registry. Format: `<upstream file> (<date>)`.
+   *
+   * WHY THIS FIELD EXISTS. The header above says a wrong path is harmless because it costs one
+   * `stat` and finds nothing. That is true and it is also the problem: a row pointing at a
+   * directory that does not exist is INDISTINGUISHABLE, from the outside, from a machine where the
+   * tool simply is not installed. So a wrong row never announces itself, and lives forever. On
+   * 2026-09-04 the rows for the two largest agent projects in the world were checked against
+   * upstream source for the first time and BOTH were wrong - Hermes had no `sessions` directory at
+   * all, OpenClaw no `agents` one - and aider's row carried an empty `dirs`, which cannot match
+   * anything by construction. Three for three on the only rows anyone had ever looked at.
+   *
+   * The field is therefore not decoration: `scripts/checks/catalog-row-provenance.mjs` ratchets on
+   * the count, so the verified set can only grow, and prints the unverified remainder so the gap
+   * is a number somebody can see instead of a silence.
+   */
+  verified?: string
+}
+
+const HOME = homedir()
+
+/**
+ * The catalog.
+ *
+ * Ordered with the tools we actually read first, then the rest roughly by how likely they are to be
+ * installed. Order is stable and is what the UI lists in.
+ */
+export const AGENT_TOOLS: AgentTool[] = [
+  // --- readable: these ARE the three stores, or forks that kept the format --------------------
+  {
+    id: 'claude-code',
+    name: 'Claude Code',
+    vendor: 'Anthropic',
+    envVar: 'CLAUDE_PROJECTS_DIR',
+    dirs: ['.claude/projects'],
+    format: 'claude',
+  },
+  {
+    id: 'openclaude',
+    name: 'OpenClaude',
+    vendor: 'OpenClaude',
+    envVar: 'OPENCLAUDE_PROJECTS_DIR',
+    dirs: ['.openclaude/projects'],
+    format: 'claude',
+  },
+  {
+    id: 'codex',
+    name: 'Codex',
+    vendor: 'OpenAI',
+    envVar: 'CODEX_SESSIONS_DIR',
+    dirs: ['.codex/sessions', '.codex/archived_sessions'],
+    archivedDirs: ['.codex/archived_sessions'],
+    format: 'codex',
+  },
+  {
+    id: 'traex',
+    name: 'TraeX',
+    vendor: 'ByteDance',
+    envVar: 'TRAEX_SESSIONS_DIR',
+    // A closed-source fork of codex-rs: same rollout JSONL, same archive move on `traex archive`.
+    dirs: ['.trae/cli/sessions', '.trae/cli/archived_sessions'],
+    archivedDirs: ['.trae/cli/archived_sessions'],
+    format: 'codex',
+  },
+  {
+    // Cowork runs Claude Code inside a sandbox and keeps the run's own transcript at
+    // `<outer>/<inner>/local_<id>/audit.jsonl`. The RECORDS are Claude Code's exactly: `type:
+    // assistant` with `message.model`, `message.id` and a full `usage` block, 6,972 of them on the
+    // machine this was written against. So it needs a path pattern, not a parser.
+    id: 'cowork',
+    name: 'Claude Cowork',
+    vendor: 'Anthropic',
+    envVar: 'COWORK_DIR',
+    dirs: [
+      'Library/Application Support/Claude/local-agent-mode-sessions',
+      '.config/Claude/local-agent-mode-sessions',
+      'AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/local-agent-mode-sessions',
+      'AppData/Roaming/Claude/local-agent-mode-sessions',
+    ],
+    format: 'claude',
+    // Everything under the store, because a run's directory holds more than its audit log: the
+    // sandbox's own `.claude/projects/<proj>/<id>.jsonl` and that session's `subagents/` tree live
+    // in there too, and they are the same run's spend. The audit log is the session; the rest
+    // attach to it, and the per-request charge stops the overlap being counted twice.
+    glob: '**/*.jsonl',
+    idFrom: 'parent-dir',
+    idPrefix: 'local_',
+    sessionFile: 'audit.jsonl',
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    vendor: 'OpenCode',
+    envVar: 'OPENCODE_DIR',
+    dirs: ['.local/share/opencode'],
+    format: 'opencode',
+    dbName: 'opencode.db',
+  },
+  {
+    id: 'kilo',
+    name: 'Kilo',
+    vendor: 'Kilocode',
+    envVar: 'KILO_DIR',
+    // Rebuilt on an OpenCode core in 2026; the CLI and the extension share this SQLite.
+    dirs: ['.local/share/kilo'],
+    format: 'opencode',
+    dbName: 'kilo.db',
+  },
+  {
+    id: 'mimocode',
+    name: 'MiMo Code',
+    vendor: 'Xiaomi',
+    envVar: 'MIMOCODE_DIR',
+    dirs: ['.local/share/mimocode'],
+    format: 'opencode',
+    dbName: 'mimocode.db',
+  },
+  {
+    id: 'icodemate',
+    name: 'IcodeMate',
+    vendor: 'IcodeMate',
+    envVar: 'ICODEMATE_DIR',
+    dirs: ['.local/share/icodemate'],
+    format: 'opencode',
+    dbName: 'icodemate.db',
+  },
+  {
+    id: 'deepseek-harness',
+    name: 'DeepSeek Harness',
+    vendor: 'DeepSeek',
+    // Read out of the harness's own shipped source rather than a registry: @deepseek-ai/dsh-home-paths
+    // resolves its root as an explicit configured path, else $DSH_HOME, else ~/.dsh — so the env var
+    // here is the tool's OWN, and a blank one is documented as unset rather than as the cwd.
+    //
+    // NOT the `deepseek-tui` row further down. That is a different DeepSeek product (.codewhale /
+    // .deepseek), it is detected-only, and giving the harness its own row is what keeps "DeepSeek
+    // Harness: 40 sessions, readable" from being reported under a tool nobody ran.
+    envVar: 'DSH_HOME',
+    dirs: ['.dsh'],
+    detectSubdir: 'sessions',
+    format: 'dsh',
+    verified:
+      '@deepseek-ai/dsh 0.1.5-rc.1 dsh-home-paths/lib/index.js + dsh-session-persistence-jsonl/lib/index.js (2026-09-12)',
+  },
+  {
+    // HSwarm replaced ZSwarm on 2026-10-03 (ZSwarm is retired; its jobs were imported into HSwarm's
+    // home). The format and the id both keep `zswarm`: the format is the session source, a frozen
+    // MCP API value, and the id is every job row's `tool` (transcript.ts hswarmRow), half of its
+    // done-mark key and locator, so renaming it orphans marks already set. The name says HSwarm.
+    id: 'zswarm',
+    name: 'HSwarm',
+    vendor: 'AgentHydra',
+    // hswarm/config.py: Path(os.environ.get("HSWARM_HOME") or (Path.home() / ".hswarm")).
+    // One shared home, not one per account - see hswarm.ts's hswarmHome() and hswarm-sessions.ts's
+    // own note on why there is no per-instance store list here the way dsh-instances.ts has one.
+    envVar: 'HSWARM_HOME',
+    dirs: ['.hswarm'],
+    detectSubdir: 'jobs',
+    format: 'zswarm',
+    verified: 'hswarm/config.py HOME/JOBS_DIR/LEDGER (2026-10-03)',
+  },
+
+  // --- detected only: found on disk, not yet parsed -------------------------------------------
+  {
+    id: 'gemini',
+    name: 'Gemini CLI',
+    vendor: 'Google',
+    envVar: 'GEMINI_DIR',
+    // `.gemini/tmp`, not `.gemini`. The parent also holds settings, MCP config and the whole
+    // Antigravity tree, so pointing at it reported 286 files for a Gemini CLI that had never been
+    // used on this machine — almost all of them Antigravity's, counted a second time under the
+    // wrong tool. A store root has to be where the CONVERSATIONS are.
+    dirs: ['.gemini/tmp'],
+    format: null,
+  },
+  {
+    id: 'copilot',
+    name: 'GitHub Copilot CLI',
+    vendor: 'GitHub',
+    envVar: 'COPILOT_DIR',
+    dirs: ['.copilot'],
+    format: 'foreign',
+    note: 'credits',
+  },
+  {
+    id: 'cursor',
+    name: 'Cursor',
+    vendor: 'Cursor',
+    envVar: 'CURSOR_PROJECTS_DIR',
+    dirs: ['.cursor/projects'],
+    format: null,
+  },
+  {
+    id: 'amp',
+    name: 'Amp',
+    vendor: 'Sourcegraph',
+    envVar: 'AMP_DIR',
+    dirs: ['.local/share/amp/threads'],
+    format: null,
+  },
+  {
+    id: 'qwen',
+    name: 'Qwen Code',
+    vendor: 'Alibaba',
+    envVar: 'QWEN_PROJECTS_DIR',
+    dirs: ['.qwen/projects'],
+    format: null,
+  },
+  {
+    id: 'iflow',
+    name: 'iFlow',
+    vendor: 'iFlow',
+    envVar: 'IFLOW_DIR',
+    dirs: ['.iflow/projects'],
+    format: null,
+  },
+  {
+    id: 'kimi',
+    name: 'Kimi CLI',
+    vendor: 'Moonshot',
+    envVar: 'KIMI_DIR',
+    dirs: ['.kimi/sessions', '.kimi-code/sessions'],
+    format: 'foreign',
+  },
+  {
+    id: 'grok',
+    name: 'Grok',
+    vendor: 'xAI',
+    envVar: 'GROK_DIR',
+    dirs: ['.grok/sessions'],
+    format: 'foreign',
+  },
+  {
+    id: 'deepseek-tui',
+    name: 'DeepSeek TUI',
+    vendor: 'DeepSeek',
+    envVar: 'DEEPSEEK_TUI_SESSIONS_DIR',
+    dirs: ['.codewhale/sessions', '.deepseek/sessions'],
+    format: null,
+  },
+  {
+    id: 'antigravity',
+    name: 'Antigravity',
+    vendor: 'Google',
+    envVar: 'ANTIGRAVITY_DIR',
+    dirs: ['.gemini/antigravity'],
+    format: null,
+    // Conversations are encrypted protobuf, not text. Detection is the honest ceiling here until
+    // someone writes the decoder.
+    note: 'encrypted',
+  },
+  {
+    id: 'antigravity-cli',
+    name: 'Antigravity CLI',
+    vendor: 'Google',
+    envVar: 'ANTIGRAVITY_CLI_DIR',
+    dirs: ['.gemini/antigravity-cli'],
+    format: null,
+    note: 'encrypted',
+  },
+  {
+    id: 'vscode-copilot',
+    name: 'VS Code Copilot',
+    vendor: 'GitHub',
+    envVar: 'VSCODE_COPILOT_DIR',
+    dirs: [
+      'AppData/Roaming/Code/User',
+      'AppData/Roaming/Code - Insiders/User',
+      'AppData/Roaming/VSCodium/User',
+      'Library/Application Support/Code/User',
+      'Library/Application Support/Code - Insiders/User',
+      'Library/Application Support/VSCodium/User',
+      '.config/Code/User',
+      '.config/Code - Insiders/User',
+      '.config/VSCodium/User',
+    ],
+    format: 'foreign',
+    note: 'credits',
+  },
+  {
+    id: 'windsurf',
+    name: 'Windsurf',
+    vendor: 'Cognition',
+    envVar: 'WINDSURF_DIR',
+    dirs: [
+      'AppData/Roaming/Windsurf/User',
+      'AppData/Roaming/Windsurf - Next/User',
+      'Library/Application Support/Windsurf/User',
+      'Library/Application Support/Windsurf - Next/User',
+      '.config/Windsurf/User',
+      '.config/Windsurf - Next/User',
+    ],
+    format: null,
+    note: 'credits',
+  },
+  {
+    id: 'trae',
+    name: 'Trae',
+    vendor: 'ByteDance',
+    envVar: 'TRAE_DIR',
+    dirs: [
+      'AppData/Roaming/Trae/User',
+      'AppData/Roaming/Trae CN/User',
+      'Library/Application Support/Trae/User',
+      'Library/Application Support/Trae CN/User',
+      '.config/Trae/User',
+      '.config/Trae CN/User',
+    ],
+    format: null,
+    note: 'encrypted',
+  },
+  {
+    id: 'roocode',
+    name: 'Roo Code',
+    vendor: 'Roo',
+    envVar: 'ROOCODE_DIR',
+    dirs: [
+      'Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline',
+      '.config/Code/User/globalStorage/rooveterinaryinc.roo-cline',
+      'AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline',
+    ],
+    format: null,
+  },
+  {
+    id: 'kilo-legacy',
+    name: 'Kilo (legacy)',
+    vendor: 'Kilocode',
+    envVar: 'KILO_LEGACY_DIR',
+    dirs: [
+      'Library/Application Support/Code/User/globalStorage/kilocode.kilo-code',
+      '.config/Code/User/globalStorage/kilocode.kilo-code',
+      'AppData/Roaming/Code/User/globalStorage/kilocode.kilo-code',
+    ],
+    format: null,
+  },
+  {
+    id: 'zed',
+    name: 'Zed',
+    vendor: 'Zed Industries',
+    envVar: 'ZED_DIR',
+    dirs: ['Library/Application Support/Zed', '.local/share/zed', 'AppData/Local/Zed'],
+    format: 'foreign',
+  },
+  {
+    id: 'goose',
+    name: 'Goose',
+    vendor: 'Block',
+    envVar: 'GOOSE_PATH_ROOT',
+    dirs: ['.local/share/goose/sessions', 'AppData/Roaming/Block/goose/data/sessions'],
+    format: null,
+  },
+  {
+    id: 'openhands',
+    name: 'OpenHands CLI',
+    vendor: 'OpenHands',
+    envVar: 'OPENHANDS_CONVERSATIONS_DIR',
+    dirs: ['.openhands/conversations'],
+    format: null,
+  },
+  {
+    id: 'warp',
+    name: 'Warp',
+    vendor: 'Warp',
+    envVar: 'WARP_DIR',
+    dirs: [
+      'Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable',
+      '.local/state/warp-terminal',
+      'AppData/Local/warp/Warp/data',
+    ],
+    format: null,
+  },
+  {
+    id: 'aider',
+    name: 'Aider',
+    vendor: 'Aider',
+    envVar: 'AIDER_DIR',
+    // Aider writes `.aider.chat.history.md` inside each repo, so there is no canonical root for its
+    // TRANSCRIPTS and this row stays detect-only. It used to carry `dirs: []`, whose stated reason
+    // was that scanning $HOME for those per-repo files "is the kind of 'helpful' walk that trips
+    // macOS privacy prompts" - correct about a walk, but `rootsFor` never walks: it does one
+    // `existsSync` per listed path. So the reasoning ruled out a search and the empty list ruled out
+    // detection too, and without AIDER_DIR set the row could not match on any machine. Upstream
+    // (aider/main.py, 2026-09-04) puts installs.json and oauth-keys.env in `Path.home() / ".aider"`,
+    // which is one exact stat, no traversal, and the same evidence of an install.
+    dirs: ['.aider'],
+    format: null,
+    note: 'opt-in',
+    verified: 'Aider-AI/aider aider/main.py (2026-09-04)',
+  },
+  {
+    id: 'gptme',
+    name: 'gptme',
+    vendor: 'gptme',
+    envVar: 'GPTME_DIR',
+    dirs: ['.local/share/gptme/logs'],
+    format: null,
+  },
+  {
+    id: 'qoder',
+    name: 'Qoder',
+    vendor: 'Alibaba',
+    envVar: 'QODER_PROJECTS_DIR',
+    dirs: [
+      '.qoder/projects',
+      '.qoderwork/projects',
+      'Library/Application Support/Qoder/SharedClientCache/cli/projects',
+      '.config/Qoder/SharedClientCache/cli/projects',
+      'AppData/Roaming/Qoder/SharedClientCache/cli/projects',
+    ],
+    format: null,
+  },
+  {
+    id: 'kiro',
+    name: 'Kiro CLI',
+    vendor: 'AWS',
+    envVar: 'KIRO_SESSIONS_DIR',
+    dirs: ['.kiro/sessions/cli', '.local/share/kiro-cli'],
+    format: null,
+  },
+  {
+    id: 'kiro-ide',
+    name: 'Kiro IDE',
+    vendor: 'AWS',
+    envVar: 'KIRO_IDE_DIR',
+    dirs: [
+      'Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent',
+      'AppData/Roaming/Kiro/User/globalStorage/kiro.kiroagent',
+      '.config/Kiro/User/globalStorage/kiro.kiroagent',
+    ],
+    format: null,
+  },
+  {
+    id: 'cortex',
+    name: 'Cortex Code',
+    vendor: 'Snowflake',
+    envVar: 'CORTEX_DIR',
+    dirs: ['.snowflake/cortex/conversations'],
+    format: null,
+  },
+  {
+    id: 'hermes',
+    name: 'Hermes Agent',
+    vendor: 'Nous Research',
+    // Verified against hermes_constants.py (2026-09-04), not the agentsview registry: there is no
+    // `sessions` directory anywhere in Hermes. State is ONE SQLite file, `state.db`, at the root of
+    // HERMES_HOME — `~/.hermes` on POSIX and `%LOCALAPPDATA%\hermes` on native Windows, which is
+    // home-relative here and so reachable by the second entry. `_HERMES_HOME_MARKERS` in that file
+    // is ("config.yaml", ".env", "state.db"); we key on the store, not the config.
+    envVar: 'HERMES_HOME',
+    dirs: ['.hermes', 'AppData/Local/hermes'],
+    dbName: 'state.db',
+    verified: 'NousResearch/hermes-agent hermes_constants.py (2026-09-04)',
+    format: 'hermes',
+  },
+  {
+    id: 'devin',
+    name: 'Devin',
+    vendor: 'Cognition',
+    envVar: 'DEVIN_DIR',
+    dirs: ['Library/Application Support/devin', '.local/share/devin'],
+    format: null,
+  },
+  {
+    id: 'zencoder',
+    name: 'Zencoder',
+    vendor: 'Zencoder',
+    envVar: 'ZENCODER_DIR',
+    dirs: ['.zencoder/sessions'],
+    format: null,
+  },
+  {
+    id: 'codebuff',
+    name: 'Codebuff',
+    vendor: 'Codebuff',
+    envVar: 'CODEBUFF_DIR',
+    dirs: ['.config/manicode/projects'],
+    format: null,
+  },
+  {
+    id: 'commandcode',
+    name: 'Command Code',
+    vendor: 'Command',
+    envVar: 'COMMANDCODE_PROJECTS_DIR',
+    dirs: ['.commandcode/projects'],
+    format: null,
+  },
+  {
+    id: 'openclaw',
+    name: 'OpenClaw',
+    vendor: 'OpenClaw',
+    // Verified against src/config/paths.ts (2026-09-04), not the agentsview registry: `resolveStateDir`
+    // returns `~/.openclaw` itself and the config is `<stateDir>/openclaw.json`. There is no `agents`
+    // directory in that file, so the path this row used to carry could never exist and OpenClaw was
+    // reported as absent on every machine that had it. The relocation env var is OPENCLAW_STATE_DIR.
+    envVar: 'OPENCLAW_STATE_DIR',
+    dirs: ['.openclaw', '.kimi_openclaw'],
+    verified: 'openclaw/openclaw src/config/paths.ts (2026-09-04)',
+    format: null,
+  },
+  {
+    id: 'qclaw',
+    name: 'QClaw',
+    vendor: 'QClaw',
+    envVar: 'QCLAW_DIR',
+    dirs: ['.qclaw/agents'],
+    format: null,
+  },
+  {
+    id: 'qwenpaw',
+    name: 'QwenPaw',
+    vendor: 'Alibaba',
+    envVar: 'QWENPAW_DIR',
+    dirs: ['.copaw/workspaces'],
+    format: null,
+  },
+  {
+    id: 'pi',
+    name: 'Pi',
+    vendor: 'Pi',
+    // Checked against Pi's own config.ts (2026-09-25), not the agentsview registry: sessions live in
+    // `<agentDir>/sessions`, agentDir defaults to `~/.pi/agent`, and PI_CODING_AGENT_SESSION_DIR
+    // relocates the sessions directory itself (the old PI_DIR row value is not a variable Pi reads).
+    // Readable since then: a tree-shaped JSONL per session, see the Pi adapter in foreign-sessions.ts.
+    envVar: 'PI_CODING_AGENT_SESSION_DIR',
+    dirs: ['.pi/agent/sessions'],
+    verified: 'earendil-works/pi packages/coding-agent/src/config.ts (2026-09-25)',
+    format: 'foreign',
+  },
+  {
+    id: 'prime-agent',
+    name: 'Prime Agent',
+    vendor: 'Prime Intellect',
+    envVar: 'PRIME_AGENT_SESSION_DIR',
+    dirs: ['.prime/agent/sessions'],
+    format: null,
+  },
+  {
+    id: 'omp',
+    name: 'Oh My Pi',
+    vendor: 'Oh My Pi',
+    envVar: 'OMP_DIR',
+    dirs: ['.omp/agent/sessions'],
+    format: null,
+  },
+  {
+    id: 'vibe',
+    name: 'Mistral Vibe',
+    vendor: 'Mistral',
+    envVar: 'VIBE_SESSIONS_DIR',
+    dirs: ['.vibe/logs/session'],
+    format: null,
+  },
+  {
+    id: 'shelley',
+    name: 'Shelley',
+    vendor: 'exe.dev',
+    envVar: 'SHELLEY_DIR',
+    dirs: ['.config/shelley'],
+    format: null,
+  },
+  {
+    id: 'reasonix',
+    name: 'Reasonix',
+    vendor: 'Reasonix',
+    envVar: 'REASONIX_DIR',
+    dirs: ['.reasonix', 'AppData/Roaming/reasonix'],
+    format: null,
+  },
+  {
+    id: 'omnigent',
+    name: 'Omnigent',
+    vendor: 'Omnigent',
+    envVar: 'OMNIGENT_DIR',
+    dirs: ['.omnigent'],
+    format: null,
+  },
+  {
+    id: 'forge',
+    name: 'Forge',
+    vendor: 'Antinomy',
+    envVar: 'FORGE_DIR',
+    dirs: ['.forge'],
+    format: null,
+  },
+  {
+    id: 'workbuddy',
+    name: 'WorkBuddy',
+    vendor: 'WorkBuddy',
+    envVar: 'WORKBUDDY_PROJECTS_DIR',
+    dirs: ['.workbuddy/projects'],
+    format: null,
+  },
+  {
+    id: 'poolside',
+    name: 'Poolside',
+    vendor: 'Poolside',
+    envVar: 'POOLSIDE_DIR',
+    dirs: [
+      'Library/Application Support/poolside',
+      '.local/state/poolside',
+      'AppData/Roaming/poolside',
+    ],
+    format: null,
+  },
+  {
+    id: 'piebald',
+    name: 'Piebald',
+    vendor: 'Piebald',
+    envVar: 'PIEBALD_DIR',
+    dirs: [
+      '.local/share/piebald',
+      'Library/Application Support/piebald',
+      'AppData/Roaming/piebald',
+    ],
+    format: null,
+  },
+  {
+    id: 'zcode',
+    name: 'Z Code',
+    vendor: 'Z.ai',
+    envVar: 'ZCODE_DIR',
+    dirs: ['.zcode/cli/db', '.zcode/cli'],
+    format: null,
+  },
+  {
+    id: 'positron',
+    name: 'Positron Assistant',
+    vendor: 'Posit',
+    envVar: 'POSITRON_DIR',
+    dirs: ['Library/Application Support/Positron/User'],
+    format: null,
+  },
+  {
+    id: 'posit-assistant',
+    name: 'Posit Assistant',
+    vendor: 'Posit',
+    envVar: 'POSIT_ASSISTANT_DIR',
+    dirs: ['.posit/assistant/workspaces'],
+    format: null,
+  },
+  {
+    id: 'visualstudio-copilot',
+    name: 'Visual Studio Copilot',
+    vendor: 'GitHub',
+    envVar: 'VISUALSTUDIO_COPILOT_DIR',
+    dirs: [
+      'AppData/Local/Temp/VSGitHubCopilotLogs/traces',
+      'Library/Caches/VSGitHubCopilotLogs/traces',
+      '.cache/VSGitHubCopilotLogs/traces',
+    ],
+    format: null,
+    note: 'credits',
+  },
+]
+
+/** By id, for the API and for settings that name a tool. */
+export function agentTool(id: string): AgentTool | undefined {
+  return AGENT_TOOLS.find((t) => t.id === id)
+}
+
+/** One tool's store on THIS machine. `archived` follows the tool's own archive split. */
+export interface AgentRoot {
+  tool: AgentTool
+  /** Absolute path to the store root. */
+  root: string
+  archived: boolean
+}
+
+/** Whether each of the real home's candidate roots exists, kept ROOT_EXISTS_MS: the transcript
+ *  index asks for every catalog tool's roots on each pass, an existsSync per candidate (2026-10-08:
+ *  34% of a 5.7 s daemon stall). A tool installed meanwhile is found within the minute. */
+const ROOT_EXISTS_MS = 60_000
+const rootsSeen = new Map<string, { at: number; yes: boolean }>()
+function rootExists(target: string): boolean {
+  const now = Date.now()
+  const seen = rootsSeen.get(target)
+  if (seen && now - seen.at < ROOT_EXISTS_MS) return seen.yes
+  const yes = existsSync(target)
+  rootsSeen.set(target, { at: now, yes })
+  return yes
+}
+
+/**
+ * Absolute roots for one tool, existing ones only.
+ *
+ * An `envVar` override replaces the defaults outright rather than adding to them — that is what an
+ * override means, and a user who repointed CLAUDE_PROJECTS_DIR at a copy does not want the original
+ * silently merged back in. Multiple paths may be given, separated by the platform's path delimiter.
+ */
+export function rootsFor(tool: AgentTool, home: string = HOME): AgentRoot[] {
+  const override = tool.envVar ? process.env[tool.envVar]?.trim() : ''
+  const candidates: Array<{ path: string; archived: boolean }> = override
+    ? override
+        .split(process.platform === 'win32' ? ';' : ':')
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((path) => ({ path, archived: false }))
+    : tool.dirs.map((rel) => ({
+        path: join(home, ...rel.split('/')),
+        archived: tool.archivedDirs?.includes(rel) ?? false,
+      }))
+
+  const out: AgentRoot[] = []
+  const held = home === HOME && !override
+  for (const c of candidates) {
+    // A `dbName` tool's root is a directory holding that file; the directory existing without the
+    // file is an installed tool with no conversations, which is not a store.
+    const target = tool.dbName ? join(c.path, tool.dbName) : c.path
+    if (!(held ? rootExists(target) : existsSync(target))) continue
+    out.push({ tool, root: c.path, archived: c.archived })
+  }
+  return out
+}
+
+/** Every existing root across every tool with the given format. */
+export function rootsWithFormat(format: StoreFormat, home: string = HOME): AgentRoot[] {
+  return AGENT_TOOLS.filter((t) => t.format === format).flatMap((t) => rootsFor(t, home))
+}
+
+/**
+ * The three tools whose stores AgentHydra read before this catalog existed.
+ *
+ * They keep their own constants in config.ts — including env overrides (`CODEX_HOME`,
+ * `AGENTHYDRA_OPENCODE_DB`) that predate this file and that a lot of tests set. The indexer scans
+ * those constants first and then asks the catalog for the OTHERS, so adding this file cannot change
+ * where the original three are read from. Belt and braces: it also means a mistake in the catalog's
+ * paths cannot break the stores people actually use.
+ */
+export const BUILT_IN_TOOL_IDS = new Set([
+  'claude-code',
+  'codex',
+  'opencode',
+  // Joined 2026-09-12 for the same reason Codex is here: a machine has one DeepSeek Harness home
+  // per account, and the set of them is core/dsh-instances.ts's dshInstanceStores(), which the
+  // indexer asks directly. Leaving this row out of that set would index the default home twice.
+  'deepseek-harness',
+  // Joined 2026-09-15: the swarm's one home (HSwarm's since ZSwarm retired, 2026-10-03; the row id
+  // stays `zswarm`, see its row above) is read directly by transcript.ts (hswarmRecords()), the same
+  // way it reads OPENCODE_DB_PATH - not through extraRootsWithFormat. Leaving this row out of
+  // BUILT_IN_TOOL_IDS would make the catalog walk index that one root a second time.
+  'zswarm',
+])
+
+/** Catalog roots for a format, EXCLUDING the three the indexer already handles by constant. */
+export function extraRootsWithFormat(format: StoreFormat, home: string = HOME): AgentRoot[] {
+  return AGENT_TOOLS.filter((t) => t.format === format && !BUILT_IN_TOOL_IDS.has(t.id)).flatMap(
+    (t) => rootsFor(t, home),
+  )
+}
+
+/** Files counted per tool before the walk gives up. A detection scan answers "is this here and is
+ *  it live", and neither answer improves past a thousand files. */
+const DETECT_FILE_CAP = 1000
+/** Directory depth. Deep enough for `projects/<encoded-cwd>/<id>.jsonl` and the dated Codex tree,
+ *  shallow enough that pointing a root at a home directory cannot become a full-disk walk. */
+const DETECT_DEPTH = 5
+
+async function walkCount(
+  dir: string,
+  depth: number,
+  state: { files: number; newest: number | null },
+): Promise<void> {
+  if (depth > DETECT_DEPTH || state.files >= DETECT_FILE_CAP) return
+  let entries: Dirent[]
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  const files: string[] = []
+  for (const entry of entries) {
+    if (state.files >= DETECT_FILE_CAP) break
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      await walkCount(path, depth + 1, state)
+      continue
+    }
+    if (!entry.isFile()) continue
+    state.files++
+    files.push(path)
+  }
+  // A file that vanished between readdir and stat contributes its count and no date.
+  const mtimes = await Promise.all(
+    files.map((p) =>
+      fsSlot(() => stat(p)).then(
+        (s) => s.mtimeMs,
+        () => null,
+      ),
+    ),
+  )
+  for (const mtime of mtimes)
+    if (mtime !== null && (state.newest === null || mtime > state.newest)) state.newest = mtime
+}
+
+/**
+ * Which of these tools are on this machine.
+ *
+ * Bounded: every tool costs one `existsSync` when absent, which is the case for nearly all of them,
+ * and a capped walk when present. The walk is async: on a busy disk a present tool's thousand stats
+ * held the daemon's thread for 2.8 s in one go (2026-10-08, 91% of that block in this walk).
+ */
+export async function detectAgentTools(home: string = HOME): Promise<AgentPresence[]> {
+  const out: AgentPresence[] = []
+  for (const tool of AGENT_TOOLS) {
+    const roots = rootsFor(tool, home)
+    if (roots.length === 0) continue
+    const state = { files: 0, newest: null as number | null }
+    for (const r of roots)
+      await walkCount(
+        tool.detectSubdir ? join(r.root, ...tool.detectSubdir.split('/')) : r.root,
+        0,
+        state,
+      )
+    out.push({
+      id: tool.id,
+      name: tool.name,
+      vendor: tool.vendor,
+      roots: roots.map((r) => r.root),
+      files: state.files,
+      truncated: state.files >= DETECT_FILE_CAP,
+      lastActivityAt: state.newest,
+      format: tool.format,
+      note: tool.note,
+    })
+  }
+  return out
+}

@@ -1,0 +1,20 @@
+{
+  "slug": "beta-backend",
+  "name": "Ben",
+  "title": "Backend Engineer",
+  "role": "domain",
+  "oneLiner": "Owns endpoints, server logic and stored data.",
+  "jev": "Is this message primarily about a server, an API endpoint or stored data?",
+  "keywords": ["api", "endpoint", "database", "server"],
+  "brief": "brief.md",
+  "playbook": [
+    {
+      "file": "playbook/01-data.md",
+      "facet": "Data and endpoints",
+      "read_when": "an endpoint or storage question"
+    }
+  ],
+  "version": 1,
+  "updated": "2026-10-13",
+  "sources": ["fixture"]
+}

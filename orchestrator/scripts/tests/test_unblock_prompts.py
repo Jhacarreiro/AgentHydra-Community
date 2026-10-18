@@ -1,0 +1,460 @@
+"""unblock_prompts: find_stuck()'s new verify/instanceDir/eligible fields, and press()
+passing -Instance/-VerifyText through to the actuator."""
+
+import contextlib
+import json
+import os
+import sys
+import tempfile
+import time
+import types
+import unittest
+import unittest.mock as mock
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import unblock_prompts  # noqa: E402
+from lib import approvallib  # noqa: E402
+from lib import armlib  # noqa: E402
+from lib import hydralib  # noqa: E402
+from lib import ledgerlib  # noqa: E402
+from lib import stamplib  # noqa: E402
+
+from util import run_cli  # noqa: E402
+
+
+def _user(text):
+    return {"type": "user", "message": {"content": text}}
+
+
+def _assistant_text(text):
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+
+
+def _assistant_tool(name):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": {}}]}}
+
+
+def _write_jsonl(path: Path, events: list) -> None:
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+
+
+@contextlib.contextmanager
+def _no_placement_lock(instance, wait_secs=30.0):
+    """A stand-in for windowlib.instance_lock that skips its window-placement courtesy
+    (capture/restore, its own calls to clilib.run_text) - tests that assert on press()'s OWN
+    actuator call count would otherwise be counting windowlib's, not press()'s."""
+    yield True
+
+
+class FindStuckTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._state = tempfile.TemporaryDirectory()
+        os.environ["ORCHESTRATOR_STATE_DIR"] = self._state.name
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        os.environ.pop("ORCHESTRATOR_STATE_DIR", None)
+        self._state.cleanup()
+        self._tmp.cleanup()
+
+    def _transcript(self, name: str, events: list, age_secs: float) -> Path:
+        p = self.root / name
+        _write_jsonl(p, events)
+        old = time.time() - age_secs
+        os.utime(p, (old, old))
+        return p
+
+    def test_pending_row_carries_verify_instanceDir_and_is_eligible(self):
+        sid_ok = "sid-with-verify"
+        sid_short = "sid-short-verify"
+        long_sentence = (
+            "I have finished reviewing the configuration and am now deploying the "
+            "artifact to the staging cluster, please hold on while this completes."
+        )
+        t_ok = self._transcript("ok.jsonl", [
+            _user("please deploy this"),
+            _assistant_text(long_sentence),
+            _assistant_tool("Bash"),
+        ], age_secs=unblock_prompts.MIN_WAIT_SECS + 60)
+        t_short = self._transcript("short.jsonl", [
+            _user("ok"),
+            _assistant_text("Ok."),
+            _assistant_tool("Bash"),
+        ], age_secs=unblock_prompts.MIN_WAIT_SECS + 60)
+
+        store_root = self.root / "inst1" / "claude-code-sessions"
+        store = {"instance": "inst1", "root": store_root, "isRunning": True}
+        meta_ok = {"cliSessionId": sid_ok, "title": "chat one",
+                  "permissionMode": stamplib.BYPASS, "isArchived": False}
+        meta_short = {"cliSessionId": sid_short, "title": "chat two",
+                     "permissionMode": stamplib.BYPASS, "isArchived": False}
+
+        with mock.patch.object(hydralib, "fleet", return_value={}), \
+             mock.patch.object(hydralib, "api_get",
+                               return_value={"sessions": [{"sessionId": sid_ok},
+                                                          {"sessionId": sid_short}]}), \
+             mock.patch.object(stamplib, "store_roots", return_value=[store]), \
+             mock.patch.object(stamplib, "iter_metas",
+                               return_value=[(store_root / "a" / "b" / "local_1.json", meta_ok),
+                                            (store_root / "a" / "b" / "local_2.json", meta_short)]), \
+             mock.patch.object(stamplib, "transcript_index",
+                               return_value={sid_ok: t_ok, sid_short: t_short}), \
+             mock.patch.object(stamplib, "is_bypass", return_value=True):
+            rows = unblock_prompts.find_stuck()
+
+        by_sid = {r["sessionId"]: r for r in rows}
+        self.assertEqual(set(by_sid), {sid_ok, sid_short})
+
+        row_ok = by_sid[sid_ok]
+        self.assertEqual(row_ok["instanceDir"], str(store_root.parent))
+        self.assertTrue(row_ok["verify"])
+        self.assertTrue(row_ok["eligible"])
+        self.assertEqual(row_ok["ineligibleWhy"], "")
+
+        row_short = by_sid[sid_short]
+        self.assertEqual(row_short["verify"], "")
+        self.assertFalse(row_short["eligible"])
+        self.assertTrue(row_short["ineligibleWhy"])
+
+    def test_a_recent_spawned_row_grants_eligibility_but_a_stale_one_does_not(self):
+        # A chat whose permissionMode is NOT bypass is normally a person's call - UNLESS the
+        # toolbox itself spawned it with bypass promised (ledger kind 'spawned') less than 24h
+        # ago. An older promise (here: 2 days) must not count.
+        sid_fresh = "sid-spawned-fresh"
+        sid_stale = "sid-spawned-stale"
+        long_sentence = (
+            "I have finished reviewing the configuration and am now deploying the "
+            "artifact to the staging cluster, please hold on while this completes."
+        )
+        t_fresh = self._transcript("fresh.jsonl", [
+            _user("please deploy this"),
+            _assistant_text(long_sentence),
+            _assistant_tool("Bash"),
+        ], age_secs=unblock_prompts.MIN_WAIT_SECS + 60)
+        t_stale = self._transcript("stale.jsonl", [
+            _user("please deploy this too"),
+            _assistant_text(long_sentence),
+            _assistant_tool("Bash"),
+        ], age_secs=unblock_prompts.MIN_WAIT_SECS + 60)
+
+        store_root = self.root / "inst2" / "claude-code-sessions"
+        store = {"instance": "inst2", "root": store_root, "isRunning": True}
+        meta_fresh = {"cliSessionId": sid_fresh, "title": "born by toolbox",
+                     "permissionMode": "acceptEdits", "isArchived": False}
+        meta_stale = {"cliSessionId": sid_stale, "title": "promise expired",
+                     "permissionMode": "acceptEdits", "isArchived": False}
+
+        now_ms = int(time.time() * 1000)
+        # ledgerlib.note() refuses kind "spawned" - it is not in VALID_KINDS (a real production
+        # bug, see report) - so the fixture writes the ledger row directly via _save() rather
+        # than through note(), which is exactly what a fixed spawn_chat.py would have produced.
+        ledgerlib._save([
+            {"kind": "spawned", "session": sid_fresh, "at": now_ms - 3600_000,
+             "deterministic": False, "note": "spawn_chat: fresh"},
+            {"kind": "spawned", "session": sid_stale, "at": now_ms - 2 * 24 * 3600_000,
+             "deterministic": False, "note": "spawn_chat: stale"},
+        ])
+
+        with mock.patch.object(hydralib, "fleet", return_value={}), \
+             mock.patch.object(hydralib, "api_get",
+                               return_value={"sessions": [{"sessionId": sid_fresh},
+                                                          {"sessionId": sid_stale}]}), \
+             mock.patch.object(stamplib, "store_roots", return_value=[store]), \
+             mock.patch.object(stamplib, "iter_metas",
+                               return_value=[(store_root / "a" / "b" / "local_3.json", meta_fresh),
+                                            (store_root / "a" / "b" / "local_4.json", meta_stale)]), \
+             mock.patch.object(stamplib, "transcript_index",
+                               return_value={sid_fresh: t_fresh, sid_stale: t_stale}):
+            rows = unblock_prompts.find_stuck()
+
+        by_sid = {r["sessionId"]: r for r in rows}
+        self.assertEqual(set(by_sid), {sid_fresh, sid_stale})
+
+        row_fresh = by_sid[sid_fresh]
+        self.assertTrue(row_fresh["spawnedByToolbox"])
+        self.assertTrue(row_fresh["eligible"])
+        self.assertIn("bypass promised", row_fresh["why"])
+
+        row_stale = by_sid[sid_stale]
+        self.assertFalse(row_stale["spawnedByToolbox"])
+        self.assertFalse(row_stale["eligible"])
+        self.assertEqual(row_stale["why"], "")
+
+
+class PressTest(unittest.TestCase):
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        os.environ["ORCHESTRATOR_STATE_DIR"] = self._state.name
+
+    def tearDown(self):
+        os.environ.pop("ORCHESTRATOR_STATE_DIR", None)
+        self._state.cleanup()
+
+    def _run_result(self, returncode=0):
+        return types.SimpleNamespace(returncode=returncode, stdout="ok", stderr="")
+
+    def test_press_passes_instance_and_verify_to_the_actuator(self):
+        row = {"title": "chat one", "instance": "inst1", "instanceDir": "C:/x/inst1",
+              "verify": "Deploying the artifact now, hold on.", "quietMins": 5.0}
+        with mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._run_result()) as run_mock:
+            got = unblock_prompts.press(row)
+        args = run_mock.call_args.args[0]
+        self.assertIn("-Instance", args)
+        self.assertEqual(args[args.index("-Instance") + 1], "C:/x/inst1")
+        self.assertIn("-VerifyText", args)
+        self.assertEqual(args[args.index("-VerifyText") + 1], row["verify"])
+        self.assertTrue(got["ok"])
+
+    def test_press_omits_verifytext_when_verify_is_empty(self):
+        row = {"title": "chat two", "instance": "inst2", "instanceDir": "C:/x/inst2",
+              "verify": "", "quietMins": 5.0}
+        with mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._run_result()) as run_mock:
+            unblock_prompts.press(row)
+        args = run_mock.call_args.args[0]
+        self.assertIn("-Instance", args)
+        self.assertNotIn("-VerifyText", args)
+
+    def test_press_on_an_escalation_shaped_row_does_not_crash_without_quietmins(self):
+        # Regression (review, 2026-09-04): press() is also called with an ESCALATION row -
+        # interview.py's apply_answers 'approve' branch passes it exactly
+        # approvallib.get_escalation()'s own shape, which carries `queuedAt` but no
+        # `quietMins` at all. A bare `row["quietMins"]` used to raise KeyError inside
+        # press()'s own try/except, which swallowed it as a fabricated-looking "actuator
+        # error" - silently skipping the -Select retry for every escalation approval.
+        approvallib.queue_escalation(
+            "esc-1", title="chat one", instance="inst1", instance_dir="C:/x/inst1",
+            verify="hi", command="npm install left-pad", tool_name="Bash",
+            reason="no pattern places it")
+        row = approvallib.get_escalation("esc-1")
+        self.assertNotIn("quietMins", row)
+        # returncode 4 (pane not reachable) is what makes press() EVALUATE the quietMins
+        # expression at all (`and` short-circuits on returncode 0) - the old
+        # `row["quietMins"] * 60 >= ...` raised KeyError right here, caught by press()'s own
+        # broad except and reported back as a fabricated "actuator error: 'quietMins'".
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._run_result(returncode=4)) as run_mock:
+            got = unblock_prompts.press(row)
+        self.assertNotIn("actuator error", got["outcome"])
+        self.assertFalse(got["ok"])  # returncode 4 -> "could not reach that chat's pane"
+        run_mock.assert_called_once()  # freshly queued: not old enough to earn a -Select retry
+
+    def test_press_on_a_long_queued_escalation_row_retries_with_select(self):
+        # The other half: an escalation that HAS been sitting a while (the common case for
+        # one a person or the AI only gets to later) must still earn the -Select retry that
+        # a find_stuck() row with the same real elapsed time would - _row_quiet_secs() falls
+        # back to `queuedAt` precisely so this keeps working without a `quietMins` field.
+        approvallib.queue_escalation(
+            "esc-2", title="chat two", instance="inst1", instance_dir="C:/x/inst1",
+            verify="hi", command="npm install left-pad", tool_name="Bash",
+            reason="no pattern places it")
+        row = approvallib.get_escalation("esc-2")
+        row["queuedAt"] -= int((unblock_prompts.SELECT_AFTER_SECS + 60) * 1000)
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               side_effect=[self._run_result(returncode=4),
+                                            self._run_result()]) as run_mock:
+            got = unblock_prompts.press(row)
+        self.assertEqual(run_mock.call_count, 2)
+        second_args = run_mock.call_args_list[1].args[0]
+        self.assertIn("-Select", second_args)
+        self.assertTrue(got["ok"])
+
+
+class ReportWhyTest(unittest.TestCase):
+    """The 'why not eligible' line (bug found on review, 2026-09-01): its app IS running and
+    its mode IS bypassPermissions, but the verify-snippet check failed - the old code fell
+    through every other branch to "its app is not running", which is simply false. The report
+    must read the already-computed ineligibleWhy first."""
+
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        os.environ["ORCHESTRATOR_STATE_DIR"] = self._state.name
+
+    def tearDown(self):
+        os.environ.pop("ORCHESTRATOR_STATE_DIR", None)
+        self._state.cleanup()
+
+    def test_a_failed_verify_snippet_is_reported_as_such_not_as_app_not_running(self):
+        row = {"sessionId": "s1", "instance": "inst1", "title": "chat one",
+               "quietMins": 5.0, "eligible": False, "held": False,
+               "mode": stamplib.BYPASS, "appRunning": True, "verify": "",
+               "ineligibleWhy": "no distinctive last words to prove the pane - never pressed blind"}
+        with mock.patch.object(unblock_prompts, "find_stuck", return_value=[row]):
+            code, out, _ = run_cli(unblock_prompts.main, [])
+        self.assertIn("no distinctive last words", out)
+        self.assertNotIn("its app is not running", out)
+
+
+class MainGateTest(unittest.TestCase):
+    """THE ARMED WINDOW (owner order, 2026-09-01): --yes alone must not press a prompt unless
+    a person opened a window (`python orch.py arm`) or passed --force."""
+
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        os.environ["ORCHESTRATOR_STATE_DIR"] = self._state.name
+
+    def tearDown(self):
+        os.environ.pop("ORCHESTRATOR_STATE_DIR", None)
+        self._state.cleanup()
+
+    def _stuck_row(self):
+        return {"sessionId": "s1", "instance": "inst1", "title": "chat one",
+                "quietMins": 5.0, "eligible": True, "held": False,
+                "mode": stamplib.BYPASS, "verify": "hi", "instanceDir": "C:/x",
+                # tri-state verdict fields (approvallib.classify) - a plain "git status" so
+                # this fixture keeps testing the ARMED WINDOW gate, not the verdict split
+                # (that has its own tests, see test_approvallib.py / test_unblock_tristate.py).
+                "verdict": "approve", "verdictReason": "read-only git inspection",
+                "toolName": "Bash", "command": "git status"}
+
+    def test_yes_without_an_armed_window_refuses_and_presses_nothing(self):
+        with mock.patch.object(unblock_prompts, "find_stuck", return_value=[self._stuck_row()]), \
+             mock.patch.object(unblock_prompts, "press") as m:
+            code, out, _ = run_cli(unblock_prompts.main, ["--yes"])
+        m.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertIn("DISARMED", out)
+
+    def test_yes_with_an_armed_window_presses_as_before(self):
+        armlib.arm(3600)
+        with mock.patch.object(unblock_prompts, "find_stuck", return_value=[self._stuck_row()]), \
+             mock.patch.object(unblock_prompts, "press",
+                               return_value={"ok": True, "instance": "inst1", "title": "chat one",
+                                             "quietMins": 5.0, "outcome": "pressed"}) as m:
+            code, out, _ = run_cli(unblock_prompts.main, ["--yes"])
+        m.assert_called_once()
+        self.assertEqual(code, 0)
+        self.assertNotIn("DISARMED", out)
+
+
+class UnreachablePaneTest(unittest.TestCase):
+    """⛔ AN APPROVAL THAT CANNOT REACH ITS PANE USED TO VANISH (2026-09-11, seen twice from
+    the standing overlord chat): `interview --apply` approved a queued escalation, the actuator
+    answered exit 4 on both passes, and all the person got back was "could not reach that
+    chat's pane". Three things were wrong at once - the person's own decision did not earn the
+    row selection (the 15-minute window is for LANES, not for someone answering about this very
+    chat), the actuator's own diagnosis was dropped into a field nothing printed, and nothing
+    counted the failures, so the same futile press re-queued forever."""
+
+    REFUSED = ("REFUSED: no sidebar row is named 'chat one' in C:/x/inst1 - a MATCH failure, "
+               "not a timing one: 4 rows are rendered right now. Rows: 'other' | 'another'")
+
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        os.environ["ORCHESTRATOR_STATE_DIR"] = self._state.name
+
+    def tearDown(self):
+        os.environ.pop("ORCHESTRATOR_STATE_DIR", None)
+        self._state.cleanup()
+
+    def _result(self, returncode=0, stdout="ok"):
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    def _row(self, sid="esc-9"):
+        approvallib.queue_escalation(
+            sid, title="chat one", instance="inst1", instance_dir="C:/x/inst1",
+            verify="hi", command="npm install left-pad", tool_name="Bash",
+            reason="no pattern places it")
+        return approvallib.get_escalation(sid)
+
+    def test_a_persons_own_decision_earns_the_row_selection_at_once(self):
+        row = self._row()  # freshly queued: far inside SELECT_AFTER_SECS
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               side_effect=[self._result(returncode=4, stdout=self.REFUSED),
+                                            self._result()]) as run_mock:
+            got = unblock_prompts.press(row, always_select=True)
+        self.assertTrue(got["ok"], got["outcome"])
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertIn("-Select", run_mock.call_args_list[1].args[0])
+
+    def test_a_lane_still_waits_for_its_window_before_flipping_the_view(self):
+        row = self._row("esc-10")
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._result(returncode=4, stdout=self.REFUSED)) as run_mock:
+            unblock_prompts.press(row)
+        run_mock.assert_called_once()
+
+    def test_an_unreachable_pane_reports_what_the_actuator_actually_saw(self):
+        row = self._row("esc-11")
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._result(returncode=4, stdout=self.REFUSED)):
+            got = unblock_prompts.press(row, always_select=True)
+        self.assertFalse(got["ok"])
+        self.assertIn("could not reach that chat's pane", got["outcome"])
+        self.assertIn("rows are rendered right now", got["outcome"])
+
+    def test_presses_that_keep_failing_are_counted_and_surfaced(self):
+        row = self._row("esc-12")
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._result(returncode=4, stdout=self.REFUSED)):
+            got = [unblock_prompts.press(row, always_select=True) for _ in range(3)]
+        self.assertEqual([g["failedStreak"] for g in got], [1, 2, 3])
+        self.assertNotIn("in a row", got[0]["outcome"])
+        self.assertIn("3 presses in a row have failed", got[2]["outcome"])
+
+    def test_a_prompt_that_had_already_cleared_is_not_a_failed_press(self):
+        # Exit 3 means there was nothing to press: the chat is fine and the row was stale.
+        # Counting it would file an incident about a healthy chat.
+        row = self._row("esc-14")
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._result(returncode=3, stdout="no prompt")):
+            got = [unblock_prompts.press(row, always_select=True) for _ in range(3)]
+        self.assertEqual([g["failedStreak"] for g in got], [0, 0, 0])
+        self.assertNotIn("in a row", got[2]["outcome"])
+
+    def test_a_press_that_lands_clears_the_count(self):
+        row = self._row("esc-13")
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._result(returncode=4, stdout=self.REFUSED)):
+            self.assertEqual(unblock_prompts.press(row, always_select=True)["failedStreak"], 1)
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock), \
+             mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._result()):
+            landed = unblock_prompts.press(row, always_select=True)
+        self.assertTrue(landed["ok"])
+        self.assertEqual(landed["failedStreak"], 0)
+        self.assertEqual(ledgerlib.check("approval", "esc-13")["attempts"], 0)
+
+    # 2026-09-24 (to-do 5f8bde91, board ruling): -Select now opens the collapsed sidebar groups the
+    # way the delivery script does and looks once more. A row still absent after that is
+    # virtualized out of reach, and the refusal LEADS with it - press() keeps only the first 180
+    # characters of the last line, and the row dump after it can run far past that.
+    VIRTUALIZED = ("REFUSED: expanded 2 group(s); row still not rendered (virtualized out of reach) - "
+                   "no sidebar row is named 'chat one' in C:/x/inst1 - a MATCH failure, not a timing "
+                   "one: 40 rows are rendered right now (rows read by the kebab phrase 'More options "
+                   "for', measured off this window). Rows: "
+                   + " | ".join(f"'chat {i}'" for i in range(12)))
+
+    def test_a_row_still_missing_after_expanding_groups_names_the_expansion(self):
+        row = self._row("esc-15")
+        with mock.patch.object(unblock_prompts.windowlib, "instance_lock", _no_placement_lock),              mock.patch.object(unblock_prompts.clilib, "run_text",
+                               return_value=self._result(returncode=4, stdout=self.VIRTUALIZED)):
+            got = unblock_prompts.press(row, always_select=True)
+        self.assertFalse(got["ok"])
+        self.assertIn("expanded 2 group(s); row still not rendered (virtualized out of reach)",
+                      got["outcome"])
+
+    def test_the_actuator_expands_groups_and_leads_both_row_refusals_with_it(self):
+        src = unblock_prompts.ACTUATOR.read_text(encoding="utf-8")
+        self.assertIn("sidebar_groups.ps1", src)
+        self.assertIn("Expand-SidebarGroups $el", src)
+        self.assertIn("Restore-SidebarGroups; Restore-Foreground", src)  # every exit folds them back
+        self.assertIn("row still not rendered (virtualized out of reach)", src)
+        self.assertEqual(src.count('Write-Output ("REFUSED: $($expandNote)'), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

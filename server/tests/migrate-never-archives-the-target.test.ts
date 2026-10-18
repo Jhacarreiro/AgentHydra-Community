@@ -1,0 +1,157 @@
+// A MOVE MUST NOT HIDE THE CHAT ON THE ACCOUNT IT LANDS ON (bug, reproduced live 2026-09-04).
+//
+// POST /api/sessions/:id/migrate archives the chat's old rows before landing it in the target.
+// It used to do that with archiveDesktopChat(id, true) and NO roots, which walks the default
+// desktop profile plus every isolated instance and flips the flag in each store carrying the
+// chat — the TARGET's own record included. When the target already held a record (a re-migrate,
+// or a target that is the account the chat is already on) the move archived it and nothing put
+// it back: alreadyRendersIn reads an archived record as "not rendering" so the import proceeds,
+// and the hot landing writes title/permission mode/carried settings but never isArchived. The
+// route answered ok and the chat was invisible on the account it had just been moved to.
+//
+// The route now filters desktopProfileRoots() by the target dir, so these pin the two primitives
+// that behaviour rests on: an excluded profile is genuinely untouched, and the failure rollback
+// restores only what this call flipped.
+
+import { afterAll, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { isInsideDir } from '../src/path-key'
+import {
+  archiveDesktopChat,
+  archiveRootsForMove,
+  desktopChatCarriers,
+  desktopProfileRoots,
+} from '../src/session-launch'
+
+const notRunning = async () => false
+const SID = 'sess-move-target'
+
+const SHARED_ROOT = mkdtempSync(join(tmpdir(), 'agenthydra-move-'))
+afterAll(() => rmSync(SHARED_ROOT, { recursive: true, force: true }))
+let scratchSeq = 0
+function scratchProfile(): string {
+  const dir = join(SHARED_ROOT, `p${scratchSeq++}`)
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function profileHolding(sessionId: string, archived: boolean): string {
+  const profile = scratchProfile()
+  const store = join(profile, 'claude-code-sessions', 'org-1', 'user-1')
+  mkdirSync(store, { recursive: true })
+  writeFileSync(
+    join(store, `local_${sessionId}.json`),
+    JSON.stringify({ cliSessionId: sessionId, isArchived: archived }),
+  )
+  return profile
+}
+
+function isArchived(profile: string, sessionId: string): boolean {
+  const p = join(profile, 'claude-code-sessions', 'org-1', 'user-1', `local_${sessionId}.json`)
+  return JSON.parse(readFileSync(p, 'utf8')).isArchived
+}
+
+// The target arrives as the caller typed it, in `instance_ref: 'desktop:<dir>'`, while the root
+// list is built by the daemon — so the two spellings routinely disagree on slash shape, trailing
+// separator and case. samePathKey is what reconciles them, and if it ever fails to match, the
+// target is archived again and the bug is back. Each variant below is a spelling seen in a real
+// instance_ref on this fleet.
+// Case folding is deliberately platform-shaped (path-key.ts): win32 folds, POSIX does not,
+// because two paths differing only by case ARE different files there. So the lowercased
+// spelling is a Windows-only expectation - asserting it on Linux would be asserting a bug.
+const SPELLINGS: Array<[string, (d: string) => string]> = [
+  ['as given', (d) => d],
+  ['forward slashes', (d) => d.replace(/\\/g, '/')],
+  ['trailing separator', (d) => `${d}\\`],
+  ...(process.platform === 'win32'
+    ? ([['lowercased', (d: string) => d.toLowerCase()]] as Array<[string, (d: string) => string]>)
+    : []),
+]
+
+test.each(SPELLINGS)(
+  'archiving every profile EXCEPT the target (%s) leaves the target visible',
+  async (_n, spell) => {
+    const source = profileHolding(SID, false)
+    const target = profileHolding(SID, false)
+
+    // The route's own decision function, against a target spelled the way a caller typed it.
+    const roots = archiveRootsForMove(spell(target), [source, target])
+    const r = await archiveDesktopChat(SID, true, roots, notRunning)
+
+    expect(roots).toEqual([source]) // the filter really did drop the target
+    expect(r.ok).toBe(true)
+    expect(isArchived(source, SID)).toBe(true)
+    // The whole bug in one assertion: the account the chat is moving TO keeps it visible.
+    expect(isArchived(target, SID)).toBe(false)
+  },
+)
+
+test('the old unfiltered call is what hid it — pinned so the regression is unmistakable', async () => {
+  const source = profileHolding(SID, false)
+  const target = profileHolding(SID, false)
+  await archiveDesktopChat(SID, true, [source, target], notRunning)
+  expect(isArchived(target, SID)).toBe(true) // <- the reproduced defect, kept as documentation
+})
+
+test('a failed landing restores only the rows this move flipped', async () => {
+  const source = profileHolding(SID, false)
+  // A third account archived this chat long ago and must stay that way: un-archiving with no
+  // roots would resurrect it, so a failed move would un-hide twins it never touched.
+  const stranger = profileHolding(SID, true)
+
+  const archived0 = await archiveDesktopChat(SID, true, [source, stranger], notRunning)
+  const flipped = archived0.hits.filter((h) => h.changed).map((h) => h.profile)
+  expect(flipped).toEqual([source]) // stranger was already archived → not "changed"
+
+  await archiveDesktopChat(SID, false, flipped, notRunning)
+  expect(isArchived(source, SID)).toBe(false)
+  expect(isArchived(stranger, SID)).toBe(true)
+})
+
+test('a profile-scoped lookup never accepts a SIBLING profile whose name shares a prefix', () => {
+  // findChatMetaPath used to accept the cached index hit on `hit.path.startsWith(instanceDir)`.
+  // Twenty profiles here carry near-duplicate leaf names, so a lookup scoped to 'pap3r rotate'
+  // accepted 'pap3r rotate2''s file - and archive/stamp/rename act on the path they are handed.
+  const base = join(SHARED_ROOT, 'accounts')
+  const rotate = join(base, 'pap3r rotate')
+  const rotate2 = join(base, 'pap3r rotate2')
+  const theirs = join(rotate2, 'claude-code-sessions', 'org-1', 'user-1', 'local_x.json')
+  expect(isInsideDir(theirs, rotate)).toBe(false)
+  expect(isInsideDir(theirs, rotate2)).toBe(true)
+  expect(isInsideDir(join(rotate, 'x.json').replace(/\\/g, '/'), rotate)).toBe(true)
+  expect(isInsideDir(rotate, rotate)).toBe(true)
+  expect(isInsideDir(theirs, '')).toBe(false)
+})
+
+test('desktopProfileRoots lists real profile dirs, so the route can filter one out', () => {
+  const roots = desktopProfileRoots()
+  expect(Array.isArray(roots)).toBe(true)
+  expect(roots.length).toBeGreaterThan(0)
+  // The default install is always first; the isolated instances follow.
+  expect(roots[0]!.toLowerCase()).toContain('claude')
+})
+
+// THE SIBLING DOOR, closed 2026-09-08. The 2026-09-04 fix above scoped POST /migrate, but
+// POST /:id/desktop-archive (and the archive_desktop_chat MCP tool behind it) still archived by
+// session id across EVERY profile. It hid two real chats on the instance they had just been
+// migrated to - one with a running engine - because after a migration the source holds the
+// leftover and the target holds the chat in use, and an unscoped flip cannot tell them apart.
+// desktopChatCarriers is the primitive that route's refusal now rests on.
+test('desktopChatCarriers names every profile holding the session, so an unscoped archive can refuse', () => {
+  const source = profileHolding(SID, false)
+  const target = profileHolding(SID, false)
+  const stranger = scratchProfile() // no store at all
+
+  const carriers = desktopChatCarriers(SID, [source, target, stranger])
+  expect(carriers.sort()).toEqual([source, target].sort())
+  // More than one carrier is exactly the ambiguous case the route turns into a 409 rather than
+  // flipping both - the failure that hid a live chat.
+  expect(carriers.length).toBeGreaterThan(1)
+
+  // One carrier is unambiguous, so the route may proceed without a scope.
+  expect(desktopChatCarriers(SID, [source, stranger])).toEqual([source])
+  // A session nobody carries is not a carrier list of one empty string.
+  expect(desktopChatCarriers('sess-nobody-has-this', [source, target])).toEqual([])
+})

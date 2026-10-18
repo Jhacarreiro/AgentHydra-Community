@@ -1,0 +1,1497 @@
+{
+ "version": 1,
+ "as_of": "2026-10-07",
+ "note": "The one place a list price is written. USD per million tokens. cache_read, cache_write_5m and cache_write_1h are derived from input (0.1x, 1.25x, 2x) when absent. A row's `over` block holds the rates of ONE request whose prompt (input + cache reads + cache writes) is over over.prompt_tokens, its cache rates derived from its own input the same way; a total of many requests prices at the row's own rates. Read by server/src/pricing.ts and hswarm/prices.py; tests/pricing-parity fixture proves both price alike.",
+ "models": {
+  "claude-fable-5-1": {
+   "input": 10,
+   "output": 50,
+   "cache_read": 0.25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-mythos-5-1": {
+   "input": 10,
+   "output": 50,
+   "cache_read": 0.25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-5-5": {
+   "input": 4,
+   "output": 20,
+   "cache_read": 0.2,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-10-03"
+  },
+  "claude-sonnet-5-5": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.1,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (cache reads halved to $0.10 per million, 5% of input, announced with Claude Haiku 5.5: https://www.anthropic.com/claude-haiku-5-5)",
+   "verified_at": "2026-10-07"
+  },
+  "claude-haiku-5-5": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "cache_write_1h": 0.2,
+   "over": {
+    "prompt_tokens": 100000,
+    "input": 0.5,
+    "output": 2.5,
+    "cache_read": 0.05,
+    "cache_write_5m": 0.625,
+    "cache_write_1h": 1.0
+   },
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (a prompt of 100,000 tokens or fewer pays the first rates, a longer one the `over` rates, chosen per request)",
+   "verified_at": "2026-10-07"
+  },
+  "claude-fable-5": {
+   "input": 10,
+   "output": 50,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-mythos-5": {
+   "input": 10,
+   "output": 50,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-5": {
+   "input": 5,
+   "output": 25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-4-8": {
+   "input": 5,
+   "output": 25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-4-7": {
+   "input": 5,
+   "output": 25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-4-6": {
+   "input": 5,
+   "output": 25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-4-5": {
+   "input": 5,
+   "output": 25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-sonnet-5": {
+   "input": 2,
+   "output": 10,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-sonnet-4-6": {
+   "input": 3,
+   "output": 15,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-sonnet-4-5": {
+   "input": 3,
+   "output": 15,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-haiku-4-5": {
+   "input": 1,
+   "output": 5,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-4-1": {
+   "input": 15,
+   "output": 75,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-4-0": {
+   "input": 15,
+   "output": 75,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-opus-4": {
+   "input": 15,
+   "output": 75,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-sonnet-4-0": {
+   "input": 3,
+   "output": 15,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-sonnet-4": {
+   "input": 3,
+   "output": 15,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-3-7-sonnet": {
+   "input": 3,
+   "output": 15,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-3-5-sonnet": {
+   "input": 3,
+   "output": 15,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-3-5-haiku": {
+   "input": 0.8,
+   "output": 4,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-3-haiku": {
+   "input": 0.25,
+   "output": 1.25,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "claude-3-opus": {
+   "input": 15,
+   "output": 75,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing (retired model, kept so archived transcripts price)",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.6-sol": {
+   "input": 5,
+   "output": 30,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.6-terra": {
+   "input": 2,
+   "output": 12,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.6-luna": {
+   "input": 0.2,
+   "output": 1.2,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.6-cyber": {
+   "input": 12.5,
+   "output": 75,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.5": {
+   "input": 5,
+   "output": 30,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.5-pro": {
+   "input": 30,
+   "output": 180,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.4": {
+   "input": 2.5,
+   "output": 15,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.4-mini": {
+   "input": 0.75,
+   "output": 4.5,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.4-nano": {
+   "input": 0.2,
+   "output": 1.25,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.3-codex": {
+   "input": 1.75,
+   "output": 14,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.2": {
+   "input": 1.75,
+   "output": 14,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.1": {
+   "input": 1.25,
+   "output": 10,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5.1-codex-mini": {
+   "input": 0.25,
+   "output": 2,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5": {
+   "input": 1.25,
+   "output": 10,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5-mini": {
+   "input": 0.25,
+   "output": 2,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "gpt-5-nano": {
+   "input": 0.05,
+   "output": 0.4,
+   "cache_write_5m": 0,
+   "cache_write_1h": 0,
+   "source": "https://platform.openai.com/docs/pricing",
+   "verified_at": "2026-09-30"
+  },
+  "deepseek-flash": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.006,
+   "cache_write_5m": 0.3,
+   "cache_write_1h": 0.3,
+   "offpeak": {
+    "multiplier": 0.5,
+    "utc_hours": [
+     [
+      1,
+      4
+     ],
+     [
+      6,
+      10
+     ]
+    ],
+    "weekdays_only": true
+   },
+   "source": "https://api-docs.deepseek.com/quick_start/pricing",
+   "verified_at": "2026-09-12"
+  },
+  "deepseek-v4-pro": {
+   "input": 1.32,
+   "output": 3.96,
+   "cache_read": 0.044,
+   "cache_write_5m": 1.32,
+   "cache_write_1h": 1.32,
+   "offpeak": {
+    "multiplier": 0.5,
+    "utc_hours": [
+     [
+      1,
+      4
+     ],
+     [
+      6,
+      10
+     ]
+    ],
+    "weekdays_only": true
+   },
+   "source": "https://api-docs.deepseek.com/quick_start/pricing",
+   "verified_at": "2026-09-12"
+  }
+ },
+ "providers": {
+  "baseten/rank:deepseek-v4-1-flash:baseten": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.007,
+   "source": "https://inference.baseten.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "baseten/rank:kimi-k3:baseten": {
+   "input": 3,
+   "output": 15,
+   "cache_read": 0.3,
+   "source": "https://inference.baseten.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "baseten/rank:nvidia-nemotron-3-ultra-550b-a55b:baseten": {
+   "input": 0.6,
+   "output": 2.4,
+   "cache_read": 0.12,
+   "source": "https://inference.baseten.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "baseten/rank:gpt-oss-120b:baseten": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.1,
+   "source": "https://inference.baseten.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "baseten/rank:glm-5-3:baseten": {
+   "input": 1.4,
+   "output": 4.4,
+   "cache_read": 0.14,
+   "source": "https://inference.baseten.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "baseten/rank:glm-5-3-flash:baseten": {
+   "input": 0.15,
+   "output": 0.5,
+   "cache_read": 0.03,
+   "source": "https://inference.baseten.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "baseten/rank:glm-5-2:baseten": {
+   "input": 1.4,
+   "output": 4.4,
+   "cache_read": 0.14,
+   "source": "https://www.baseten.co/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "baseten/rank:deepseek-v4-flash:baseten": {
+   "input": 0.13,
+   "output": 0.26,
+   "cache_read": 0.028,
+   "source": "https://www.baseten.co/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "cerebras/cerebras-gpt-oss-120b": {
+   "input": 0.35,
+   "output": 0.75,
+   "cache_read": 0.35,
+   "source": "https://www.cerebras.ai/pricing (Developer tier; no cache discount published)",
+   "verified_at": "2026-10-03"
+  },
+  "cerebras/cerebras-qwen3.8-27b": {
+   "input": 0.99,
+   "output": 1.49,
+   "cache_read": 0.99,
+   "source": "https://www.cerebras.ai/pricing (Developer tier; no cache discount published)",
+   "verified_at": "2026-10-03"
+  },
+  "chutes/rank:qwen3-8-27b:chutes": {
+   "input": 0.24,
+   "output": 2.2,
+   "cache_read": 0.024,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "chutes/rank:qwen3-5-397b-a17b:chutes": {
+   "input": 0.45,
+   "output": 3,
+   "cache_read": 0.045,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "chutes/rank:qwen3-6-27b:chutes": {
+   "input": 0.3,
+   "output": 2,
+   "cache_read": 0.03,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "chutes/rank:deepseek-v4-flash:chutes": {
+   "input": 0.44,
+   "output": 1.32,
+   "cache_read": 0.044,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "chutes/rank:kimi-k2-6:chutes": {
+   "input": 0.5,
+   "output": 2.85,
+   "cache_read": 0.05,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "chutes/rank:glm-5-1:chutes": {
+   "input": 0.98,
+   "output": 3.08,
+   "cache_read": 0.098,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "chutes/rank:glm-5-2:chutes": {
+   "input": 1.25,
+   "output": 3.95,
+   "cache_read": 0.125,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "chutes/rank:kimi-k3:chutes": {
+   "input": 3,
+   "output": 15,
+   "cache_read": 0.3,
+   "source": "https://llm.chutes.ai/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "fireworks/rank:kimi-k3:fireworks": {
+   "input": 3,
+   "output": 15,
+   "cache_read": 0.3,
+   "source": "https://docs.fireworks.ai/serverless/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "fireworks/rank:glm-5-3:fireworks": {
+   "input": 1.4,
+   "output": 4.4,
+   "cache_read": 0.26,
+   "source": "https://docs.fireworks.ai/serverless/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "fireworks/rank:glm-5-3-flash:fireworks": {
+   "input": 0.15,
+   "output": 0.5,
+   "cache_read": 0.03,
+   "source": "https://docs.fireworks.ai/serverless/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "fireworks/rank:deepseek-v4-1-flash:fireworks": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.006,
+   "source": "https://docs.fireworks.ai/serverless/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "fireworks/rank:gpt-oss-120b:fireworks": {
+   "input": 0.15,
+   "output": 0.6,
+   "cache_read": 0.015,
+   "source": "https://docs.fireworks.ai/serverless/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "fireworks/rank:minimax-m3:fireworks": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.06,
+   "source": "https://docs.fireworks.ai/serverless/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "gemini/gemini-3.1-flash-lite": {
+   "input": 0.25,
+   "output": 1.5,
+   "cache_read": 0.025,
+   "source": "https://ai.google.dev/gemini-api/docs/pricing",
+   "verified_at": "2026-10-03"
+  },
+  "gemini/gemini-3.5-flash": {
+   "input": 1.5,
+   "output": 9.0,
+   "cache_read": 0.15,
+   "source": "https://ai.google.dev/gemini-api/docs/pricing",
+   "verified_at": "2026-10-03"
+  },
+  "gemini/gemini-3.5-flash-lite": {
+   "input": 0.3,
+   "output": 2.5,
+   "cache_read": 0.03,
+   "source": "https://ai.google.dev/gemini-api/docs/pricing",
+   "verified_at": "2026-10-03"
+  },
+  "gemini/gemini-3.7-flash": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075,
+   "source": "https://ai.google.dev/gemini-api/docs/pricing",
+   "verified_at": "2026-10-03"
+  },
+  "gemini/gemini-3.8-flash": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075,
+   "source": "https://ai.google.dev/gemini-api/docs/pricing",
+   "verified_at": "2026-10-03"
+  },
+  "groq/groq-gpt-oss-120b": {
+   "input": 0.15,
+   "output": 0.6,
+   "cache_read": 0.075,
+   "source": "https://console.groq.com/docs/models (cached input 50% off: https://console.groq.com/docs/prompt-caching)",
+   "verified_at": "2026-10-03"
+  },
+  "groq/groq-gpt-oss-20b": {
+   "input": 0.075,
+   "output": 0.3,
+   "cache_read": 0.0375,
+   "source": "https://console.groq.com/docs/models (cached input 50% off: https://console.groq.com/docs/prompt-caching)",
+   "verified_at": "2026-10-03"
+  },
+  "groq/groq-qwen3.8-27b": {
+   "input": 0.8,
+   "output": 4.0,
+   "cache_read": 0.8,
+   "source": "https://console.groq.com/docs/models (no prompt caching on this model, so hit = miss)",
+   "verified_at": "2026-10-03"
+  },
+  "grok_xai/rank:grok-4-3:grok_xai": {
+   "input": 1.25,
+   "output": 2.5,
+   "cache_read": 0.2,
+   "over": {
+    "prompt_tokens": 199999,
+    "input": 2.5,
+    "output": 5,
+    "cache_read": 0.4
+   },
+   "source": "https://docs.x.ai/developers/models/grok-4.3",
+   "verified_at": "2026-10-07"
+  },
+  "grok_xai/rank:grok-4-5:grok_xai": {
+   "input": 2,
+   "output": 6,
+   "cache_read": 0.3,
+   "over": {
+    "prompt_tokens": 199999,
+    "input": 4,
+    "output": 12,
+    "cache_read": 0.6
+   },
+   "source": "https://docs.x.ai/developers/models/grok-4.5",
+   "verified_at": "2026-10-07"
+  },
+  "grok_xai/rank:grok-4-6:grok_xai": {
+   "input": 2,
+   "output": 6,
+   "cache_read": 0.5,
+   "over": {
+    "prompt_tokens": 199999,
+    "input": 4,
+    "output": 12,
+    "cache_read": 1
+   },
+   "source": "https://docs.x.ai/developers/models/grok-4.6",
+   "verified_at": "2026-10-07"
+  },
+  "grok_xai/rank:grok-4-7:grok_xai": {
+   "input": 2,
+   "output": 6,
+   "cache_read": 0.5,
+   "over": {
+    "prompt_tokens": 199999,
+    "input": 4,
+    "output": 12,
+    "cache_read": 1
+   },
+   "source": "https://docs.x.ai/developers/models/grok-4.7",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:glm-5-3:huggingface": {
+   "input": 0.9,
+   "output": 4.0,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:glm-5-3-flash:huggingface": {
+   "input": 0.15,
+   "output": 0.5,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:kimi-k3:huggingface": {
+   "input": 2.7,
+   "output": 13.5,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:deepseek-v4-pro:huggingface": {
+   "input": 1.3,
+   "output": 2.6,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:deepseek-v4-1-flash:huggingface": {
+   "input": 0.2,
+   "output": 0.6,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:minimax-m3:huggingface": {
+   "input": 0.28,
+   "output": 1.1,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:qwen3-8-27b:huggingface": {
+   "input": 0.2,
+   "output": 2.5,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:gpt-oss-120b:huggingface": {
+   "input": 0.037,
+   "output": 0.17,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:mimo-v2-6-pro:huggingface": {
+   "input": 0.435,
+   "output": 0.87,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "huggingface/rank:nvidia-nemotron-3-ultra-550b-a55b:huggingface": {
+   "input": 1.0,
+   "output": 5.0,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-07"
+  },
+  "mistral/ministral-8b": {
+   "input": 0.15,
+   "output": 0.15,
+   "cache_read": 0.015,
+   "source": "https://mistral.ai/pricing/api",
+   "verified_at": "2026-10-03"
+  },
+  "mistral/mistral-medium-3.5": {
+   "input": 1.5,
+   "output": 7.5,
+   "cache_read": 0.15,
+   "source": "https://mistral.ai/pricing/api",
+   "verified_at": "2026-10-03"
+  },
+  "openai/rank:gpt-6-astra:openai": {
+   "input": 10,
+   "output": 50,
+   "cache_read": 1.0,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "openai/rank:gpt-6-astra-high:openai": {
+   "input": 10,
+   "output": 50,
+   "cache_read": 1.0,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "openai/rank:gpt-6-luna:openai": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "openai/rank:gpt-6-luna-high:openai": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "openai/rank:gpt-6-sol:openai": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.2,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "openai/rank:gpt-6-sol-high:openai": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.2,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "openai/rank:gpt-6-1-sol:openai": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.1,
+   "over": {
+    "prompt_tokens": 272000,
+    "input": 4,
+    "output": 15,
+    "cache_read": 0.2
+   },
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "openrouter/rank:claude-fable-5-1": {
+   "input": 10.0,
+   "output": 50.0,
+   "cache_read": 0.25,
+   "cache_write_5m": 12.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-opus-5-5": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 5.0,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-opus-5-5-high": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 5.0,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-opus-5-5-low": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 5.0,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-opus-5-5-medium": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 5.0,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-opus-5-5-xhigh": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 5.0,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-sonnet-5": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-sonnet-5-5": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-sonnet-5-5-high": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-sonnet-5-5-low": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-sonnet-5-5-medium": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:claude-sonnet-5-5-xhigh": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:deepseek-v4-1-flash": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.006,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:deepseek-v4-pro": {
+   "input": 0.22,
+   "output": 4.2,
+   "cache_read": 0.14,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gemini-3-8-flash": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075,
+   "cache_write_5m": 0.041667,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:glm-5-3": {
+   "input": 0.22,
+   "output": 3.39,
+   "cache_read": 0.176,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:glm-5-3-flash": {
+   "input": 0.15,
+   "output": 0.5,
+   "cache_read": 0.03,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gpt-6-astra": {
+   "input": 10.0,
+   "output": 50.0,
+   "cache_read": 1.0,
+   "cache_write_5m": 12.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gpt-6-astra-high": {
+   "input": 10.0,
+   "output": 50.0,
+   "cache_read": 1.0,
+   "cache_write_5m": 12.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gpt-6-luna": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gpt-6-luna-high": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gpt-6-sol": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gpt-6-sol-high": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:gpt-oss-120b": {
+   "input": 0.037,
+   "output": 0.17,
+   "cache_read": 0.037,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:mimo-v2-6-pro": {
+   "input": 0.435,
+   "output": 0.87,
+   "cache_read": 0.0036,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:minimax-m3": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.06,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "openrouter/rank:qwen3-8-27b": {
+   "input": 0.42,
+   "output": 3.0,
+   "cache_read": 0.085,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-03"
+  },
+  "together/rank:kimi-k3:together": {
+   "input": 2.7,
+   "output": 13.5,
+   "cache_read": 0.27,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:glm-5-3:together": {
+   "input": 1.4,
+   "output": 4.4,
+   "cache_read": 0.26,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:glm-5-3-flash:together": {
+   "input": 0.15,
+   "output": 0.5,
+   "cache_read": 0.03,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:deepseek-v4-pro:together": {
+   "input": 1.32,
+   "output": 3.96,
+   "cache_read": 0.13,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:deepseek-v4-1-flash:together": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.006,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:minimax-m3:together": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.06,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:gpt-oss-120b:together": {
+   "input": 0.15,
+   "output": 0.6,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:qwen3-7-plus:together": {
+   "input": 0.32,
+   "output": 1.28,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:qwen3-5-9b:together": {
+   "input": 0.17,
+   "output": 0.25,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "together/rank:glm-5-2:together": {
+   "input": 1.4,
+   "output": 4.4,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "zhipu/rank:glm-5-3:zhipu": {
+   "input": 1.4,
+   "output": 4.4,
+   "cache_read": 0.26,
+   "source": "https://docs.z.ai/guides/overview/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "zhipu/rank:glm-5-3-flash:zhipu": {
+   "input": 0.15,
+   "output": 0.5,
+   "cache_read": 0.03,
+   "source": "https://docs.z.ai/guides/overview/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "zhipu/rank:glm-5-2:zhipu": {
+   "input": 1.4,
+   "output": 4.4,
+   "cache_read": 0.26,
+   "source": "https://docs.z.ai/guides/overview/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "zhipu/rank:glm-5-1:zhipu": {
+   "input": 1.4,
+   "output": 4.4,
+   "source": "https://docs.z.ai/guides/overview/pricing",
+   "verified_at": "2026-10-07"
+  },
+  "zhipu/glm-4.5-air": {
+   "input": 0.2,
+   "output": 1.1,
+   "cache_read": 0.03,
+   "source": "https://docs.z.ai/guides/overview/pricing",
+   "verified_at": "2026-10-03"
+  },
+  "nebius/rank:deepseek-v4-1-flash:nebius": {
+   "input": 0.3,
+   "output": 1.2,
+   "source": "https://api.tokenfactory.nebius.com/v1/models?verbose=true",
+   "verified_at": "2026-10-10"
+  },
+  "nebius/rank:kimi-k3:nebius": {
+   "input": 3,
+   "output": 15,
+   "source": "https://api.tokenfactory.nebius.com/v1/models?verbose=true",
+   "verified_at": "2026-10-10"
+  },
+  "nebius/rank:glm-5-3:nebius": {
+   "input": 1.4,
+   "output": 4.4,
+   "source": "https://api.tokenfactory.nebius.com/v1/models?verbose=true",
+   "verified_at": "2026-10-10"
+  },
+  "nebius/rank:glm-5-3-flash:nebius": {
+   "input": 0.15,
+   "output": 0.5,
+   "source": "https://api.tokenfactory.nebius.com/v1/models?verbose=true",
+   "verified_at": "2026-10-10"
+  },
+  "nebius/rank:qwen3-8-27b:nebius": {
+   "input": 0.45,
+   "output": 3,
+   "source": "https://api.tokenfactory.nebius.com/v1/models?verbose=true",
+   "verified_at": "2026-10-10"
+  },
+  "nebius/rank:minimax-m3:nebius": {
+   "input": 0.3,
+   "output": 1.2,
+   "source": "https://api.tokenfactory.nebius.com/v1/models?verbose=true",
+   "verified_at": "2026-10-10"
+  },
+  "nebius/rank:gpt-oss-120b:nebius": {
+   "input": 0.15,
+   "output": 0.6,
+   "source": "https://api.tokenfactory.nebius.com/v1/models?verbose=true",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:qwen3-8-2-4t-a95b:huggingface": {
+   "input": 2,
+   "output": 6,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:mimo-v2-6-flash:huggingface": {
+   "input": 0.14,
+   "output": 0.28,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:granite-4-2-30b:huggingface": {
+   "input": 0.16,
+   "output": 0.65,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:granite-4-2-8b:huggingface": {
+   "input": 0.06,
+   "output": 0.25,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:granite-4-2-3b:huggingface": {
+   "input": 0.03,
+   "output": 0.12,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:gpt-oss-20b:huggingface": {
+   "input": 0.03,
+   "output": 0.14,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:hy3:huggingface": {
+   "input": 0.13,
+   "output": 0.53,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "huggingface/rank:inkling-small:huggingface": {
+   "input": 0.45,
+   "output": 1.2,
+   "source": "https://router.huggingface.co/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "together/rank:qwen3-8-2-4t-a95b:together": {
+   "input": 2,
+   "output": 6,
+   "source": "https://www.together.ai/pricing",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:claude-haiku-5-5": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:claude-haiku-5-5-xhigh": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:claude-haiku-5-5-high": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:claude-haiku-5-5-medium": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:claude-haiku-5-5-low": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write_5m": 0.125,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:gpt-6-1-sol": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.1,
+   "cache_write_5m": 2.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:kimi-k3": {
+   "input": 0.8,
+   "output": 15.0,
+   "cache_read": 0.55,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:grok-4-7": {
+   "input": 2.0,
+   "output": 6.0,
+   "cache_read": 0.5,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:qwen3-8-2-4t-a95b": {
+   "input": 2.0,
+   "output": 6.0,
+   "cache_read": 0.25,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:mimo-v2-6-flash": {
+   "input": 0.14,
+   "output": 0.28,
+   "cache_read": 0.0028,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:inkling-small": {
+   "input": 0.45,
+   "output": 1.2,
+   "cache_read": 0.1,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:hy3": {
+   "input": 0.132,
+   "output": 0.528,
+   "cache_read": 0.033,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "openrouter/rank:granite-4-2-8b": {
+   "input": 0.06,
+   "output": 0.25,
+   "cache_read": 0.015,
+   "source": "https://openrouter.ai/api/v1/models",
+   "verified_at": "2026-10-10"
+  },
+  "inworld/rank:claude-opus-5-5-xhigh:inworld": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-opus-5-5-high:inworld": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-opus-5-5-medium:inworld": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-opus-5-5-low:inworld": {
+   "input": 4.0,
+   "output": 20.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-sonnet-5-5-xhigh:inworld": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-sonnet-5-5-high:inworld": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-sonnet-5-5-medium:inworld": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-sonnet-5-5-low:inworld": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-haiku-5-5-xhigh:inworld": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-haiku-5-5-high:inworld": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-haiku-5-5-medium:inworld": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:claude-haiku-5-5-low:inworld": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:glm-5-3:inworld": {
+   "input": 1.4,
+   "output": 4.4,
+   "cache_read": 0.26,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:glm-5-3-flash:inworld": {
+   "input": 0.15,
+   "output": 0.5,
+   "cache_read": 0.03,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:glm-5-2:inworld": {
+   "input": 1.2,
+   "output": 4.1,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:deepseek-v4-1-flash:inworld": {
+   "input": 0.3,
+   "output": 1.2,
+   "cache_read": 0.006,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:deepseek-v4-1-flash:inworld-free": {
+   "input": 0.0,
+   "output": 0.0,
+   "cache_read": 0.0,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:deepseek-v4-flash:inworld": {
+   "input": 0.1,
+   "output": 0.2,
+   "cache_read": 0.02,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:deepseek-v4-flash:inworld-free": {
+   "input": 0.0,
+   "output": 0.0,
+   "cache_read": 0.0,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:deepseek-v4-pro:inworld": {
+   "input": 1.32,
+   "output": 3.96,
+   "cache_read": 0.044,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:kimi-k3:inworld": {
+   "input": 2.85,
+   "output": 14.25,
+   "cache_read": 0.285,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:qwen3-8-27b:inworld": {
+   "input": 0.4,
+   "output": 3.0,
+   "cache_read": 0.04,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:grok-4-7:inworld": {
+   "input": 2.0,
+   "output": 6.0,
+   "cache_read": 0.5,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:grok-4-6:inworld": {
+   "input": 2.0,
+   "output": 6.0,
+   "cache_read": 0.5,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:grok-4-5:inworld": {
+   "input": 2.0,
+   "output": 6.0,
+   "cache_read": 0.5,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gemini-3-8-flash:inworld": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gemini-3-1-pro-preview:inworld": {
+   "input": 2.0,
+   "output": 12.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-oss-120b:inworld": {
+   "input": 0.15,
+   "output": 0.6,
+   "cache_read": 0.075,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-6-sol:inworld": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-6-sol-high:inworld": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.2,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-6-1-sol:inworld": {
+   "input": 2.0,
+   "output": 10.0,
+   "cache_read": 0.1,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-6-astra:inworld": {
+   "input": 10.0,
+   "output": 50.0,
+   "cache_read": 1.0,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-6-astra-high:inworld": {
+   "input": 10.0,
+   "output": 50.0,
+   "cache_read": 1.0,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-6-luna:inworld": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  },
+  "inworld/rank:gpt-6-luna-high:inworld": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "source": "https://api.inworld.ai/llm/v1alpha/models",
+   "verified_at": "2026-10-13"
+  }
+ }
+}

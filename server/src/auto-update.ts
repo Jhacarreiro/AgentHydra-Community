@@ -1,0 +1,379 @@
+/**
+ * Auto-update timer — "keep the app current for me, silently".
+ *
+ * A single daemon-wide timer that, each time it fires, asks the shared updater engine whether a
+ * newer commit is on the update remote AND the working tree is clean (`canApply`). If so it applies
+ * the update (git pull --ff-only + reinstall + rebuild — see server/src/updater.ts) and then
+ * SELF-RELAUNCHES so the freshly-pulled code takes over. The tray (misc/AgentHydra-Tray.ps1) is a
+ * bare supervisor that does NOT relaunch the daemon on exit, so the daemon must relaunch itself; the
+ * concrete relaunch (spawn a detached copy of our launch command, then gracefully shut down) is
+ * injected from server/src/index.ts, which owns the shutdown handle. The tray then finds the
+ * successor via ~/.agenthydra/runtime.json + /api/health exactly as it does after a manual restart.
+ *
+ * APPLYING follows the `auto_update_enabled` setting, ON by default since 2026-10-05 (owner: "we should
+ * have it default that AgentHydra auto-updates if there's a new version"; db.ts seeds it '1', and an
+ * install turned off in Settings keeps its '0'). It restarts the daemon unattended, which is why it
+ * still waits while work a restart would lose is in flight. CHECKING is not gated on it and never was meant
+ * to be: the loop runs either way and records the answer (lastUpdateCheck), because "is there a
+ * newer version" is worth knowing whether or not you want it installed for you. Before that split,
+ * a default install ran no timer at all and the only code that ever asked was the Settings screen's
+ * onMounted — so a user who never opened Settings was never told, which is exactly what was
+ * reported.
+ *
+ * A dirty working tree is NEVER updated (`canApply` gates it), so uncommitted local work is safe.
+ * Timer shape is a self-rescheduling setTimeout (never setInterval) so a slow apply can't stack.
+ * Settings are persisted via db.ts's setSetting/getSetting (same pattern scheduler.ts uses); primed
+ * + toggled live from POST /api/update/settings; started in server/src/index.ts after boot.
+ */
+import { watch } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { spawnCaptured } from './core/process'
+import { getSetting, setSetting } from './db'
+import { applyUpdate, checkForUpdate, type UpdateStatus } from './updater'
+
+/** Check cadence bounds (seconds): 15 min floor, 7 day ceiling, default 6 h. */
+export const AUTO_UPDATE_INTERVAL_MIN_S = 900
+export const AUTO_UPDATE_INTERVAL_MAX_S = 604_800
+export const AUTO_UPDATE_INTERVAL_DEFAULT_S = 21_600
+
+/** Clamp a requested cadence into [MIN, MAX]; a non-finite value falls back to the default. */
+export function clampAutoUpdateInterval(secs: number): number {
+  if (!Number.isFinite(secs)) return AUTO_UPDATE_INTERVAL_DEFAULT_S
+  return Math.min(
+    AUTO_UPDATE_INTERVAL_MAX_S,
+    Math.max(AUTO_UPDATE_INTERVAL_MIN_S, Math.round(secs)),
+  )
+}
+
+// ── injectable side-effects (real impls by default; index.ts wires `relaunch`, tests swap all) ──
+export interface AutoUpdateHooks {
+  check: typeof checkForUpdate
+  apply: typeof applyUpdate
+  /** Restart the daemon so the freshly-pulled code takes over. Wired by server/src/index.ts. */
+  relaunch: () => void
+  /** True when dispatch runs are in flight. An update relaunches the daemon; even though runs now
+   *  survive that (they're detached + reattached), we DEFER updating while the queue is busy so a
+   *  relaunch never churns a live run's stream, for at most AUTO_UPDATE_MAX_DEFER_S. Wired by
+   *  server/src/index.ts; default: never busy. */
+  hasActiveRuns: () => boolean
+}
+function defaultRelaunch(): void {
+  // No relaunch handler wired (e.g. a bare test harness) — the update is applied on disk and takes
+  // effect on the next manual restart. Never exit here; we don't own a successor.
+  console.warn(
+    'agenthydra: auto-update applied, but no relaunch handler is wired — restart to apply the new code.',
+  )
+}
+const realHooks: AutoUpdateHooks = {
+  check: checkForUpdate,
+  apply: applyUpdate,
+  relaunch: defaultRelaunch,
+  hasActiveRuns: () => false,
+}
+let hooks: AutoUpdateHooks = realHooks
+/** Override the side-effect hooks (index.ts sets `relaunch`; tests inject fakes for all three so
+ *  nothing pulls/spawns/exits). Passing `{}` restores the real hooks. */
+export function setAutoUpdateHooks(h: Partial<AutoUpdateHooks>): void {
+  hooks = { ...realHooks, ...h }
+}
+
+// ── settings persistence (mirrors scheduler.ts's setSetting/getSetting use) ──
+const SETTING_ENABLED = 'auto_update_enabled'
+const SETTING_INTERVAL = 'auto_update_interval_secs'
+
+/** Load enabled/interval from the settings table into the runtime state. Call once at boot before
+ *  startAutoUpdate() (index.ts) so the loop starts with the persisted configuration. */
+export function loadAutoUpdateSettings(): void {
+  enabled = getSetting(SETTING_ENABLED) === '1'
+  intervalSecs = clampAutoUpdateInterval(Number(getSetting(SETTING_INTERVAL)))
+}
+
+// ── runtime state ────────────────────────────────────────────────────────────────────────────
+let enabled = true // ON by default (owner, 2026-10-05); loadAutoUpdateSettings reads the saved choice
+let intervalSecs = AUTO_UPDATE_INTERVAL_DEFAULT_S
+let started = false // true only after the daemon finishes booting (startAutoUpdate)
+let timer: ReturnType<typeof setTimeout> | null = null
+let ticking = false
+let applying = false // an apply is in flight — never overlap checks/applies
+/** When the waiting update was first held back by busy runs; null while nothing waits on them. */
+let deferredSince: number | null = null
+
+/** The longest an available update waits for busy runs before it installs past them (owner,
+ *  2026-10-08: yes, auto-update may install after waiting an hour). With CliMayte and HSwarm busy
+ *  around the clock the queue was never idle, and the live window sat on code an hour old while
+ *  fixes waited on origin. Runs survive the relaunch (detached + reattached); a CliMayte worker the
+ *  daemon spawned itself resumes its session and redoes its current step. */
+export const AUTO_UPDATE_MAX_DEFER_S = 3600
+
+/**
+ * The last background check's answer, so the UI can ask "is there an update?" without paying for a
+ * network round trip — and, more to the point, without the user having to go looking.
+ *
+ * This is the fix for a real report: someone ran an old version for weeks and was never told. The
+ * cause was that `enabled` gated the whole loop, so with auto-APPLY off (the default then, because
+ * applying restarts the daemon) NOTHING ran — not even the check — and the only code that ever
+ * asked was SettingsView's onMounted. Open Settings and you'd find out; otherwise never.
+ *
+ * Checking and applying are now separate decisions. The check is cheap and side-effect-free (one
+ * GitHub API call, or a `git ls-remote`), so it always runs; applying is its own setting (on by
+ * default since 2026-10-05). Nothing about the restart-on-apply behaviour changes.
+ */
+let lastCheck: { status: UpdateStatus; at: number } | null = null
+
+export function autoUpdateEnabled(): boolean {
+  return enabled
+}
+export function getAutoUpdateIntervalSecs(): number {
+  return intervalSecs
+}
+/** The last check, or null before any has landed. Read by GET /api/update/available — a plain
+ *  memory read, so the whole app can poll it cheaply. */
+export function lastUpdateCheck(): { status: UpdateStatus; at: number } | null {
+  return lastCheck
+}
+
+/**
+ * Record a check this module did not run — specifically the real one behind GET /api/update, which
+ * the Settings screen performs on open and on its Check button.
+ *
+ * Without this, the freshest information in the process would be the one thing the passive hint
+ * ignored: open Settings, see "an update is available", close it, and the dot would stay dark until
+ * the background tick came round up to six hours later. The signal should never be staler than what
+ * the app has already been told.
+ */
+export function recordUpdateCheck(status: UpdateStatus, at = Date.now()): void {
+  lastCheck = { status, at }
+}
+
+/** How often the background CHECK runs when auto-apply is off. Independent of the apply cadence:
+ *  the check is one cheap request that changes nothing, so it does not need the interval a
+ *  daemon-restarting apply does — but it also has no reason to be aggressive. Six hours matches
+ *  AUTO_UPDATE_INTERVAL_DEFAULT_S and stays far inside GitHub's unauthenticated rate limit. */
+export const UPDATE_CHECK_INTERVAL_S = 21_600
+
+/** Outcome of one check→apply→relaunch pass. Returned (not just logged) so it's unit-testable. */
+export interface AutoUpdateRunResult {
+  checked: boolean
+  applied: boolean
+  relaunched: boolean
+  reason?: string
+}
+
+/**
+ * One check → maybe apply → maybe relaunch. Applies ONLY when the engine reports an update is
+ * available AND applicable (`canApply`: clean tree, on a branch with an update remote) — so a dirty
+ * working tree is never touched. On a successful apply that needs a restart, it fires the injected
+ * relaunch. Exported + returns a result so the timer AND the test can drive it identically.
+ */
+export async function runAutoUpdateOnce(now = Date.now()): Promise<AutoUpdateRunResult> {
+  if (applying) return { checked: false, applied: false, relaunched: false, reason: 'busy' }
+  let status: Awaited<ReturnType<typeof checkForUpdate>>
+  try {
+    status = await hooks.check()
+  } catch {
+    return { checked: false, applied: false, relaunched: false, reason: 'check-failed' }
+  }
+  lastCheck = { status, at: Date.now() }
+  if (!status.ok)
+    return {
+      checked: true,
+      applied: false,
+      relaunched: false,
+      reason: status.reason ?? 'check-error',
+    }
+  if (!status.updateAvailable) {
+    deferredSince = null
+    return { checked: true, applied: false, relaunched: false, reason: 'up-to-date' }
+  }
+  // Hard gate: canApply is false on a dirty tree / detached HEAD / no update remote — never update then.
+  if (!status.canApply)
+    return {
+      checked: true,
+      applied: false,
+      relaunched: false,
+      reason: status.reason ?? 'cannot-apply',
+    }
+  // Defer while dispatch runs are in flight: applying relaunches the daemon, and even though runs
+  // survive that now, we'd rather not churn a live run's stream mid-flight. Re-checked next window,
+  // and installed past them once the update has waited AUTO_UPDATE_MAX_DEFER_S.
+  if (hooks.hasActiveRuns()) {
+    deferredSince ??= now
+    if (now - deferredSince < AUTO_UPDATE_MAX_DEFER_S * 1000)
+      return { checked: true, applied: false, relaunched: false, reason: 'busy-runs' }
+    console.warn(
+      `agenthydra: auto-update waited ${Math.round((now - deferredSince) / 60_000)} min for busy runs; installing past them.`,
+    )
+  }
+  deferredSince = null
+
+  applying = true
+  try {
+    const res = await hooks.apply()
+    if (!res.ok) return { checked: true, applied: false, relaunched: false, reason: 'apply-failed' }
+    if (res.restartRequired) {
+      hooks.relaunch()
+      return { checked: true, applied: true, relaunched: true }
+    }
+    return { checked: true, applied: true, relaunched: false }
+  } catch {
+    return { checked: true, applied: false, relaunched: false, reason: 'apply-threw' }
+  } finally {
+    applying = false
+  }
+}
+
+/**
+ * Check ONLY — record whether a newer version exists, and stop there.
+ *
+ * The notify half of the loop, run when auto-apply is off. Kept separate from runAutoUpdateOnce
+ * rather than short-circuiting inside it: that function's contract is "one check → maybe apply →
+ * maybe relaunch" and its guard ORDER (available → canApply → no active runs) is what the
+ * auto-update tests pin down. Threading an `enabled` early-return through it would have quietly
+ * moved a gate ahead of `busy-runs`, which is the kind of change that reads as harmless and is not.
+ */
+export async function runUpdateCheckOnce(): Promise<{ ok: boolean; updateAvailable: boolean }> {
+  if (applying) return { ok: false, updateAvailable: false }
+  try {
+    const status = await hooks.check()
+    lastCheck = { status, at: Date.now() }
+    return { ok: status.ok, updateAvailable: status.ok && status.updateAvailable }
+  } catch {
+    return { ok: false, updateAvailable: false }
+  }
+}
+
+// ── timer plumbing ───────────────────────────────────────────────────────────────────────────
+//
+// The loop now runs in BOTH states, at whichever cadence fits, doing whichever pass fits: apply
+// when auto-apply is on, check-only when it is off. It used to arm only when `enabled`, which is
+// what made "I was never told there was an update" the default experience — see lastCheck above.
+/** Seconds until the next tick, given what this loop is currently for. */
+function tickIntervalSecs(): number {
+  return enabled ? intervalSecs : UPDATE_CHECK_INTERVAL_S
+}
+function schedule(): void {
+  timer = setTimeout(() => void runTick(), tickIntervalSecs() * 1000)
+}
+async function runTick(): Promise<void> {
+  timer = null
+  ticking = true
+  try {
+    if (enabled) await runAutoUpdateOnce()
+    else await runUpdateCheckOnce()
+  } catch {
+    /* a round failing is non-fatal — we just try again next window */
+  } finally {
+    ticking = false
+  }
+  if (started && !timer) schedule()
+}
+/** Bring the timer in line with the current started state (idempotent). Armed whenever the daemon
+ *  is up: with auto-apply off the tick still checks, it just stops short of applying. */
+function reconcile(): void {
+  if (!started) return
+  if (!timer && !ticking) schedule()
+}
+/** Re-arm a running loop with the current cadence (no-op mid-tick). Also covers the auto-apply
+ *  toggle, which changes WHICH cadence applies. */
+function retime(): void {
+  if (started && !ticking) {
+    if (timer) clearTimeout(timer)
+    timer = null
+    schedule()
+  }
+}
+
+/** Begin the loop once the daemon has booted (server/src/index.ts). The first tick is one interval
+ *  out (never in the boot stampede, so a fresh launch is never interrupted by an immediate restart,
+ *  and a cold boot never spends a network round trip it was not asked for). */
+export function startAutoUpdate(): void {
+  started = true
+  reconcile()
+}
+/** Stop the loop (daemon shutdown). Safe to call when it was never started. */
+export function stopAutoUpdate(): void {
+  started = false
+  deferredSince = null
+  if (timer) {
+    clearTimeout(timer)
+    timer = null
+  }
+}
+/** Enable/disable AUTO-APPLY, persisting to settings. The loop keeps running either way (it checks
+ *  regardless); this only changes whether a found update is installed, and at which cadence the
+ *  loop ticks — so re-time rather than merely reconcile. */
+export function setAutoUpdateEnabled(value: boolean): void {
+  enabled = value
+  setSetting(SETTING_ENABLED, value ? '1' : '0')
+  retime()
+}
+/** Set the check cadence in seconds (clamped), persisting to settings. Re-times a running loop.
+ *  Returns the clamped value. */
+export function setAutoUpdateIntervalSecs(secs: number): number {
+  intervalSecs = clampAutoUpdateInterval(secs)
+  setSetting(SETTING_INTERVAL, String(intervalSecs))
+  retime()
+  return intervalSecs
+}
+
+// ── a push from this PC is taken at once ─────────────────────────────────────────────────────
+//
+// The live checkout is a git worktree of the working one (scripts/live-checkout.ps1), so both share one git folder, and
+// a push from the working checkout moves the upstream's remote-tracking ref there (refs/remotes/origin/main). Watching
+// that ref runs the same unattended tick PUSH_SETTLE_MS after it last moved, instead of up to a whole interval later
+// (owner, 2026-10-14, a landed change waiting up to 15 minutes for live: "whatever you're waiting on shouldn't wait").
+// A burst of lands is one apply, and the tick's own gates still hold (a clean tree, busy runs, auto-apply off means a
+// check only). A push from another PC still arrives at the next tick.
+
+/** Quiet time after the ref last moved, so one land's commits, or a few lands in a row, are one apply. */
+export const PUSH_SETTLE_MS = 20_000
+let settleTimer: ReturnType<typeof setTimeout> | null = null
+
+/** The ref moved: run the tick once it has been still for `settleMs`. */
+function refMoved(settleMs: number): void {
+  if (!started) return
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = setTimeout(() => {
+    settleTimer = null
+    // A tick in flight read the ref before it moved (or moved it itself, fetching): look again once it is done.
+    if (ticking) return refMoved(settleMs)
+    if (timer) clearTimeout(timer)
+    timer = null
+    void runTick()
+  }, settleMs)
+  settleTimer.unref?.()
+}
+
+/** Watch the folder `dir` for the ref file `name` moving (git writes `<name>.lock`, then renames it). Returns the stop. */
+export function watchRemoteRef(dir: string, name: string, settleMs = PUSH_SETTLE_MS): () => void {
+  const watcher = watch(dir, (_event, file) => {
+    const leaf = String(file ?? '')
+    if (leaf === name || leaf === `${name}.lock`) refMoved(settleMs)
+  })
+  watcher.on('error', () => watcher.close())
+  return () => {
+    watcher.close()
+    if (settleTimer) clearTimeout(settleTimer)
+    settleTimer = null
+  }
+}
+
+/** Watch the upstream ref of the source checkout at `appRoot` (server/src/index.ts). Null when it has no upstream or
+ *  its ref folder cannot be watched: the timer alone still updates it. */
+export async function watchPushes(appRoot: string): Promise<(() => void) | null> {
+  const git = (args: string[]) =>
+    spawnCaptured(['git', ...args], { cwd: appRoot, timeoutMs: 10_000, lane: 'updater' })
+  const [common, upstream] = await Promise.all([
+    git(['rev-parse', '--git-common-dir']),
+    git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
+  ])
+  const up = upstream.code === 0 ? upstream.stdout.trim() : ''
+  const slash = up.indexOf('/')
+  if (common.code !== 0 || slash <= 0) return null
+  const ref = join(resolve(appRoot, common.stdout.trim()), 'refs', 'remotes', up)
+  try {
+    return watchRemoteRef(dirname(ref), basename(ref))
+  } catch {
+    return null
+  }
+}

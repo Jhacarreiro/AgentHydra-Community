@@ -1,0 +1,88 @@
+# Baseten's shared Model APIs, not a user's dedicated deployment URL.
+base_url = "https://inference.baseten.co/v1"
+about = "Hosted language models through Baseten's OpenAI-compatible Model APIs."
+website = "https://www.baseten.co"
+key_url = "https://app.baseten.co/settings/api_keys"
+docs = "https://docs.baseten.co/inference/model-apis/overview"
+transport = "openai"
+capabilities = ["chat"]
+key_billing = "unknown"
+models_path = "/models"
+passthrough = ["baseten:"]
+options = ["reasoning_effort"]
+anthropic_url = "facade"
+
+# Ranked routes (owner, 2026-10-07). Context, output limit, tool support and per-token prices come from Baseten's own
+# model list (inference.baseten.co/v1/models).
+[models."rank:deepseek-v4-1-flash:baseten"]
+api_id = "deepseek-ai/DeepSeek-V4.1-Flash"
+benchmark_slug = "deepseek-v4-1-flash"
+ctx = 1048576
+max_out = 262144
+tools = true
+price_ref = "baseten/rank:deepseek-v4-1-flash:baseten"
+cc_effort = false
+
+[models."rank:kimi-k3:baseten"]
+api_id = "moonshotai/Kimi-K3"
+benchmark_slug = "kimi-k3"
+ctx = 1048576
+max_out = 262144
+tools = true
+price_ref = "baseten/rank:kimi-k3:baseten"
+cc_effort = false
+
+[models."rank:nvidia-nemotron-3-ultra-550b-a55b:baseten"]
+api_id = "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
+benchmark_slug = "nvidia-nemotron-3-ultra-550b-a55b"
+ctx = 202800
+max_out = 202800
+tools = true
+price_ref = "baseten/rank:nvidia-nemotron-3-ultra-550b-a55b:baseten"
+cc_effort = false
+
+[models."rank:gpt-oss-120b:baseten"]
+api_id = "openai/gpt-oss-120b"
+benchmark_slug = "gpt-oss-120b"
+ctx = 128072
+max_out = 128072
+tools = true
+price_ref = "baseten/rank:gpt-oss-120b:baseten"
+cc_effort = false
+
+[models."rank:glm-5-3:baseten"]
+api_id = "zai-org/GLM-5.3"
+benchmark_slug = "glm-5-3"
+ctx = 1048576
+max_out = 262144
+tools = true
+price_ref = "baseten/rank:glm-5-3:baseten"
+cc_effort = false
+
+[models."rank:glm-5-3-flash:baseten"]
+api_id = "zai-org/GLM-5.3-Flash"
+benchmark_slug = "glm-5-3-flash"
+ctx = 1048576
+max_out = 131072
+tools = true
+price_ref = "baseten/rank:glm-5-3-flash:baseten"
+cc_effort = false
+
+# GLM-5.2 and DeepSeek-V4-Flash: context, output limit and tool support from docs.baseten.co's model APIs overview; prices from baseten.co/pricing.
+[models."rank:glm-5-2:baseten"]
+api_id = "zai-org/GLM-5.2"
+benchmark_slug = "glm-5-2"
+ctx = 1048576
+max_out = 262144
+tools = true
+price_ref = "baseten/rank:glm-5-2:baseten"
+cc_effort = false
+
+[models."rank:deepseek-v4-flash:baseten"]
+api_id = "deepseek-ai/DeepSeek-V4-Flash-0731"
+benchmark_slug = "deepseek-v4-flash"
+ctx = 1048576
+max_out = 393216
+tools = true
+price_ref = "baseten/rank:deepseek-v4-flash:baseten"
+cc_effort = false

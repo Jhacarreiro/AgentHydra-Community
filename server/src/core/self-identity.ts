@@ -1,0 +1,739 @@
+// server/src/core/self-identity.ts — "WHICH instance am I?", answered from inside the agent's own
+// process tree instead of from a single env var.
+//
+// THE BUG THIS EXISTS TO FIX (observed 2026-08-13, a real session that burned a Pro 5-hour window):
+// `whoami` used to read ONLY `CLAUDE_CONFIG_DIR`, fall back to the default `~/.claude`, and report
+// `instance: null`. That is correct for a CLI instance and WRONG for every Claude Desktop session,
+// because a Desktop instance does not set `CLAUDE_CONFIG_DIR` at all — it is selected by the
+// Electron host's `--user-data-dir`. The agent therefore reported the DEFAULT login while actually
+// spending a completely different account's quota, and every one of its own attempts to check
+// itself pointed at the wrong meter.
+//
+// THREE TRAPS THIS MODULE IS BUILT AROUND, all verified on a live session:
+//
+//  1. THE TRANSCRIPT PATH LIES. A Desktop-instance session still writes its transcript to the
+//     DEFAULT `~/.claude/projects/<cwd-key>/<sessionId>.jsonl`. So "find my own transcript" proves
+//     where the session logs, NOT which account pays. Do not identify by transcript location.
+//  2. `~/.claude.json`'s `oauthAccount.emailAddress` LIES. It is the default login sitting on the
+//     machine, not the credential the running session bills to. It looks authoritative and is not.
+//  3. AN MCP SERVER GETS A REDUCED ENV. A stdio MCP server spawned by Claude Code sees
+//     `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_HOST_SESSION_ID`, but NOT
+//     `CLAUDE_CODE_EXECPATH` (which the Bash tool's child processes DO get). So a detector that only
+//     reads env vars works when tested from a shell and silently fails where it actually runs.
+//
+// So identification is LAYERED, cheapest and most certain first, and every layer records the
+// literal thing it observed (`proof`) so a human can audit the claim instead of trusting it:
+//
+//   codex-home-env          CODEX_HOME              — a Codex instance names its own home
+//   claude-config-dir-env   CLAUDE_CONFIG_DIR       — a CLI instance names its own config dir
+//   execpath-env            CLAUDE_CODE_EXECPATH    — <instanceDir>/claude-code/<ver>/claude.exe
+//   host-session-file       CLAUDE_CODE_HOST_SESSION_ID → <instanceDir>/claude-code-sessions/**/<id>.json
+//   ancestor-execpath       the parent claude.exe's image path (same shape as execpath-env)
+//   ancestor-user-data-dir  the grandparent Electron host's `--user-data-dir=<instanceDir>`
+//   default-login           nothing matched → the plain ~/.claude login, flagged ASSUMED
+//
+// The last one is deliberately NOT called "exact". "I could not tell" and "it is the default login"
+// are different answers, and collapsing them is precisely how the original bug reported a confident
+// wrong number.
+
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, sep } from 'node:path'
+import { collectChats, type DossierChat, lineageIdsOf } from './chat-store-scan'
+import { claudeUserDataDir, instancesRoot, normalizeInstancePath } from './paths'
+
+/** How an identity was established. Ordered from most to least certain — see the module header. */
+export type SelfIdentityMethod =
+  | 'codex-home-env'
+  | 'claude-config-dir-env'
+  | 'execpath-env'
+  | 'host-session-file'
+  | 'ancestor-execpath'
+  | 'ancestor-user-data-dir'
+  | 'default-login'
+
+/** Which credential family the detected directory belongs to. */
+export type SelfIdentityKind = 'desktop' | 'cli' | 'codex' | 'default-login'
+
+/** One signal that resolved to a directory, with the literal observation that produced it. */
+export interface SelfIdentityClue {
+  method: SelfIdentityMethod
+  kind: SelfIdentityKind
+  /** The credential directory this signal points at (desktop user-data dir / CLAUDE_CONFIG_DIR /
+   *  CODEX_HOME). */
+  configDir: string
+  /** The raw evidence — an env value, an executable path, a pid + command line. Printed back to the
+   *  caller so the identification can be CHECKED rather than believed. */
+  proof: string
+}
+
+export interface SelfIdentityDetection {
+  /** The winning directory, or null when nothing at all could be established. */
+  configDir: string | null
+  kind: SelfIdentityKind | 'unknown'
+  method: SelfIdentityMethod | null
+  /**
+   * `exact`   — a signal that names the credential store directly. Act on it.
+   * `assumed` — nothing named it; this is the default login by elimination. State the assumption.
+   * `none`    — not running under Claude Code at all, or every signal failed.
+   */
+  confidence: 'exact' | 'assumed' | 'none'
+  /** Every signal that resolved, winner first. More than one is a good sign; see `conflict`. */
+  clues: SelfIdentityClue[]
+  /** Signals that were checked and produced nothing, with why. This is what makes a failed
+   *  detection debuggable instead of a shrug. */
+  ruledOut: string[]
+  /** True when two independent signals named DIFFERENT directories. The winner is still returned
+   *  (highest-priority signal), but a caller about to spend quota should say so out loud. */
+  conflict: boolean
+  /** Set when the winning signal had to CHOOSE between several instance dirs that all held the same
+   *  evidence — a migrated chat leaves its session file behind in every home it has had. Names the
+   *  rule used and the dirs passed over, so a caller can say the identification was disambiguated
+   *  rather than observed. Absent when the winner was unique. */
+  disambiguated?: string
+  /**
+   * Set when `host-session-file` won, but the CHAT STORE (the same lineage-aware read `list_chats`
+   * / `chat_dossier` use — current `cliSessionId` and `priorCliSessionIds`, not just a literal
+   * filename) says this session's chat ALSO — or INSTEAD — lives under a different instance than
+   * the file that was found. This is exactly the failure filed 2026-09-07: a chat migrated away
+   * leaves its old `claude-code-sessions/**\/<id>.json` behind at the OLD instance under the
+   * SAME filename, while its new home records the id only inside `priorCliSessionIds` under a
+   * DIFFERENT filename — so the file-only scan finds just the stale copy and calls it exact. When
+   * this is set, `confidence` is downgraded to `assumed` even though a clue still won: a bare
+   * filesystem hit is proof of *a* home this session has had, never proof it is the CURRENT one.
+   */
+  storeConflict?: string
+  /**
+   * Set when `host-session-file` won and the chat store agrees on the owner, but that chat is
+   * ARCHIVED — i.e. dead. A process actually hosting the CALLER cannot have an archived host
+   * session: your own live chat is never archived. So this env is a FROZEN LEFTOVER from a prior
+   * launch of a long-lived / shared server process — CLAUDE_CODE_HOST_SESSION_ID names the chat
+   * that STARTED the server, not the one calling now. This is the mechanism behind the 2026-09-08
+   * incident the 2026-09-07 storeConflict guard could not catch: the frozen id (a #12 chat) had no
+   * lineage link to the real caller (a #5 chat) at all, so no cross-check could connect them — but
+   * its being ARCHIVED proves it is not the live caller. When set, `confidence` is downgraded to
+   * `assumed` even though a clue still won, and `resolveMoveTarget` then refuses `to: "here"`.
+   */
+  staleHostSession?: string
+}
+
+/** Injection seams. Every one defaults to the real thing; tests pass fakes and touch no disk. */
+export interface SelfIdentityDeps {
+  env?: Record<string, string | undefined>
+  /** Does this path exist? */
+  exists?: (p: string) => boolean
+  /** Directory entry names, or null when unreadable. */
+  readDir?: (p: string) => string[] | null
+  /** Last-modified time of a path in ms, or null when it cannot be read. Consulted ONLY to break a
+   *  tie when more than one instance holds this session's file (a migrated chat leaves a copy in
+   *  every home it has had); the live instance is the one still writing its copy. */
+  mtimeMs?: (p: string) => number | null
+  /** Ancestor process chain, nearest parent first. Null when it cannot be enumerated. */
+  ancestry?: () => Promise<AncestorProcess[] | null>
+  /** `~/.claude-instances`. */
+  instancesRoot?: () => string
+  /** The default (non-isolated) Claude Desktop user-data dir. */
+  defaultUserDataDir?: () => string
+  /** The default `claude` CLI login dir (`~/.claude`). */
+  defaultConfigDir?: () => string
+  /** The chat store's own lineage-aware read (`core/chat-store-scan.ts`'s `collectChats`), used
+   *  to cross-check a `host-session-file` filename hit against `list_chats`/`chat_dossier`'s
+   *  authoritative view — see `storeConflict`. Defaults to the real, pure (no-db) scan; tests
+   *  inject a fixture so this never touches real disk. */
+  collectChats?: (roots?: Array<{ dir: string; label: string }>) => DossierChat[]
+}
+
+/** One ancestor process, as {@link processAncestry} reports it. */
+export interface AncestorProcess {
+  pid: number
+  name: string | null
+  executablePath: string | null
+  commandLine: string | null
+}
+
+/** Where a plain `claude` login (no CLAUDE_CONFIG_DIR override) keeps its credentials. */
+export const defaultClaudeConfigDir = (): string => join(homedir(), '.claude')
+
+/**
+ * `--user-data-dir` as it can appear in a reported command line. Duplicated from core/process.ts's
+ * USER_DATA_DIR_RE on purpose: that module owns the *scan* of every running Claude process and
+ * pulls in a scan cache with it, while this one must stay importable from the MCP server's cold
+ * start. Both are covered by their own tests, and the three quoting forms are a stable Windows
+ * fact, not a moving target.
+ */
+const USER_DATA_DIR_RE =
+  /"--user-data-dir[= ]([^"]+)"|--user-data-dir[= ]"([^"]+)"|--user-data-dir[= ]([^"\s]+)/
+
+/** The `--user-data-dir` value in a command line, or null. Handles all three Windows quotings. */
+export function userDataDirFromCommandLine(cmdline: string): string | null {
+  const m = cmdline.match(USER_DATA_DIR_RE)
+  if (!m) return null
+  const raw = (m[1] ?? m[2] ?? m[3])?.trim()
+  return raw && raw.length > 0 ? raw : null
+}
+
+/**
+ * The instance directory that owns a claude-code agent binary.
+ *
+ * Claude Desktop unpacks the agent under its OWN user-data dir:
+ *   <userDataDir>/claude-code/<version>/claude.exe
+ * so the directory above the `claude-code` segment IS the instance. This holds for isolated
+ * instances (`~/.claude-instances/<name>`) and for the default install (`%APPDATA%/Claude`) alike.
+ *
+ * Returns null for any path with no `claude-code` segment — a globally-installed `claude` on PATH
+ * is not an instance and must not be guessed into one.
+ */
+export function userDataDirFromAgentExe(exePath: string): string | null {
+  if (!exePath?.trim()) return null
+  const parts = exePath.split(/[\\/]/)
+  const idx = parts.map((p) => p.toLowerCase()).lastIndexOf('claude-code')
+  if (idx <= 0) return null
+  const dir = parts.slice(0, idx).join(sep)
+  return dir.trim() ? dir : null
+}
+
+/** A Claude Desktop user-data dir always carries one of these at its root. Used to reject a path
+ *  that merely *looks* right (a stale/renamed folder) before reporting it as an identity. */
+export function looksLikeUserDataDir(dir: string, exists: (p: string) => boolean): boolean {
+  return exists(join(dir, 'config.json')) || exists(join(dir, 'Local State'))
+}
+
+/** Bounded recursive search for `<name>` under `<root>`. Depth- AND visit-capped so a pathological
+ *  tree can never turn an identity check into a filesystem walk. */
+function findFileUnder(
+  root: string,
+  name: string,
+  readDir: (p: string) => string[] | null,
+  exists: (p: string) => boolean,
+  maxDepth = 3,
+  budget = { visits: 2_000 },
+): string | null {
+  if (maxDepth < 0 || budget.visits <= 0) return null
+  const direct = join(root, name)
+  if (exists(direct)) return direct
+  const entries = readDir(root)
+  if (!entries) return null
+  for (const entry of entries) {
+    if (budget.visits-- <= 0) return null
+    if (entry === name) return join(root, entry)
+    const child = join(root, entry)
+    // Only descend into things that read as directories; readDir returning null is our "not a
+    // directory (or unreadable)" signal, which keeps this free of an extra stat per entry.
+    const hit = findFileUnder(child, name, readDir, exists, maxDepth - 1, budget)
+    if (hit) return hit
+  }
+  return null
+}
+
+/** Every candidate desktop user-data dir on this machine: each isolated instance, plus the default
+ *  install. Never throws — an unreadable instances root just yields the default. */
+function candidateUserDataDirs(
+  deps: Required<Pick<SelfIdentityDeps, 'readDir'>>,
+  root: string,
+  fallback: string,
+): string[] {
+  const dirs: string[] = []
+  const entries = deps.readDir(root)
+  if (entries) for (const e of entries) dirs.push(join(root, e))
+  dirs.push(fallback)
+  return dirs
+}
+
+interface EnvSignalResult {
+  clue: SelfIdentityClue | null
+  ruledOut: string
+  /** A signal that resolved, but only by choosing among several equally-matching candidates.
+   *  Surfaced as `disambiguated` on the detection so the choice is never silent. */
+  note?: string
+  /** The chat store contradicts this clue. Surfaced as `storeConflict` on the detection, and
+   *  forces `confidence` down to `assumed` even though a clue still won — see that field. */
+  storeConflict?: string
+  /** The chat store agrees on the owner, but that chat is ARCHIVED (dead), so the host-session env
+   *  is a frozen leftover from a prior launch of this process. Surfaced as `staleHostSession` and
+   *  forces `confidence` down to `assumed` — see that field. */
+  staleHostSession?: string
+}
+
+/** Stage 1 — CODEX_HOME names its own home outright. */
+function checkCodexHomeSignal(env: Record<string, string | undefined>): EnvSignalResult {
+  const codexHome = env.CODEX_HOME?.trim()
+  if (codexHome) {
+    return {
+      clue: {
+        method: 'codex-home-env',
+        kind: 'codex',
+        configDir: codexHome,
+        proof: `CODEX_HOME=${codexHome}`,
+      },
+      ruledOut: '',
+    }
+  }
+  return { clue: null, ruledOut: 'CODEX_HOME is unset (not a Codex instance)' }
+}
+
+/** Stage 2 — CLAUDE_CONFIG_DIR, set by every AgentHydra-launched CLI instance. Wins over any
+ *  desktop signal: when it is set, the `claude` binary uses THOSE credentials, even if the
+ *  terminal happens to have been opened from inside a Desktop instance. */
+function checkClaudeConfigDirSignal(env: Record<string, string | undefined>): EnvSignalResult {
+  const cfgDir = env.CLAUDE_CONFIG_DIR?.trim()
+  if (cfgDir) {
+    return {
+      clue: {
+        method: 'claude-config-dir-env',
+        kind: 'cli',
+        configDir: cfgDir,
+        proof: `CLAUDE_CONFIG_DIR=${cfgDir}`,
+      },
+      ruledOut: '',
+    }
+  }
+  return {
+    clue: null,
+    ruledOut: 'CLAUDE_CONFIG_DIR is unset (not a CLI instance — a Desktop session never sets it)',
+  }
+}
+
+/** Stage 3 — CLAUDE_CODE_EXECPATH, present for hooks and Bash-tool children, absent inside MCP. */
+function checkExecPathSignal(
+  env: Record<string, string | undefined>,
+  exists: (p: string) => boolean,
+): EnvSignalResult {
+  const execPath = env.CLAUDE_CODE_EXECPATH?.trim()
+  if (!execPath) {
+    return {
+      clue: null,
+      ruledOut:
+        'CLAUDE_CODE_EXECPATH is unset (expected inside an MCP server — it is only set for hooks and Bash-tool children)',
+    }
+  }
+  const dir = userDataDirFromAgentExe(execPath)
+  if (dir && looksLikeUserDataDir(dir, exists)) {
+    return {
+      clue: {
+        method: 'execpath-env',
+        kind: 'desktop',
+        configDir: dir,
+        proof: `CLAUDE_CODE_EXECPATH=${execPath}`,
+      },
+      ruledOut: '',
+    }
+  }
+  return {
+    clue: null,
+    ruledOut: dir
+      ? `CLAUDE_CODE_EXECPATH points at ${dir}, which is not a Claude user-data dir (no config.json / Local State)`
+      : `CLAUDE_CODE_EXECPATH=${execPath} has no claude-code/<version>/ segment to derive an instance from`,
+  }
+}
+
+/** Stage 4 — CLAUDE_CODE_HOST_SESSION_ID → the instance dir that holds this session's own file.
+ *  The strongest filesystem-only route: a Desktop instance stores each Claude Code session as
+ *  <instanceDir>/claude-code-sessions/<a>/<b>/<hostSessionId>.json. No process enumeration, no
+ *  elevated permissions, works when PowerShell/ps is unavailable. */
+function checkHostSessionSignal(
+  env: Record<string, string | undefined>,
+  rootOf: () => string,
+  defaultUdd: () => string,
+  readDir: (p: string) => string[] | null,
+  exists: (p: string) => boolean,
+  mtimeMs: (p: string) => number | null,
+  collectChatsFn: (roots?: Array<{ dir: string; label: string }>) => DossierChat[],
+): EnvSignalResult {
+  const hostSessionId = env.CLAUDE_CODE_HOST_SESSION_ID?.trim()
+  if (!hostSessionId) {
+    return {
+      clue: null,
+      ruledOut: 'CLAUDE_CODE_HOST_SESSION_ID is unset (not a Claude Desktop session)',
+    }
+  }
+  const dirs = candidateUserDataDirs({ readDir }, rootOf(), defaultUdd())
+  // EVERY holder, not the first (2026-09-01). A migrated chat leaves its session file behind in
+  // each instance it has lived in, so several dirs can hold this id at once. Returning the first
+  // hit made the answer depend on directory ORDER: an Orchestrate chat moved to temp1 was reported
+  // as funzypops for hours, because 'f' sorts before 't', and every usage check it made that day
+  // read the wrong account's meter — the exact bug this module exists to prevent, back in through
+  // a side door. The 0% weekly it kept seeing was real; it just belonged to someone else.
+  const hits: { dir: string; path: string; mtime: number | null }[] = []
+  for (const dir of dirs) {
+    const sessionsRoot = join(dir, 'claude-code-sessions')
+    if (!exists(sessionsRoot)) continue
+    const hit = findFileUnder(sessionsRoot, `${hostSessionId}.json`, readDir, exists)
+    if (hit) hits.push({ dir, path: hit, mtime: mtimeMs(hit) })
+  }
+  const first = hits[0]
+  let base: EnvSignalResult
+  if (!first) {
+    base = {
+      clue: null,
+      ruledOut: `no instance holds a claude-code-sessions file for CLAUDE_CODE_HOST_SESSION_ID=${hostSessionId}`,
+    }
+  } else if (hits.length === 1) {
+    base = {
+      clue: {
+        method: 'host-session-file',
+        kind: 'desktop',
+        configDir: first.dir,
+        proof: first.path,
+      },
+      ruledOut: '',
+    }
+  } else {
+    // The live instance is the one still WRITING its copy, so the newest file is the home. When
+    // no timestamp can be read at all, the pick is not knowledge and is labelled so — it must
+    // never be reported with the same confidence as a unique hit.
+    const dated = hits.filter((h) => h.mtime !== null)
+    const winner = dated.length
+      ? dated.reduce((a, b) => ((b.mtime as number) > (a.mtime as number) ? b : a))
+      : first
+    const losers = hits.filter((h) => h !== winner).map((h) => h.dir)
+    const note = dated.length
+      ? `${hits.length} instances hold this session's file (a migrated chat leaves one behind in each home it has had); chose ${winner.dir} by newest file, over ${losers.join(', ')}`
+      : `AMBIGUOUS: ${hits.length} instances hold this session's file and no timestamp could be read to tell them apart; ${winner.dir} was taken as the first match, over ${losers.join(', ')} — confirm before spending quota on it`
+    base = {
+      clue: {
+        method: 'host-session-file',
+        kind: 'desktop',
+        configDir: winner.dir,
+        proof: winner.path,
+      },
+      ruledOut: '',
+      note,
+    }
+  }
+
+  // Cross-check the filename hit against the CHAT STORE itself — the same lineage-aware read
+  // list_chats/chat_dossier use (current cliSessionId + priorCliSessionIds, not just a literal
+  // filename) — before trusting it as `exact`. FILED 2026-09-07: a chat migrated away leaves its
+  // OLD claude-code-sessions file behind at the OLD instance under the SAME name (that is what
+  // the multi-hit branch above disambiguates), but its NEW home gets a DIFFERENT filename and
+  // records the old id only inside priorCliSessionIds — a filename-only scan never sees that new
+  // home at all. Only one instance held the literal file (the STALE, superseded one), so
+  // `hits.length === 1` above returned total confidence in the wrong account. The chat store is
+  // what `list_chats` reads and is authoritative; a bare filesystem hit is proof of *a* home this
+  // session has had, never proof it is the CURRENT one.
+  if (base.clue) {
+    const matches = chatStoreMatchesOf(hostSessionId, dirs, collectChatsFn)
+    const owners = new Set(matches.map((m) => m.instance))
+    const fileDir = normalizeInstancePath(base.clue.configDir)
+    const others = [...owners].filter((o) => normalizeInstancePath(o) !== fileDir)
+    if (others.length > 0) {
+      return {
+        ...base,
+        storeConflict:
+          `CONFLICT: the chat store also names ${others.join(', ')} as a home for ` +
+          `CLAUDE_CODE_HOST_SESSION_ID=${hostSessionId} via its current cliSessionId or ` +
+          `priorCliSessionIds — the filesystem-only scan above never saw it. The file at ` +
+          `${base.clue.configDir} may be a stale copy a prior move left behind; confirm before ` +
+          `spending quota on it`,
+      }
+    }
+    // The store agrees on the owner, but EVERY matching chat is ARCHIVED — the host session is
+    // dead. A process that is genuinely hosting the caller cannot have an archived host session
+    // (your own live chat is never archived), so CLAUDE_CODE_HOST_SESSION_ID is a frozen leftover
+    // from an earlier launch of this long-lived / shared process: it names the chat that STARTED
+    // the server, not the one calling now. This is the failure the storeConflict guard above
+    // cannot catch, because the frozen id has no lineage link to the real caller at all.
+    if (matches.length > 0 && matches.every((m) => m.archived || m.isArchived)) {
+      const titles = matches.map((m) => JSON.stringify(m.title ?? '(untitled)')).join(', ')
+      return {
+        ...base,
+        staleHostSession:
+          `STALE ENV: CLAUDE_CODE_HOST_SESSION_ID=${hostSessionId} resolves to an ARCHIVED chat ` +
+          `(${titles}) in ${base.clue.configDir}. A live caller's own session is never archived, ` +
+          `so this env is a frozen leftover from a prior launch of this shared server — it names ` +
+          `the chat that STARTED the server, not the one calling now. Resolve "here" by matching ` +
+          `the caller's own session id against list_chats, or pass the target instance explicitly`,
+      }
+    }
+  }
+  return base
+}
+
+/** Every chat-store record answering to `hostSessionId` — by current `cliSessionId`, a
+ *  `priorCliSessionIds` entry, or the literal filename — not just the filename
+ *  `checkHostSessionSignal`'s fast path matched. Returns the CHATS (not just their instances) so a
+ *  caller can read the `archived` flag as well as the owner: a store hit alone drives the
+ *  storeConflict cross-check, and its archived-ness drives the staleHostSession check.
+ *  Deliberately built on `collectChats`/`lineageIdsOf` from `./chat-store-scan`, NOT
+ *  `./chat-dossier`: that module imports `./db`, which OPENS A REAL SQLITE HANDLE AS AN IMPORT-TIME
+ *  SIDE EFFECT, and this one must stay side-effect-free at the MCP server's cold start. */
+function chatStoreMatchesOf(
+  hostSessionId: string,
+  dirs: string[],
+  collectChatsFn: (roots?: Array<{ dir: string; label: string }>) => DossierChat[],
+): DossierChat[] {
+  // lineageIdsOf strips a filename's leading 'local_' before treating it as a lineage id.
+  // CLAUDE_CODE_HOST_SESSION_ID names the FILE, so it carries that prefix — strip it the same way
+  // to compare like with like.
+  const bareId = hostSessionId.startsWith('local_')
+    ? hostSessionId.slice('local_'.length)
+    : hostSessionId
+  // label === dir: this comparison only needs directory equality, never a display name.
+  const roots = dirs.map((dir) => ({ dir, label: dir }))
+  return collectChatsFn(roots).filter((chat) => lineageIdsOf(chat).includes(bareId))
+}
+
+/** Stage 5 (last resort) — walk this process's ancestry for a claude-code binary path or a
+ *  Desktop --user-data-dir. The only signal that survives a stripped env, and the only one that
+ *  spawns a process — detectSelfIdentity skips it once anything cheaper has already answered. */
+async function checkProcessAncestrySignal(
+  deps: SelfIdentityDeps,
+  exists: (p: string) => boolean,
+): Promise<EnvSignalResult> {
+  const chain = deps.ancestry ? await deps.ancestry() : await defaultAncestry()
+  if (chain === null) {
+    return { clue: null, ruledOut: 'process ancestry could not be enumerated on this platform' }
+  }
+  if (chain.length === 0) {
+    return { clue: null, ruledOut: 'process ancestry returned no parent processes' }
+  }
+  for (const proc of chain) {
+    // The agent binary itself: <instanceDir>/claude-code/<ver>/claude.exe.
+    const fromExe = userDataDirFromAgentExe(proc.executablePath ?? '')
+    if (fromExe && looksLikeUserDataDir(fromExe, exists)) {
+      return {
+        clue: {
+          method: 'ancestor-execpath',
+          kind: 'desktop',
+          configDir: fromExe,
+          proof: `pid ${proc.pid} (${proc.name ?? 'unknown'}) → ${proc.executablePath}`,
+        },
+        ruledOut: '',
+      }
+    }
+    // The Electron host that launched it: `--user-data-dir=<instanceDir>`.
+    const fromCmd = userDataDirFromCommandLine(proc.commandLine ?? '')
+    if (fromCmd && looksLikeUserDataDir(fromCmd, exists)) {
+      return {
+        clue: {
+          method: 'ancestor-user-data-dir',
+          kind: 'desktop',
+          configDir: fromCmd,
+          proof: `pid ${proc.pid} (${proc.name ?? 'unknown'}) → --user-data-dir=${fromCmd}`,
+        },
+        ruledOut: '',
+      }
+    }
+  }
+  return {
+    clue: null,
+    ruledOut: `walked ${chain.length} ancestor process(es); none carried --user-data-dir or a claude-code binary path`,
+  }
+}
+
+/**
+ * Work out which instance THIS process belongs to.
+ *
+ * Cheap signals first: the env checks cost nothing, the host-session-file scan is a handful of
+ * readdirs, and the process-ancestry walk (a ~300ms PowerShell spawn on Windows) only runs when
+ * everything cheaper has come up empty. That ordering matters because `check_my_usage` is
+ * advertised as a ~300ms call an agent can make mid-task without thinking about it.
+ */
+function defaultReadDirEntries(p: string): string[] | null {
+  try {
+    return readdirSync(p, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+  } catch {
+    return null
+  }
+}
+
+function defaultMtimeMs(p: string): number | null {
+  try {
+    return statSync(p).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+/** Runs the env-signal checks in order, adding a matched clue or its ruled-out reason. */
+function checkEnvSignals(
+  env: Record<string, string | undefined>,
+  exists: (p: string) => boolean,
+  add: (clue: SelfIdentityClue) => void,
+  ruledOut: string[],
+): void {
+  for (const result of [
+    checkCodexHomeSignal(env),
+    checkClaudeConfigDirSignal(env),
+    checkExecPathSignal(env, exists),
+  ]) {
+    if (result.clue) add(result.clue)
+    else ruledOut.push(result.ruledOut)
+  }
+}
+
+/** Records the host-session-file signal, plus the note/storeConflict/staleHostSession
+ *  side-findings a human will want to see — never folded into the `exact` verdict. */
+function recordHostSessionSignal(
+  hostSignal: ReturnType<typeof checkHostSessionSignal>,
+  add: (clue: SelfIdentityClue) => void,
+  ruledOut: string[],
+): { disambiguated?: string; storeConflict?: string; staleHostSession?: string } {
+  if (hostSignal.clue) add(hostSignal.clue)
+  else ruledOut.push(hostSignal.ruledOut)
+  const disambiguated = hostSignal.note
+  if (disambiguated) ruledOut.push(disambiguated)
+  const storeConflict = hostSignal.storeConflict
+  if (storeConflict) ruledOut.push(storeConflict)
+  const staleHostSession = hostSignal.staleHostSession
+  if (staleHostSession) ruledOut.push(staleHostSession)
+  return { disambiguated, storeConflict, staleHostSession }
+}
+
+/** The process-ancestry stage only runs when nothing cheaper answered — it is the one step
+ *  that spawns a process, and paying ~300ms to confirm an env var already trusted is waste. */
+async function checkAncestryIfNeeded(
+  clues: SelfIdentityClue[],
+  deps: SelfIdentityDeps,
+  exists: (p: string) => boolean,
+  add: (clue: SelfIdentityClue) => void,
+  ruledOut: string[],
+): Promise<void> {
+  if (clues.length !== 0) {
+    ruledOut.push('process ancestry not walked (a cheaper signal already identified this process)')
+    return
+  }
+  const ancestrySignal = await checkProcessAncestrySignal(deps, exists)
+  if (ancestrySignal.clue) add(ancestrySignal.clue)
+  else ruledOut.push(ancestrySignal.ruledOut)
+}
+
+/** The fallback verdict once nothing named a credential store: the plain ~/.claude login by
+ *  elimination when we are demonstrably inside Claude Code, else fully unknown. */
+function fallbackVerdict(
+  env: Record<string, string | undefined>,
+  defaultCfg: () => string,
+  ruledOut: string[],
+): SelfIdentityDetection {
+  if (!(env.CLAUDECODE === '1' || env.CLAUDE_CODE_ENTRYPOINT)) {
+    return {
+      configDir: null,
+      kind: 'unknown',
+      method: null,
+      confidence: 'none',
+      clues: [],
+      ruledOut,
+      conflict: false,
+    }
+  }
+  const dir = defaultCfg()
+  return {
+    configDir: dir,
+    kind: 'default-login',
+    method: 'default-login',
+    confidence: 'assumed',
+    clues: [
+      {
+        method: 'default-login',
+        kind: 'default-login',
+        configDir: dir,
+        proof:
+          'no instance signal matched; falling back to the plain ~/.claude login by elimination',
+      },
+    ],
+    ruledOut,
+    conflict: false,
+  }
+}
+
+export async function detectSelfIdentity(
+  deps: SelfIdentityDeps = {},
+): Promise<SelfIdentityDetection> {
+  const env = deps.env ?? (process.env as Record<string, string | undefined>)
+  const exists = deps.exists ?? ((p: string) => existsSync(p))
+  const readDir = deps.readDir ?? defaultReadDirEntries
+  const mtimeMs = deps.mtimeMs ?? defaultMtimeMs
+  const rootOf = deps.instancesRoot ?? instancesRoot
+  const defaultUdd = deps.defaultUserDataDir ?? claudeUserDataDir
+  const defaultCfg = deps.defaultConfigDir ?? defaultClaudeConfigDir
+
+  const clues: SelfIdentityClue[] = []
+  const ruledOut: string[] = []
+  const add = (clue: SelfIdentityClue) => clues.push(clue)
+
+  // --- 1-3. Env signals — CODEX_HOME / CLAUDE_CONFIG_DIR / CLAUDE_CODE_EXECPATH. ------------------
+  checkEnvSignals(env, exists, add, ruledOut)
+
+  // --- 4. CLAUDE_CODE_HOST_SESSION_ID → the instance dir that holds this session's own file. -----
+  const collectChatsFn = deps.collectChats ?? collectChats
+  const hostSignal = checkHostSessionSignal(
+    env,
+    rootOf,
+    defaultUdd,
+    readDir,
+    exists,
+    mtimeMs,
+    collectChatsFn,
+  )
+  const { disambiguated, storeConflict, staleHostSession } = recordHostSessionSignal(
+    hostSignal,
+    add,
+    ruledOut,
+  )
+
+  // --- 5. Process ancestry — the last resort, and the only one that survives a stripped env. -----
+  await checkAncestryIfNeeded(clues, deps, exists, add, ruledOut)
+
+  // --- verdict -----------------------------------------------------------------------------------
+  const winner = clues[0] ?? null
+  const distinct = new Set(clues.map((c) => normalizeInstancePath(c.configDir)))
+  const conflict = distinct.size > 1
+  // A store conflict / stale-env finding only downgrades the verdict when the CONTESTED clue is the
+  // one that actually won — a cheaper stage (CODEX_HOME / CLAUDE_CONFIG_DIR / CLAUDE_CODE_EXECPATH)
+  // answering first means the host-session-file finding was never acted on in the first place.
+  const winnerIsHostClue = winner === hostSignal.clue
+  const winnerIsContested =
+    (Boolean(storeConflict) || Boolean(staleHostSession)) && winnerIsHostClue
+
+  if (winner) {
+    return {
+      configDir: winner.configDir,
+      kind: winner.kind,
+      method: winner.method,
+      confidence: winnerIsContested ? 'assumed' : 'exact',
+      clues,
+      ruledOut,
+      conflict,
+      ...(disambiguated ? { disambiguated } : {}),
+      ...(winnerIsContested && storeConflict ? { storeConflict } : {}),
+      ...(winnerIsContested && staleHostSession ? { staleHostSession } : {}),
+    }
+  }
+
+  // Nothing named a credential store. If we are demonstrably inside Claude Code, the default login
+  // is the only remaining candidate — but that is an ASSUMPTION, and it is labelled as one.
+  return fallbackVerdict(env, defaultCfg, ruledOut)
+}
+
+/** Ancestry via core/process.ts, imported lazily so the common (env-answered) path never loads the
+ *  process-scanning module at all. */
+async function defaultAncestry(): Promise<AncestorProcess[] | null> {
+  const { processAncestry } = await import('./process')
+  return processAncestry()
+}
+
+/**
+ * One sentence a human or an agent can act on, e.g.
+ *   "instance #12 (pap3r rotate2) — adriel@example.com · Max 20x [exact: host-session-file]"
+ * Kept here rather than in the MCP layer so the REST route, the MCP tool and any future consumer
+ * phrase it identically.
+ */
+export function describeSelfIdentity(
+  detection: SelfIdentityDetection,
+  instance: { num: number; name: string; email: string | null; plan: string | null } | null,
+): string {
+  const how = detection.method ? `[${detection.confidence}: ${detection.method}]` : '[unidentified]'
+  if (!instance) {
+    if (detection.confidence === 'none') {
+      return `Could not identify which Claude account this process runs as. ${how}`
+    }
+    const where = detection.configDir ?? 'unknown'
+    return detection.kind === 'default-login'
+      ? `Not a managed instance — the plain ~/.claude login (${where}). ${how}`
+      : `An unmanaged ${detection.kind} credential dir (${where}) — no instance number. ${how}`
+  }
+  const who = [instance.email, instance.plan].filter(Boolean).join(' · ')
+  return `instance #${instance.num} (${instance.name})${who ? ` — ${who}` : ''} ${how}`
+}

@@ -1,0 +1,473 @@
+# The copied Portal credential is already Base64; do not encode it a second time.
+base_url = "https://api.inworld.ai"
+transport = "openai"
+check_path = "/voices/v1/voices?pageSize=1"
+about = "Inworld's chat model router, speech synthesis and voice catalog. Uses the complete Base64 credential copied from the Portal."
+website = "https://inworld.ai"
+key_url = "https://platform.inworld.ai"
+docs = "https://docs.inworld.ai/api-reference/ttsAPI/texttospeech/synthesize-speech"
+auth_header = "Authorization"
+auth_prefix = "Basic "
+capabilities = ["chat", "text-to-speech", "voices", "model-catalog"]
+chat_path = "/v1/chat/completions"
+passthrough = ["inworld:"]
+options = ["reasoning_effort"]
+anthropic_url = "facade"
+key_billing = "unknown"
+# The catalog has its own schema; list_models returns it through the service adapter.
+
+[operations.synthesize]
+method = "POST"
+path = "/tts/v1/voice"
+capability = "text-to-speech"
+response = "json"
+
+[operations.list_voices]
+method = "GET"
+path = "/voices/v1/voices"
+capability = "voices"
+response = "json"
+
+[operations.list_models]
+method = "GET"
+path = "/llm/v1alpha/models"
+capability = "model-catalog"
+response = "json"
+docs = "https://docs.inworld.ai/api-reference/modelsAPI/modelservice/list-models"
+
+# Ranked routes (2026-10-13). Inworld's router serves other labs' models on one key: every price, context, output cap,
+# image input and tool-calling flag below is Inworld's own catalog (GET /llm/v1alpha/models, read 2026-10-13), and each
+# route sends the effort its benchmark point names, only where the catalog lists that level for the model (so no Claude
+# max route: Inworld's Claude levels stop at xhigh). A request names a model as <host>/<model>, and the standard
+# reasoning_effort field reaches the model: probed 2026-10-13, reasoning tokens rose with it and tool calls came back
+# through every host here. Of the nine keys here, six answer: three call tools, three only chat (HTTP 400 "Tool calling
+# is currently restricted on your plan", which the client skips for tool calls: client._TOOLS_REFUSED_400), two are
+# refused (403) and one is out of credit. The Claude and GPT routes come after CliMayte (after_climayte): CliMayte runs
+# Claude on the owner's subscriptions, and the owner keeps API sales of those models for last (2026-10-13).
+
+[models."rank:claude-opus-5-5-xhigh:inworld"]
+api_id = "anthropic/claude-opus-5-5"
+benchmark_slug = "claude-opus-5-5-xhigh"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-opus-5-5-xhigh:inworld"
+default_reasoning_effort = "xhigh"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-opus-5-5-high:inworld"]
+api_id = "anthropic/claude-opus-5-5"
+benchmark_slug = "claude-opus-5-5-high"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-opus-5-5-high:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-opus-5-5-medium:inworld"]
+api_id = "anthropic/claude-opus-5-5"
+benchmark_slug = "claude-opus-5-5-medium"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-opus-5-5-medium:inworld"
+default_reasoning_effort = "medium"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-opus-5-5-low:inworld"]
+api_id = "anthropic/claude-opus-5-5"
+benchmark_slug = "claude-opus-5-5-low"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-opus-5-5-low:inworld"
+default_reasoning_effort = "low"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-sonnet-5-5-xhigh:inworld"]
+api_id = "anthropic/claude-sonnet-5-5"
+benchmark_slug = "claude-sonnet-5-5-xhigh"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-sonnet-5-5-xhigh:inworld"
+default_reasoning_effort = "xhigh"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-sonnet-5-5-high:inworld"]
+api_id = "anthropic/claude-sonnet-5-5"
+benchmark_slug = "claude-sonnet-5-5-high"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-sonnet-5-5-high:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-sonnet-5-5-medium:inworld"]
+api_id = "anthropic/claude-sonnet-5-5"
+benchmark_slug = "claude-sonnet-5-5-medium"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-sonnet-5-5-medium:inworld"
+default_reasoning_effort = "medium"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-sonnet-5-5-low:inworld"]
+api_id = "anthropic/claude-sonnet-5-5"
+benchmark_slug = "claude-sonnet-5-5-low"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-sonnet-5-5-low:inworld"
+default_reasoning_effort = "low"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-haiku-5-5-xhigh:inworld"]
+api_id = "anthropic/claude-haiku-5-5"
+benchmark_slug = "claude-haiku-5-5-xhigh"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-haiku-5-5-xhigh:inworld"
+default_reasoning_effort = "xhigh"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-haiku-5-5-high:inworld"]
+api_id = "anthropic/claude-haiku-5-5"
+benchmark_slug = "claude-haiku-5-5-high"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-haiku-5-5-high:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-haiku-5-5-medium:inworld"]
+api_id = "anthropic/claude-haiku-5-5"
+benchmark_slug = "claude-haiku-5-5-medium"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-haiku-5-5-medium:inworld"
+default_reasoning_effort = "medium"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:claude-haiku-5-5-low:inworld"]
+api_id = "anthropic/claude-haiku-5-5"
+benchmark_slug = "claude-haiku-5-5-low"
+ctx = 1000000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:claude-haiku-5-5-low:inworld"
+default_reasoning_effort = "low"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:glm-5-3:inworld"]
+api_id = "inworld/models/GLM-5.3"
+benchmark_slug = "glm-5-3"
+ctx = 1048576
+max_out = 131072
+tools = true
+price_ref = "inworld/rank:glm-5-3:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+
+[models."rank:glm-5-3-flash:inworld"]
+api_id = "inworld/models/GLM-5.3-Flash"
+benchmark_slug = "glm-5-3-flash"
+ctx = 131072
+max_out = 131072
+vision = true
+tools = true
+price_ref = "inworld/rank:glm-5-3-flash:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+note = "Inworld serves GLM-5.3-Flash without thinking unless asked (probed 2026-10-13: no reasoning at the default, reasoning at max); z.ai's own default, which the benchmark ran, thinks, so the route sends max. Provisional."
+
+[models."rank:glm-5-2:inworld"]
+api_id = "inworld/models/GLM-5.2"
+benchmark_slug = "glm-5-2"
+ctx = 1048576
+max_out = 131072
+tools = true
+price_ref = "inworld/rank:glm-5-2:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+
+[models."rank:deepseek-v4-1-flash:inworld"]
+api_id = "inworld/models/deepseek-v4.1-flash"
+benchmark_slug = "deepseek-v4-1-flash"
+ctx = 131072
+max_out = 131072
+tools = true
+price_ref = "inworld/rank:deepseek-v4-1-flash:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+
+[models."rank:deepseek-v4-1-flash:inworld-free"]
+api_id = "inworld/models/deepseek-v4.1-flash:free"
+benchmark_slug = "deepseek-v4-1-flash"
+ctx = 65536
+max_out = 8192
+tools = true
+price_ref = "inworld/rank:deepseek-v4-1-flash:inworld-free"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+note = "Inworld's free tier of the same model: no charge, a 65,536-token context."
+
+[models."rank:deepseek-v4-flash:inworld"]
+api_id = "inworld/models/deepseek-v4-flash-0731"
+benchmark_slug = "deepseek-v4-flash"
+ctx = 131072
+max_out = 131072
+tools = true
+price_ref = "inworld/rank:deepseek-v4-flash:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+
+[models."rank:deepseek-v4-flash:inworld-free"]
+api_id = "inworld/models/deepseek-v4-flash-0731:free"
+benchmark_slug = "deepseek-v4-flash"
+ctx = 65536
+max_out = 8192
+tools = true
+price_ref = "inworld/rank:deepseek-v4-flash:inworld-free"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+note = "Inworld's free tier of the same model: no charge, a 65,536-token context."
+
+[models."rank:deepseek-v4-pro:inworld"]
+api_id = "inworld/models/deepseek-v4-pro-0813"
+benchmark_slug = "deepseek-v4-pro"
+ctx = 1048576
+max_out = 131072
+tools = true
+price_ref = "inworld/rank:deepseek-v4-pro:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+
+[models."rank:kimi-k3:inworld"]
+api_id = "deepinfra/moonshotai/Kimi-K3"
+benchmark_slug = "kimi-k3"
+ctx = 1048576
+vision = true
+tools = true
+price_ref = "inworld/rank:kimi-k3:inworld"
+cc_effort = false
+note = "Served by DeepInfra through Inworld, which lists no max level for it; it thinks at its default (probed 2026-10-13), as Baseten's route runs it."
+
+[models."rank:qwen3-8-27b:inworld"]
+api_id = "inworld/models/qwen3.8-27b"
+benchmark_slug = "qwen3-8-27b"
+ctx = 262144
+max_out = 131072
+tools = true
+price_ref = "inworld/rank:qwen3-8-27b:inworld"
+default_reasoning_effort = "xhigh"
+default_thinking = true
+cc_effort = false
+
+[models."rank:grok-4-7:inworld"]
+api_id = "xai/grok-4.7"
+benchmark_slug = "grok-4-7"
+ctx = 500000
+vision = true
+tools = true
+price_ref = "inworld/rank:grok-4-7:inworld"
+default_reasoning_effort = "xhigh"
+default_thinking = true
+cc_effort = false
+
+[models."rank:grok-4-6:inworld"]
+api_id = "xai/grok-4.6"
+benchmark_slug = "grok-4-6"
+ctx = 500000
+vision = true
+tools = true
+price_ref = "inworld/rank:grok-4-6:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+
+[models."rank:grok-4-5:inworld"]
+api_id = "xai/grok-4.5"
+benchmark_slug = "grok-4-5"
+ctx = 500000
+vision = true
+tools = true
+price_ref = "inworld/rank:grok-4-5:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+
+[models."rank:gemini-3-8-flash:inworld"]
+api_id = "google-ai-studio/gemini-3.8-flash"
+benchmark_slug = "gemini-3-8-flash"
+ctx = 1048576
+max_out = 65536
+vision = true
+tools = true
+price_ref = "inworld/rank:gemini-3-8-flash:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+
+[models."rank:gemini-3-1-pro-preview:inworld"]
+api_id = "google-ai-studio/gemini-3.1-pro-preview"
+benchmark_slug = "gemini-3-1-pro-preview"
+ctx = 1048576
+max_out = 65536
+vision = true
+tools = true
+price_ref = "inworld/rank:gemini-3-1-pro-preview:inworld"
+cc_effort = false
+note = "Google's default thinking, which the benchmark ran (probed 2026-10-13: it reasons unasked)."
+
+[models."rank:gpt-oss-120b:inworld"]
+api_id = "deepinfra/openai/gpt-oss-120b"
+benchmark_slug = "gpt-oss-120b"
+ctx = 131072
+max_out = 32766
+tools = true
+price_ref = "inworld/rank:gpt-oss-120b:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+
+[models."rank:gpt-6-sol:inworld"]
+api_id = "openai/gpt-6-sol"
+benchmark_slug = "gpt-6-sol"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:gpt-6-sol:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:gpt-6-sol-high:inworld"]
+api_id = "openai/gpt-6-sol"
+benchmark_slug = "gpt-6-sol-high"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:gpt-6-sol-high:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:gpt-6-1-sol:inworld"]
+api_id = "openai/gpt-6.1-sol"
+benchmark_slug = "gpt-6-1-sol"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:gpt-6-1-sol:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:gpt-6-astra:inworld"]
+api_id = "openai/gpt-6-astra"
+benchmark_slug = "gpt-6-astra"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:gpt-6-astra:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:gpt-6-astra-high:inworld"]
+api_id = "openai/gpt-6-astra"
+benchmark_slug = "gpt-6-astra-high"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:gpt-6-astra-high:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:gpt-6-luna:inworld"]
+api_id = "openai/gpt-6-luna"
+benchmark_slug = "gpt-6-luna"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:gpt-6-luna:inworld"
+default_reasoning_effort = "max"
+default_thinking = true
+cc_effort = false
+after_climayte = true
+
+[models."rank:gpt-6-luna-high:inworld"]
+api_id = "openai/gpt-6-luna"
+benchmark_slug = "gpt-6-luna-high"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "inworld/rank:gpt-6-luna-high:inworld"
+default_reasoning_effort = "high"
+default_thinking = true
+cc_effort = false
+after_climayte = true

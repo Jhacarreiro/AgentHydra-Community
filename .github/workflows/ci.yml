@@ -1,0 +1,331 @@
+name: CI
+
+# rust-ci-speed: ci not applied: misc/tray-host-native is the LunarWerx kit's tray host, synced from
+# lunarwerx-ui, which builds and tests it (.github/workflows/tray-host.yml); this copy is not built here.
+
+# rust-ci-speed: windows-per-change not applied: AgentHydra ships on Windows (tray, Claude Desktop
+# control, the orchestrator's UI Automation actuators), so the Windows leg is the real gate and stays
+# on every change; it already runs side by side with the Linux leg, and the slow part of it (the
+# Python orchestrator suite) is split into parallel shards below.
+# rust-ci-speed: no step of this workflow builds Rust (misc/tray-host-native is not compiled here,
+# nor misc/climayte-runner-native: its exe is committed, its build.ps1 runs its unit tests before
+# every rebuild, and the Windows leg's runner tests run the committed exe), so the cargo-only
+# settings (cache, test timing, no-fail-fast) have nothing to attach to.
+on:
+  push:
+    branches: [main]
+    # A docs-only change cannot break the gate. Release commits bump package.json, so they still run.
+    paths-ignore: ['docs/**', '**/*.md']
+  pull_request:
+    paths-ignore: ['docs/**', '**/*.md']
+  # Manual runs, so a commit can be verified without a dummy push. Added 2026-08-06, during a
+  # GitHub Actions outage whose recovery plan was to throttle webhook triggers: pushes landed on
+  # main and simply never produced a run. Since docs/RELEASING.md makes "main is green" the gate on
+  # tagging a release, the only ways to re-check an already-pushed commit were an empty commit or
+  # waiting for the next real one. Release.yml already had this; CI should too.
+  workflow_dispatch:
+
+# A newer push to the same ref supersedes an in-flight run, except on main: there a run finishes and
+# only the newest push waits for it (GitHub keeps one pending run per group). On 2026-10-07 main took
+# a push every few minutes and every run was cancelled before the ~25 min Windows server tests ended,
+# so for over an hour no commit on main had a complete CI result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  # The `already` job reads this workflow's own run history.
+  actions: read
+
+jobs:
+  # Ask the API whether this workflow already SUCCEEDED on this exact sha (a ci/ branch or a manual
+  # run before landing); if so the gate jobs are skipped and the run reads success. A manual
+  # dispatch, an unreadable answer, or a sha with no green run gates in full.
+  already:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      verified: ${{ steps.check.outputs.verified }}
+    steps:
+      - name: Has this workflow already passed on this exact commit?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verified=0
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            wf="${GITHUB_WORKFLOW_REF%%@*}"; wf="${wf##*/}"
+            earlier="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?head_sha=$GITHUB_SHA&status=success&per_page=10" \
+              | jq -r --argjson me "$GITHUB_RUN_ID" '[.workflow_runs[] | select(.id != $me)][0].html_url // ""' || true)"
+            if [ -n "$earlier" ]; then
+              echo "::notice::$GITHUB_SHA already passed this workflow: $earlier. The gate is skipped."
+              verified=1
+            fi
+          fi
+          echo "verified=$verified" >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: already
+    if: needs.already.outputs.verified != '1'
+    timeout-minutes: 60
+    name: lint · typecheck · build · test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.3
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint + format (Biome)
+        run: bun run lint
+
+      # The job has been named "typecheck" since day one but never ran one, so a change could go
+      # green here carrying real type errors — and one was: the portable-window exports went
+      # undeclared for two commits with nothing to notice. Covers src AND every tests/ dir.
+      - name: Typecheck
+        run: bun run typecheck
+
+      # Repo guardrail (Architect custom check, run standalone, no npx/network): fails if a reka
+      # popper root (DropdownMenu/Popover/etc) wraps AROUND an <IconTooltip> that contains its own
+      # trigger, instead of living inside it. reka anchors to the nearest PopperRoot in the Vue
+      # component tree, so the tooltip steals the anchor and the real content opens off-screen (and
+      # freezes pointer events for modal poppers). See the check file's header.
+      - name: Guardrail (reka popper root inside tooltip)
+        run: bun scripts/checks/reka-popper-root-inside-tooltip.mjs
+
+      # Fails if a WMI `CommandLine LIKE` query forgets to exclude the shell running it — that query
+      # carries the needle in its own command line, so it matches itself and answers "found"
+      # forever. isRunnerAlive() did exactly that for months, silently disabling the stale-pid guard.
+      - name: Guardrail (self-matching WMI query)
+        run: bun scripts/checks/wmi-commandline-query-self-match.mjs
+
+      # Fails if a vendored server lib's runtime .mjs and its hand-maintained .d.mts disagree on
+      # value exports either way: a .mjs export the .d.mts omits (TS2305 on import — exactly the
+      # kit-sync that shipped RepoYeti v0.6.0 with red CI), or a .d.mts declaration the .mjs lacks
+      # (tsc trusts it, so it typechecks and is `undefined` at runtime). See the check's header.
+      - name: Guardrail (kit lib .mjs/.d.mts export drift)
+        run: bun scripts/checks/kit-lib-type-drift.mjs
+
+      # Enforces BOTH directions of the windowsHide rule in server/src.
+      # Missing on a console program (powershell/cmd/taskkill/bun/node/claude/npm/wmic/reg): that
+      # spawn only stays invisible because the daemon happens to be launched with a window-less
+      # console (misc/Tray-Host.ps1's CreateNoWindow=true) that a console child inherits; start the
+      # daemon any other way and it flashes a real console window.
+      # PRESENT on a GUI program (explorer, an editor, a browser): windowsHide is libuv's hide flag,
+      # which sets SW_HIDE too, and a GUI app obeys it, so the window the spawn exists to open never
+      # appears while the call still succeeds. That silently broke reveal-instance-folder once.
+      # See the check's header.
+      - name: Guardrail (windowsHide on console spawns, never on GUI spawns)
+        run: bun scripts/checks/spawn-console-window.mjs
+
+      # Fails if a test that spawns a subprocess inherits bun's 5s default timeout. Such a test
+      # measures the RUNNER, not its own assertions: sessions-scan-cache.test.ts takes 533ms locally
+      # and took 5083.99ms here on windows-latest, failing the 2026-08-08 run 84ms over the line and
+      # passing again on re-run. The check resolves module-level helpers transitively, because the
+      # four tests that actually flaked reach their spawn through a child() helper and an
+      # inline-only scan finds nothing in the very file that caused it. See the check's header.
+      - name: Guardrail (subprocess tests must set an explicit timeout)
+        run: bun scripts/checks/spawn-test-without-timeout.mjs
+
+      # Fails if the transcript index can be born stale. It used to stamp its snapshot with a
+      # timestamp captured BEFORE a ~9.5s sweep and keep it for TTL_MS=2000, so the snapshot was
+      # never once fresh and every request scheduled another sweep — synchronously, inside a
+      # setTimeout, which holds Bun's event loop. /api/health took 6.6s and opening any chat took
+      # 16-23s regardless of its size. All three facets are checked; see the check's header.
+      - name: Guardrail (transcript index must not be born stale)
+        run: bun scripts/checks/transcript-index-born-stale.mjs
+
+      - name: Guardrail (a repeating timer must not be able to kill the daemon)
+        run: bun scripts/checks/timer-callback-can-kill-the-daemon.mjs
+
+      # A bun:sqlite test fixture must wrap its writes in one transaction. Three tests on this pattern
+      # timed out at bun's 5 s limit on windows-latest on 2026-10-13, each fsyncing once per write.
+      - name: Guardrail (sqlite test fixtures must not autocommit per write)
+        run: bun scripts/checks/sqlite-fixture-autocommits.mjs
+
+      # The agent catalog's paths came from a third-party registry, and a wrong one is INVISIBLE:
+      # a row pointing at a directory that does not exist produces exactly what a correct row
+      # produces on a machine without that tool - nothing. Three rows were checked against upstream
+      # source on 2026-09-04 and all three were wrong. This ratchets the verified count so it can
+      # only grow, and fails on a row that cannot match at all.
+      - name: Guardrail (agent catalog row provenance ratchet)
+        run: bun scripts/checks/catalog-row-provenance.mjs
+
+      # Fails if a test file's stub outlives it. `bun test` runs every file in one process, so a
+      # global stubbed at module scope (or in a before* hook) with no after* restore, and any
+      # mock.module() with no re-mock to the real exports, is what the NEXT file's code calls.
+      # 2026-09-05, twice: probe tests under tmp/ broke instance-pointer + updater-engine, then
+      # request-generations' mock of the old window's api client hung resource-status for three 5s timeouts.
+      # Every file involved passes alone; only the serial run below sees it. See the check's header.
+      - name: Guardrail (a test stub must not outlive its file)
+        run: bun scripts/checks/test-stub-outlives-its-file.mjs
+
+      # Fails if an exported fixer (sweep*, reassert*, run*Once) is named only by test code. A green
+      # unit test proves a fixer works, not that anything calls it: reassertAutomationStamps and
+      # sweepUntitledDesktopChats both shipped unit-tested, documented as running on a timer, and
+      # called from nowhere but their own test, until users reported the symptoms (2026-10-03).
+      - name: Guardrail (a fixer must not be called only by its own test)
+        run: bun scripts/checks/fixer-only-called-by-its-test.mjs
+
+      # Fails if a local HTTP server binds a port without the EXACT-ORIGIN loopback guard. A
+      # browser treats every localhost port as its own origin, so "any loopback origin" lets a
+      # page on any other local port drive these APIs cross-site, and here that reaches instance
+      # create/open/quit. AH-11 asked both servers to use an allowlist; the fix landed in index.ts
+      # only and instance-mode.ts kept the permissive guard, which nothing caught until the
+      # closure was adversarially re-checked (2026-09-06). This is that check, made permanent.
+      - name: Guardrail (local API servers use an exact-origin allowlist)
+        run: bun scripts/checks/local-api-origin-allowlist.mjs
+
+      # Fails if an `/api/instances/:dir/...` route uses its param as a path instead of resolving it
+      # against the instance list. A bare folder name then resolves RELATIVE to the daemon's working
+      # directory (System32's driver store, for the installed service), which is how
+      # `POST /api/instances/thomas/open` launched claude.exe against a profile under System32 on
+      # 2026-09-03. Scans all of server/src, because the first fix for that bug gated one daemon's
+      # routes and missed the second daemon serving the same paths.
+      - name: Guardrail (per-instance routes resolve :dir against the instance list)
+        run: bun scripts/checks/instance-dir-route-gate.mjs
+
+      # Fails if install.ps1 gains non-ASCII without a UTF-8 BOM. Windows PowerShell 5.1 reads a
+      # BOM-less script in the ANSI code page, where an em dash's bytes include a curly quote that
+      # ends a "..." string early: `powershell -File install.ps1` could not even parse (2026-09-28).
+      - name: Guardrail (install.ps1 parses under Windows PowerShell 5.1)
+        run: bun scripts/checks/ps1-read-as-ansi.mjs
+
+      - name: Test
+        # ⛔ SERIAL ON PURPOSE. `bun run test` is --parallel=4 for a fast local loop (34.9s
+        # -> 22.1s); CI is NOT, and the difference is deliberate rather than an oversight.
+        #
+        # Parallelism was tried here and pulled back out the same evening. Bare --parallel
+        # defaults to the core count (32 on the dev box) and failed three tests in
+        # dispatch.test.ts under load; pinned to 4 it passed locally three times running and
+        # passed one CI run, then failed the next on THIS runner - two 5s timeouts in
+        # launcher/lifecycle tests that spawn real processes and build a real .lnk. The
+        # runner has ~4 slow vCPUs, so four workers is full saturation, and the tests that
+        # break are the ones whose whole value is that they are not faked.
+        #
+        # A green that depends on how busy the machine was is not a green. Locally that costs
+        # a re-run; on a public repo's CI it costs trust in every future red. Twelve seconds
+        # is not worth it. If this is ever revisited, the fix is to raise those tests' own
+        # timeouts first and prove it over many runs - not to widen the workers and hope.
+        run: bun test
+
+    # The orchestrator suite is its own job (below): it was 776 s of the 17-minute Windows leg,
+    # run after everything else in this job. See `orchestrator`.
+    #
+    # NOTE: the windows-latest leg exercises the tray's Windows -SelfTest
+    # (tests/launcher.test.ts's `test.skipIf(!isWin)` cases run automatically here, skip on
+    # ubuntu) and the golden crypto vectors in server/tests/instances-crypto.test.ts, which are
+    # gated on BOTH platform and the presence of this machine's real credential fixture — they
+    # skip gracefully on any CI runner (no fixture present) rather than failing.
+    #
+    # check:kit is intentionally NOT run here — it needs the private lunarwerx-ui kit repo as a
+    # sibling checkout, which CI doesn't have.
+
+  # orchestrator/ is the Python toolbox that decides what should happen to a chat (see
+  # docs/REFERENCE.md "The orchestrator"): ~650 unit tests against a stub daemon, no fleet, no
+  # python deps beyond the stdlib. Windows only, because the toolbox drives Windows desktop apps
+  # (UI Automation actuators, the tray, taskkill) and that is the machine it ships to; a green here
+  # is a real green. Run from its own folder: its tests import `lib` relative to scripts/.
+  #
+  # Three shards by test file name (test_[a-c]*, test_[d-m]*, test_[n-z]*: 29/35/32 of the 96 files on 2026-09-30, together
+  # every test_*.py), side by side with the `ci` legs, so the Windows wall time is the slowest
+  # shard, not the sum; the shards run on separate machines, so no shared state between them.
+  # ponytail: by-name split, re-balance the ranges if one shard dominates.
+  orchestrator:
+    needs: already
+    if: needs.already.outputs.verified != '1'
+    timeout-minutes: 60
+    name: orchestrator tests (windows-latest, ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['a-c', 'd-m', 'n-z']
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Python (the orchestrator toolbox is stdlib Python)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Test (orchestrator)
+        working-directory: orchestrator
+        run: python -m unittest discover -s scripts/tests -p "test_[${{ matrix.shard }}]*.py"
+
+  # desk2/ (AgentHydra 2.0's window) is its own bun workspace with its own lockfile and suite, and
+  # the root `bun test` skips it (bunfig.toml), so without this job a change that breaks Desk 2
+  # lands green. Windows only: its suite is developed and passes there, PowerShell launcher tests
+  # included. Same triggers as every other job (this workflow's paths-ignore already lets desk2/**
+  # and the shared files it imports through).
+  desk2:
+    needs: already
+    if: needs.already.outputs.verified != '1'
+    timeout-minutes: 60
+    name: desk2 · typecheck · test · build (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.3
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-desk2-${{ runner.os }}-${{ hashFiles('desk2/bun.lock') }}
+          restore-keys: bun-desk2-${{ runner.os }}-
+
+      - name: Install dependencies (desk2)
+        working-directory: desk2
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (desk2)
+        working-directory: desk2
+        run: bun run typecheck
+
+      # The runner's TEMP is the 8.3 short form (C:\Users\RUNNER~1\...) while git, RepoYeti and the folder
+      # picker answer the long form, so the suite's temp-folder paths never matched what came back (ten
+      # failures on this job's first run, 2026-10-06). A PC's TEMP is the long form; runner.temp is too.
+      - name: Test (desk2)
+        working-directory: desk2
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: bun run test
+
+      - name: Setup Python (desk2 free-instances harness)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install ClaudFree and its test tools (desk2)
+        working-directory: desk2
+        run: pip install "server/src/free-instances/harness[browser,dev]"
+
+      - name: Test (desk2 free-instances harness)
+        working-directory: desk2
+        run: bun run test:py
+
+      - name: Build (desk2)
+        working-directory: desk2
+        run: bun run build

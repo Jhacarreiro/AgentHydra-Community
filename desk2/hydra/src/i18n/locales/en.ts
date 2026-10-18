@@ -1,0 +1,45 @@
+// English base catalog — the source every other locale is translated from.
+// Namespaced per component/area; each area's keys live in ./en/<area>.ts.
+import analytics from './en/analytics'
+import app from './en/app'
+import builder from './en/builder'
+import cliInstances from './en/cliInstances'
+import climayte from './en/climayte'
+import codexInstances from './en/codexInstances'
+import dshInstances from './en/dshInstances'
+import freeInstances from './en/freeInstances'
+import helpers from './en/helpers'
+import hswarm from './en/hswarm'
+import incidents from './en/incidents'
+import instances from './en/instances'
+import notifications from './en/notifications'
+import queue from './en/queue'
+import routingCost from './en/routingCost'
+import run from './en/run'
+import scheduler from './en/scheduler'
+import sessions from './en/sessions'
+import settings from './en/settings'
+import swarmStats from './en/swarmStats'
+
+export default {
+  analytics,
+  app,
+  builder,
+  cliInstances,
+  codexInstances,
+  climayte,
+  dshInstances,
+  freeInstances,
+  helpers,
+  hswarm,
+  incidents,
+  instances,
+  notifications,
+  queue,
+  routingCost,
+  run,
+  scheduler,
+  sessions,
+  settings,
+  swarmStats,
+}

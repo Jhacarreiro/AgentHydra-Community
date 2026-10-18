@@ -1,0 +1,1303 @@
+// server/src/core/process.ts — per-OS Claude process enumeration + `--user-data-dir` parsing
+// (PLAN.md §3/§4/§9 item 3).
+//
+// Mirrors a verified PowerShell prototype (Get-CMRunningProcess, from an earlier internal
+// scratch tool) ported to cross-platform Bun/TypeScript.
+//
+// Cross-platform via Bun.spawn:
+//   win32:        `powershell -NoProfile -Command "Get-CimInstance Win32_Process | ..."`
+//                 (falls back to `wmic process get ProcessId,CommandLine /format:list` if
+//                 PowerShell itself is unavailable — rare, but keeps this dependency-light).
+//   darwin/linux: `ps -eo pid=,command=` (no header row; wide enough to not truncate cmdline).
+//
+// "Main" process = has `--user-data-dir` AND lacks `--type=` (Electron marks child processes
+// — gpu-process, renderer, utility, crashpad-handler, zygote, etc. — with `--type=`).
+// `listClaudeProcesses({ includeChildren: true })` returns everything (main + children) so
+// callers like quitInstance() can kill the whole process tree for a dir; the default
+// (`includeChildren` unset/false) returns only main processes, which is what discovery/open
+// need (one row per running instance).
+//
+// Nothing here throws for expected failure conditions (powershell/wmic/ps missing, spawn
+// failure, unparseable output, permission-denied on some processes) — every path returns an
+// empty array rather than rejecting, since "we can't currently enumerate processes" should
+// degrade to "no known running instances", not crash the caller.
+
+import { readdirSync, readFileSync } from 'node:fs'
+import { normalizePath } from './paths.ts'
+import { createScanCache } from './scan-cache.ts'
+import { captureInWorker, type StartedChild, StartFailed, startInWorker } from './spawn-worker.ts'
+import { nativeProcessesNamed, nativeProcessInfo, nativeProcessTable } from './win-process-table.ts'
+import { TCP_STATE_ESTABLISHED, type TcpRow, windowsTcpTable } from './win-tcp-table.ts'
+
+/** One row of the OS process table, as `ps -eo pid=,ppid=,command=` would print it. */
+export interface ProcTableRow {
+  pid: number
+  ppid: number
+  command: string
+}
+
+/*
+ * Linux: the process table read straight from /proc, so it needs no `ps`.
+ *
+ * Both Unix listers below used to shell out to `ps`, and a Linux box without procps (a minimal
+ * container is one; the CI image ships neither ps nor pgrep) answered "could not enumerate", which
+ * the delete guard rightly refuses to act on - so on such a box no instance could ever be deleted
+ * (2026-09-05, reproduced in the container). /proc is the source `ps` itself reads. Returns null
+ * off Linux or where /proc is unreadable, and the caller falls back to `ps` (macOS).
+ */
+/** Test seam. process-scan-unknown.test.ts injects an enumeration failure by making Bun.spawn
+ *  throw, which on Linux no longer reaches /proc at all; this lets that test make /proc answer
+ *  "unreadable" too, so "could not look" is exercised on every platform. Null = no override. */
+export const procTableForTests: { override: (() => ProcTableRow[] | null) | null } = {
+  override: null,
+}
+
+export function linuxProcTable(): ProcTableRow[] | null {
+  if (procTableForTests.override) return procTableForTests.override()
+  if (process.platform !== 'linux') return null
+  let entries: string[]
+  try {
+    entries = readdirSync('/proc')
+  } catch {
+    return null
+  }
+  const NUL = String.fromCharCode(0)
+  const rows: ProcTableRow[] = []
+  for (const name of entries) {
+    if (!/^\d+$/.test(name)) continue
+    const pid = Number.parseInt(name, 10)
+    let stat: string
+    let cmdline: string
+    try {
+      stat = readFileSync(`/proc/${name}/stat`, 'utf8')
+      cmdline = readFileSync(`/proc/${name}/cmdline`, 'utf8')
+    } catch {
+      continue // raced with an exit
+    }
+    // "pid (comm) state ppid ..." - comm may hold spaces and parentheses, so split after the LAST ')'.
+    const close = stat.lastIndexOf(')')
+    if (close < 0) continue
+    const fields = stat
+      .slice(close + 1)
+      .trim()
+      .split(/\s+/)
+    const ppid = Number.parseInt(fields[1] ?? '', 10)
+    if (!Number.isFinite(ppid)) continue
+    // cmdline is the NUL-separated argv; a kernel thread has none, and `ps` prints its comm in
+    // brackets for those, so this does the same.
+    const argv = cmdline.split(NUL).filter((part) => part.length > 0)
+    const command =
+      argv.length > 0 ? argv.join(' ') : `[${stat.slice(stat.indexOf('(') + 1, close)}]`
+    rows.push({ pid, ppid, command })
+  }
+  return rows.length > 0 ? rows : null
+}
+
+/** Hard cap on how deep the Unix descendant walk goes. An actuator chain is python -> shell ->
+ *  tool, three or four levels; twelve bounds a pathological fork tree without ever mattering. */
+const UNIX_TREE_MAX_DEPTH = 12
+
+/**
+ * Every descendant of `pid` on a Unix host, DEEPEST FIRST. Returns [] for a childless process or
+ * a host where neither source can be read.
+ *
+ * WHY IT EXISTS (audit AH-15): on Windows the kill is `taskkill /T`, the whole tree; on Unix it
+ * was the named process alone. Its own child, the actuator it was blocking on, kept running
+ * unsupervised and still held the stdout/stderr pipes, so a caller's drain could not finish until
+ * that grandchild happened to exit. A process group would be the canonical answer, but Bun.spawn
+ * offers no `detached`, so the tree is enumerated and killed leaf-first instead.
+ *
+ * /proc first (via linuxProcTable), `pgrep -P` second. The order matters: the CI container ships
+ * neither `pgrep` nor `ps`, and the pgrep-only walk answered EMPTY there, which is indistinguishable
+ * from "no children" and silently turned the tree kill back into a single-process kill (2026-09-05).
+ */
+export function unixDescendants(pid: number, maxDepth = UNIX_TREE_MAX_DEPTH): number[] {
+  const out: number[] = []
+  const table = linuxProcTable()
+  if (table) {
+    const children = new Map<number, number[]>()
+    for (const row of table) {
+      const list = children.get(row.ppid)
+      if (list) list.push(row.pid)
+      else children.set(row.ppid, [row.pid])
+    }
+    const walk = (parent: number, depth: number): void => {
+      if (depth >= maxDepth) return
+      for (const child of children.get(parent) ?? []) {
+        if (child === parent) continue
+        walk(child, depth + 1) // grandchildren first, so a parent cannot respawn what we killed
+        out.push(child)
+      }
+    }
+    walk(pid, 0)
+    return out
+  }
+  const walk = (parent: number, depth: number): void => {
+    if (depth >= maxDepth) return
+    let stdout: string
+    try {
+      const r = Bun.spawnSync(['pgrep', '-P', String(parent)], { stdout: 'pipe', stderr: 'ignore' })
+      stdout = r.stdout.toString()
+    } catch {
+      return // no pgrep on this host: killing the named process is all we can do
+    }
+    for (const line of stdout.split('\n')) {
+      const child = Number.parseInt(line.trim(), 10)
+      if (!Number.isFinite(child) || child <= 0 || child === parent) continue
+      walk(child, depth + 1)
+      out.push(child)
+    }
+  }
+  walk(pid, 0)
+  return out
+}
+
+/**
+ * Kill `pid` AND everything it spawned. The one implementation, because there were two and only
+ * one of them was ever fixed.
+ *
+ * A cancelled or timed-out run is the case that matters: the thing being killed is a supervisor
+ * blocked on an actuator (a PowerShell driving a window, a `subprocess.run` inside the toolbox, a
+ * `claude` under a runner), and killing only the named process leaves that actuator running with
+ * nobody watching it while the caller is told the work stopped. Windows has always used
+ * `taskkill /T /F`; the Unix branch walks the tree and kills leaf-first so a parent cannot respawn
+ * what was just killed.
+ *
+ * Never throws: a process that died between enumeration and signal is the expected case, not an
+ * error, and every caller here is already reporting some other outcome.
+ */
+export function killProcessTree(pid: number): void {
+  killProcessTrees([pid])
+}
+
+/**
+ * killProcessTree for several trees, in ONE taskkill on Windows: each taskkill walks every process
+ * on the box, 0.8-3 s a call on a loaded one, so a loop of killProcessTree held a CliMayte group
+ * cancel of 11 workers for 15.8 s (measured 2026-10-03). One call with a /PID per tree kills them
+ * all, a pid already gone included, in about the time of one.
+ */
+export function killProcessTrees(pids: number[]): void {
+  const live = pids.filter((pid) => Number.isFinite(pid) && pid > 0)
+  if (!live.length) return
+  if (process.platform === 'win32') {
+    try {
+      Bun.spawnSync(['taskkill', ...live.flatMap((pid) => ['/PID', String(pid)]), '/T', '/F'], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+        windowsHide: true,
+      })
+    } catch {
+      // already gone
+    }
+    return
+  }
+  killUnixTrees(live)
+}
+
+/**
+ * killProcessTrees without holding the event loop: the same one taskkill, started and awaited
+ * instead of run with spawnSync. On a loaded box taskkill takes 0.8-3 s; run synchronously from the
+ * limit-reset sweep it was 87% of a 7.6 s daemon stall (stall profile, 2026-10-04), and a daemon
+ * that misses three health probes is killed by the tray. For a caller that needs the tree gone
+ * before it goes on, await this; a timeout handler can fire it and move on.
+ */
+export async function killProcessTreesAsync(pids: number[]): Promise<void> {
+  const live = pids.filter((pid) => Number.isFinite(pid) && pid > 0)
+  if (!live.length) return
+  if (process.platform !== 'win32') return killUnixTrees(live)
+  try {
+    // On the spawn worker (Bun.spawn holds its caller 100-280 ms here). Bounded; a taskkill that
+    // hangs past the bound is killed by the worker, not chased with another from here.
+    await spawnCaptured(['taskkill', ...live.flatMap((pid) => ['/PID', String(pid)]), '/T', '/F'], {
+      timeoutMs: 30_000,
+      wantStderr: false,
+    })
+  } catch {
+    // already gone
+  }
+}
+
+function killUnixTrees(live: number[]): void {
+  for (const pid of live) {
+    try {
+      for (const child of unixDescendants(pid)) {
+        try {
+          process.kill(child, 'SIGKILL')
+        } catch {
+          // already gone
+        }
+      }
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // already gone
+    }
+  }
+}
+
+// `--user-data-dir` shows up three ways in a reported command line, depending on how the value
+// was quoted when the process was launched — the discovery here must handle all three or a
+// running instance whose profile path contains a space is mis-parsed (and so appears "stopped"
+// or as a bogus external entry). Verified empirically 2026-07:
+//   --user-data-dir=C:\no space\x      unquoted — Bun.spawn/libuv leaves a space-free argv as-is
+//                                       (the manager's own openInstance, common case)
+//   --user-data-dir="C:\a b\x"          value quoted — what the desktop-shortcut .lnk writes
+//   "--user-data-dir=C:\a b\x"          WHOLE token quoted — libuv wraps the entire argv element
+//                                       in quotes when the value contains a space, so the quote
+//                                       lands BEFORE the flag name, not after the '='
+// Three ordered alternatives, most-specific first; capture group 1/2/3 respectively holds the
+// value. `[^"]+` (not `[^"\s]`) in the quoted branches is what keeps spaces inside the path.
+const USER_DATA_DIR_RE =
+  /"--user-data-dir[= ]([^"]+)"|--user-data-dir[= ]"([^"]+)"|--user-data-dir[= ]([^"\s]+)/
+const TYPE_FLAG_RE = /--type=/
+
+/** Extracts the raw (un-normalized) `--user-data-dir` value from a process command line, or
+ *  `null` when the flag is absent. Handles all three quotings above. Exported for unit tests. */
+export function extractUserDataDir(cmdline: string): string | null {
+  const m = cmdline.match(USER_DATA_DIR_RE)
+  if (!m) return null
+  const raw = (m[1] ?? m[2] ?? m[3])?.trim()
+  return raw && raw.length > 0 ? raw : null
+}
+
+/** One discovered Claude Desktop process. */
+export interface CMProcessInfo {
+  pid: number
+  cmdline: string
+  /** Parsed + normalized `--user-data-dir` value, or `null` if the process didn't carry one
+   *  (shouldn't normally happen for anything matched by the main-process filter, but child
+   *  processes included via `includeChildren` may lack it in edge cases). */
+  dir: string | null
+  /** True when this is the main (non-`--type=`) process for its `--user-data-dir`. */
+  isMain: boolean
+  /** Best-effort process start time (ISO string), or `undefined` if unavailable on this
+   *  OS/path (e.g. the `ps`-based unix path does not cheaply expose it). */
+  startTime?: string
+  /** Best-effort resident memory (working-set bytes) for THIS single process, or `undefined`
+   *  when unavailable (unix `ps` path). Callers that want a per-instance total sum this across
+   *  the whole process tree (main + `--type=` children). */
+  memoryBytes?: number
+}
+
+export interface ListClaudeProcessesOptions {
+  /** Include Electron child processes (renderer/gpu/utility/crashpad/... — marked `--type=`)
+   *  in addition to the main process. Default `false` (discovery wants one row per instance;
+   *  quit/kill wants the whole tree). */
+  includeChildren?: boolean
+  /** Bypass the shared scan cache and enumerate for real. Set it on any path that is about to
+   *  ACT on the answer (open / quit / focus / delete guards): those must not decide from a
+   *  snapshot that is a poll tick old. Read-only listing paths leave it off — see scan-cache.ts
+   *  for why the polling routes must not pay for a PowerShell spawn. */
+  fresh?: boolean
+}
+
+/** Parses a single raw process record into a CMProcessInfo, or `null` if it isn't a Claude
+ *  Desktop process we care about (no `--user-data-dir` at all) or is malformed. */
+function parseProcessRecord(
+  pid: number,
+  cmdline: string,
+  startTime?: string,
+  memoryBytes?: number,
+): CMProcessInfo | null {
+  if (!cmdline?.trim() || !Number.isFinite(pid)) return null
+
+  const rawDir = extractUserDataDir(cmdline)
+  if (rawDir === null) return null // no `--user-data-dir` → not an instance process we track
+
+  const dir = normalizePath(rawDir)
+  const isMain = !TYPE_FLAG_RE.test(cmdline)
+
+  return { pid, cmdline, dir, isMain, startTime, memoryBytes }
+}
+
+// ----------------------------------------------------------------------------
+// Shared spawn helper.
+// ----------------------------------------------------------------------------
+
+/** What a bounded spawn came back with. `timedOut` true means the deadline fired and `code` is
+ *  whatever we knew at that moment — usually null, because the child never reported one. */
+export interface CapturedRun {
+  code: number | null
+  stdout: string
+  stderr: string
+  timedOut: boolean
+}
+
+/** Default deadline for a captured spawn. Every caller in this repo runs a short CLI — powershell,
+ *  taskkill, ps, security, secret-tool — so ten seconds is generous, not tight. */
+export const CAPTURE_TIMEOUT_MS = 10_000
+
+/** Bun.spawn as this module found it; spawnCaptured runs inline when it has been replaced. */
+const nativeSpawn = Bun.spawn
+
+/**
+ * THE ONE BOUNDED SPAWN. Run a short command, capture what it said, and COME BACK — whatever the
+ * child or its descendants do.
+ *
+ * ⛔ WHY THIS IS CENTRAL AND NOT COPIED PER CALLER (swept 2026-09-18, after the orchestrator route
+ * wedged for the same reason). Sixteen sites in this server awaited a child's exit; eleven of them
+ * had no deadline at all, and they failed in three distinct ways that one helper closes for good:
+ *
+ *   1. NO DEADLINE. `await proc.exited` with nothing racing it hangs its caller forever if the
+ *      child never exits — and one of those sites was inside an HTTP route, so the route simply
+ *      never answered.
+ *   2. PIPE-AND-IGNORE, WHICH IS A DEADLOCK, NOT A LEAK. `keys.win.ts` opened `stderr: 'pipe'` and
+ *      never read it. A DPAPI `Unprotect` failure writes a multi-kilobyte .NET traceback; past the
+ *      pipe buffer the child BLOCKS on the write, so it never exits, so stdout never closes and
+ *      `proc.exited` never settles. That is the exact deadlock `realSpawn`'s own comment warns
+ *      about ("a child that fills one pipe while the other is unread"), in the credential-decrypt
+ *      path. So this helper DRAINS EVERY STREAM IT OPENS, always, whether the caller wants the
+ *      text or not.
+ *   3. THE CHILD'S EXIT IS NOT THE PIPE CLOSING. A grandchild that inherited the child's stdout
+ *      holds that pipe open for as long as IT lives, so a drain can outlive the process by
+ *      minutes. The deadline therefore kills the whole TREE (killProcessTree), not just the pid,
+ *      and the race settles even if a drain is still pending.
+ *
+ * Never throws: a spawn that cannot start, a non-zero exit and a timeout all come back as data, so
+ * a caller can try its next strategy without a try/catch of its own.
+ */
+export async function spawnCaptured(
+  cmd: string[],
+  {
+    timeoutMs = CAPTURE_TIMEOUT_MS,
+    cwd,
+    env,
+    wantStderr = true,
+    stdin,
+    lane,
+  }: {
+    timeoutMs?: number
+    cwd?: string
+    env?: Record<string, string | undefined>
+    /** false only when the caller genuinely does not want stderr text; it is still DRAINED. */
+    wantStderr?: boolean
+    /** Text written to the child's stdin, then closed (`git patch-id` reads its diff this way). Absent:
+     *  the child's stdin is ignored, as it always was. */
+    stdin?: string
+    /** A spawn-worker thread of this capture's own, for one that must never queue behind the rest
+     *  (the CliMayte runner hand-off: core/spawn-worker.ts). Absent: the shared thread. */
+    lane?: string
+  } = {},
+): Promise<CapturedRun> {
+  // Spawned on a worker thread: Bun.spawn holds its caller for 100-280 ms on Windows, and the
+  // daemon's one thread serves every route. Inline only where no worker can run, or where this
+  // thread's Bun.spawn was replaced: the worker has its own Bun, so a test that breaks spawn to
+  // reach "could not look", or forbids it ("this suite must never launch anything"), would
+  // otherwise be bypassed and a real process launched behind its back.
+  if (Bun.spawn === nativeSpawn) {
+    try {
+      return await captureInWorker(cmd, { timeoutMs, cwd, env, wantStderr, stdin, lane })
+    } catch {
+      // worker unavailable or died: capture on this thread
+    }
+  }
+  let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
+  try {
+    proc = Bun.spawn(cmd, {
+      stdin: stdin === undefined ? 'ignore' : 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      windowsHide: true,
+      ...(cwd ? { cwd } : {}),
+      ...(env ? { env } : {}),
+    }) as Bun.Subprocess<'ignore', 'pipe', 'pipe'>
+  } catch {
+    // Command not found / spawn rejected outright. Not a timeout: there was never a child.
+    return { code: null, stdout: '', stderr: '', timedOut: false }
+  }
+  if (stdin !== undefined) writeStdin(proc, stdin)
+
+  return capturePipedProc(proc, { timeoutMs, wantStderr })
+}
+
+/** A long-lived child (a server), started on `lane`'s spawn-worker thread, which watches it for its
+ *  exit: CreateProcess never holds this thread. stdout and stderr go to the given fds, else nowhere.
+ *  Throws, as Bun.spawn does, when it cannot be started. Inline where no worker can run, or where
+ *  this thread's Bun.spawn was replaced (spawnCaptured). */
+export async function startProcess(
+  cmd: string[],
+  opts: {
+    lane: string
+    cwd?: string
+    env?: Record<string, string | undefined>
+    stdout?: number
+    stderr?: number
+  },
+): Promise<StartedChild> {
+  if (Bun.spawn === nativeSpawn) {
+    try {
+      return await startInWorker(cmd, opts)
+    } catch (err) {
+      if (err instanceof StartFailed) throw err
+      // worker unavailable or wedged: start on this thread
+    }
+  }
+  const proc = Bun.spawn(cmd, {
+    stdin: 'ignore',
+    stdout: opts.stdout ?? 'ignore',
+    stderr: opts.stderr ?? 'ignore',
+    windowsHide: true,
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(opts.env ? { env: opts.env } : {}),
+  })
+  return { pid: proc.pid, exited: proc.exited, kill: () => proc.kill('SIGKILL') }
+}
+
+/** Write `text` to a child's piped stdin and close it, without awaiting: the write is buffered by Bun,
+ *  so the caller never holds its thread on it, and the reads of stdout and stderr run beside it. A
+ *  child that exits without reading its input closes the pipe under the write (EPIPE); that is its
+ *  exit's business, not this call's, so the error is swallowed here and the exit code tells the rest. */
+function writeStdin(proc: { stdin: unknown }, text: string): void {
+  try {
+    const sink = proc.stdin as { write(chunk: string): unknown; end(): unknown }
+    sink.write(text)
+    void Promise.resolve(sink.end()).catch(() => {})
+  } catch {
+    // the child closed its stdin already
+  }
+}
+
+/**
+ * The same bound, applied to a child SOMEBODY ELSE spawned. Two call sites build their argv and
+ * env inside their own try/catch and carry their own failure messages (core/shortcut.ts,
+ * core/instance-mode-shortcut.ts); rewriting them to spawnCaptured would throw that away for no
+ * gain, so the bound is reachable on its own. One implementation, two doors.
+ *
+ * The child MUST have both streams piped — that is the whole thing being drained.
+ */
+export async function capturePipedProc(
+  proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+  {
+    timeoutMs = CAPTURE_TIMEOUT_MS,
+    wantStderr = true,
+  }: { timeoutMs?: number; wantStderr?: boolean } = {},
+): Promise<CapturedRun> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let timedOut = false
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true
+      // The TREE, not the pid: a grandchild holding the pipes is exactly what makes a drain
+      // outlive the process, and it is the thing a bare proc.kill() cannot reach. Not awaited: the
+      // 2 s drain wait below runs while taskkill does, and the event loop is never held.
+      if (proc.pid) void killProcessTreesAsync([proc.pid])
+      resolve('timeout')
+    }, timeoutMs)
+  })
+
+  // ⛔ READ INCREMENTALLY, NOT VIA `new Response(stream).text()`. That convenience cannot be
+  // CANCELLED, so on a timeout it keeps waiting for a pipe a grandchild is holding and hands back
+  // nothing — which loses exactly the diagnostic a killed run was about to give you. (Found by
+  // this file's own test: the pipe-holder case came back with empty stdout even though the child
+  // had printed and exited.) Accumulating as the bytes arrive means the text we already have is
+  // still ours the moment the deadline fires.
+  const held = { stdout: '', stderr: '' }
+  const drain = async (stream: ReadableStream<Uint8Array>, into: 'stdout' | 'stderr') => {
+    const reader = stream.getReader()
+    const decoder = new TextDecoder('utf-8')
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        held[into] += decoder.decode(value, { stream: true })
+      }
+      held[into] += decoder.decode()
+    } catch {
+      // Killed mid-write, or the pipe closed under us: what arrived is still the honest answer.
+    } finally {
+      try {
+        reader.releaseLock()
+      } catch {
+        // already released
+      }
+    }
+  }
+
+  // BOTH streams drained concurrently with the exit wait — never one at a time, or a child that
+  // fills the unread pipe deadlocks before either of them can finish.
+  const work = Promise.all([drain(proc.stdout, 'stdout'), drain(proc.stderr, 'stderr')])
+    .then(() => proc.exited)
+    .then((code) => ({ code }) as const)
+
+  try {
+    const settled = await Promise.race([work, deadline])
+    if (settled === 'timeout') {
+      // The kill above has fired; give the drains a moment to notice their pipe closed, then
+      // answer with whatever `held` accumulated. Waiting on them unconditionally is the bug this
+      // helper exists to close — but throwing away what they already read is the other one.
+      await Promise.race([work, new Promise<null>((r) => setTimeout(() => r(null), 2_000))])
+      return {
+        code: proc.exitCode,
+        stdout: held.stdout,
+        stderr: wantStderr ? held.stderr : '',
+        timedOut: true,
+      }
+    }
+    return {
+      code: settled.code,
+      stdout: held.stdout,
+      stderr: wantStderr ? held.stderr : '',
+      timedOut: false,
+    }
+  } catch {
+    return {
+      code: null,
+      stdout: held.stdout,
+      stderr: wantStderr ? held.stderr : '',
+      timedOut,
+    }
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (proc.exitCode === null && !proc.killed && proc.pid) void killProcessTreesAsync([proc.pid])
+  }
+}
+
+/**
+ * Wait for a child that has NO piped streams, bounded. For the `stdio: ['ignore','ignore','ignore']`
+ * spawns — taskkill, Set-Clipboard, osascript — where there is nothing to drain and the only defect
+ * is that `await proc.exited` has nothing racing it.
+ *
+ * Returns the exit code, or null when the deadline fired (in which case the tree has been killed).
+ */
+export async function awaitExitBounded(
+  proc: { exited: Promise<number>; pid?: number; exitCode: number | null; killed?: boolean },
+  timeoutMs = CAPTURE_TIMEOUT_MS,
+): Promise<number | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      proc.exited,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          if (proc.pid) void killProcessTreesAsync([proc.pid])
+          resolve(null)
+        }, timeoutMs)
+      }),
+    ])
+  } catch {
+    return null
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** Runs a command via Bun.spawn and captures stdout as text. Never throws — returns `null`
+ *  on spawn failure, non-zero exit, or timeout so callers can try the next strategy.
+ *  Thin wrapper over spawnCaptured so there is ONE bounded spawn in this file, not two. */
+async function runCaptureStdout(
+  cmd: string[],
+  { timeoutMs = CAPTURE_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<string | null> {
+  const r = await spawnCaptured(cmd, { timeoutMs, wantStderr: false })
+  return r.code === 0 && !r.timedOut ? r.stdout : null
+}
+
+// ----------------------------------------------------------------------------
+// Windows: Get-CimInstance Win32_Process (primary), wmic (fallback).
+// ----------------------------------------------------------------------------
+
+interface WinProcRecord {
+  pid: number
+  commandLine: string | null
+  /** Working-set bytes (Win32_Process.WorkingSetSize), or null when absent. */
+  workingSetSize: number | null
+  /** Process start time as a round-trip ISO string (Win32_Process.CreationDate), or null. */
+  creationDate: string | null
+}
+
+/**
+ * Strip raw control bytes out of PowerShell's JSON before parsing. The UTF-8 preamble in the
+ * script below prevents the known corruption (see its comment), but the failure mode is too
+ * expensive to leave to one line of defense: a single stray control byte in ONE process's
+ * command line otherwise unparses the whole document and blinds running-detection for the
+ * entire fleet. Escaped backslash-u sequences are untouched — only literal bytes JSON forbids
+ * inside strings are replaced, each with a space so offsets stay meaningful.
+ */
+export function sanitizeCimJson(s: string): string {
+  let out = ''
+  let dirty = false
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) {
+      out += ' '
+      dirty = true
+    } else {
+      out += s[i]
+    }
+  }
+  return dirty ? out : s
+}
+
+/** Primary Windows strategy: `Get-CimInstance Win32_Process` filtered to `Claude.exe`,
+ *  emitted as JSON so parsing is exact (no column-width truncation like `wmic`/`tasklist`,
+ *  and no ambiguity from `Format-List`'s line-wrapping of long command lines).
+ *
+ *  Also projects `WorkingSetSize` (live memory) and `CreationDate` (start time, formatted to a
+ *  round-trip ISO string in PowerShell so JS `Date.parse` reads it identically on PS 5.1 and 7 —
+ *  raw `ConvertTo-Json` serializes a CIM DateTime differently across versions). Both come free
+ *  from the same snapshot this call already makes for running-state, so uptime/memory add no
+ *  extra process scan. */
+async function listWindowsProcessesViaCim(): Promise<WinProcRecord[] | null> {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    // Force UTF-8 stdout. Windows PowerShell 5.1 otherwise encodes piped output in the legacy
+    // OEM codepage, where any character it cannot represent becomes a raw 0x1A SUB byte — and a
+    // control byte inside a JSON string makes the WHOLE document unparseable. Found live
+    // 2026-08-25: one claude.exe whose command line contained "→" (a prompt) corrupted the scan,
+    // the wmic fallback does not exist on current Windows, and every instance read as
+    // not-running until that unrelated session exited.
+    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+    'Get-CimInstance -ClassName Win32_Process -Filter "Name=\'Claude.exe\'" | ' +
+      'Select-Object ProcessId, CommandLine, WorkingSetSize, ' +
+      "@{Name='CreationDate';Expression={ if ($_.CreationDate) { $_.CreationDate.ToString('o') } }} | " +
+      'ConvertTo-Json -Compress -Depth 3',
+  ].join('; ')
+
+  const stdout = await runCaptureStdout([
+    'powershell',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    script,
+  ])
+  if (stdout === null) return null
+
+  const trimmed = sanitizeCimJson(stdout).trim()
+  if (!trimmed) return [] // no Claude.exe processes running — valid empty result
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    // ConvertTo-Json emits a single object (not an array) when there's exactly one match.
+    const records = Array.isArray(parsed) ? parsed : [parsed]
+    return records
+      .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
+      .map((r) => ({
+        pid: typeof r.ProcessId === 'number' ? r.ProcessId : Number(r.ProcessId),
+        commandLine: typeof r.CommandLine === 'string' ? r.CommandLine : null,
+        workingSetSize:
+          typeof r.WorkingSetSize === 'number' && Number.isFinite(r.WorkingSetSize)
+            ? r.WorkingSetSize
+            : null,
+        creationDate: typeof r.CreationDate === 'string' ? r.CreationDate : null,
+      }))
+      .filter((r) => Number.isFinite(r.pid))
+  } catch {
+    return null // malformed JSON — let the caller fall back to wmic
+  }
+}
+
+/** Fallback Windows strategy: `wmic process get ProcessId,CommandLine /format:list`. Used
+ *  only if PowerShell itself is unavailable (rare on modern Windows, and `wmic` is
+ *  absent on newer Windows builds too, so this probe is best-effort by design).
+ *  It is the permanent second choice for the older Windows builds
+ *  this app still supports where PowerShell itself is missing. */
+async function listWindowsProcessesViaWmic(): Promise<WinProcRecord[] | null> {
+  const stdout = await runCaptureStdout([
+    'wmic',
+    'process',
+    'where',
+    "name='Claude.exe'",
+    'get',
+    'ProcessId,CommandLine',
+    '/format:list',
+  ])
+  if (stdout === null) return null
+
+  // /format:list emits blocks like:
+  //   CommandLine=...
+  //   ProcessId=1234
+  // separated by blank lines, with \r\n line endings.
+  const records: WinProcRecord[] = []
+  const blocks = stdout.split(/\r?\n\r?\n/)
+  for (const block of blocks) {
+    const lines = block
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+    if (lines.length === 0) continue
+
+    let commandLine: string | null = null
+    let pid: number | null = null
+    for (const line of lines) {
+      const eq = line.indexOf('=')
+      if (eq === -1) continue
+      const key = line.slice(0, eq)
+      const value = line.slice(eq + 1)
+      if (key === 'CommandLine') commandLine = value || null
+      else if (key === 'ProcessId') pid = Number.parseInt(value, 10)
+    }
+
+    if (pid !== null && Number.isFinite(pid)) {
+      // permanent property of the wmic path, not a stopgap — wmic's
+      // own CreationDate/WorkingSetSize columns are DMTF-formatted and column-truncated; this
+      // fallback stays memory/uptime-less (best-effort) rather than mis-parse them.
+      records.push({ pid, commandLine, workingSetSize: null, creationDate: null })
+    }
+  }
+  return records
+}
+
+/** null = BOTH Windows strategies failed. That is "could not enumerate", which the public
+ *  `scanClaudeProcesses` reports as such; it is never folded into an empty list here. */
+async function listWindowsProcesses(): Promise<CMProcessInfo[] | null> {
+  // In-process first (win-process-table.ts): the same four fields without a PowerShell, a conhost
+  // and a WMI read of every process on the machine, on the Instances tab's 4-second poll.
+  let records: WinProcRecord[] | null =
+    nativeProcessesNamed(['Claude.exe'])?.map((p) => ({
+      pid: p.pid,
+      commandLine: p.commandLine,
+      workingSetSize: p.workingSetSize,
+      creationDate: p.creationDate,
+    })) ?? null
+  if (records === null) records = await listWindowsProcessesViaCim()
+  if (records === null) {
+    records = await listWindowsProcessesViaWmic()
+  }
+  if (records === null) return null
+
+  const out: CMProcessInfo[] = []
+  for (const r of records) {
+    if (!r.commandLine) continue
+    const parsed = parseProcessRecord(
+      r.pid,
+      r.commandLine,
+      r.creationDate ?? undefined,
+      r.workingSetSize ?? undefined,
+    )
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
+// ----------------------------------------------------------------------------
+// macOS / Linux: `ps -eo pid=,command=`.
+// ----------------------------------------------------------------------------
+
+/** null = `ps` could not be run or failed; see listWindowsProcesses. */
+async function listUnixProcesses(): Promise<CMProcessInfo[] | null> {
+  // `pid=,command=` suppresses the header row; `command` (not `comm`) gives the full
+  // argv/cmdline rather than just the truncated executable basename. BSD `ps` (macOS) and
+  // procps `ps` (Linux) both support this `-o key=` no-header syntax.
+  // Linux answers from /proc first (see linuxProcTable): a box without procps still gets a real
+  // table rather than "unknown". The parser below is the same for both sources.
+  const table = linuxProcTable()
+  const stdout = table
+    ? table.map((r) => `${r.pid} ${r.command}`).join('\n')
+    : await runCaptureStdout(['ps', '-eo', 'pid=,command='])
+  if (stdout === null) return null
+
+  const out: CMProcessInfo[] = []
+  const lines = stdout.split(/\r?\n/)
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    const spaceIdx = trimmed.indexOf(' ')
+    if (spaceIdx === -1) continue
+
+    const pidStr = trimmed.slice(0, spaceIdx)
+    const cmdline = trimmed.slice(spaceIdx + 1).trim()
+    const pid = Number.parseInt(pidStr, 10)
+    if (!Number.isFinite(pid)) continue
+
+    // Cheap pre-filter (avoid running the --user-data-dir regex against every process on
+    // the box) before the real parse — anything Claude-related mentions "claude" somewhere.
+    if (!/claude/i.test(cmdline)) continue
+
+    const parsed = parseProcessRecord(pid, cmdline)
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
+// ----------------------------------------------------------------------------
+// Public API.
+// ----------------------------------------------------------------------------
+
+/**
+ * Enumerates currently-running Claude Desktop processes across all instances, per-OS.
+ * Filters to processes whose command line carries `--user-data-dir` (i.e. Claude Desktop
+ * instances launched by this app or manually with that flag); by default excludes Electron
+ * child processes (`--type=gpu-process`, `--type=renderer`, `--type=utility`,
+ * `--type=crashpad-handler`, etc.) so callers get one record per running instance.
+ *
+ * Pass `{ includeChildren: true }` to get the full process tree per instance (used by
+ * quitInstance()-style callers that need to kill every process, not just the main one).
+ *
+ * The underlying OS scan is SHARED AND CACHED (see scan-cache.ts): the Instances tab polls this
+ * every 4s and the scan costs ~490ms of PowerShell + WMI on Windows, so paying for it per request
+ * put half a second on every poll tick and on first paint. Pass `{ fresh: true }` from anything
+ * about to act on the answer. `includeChildren` filters the SAME cached snapshot — it was never
+ * a different scan, so the two shapes share one cache entry.
+ *
+ * Never throws: enumeration failures (powershell/wmic/ps unavailable, spawn error, timeout,
+ * unparseable output) resolve to an empty array. THAT MAKES THIS THE WRONG CALL FOR ANYTHING
+ * DESTRUCTIVE - an empty array here means "none running OR could not look", and a delete guard
+ * that reads it as the former deletes a live profile the moment PowerShell hiccups (audit AH-02,
+ * reproduced with an injected spawn failure). Anything about to destroy data must call
+ * {@link scanClaudeProcesses}, which keeps the two apart. This lenient shape stays for the UI
+ * tables, where a blank tick is the right degradation.
+ */
+export async function listClaudeProcesses(
+  options: ListClaudeProcessesOptions = {},
+): Promise<CMProcessInfo[]> {
+  const scan = await scanClaudeProcesses(options)
+  return scan.ok ? scan.processes : []
+}
+
+/** The outcome of one enumeration attempt: the processes, or the reason there is no answer. */
+export type ClaudeProcessScan =
+  | { ok: true; processes: CMProcessInfo[] }
+  | { ok: false; reason: string }
+
+/**
+ * The same enumeration as {@link listClaudeProcesses}, WITHOUT collapsing failure into empty.
+ *
+ * `ok: false` means the OS could not be asked (no PowerShell/wmic/ps, spawn error, timeout,
+ * unparseable output). A caller deciding whether a profile is safe to delete must refuse on it;
+ * a caller only painting a table may treat it as nothing to show. Same cache, same `fresh`
+ * semantics, same `includeChildren` narrowing.
+ */
+export async function scanClaudeProcesses(
+  options: ListClaudeProcessesOptions = {},
+): Promise<ClaudeProcessScan> {
+  const scan = await claudeProcessCache.get({ fresh: options.fresh })
+  if (!scan.ok) return scan
+  return {
+    ok: true,
+    processes: options.includeChildren ? scan.processes : scan.processes.filter((p) => p.isMain),
+  }
+}
+
+/** The one OS scan behind {@link listClaudeProcesses} / {@link scanClaudeProcesses}. Always
+ *  holds the FULL set (main + `--type=` children); the public functions do the narrowing, so both
+ *  shapes are served from a single cached snapshot. A failed scan is cached like any other answer
+ *  (a `fresh: true` caller bypasses it anyway), so a broken PowerShell does not turn every poll
+ *  tick into a fresh 10-second timeout. */
+const claudeProcessCache = createScanCache<ClaudeProcessScan>(
+  async () => {
+    try {
+      const processes =
+        process.platform === 'win32' ? await listWindowsProcesses() : await listUnixProcesses()
+      if (processes !== null) lastGoodScan = { processes, at: Date.now() }
+      if (processes === null) {
+        return {
+          ok: false,
+          reason:
+            process.platform === 'win32'
+              ? 'neither Get-CimInstance nor wmic returned a process list'
+              : 'neither /proc nor `ps` returned a process list',
+        }
+      }
+      return { ok: true, processes }
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+    }
+  },
+  // 3s fresh: comfortably inside the UI's 4s poll, so a tick that lands early costs nothing, and
+  // the tick that does refresh takes the cached answer while the scan runs behind it. 30s stale:
+  // past that the app has effectively been idle (nothing polling), and a caller coming back
+  // deserves a real answer rather than a snapshot from whenever it last had focus.
+  { freshMs: 3_000, staleMs: 30_000 },
+)
+
+/** The last scan that answered, whatever came after it. */
+let lastGoodScan: { processes: CMProcessInfo[]; at: number } | null = null
+
+/**
+ * The last SUCCESSFUL scan (full set, main + children) if it is at most `maxAgeMs` old, else null.
+ *
+ * ⛔ FOR A LISTING ONLY, NEVER A DESTRUCTIVE GUARD (those use scanClaudeProcesses and refuse on a
+ * failure). It exists because a failed scan used to read as "nothing is running": on a pinned box
+ * (2026-09-24) the 10s CIM query timed out, `/api/fleet` reported a running instance as closed,
+ * and fan_out refused it "not open" while `list_instances`, a moment later, showed its pid. A
+ * snapshot a few minutes old is a better answer to "is it running?" than an empty one.
+ */
+export function lastGoodClaudeProcessScan(
+  maxAgeMs: number,
+): { processes: CMProcessInfo[]; at: number } | null {
+  if (!lastGoodScan || Date.now() - lastGoodScan.at > maxAgeMs) return null
+  return lastGoodScan
+}
+
+/**
+ * Whether `pid` is still running AS A PROCESS WE CAN SIGNAL, without a scan: signal 0 probes and
+ * signals nothing. A few ms against the 1.0-1.5s of one full scan (measured 2026-09-25, 112
+ * claude.exe running), so a caller that already knows WHICH Claude pid it is waiting on watches it
+ * with this and scans only once it is gone. EPERM counts as GONE: a Claude this app started runs as
+ * this user, so a pid we may not signal has been handed to someone else's process - one a quit
+ * must neither wait on nor force-kill.
+ */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Forget the cached process snapshot so the next listing scans for real.
+ *
+ * Call this after anything that CHANGES what a scan would return — launching, quitting, creating
+ * or deleting an instance. Freshness that lags by a poll tick is invisible when someone else's
+ * process appeared; it is very visible when the user just clicked the button themselves and the
+ * row didn't change.
+ */
+export function invalidateClaudeProcessCache(): void {
+  claudeProcessCache.invalidate()
+}
+
+// ----------------------------------------------------------------------------
+// Claude Desktop's Code engines — "which account is this running chat on?"
+// ----------------------------------------------------------------------------
+
+/** One Claude Code engine a Claude Desktop profile runs for a Code chat. */
+export interface DesktopEngine {
+  pid: number
+  /** The profile (user-data dir) whose account the engine runs on. */
+  instanceDir: string
+}
+
+const ENGINE_PATH_RE = /^(.+)[\\/]claude-code[\\/]\d+\.\d+[^\\/]*[\\/]claude(?:\.exe)?$/i
+
+/** The profile a Code engine's executable belongs to, or null when the path is not an engine's.
+ *  A desktop profile runs its engines from `<instanceDir>/claude-code/<version>/claude.exe`
+ *  (checked live 2026-09-30); the npm CLI's `.../@anthropic-ai/claude-code/bin/claude.exe` has
+ *  no version segment and is never mistaken for one. */
+export function desktopEngineDir(exePath: string | null | undefined): string | null {
+  const m = exePath ? ENGINE_PATH_RE.exec(exePath.trim()) : null
+  return m?.[1] ? m[1] : null
+}
+
+/** The pid + executable path of every `claude.exe` on Windows, from one CIM query. Null when the
+ *  query failed or its JSON could not be parsed (never folded into "none running"). */
+async function windowsClaudeRows(): Promise<{ pid: number; exe: string | null }[] | null> {
+  const native = nativeProcessesNamed(['claude.exe'])
+  if (native) return native.map((p) => ({ pid: p.pid, exe: p.executablePath }))
+  const stdout = await runCaptureStdout([
+    'powershell',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    [
+      "$ErrorActionPreference = 'Stop'",
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      'Get-CimInstance -ClassName Win32_Process -Filter "Name=\'claude.exe\'" | ' +
+        'Select-Object ProcessId, ExecutablePath | ConvertTo-Json -Compress',
+    ].join('; '),
+  ])
+  if (stdout === null) return null
+  const trimmed = sanitizeCimJson(stdout).trim()
+  if (!trimmed) return []
+  const rows: { pid: number; exe: string | null }[] = []
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    for (const r of Array.isArray(parsed) ? parsed : [parsed]) {
+      const rec = r as { ProcessId?: unknown; ExecutablePath?: unknown }
+      const pid = Number(rec?.ProcessId)
+      if (Number.isFinite(pid))
+        rows.push({
+          pid,
+          exe: typeof rec.ExecutablePath === 'string' ? rec.ExecutablePath : null,
+        })
+    }
+  } catch {
+    return null
+  }
+  return rows
+}
+
+/** The pid + executable path of every process on macOS/Linux, from one `ps`. `comm` is the
+ *  executable's full path on macOS (the only other OS Claude Desktop ships on). Null when the
+ *  query failed (never folded into "none running"). */
+async function unixClaudeRows(): Promise<{ pid: number; exe: string | null }[] | null> {
+  const stdout = await runCaptureStdout(['ps', '-eo', 'pid=,comm='])
+  if (stdout === null) return null
+  const rows: { pid: number; exe: string | null }[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(.+)$/.exec(line)
+    if (m) rows.push({ pid: Number(m[1]), exe: m[2] ?? null })
+  }
+  return rows
+}
+
+/**
+ * Every Code engine a Claude Desktop profile is running, from ONE process query. The engine's own
+ * executable path names its profile, so this needs neither the chat stores nor an ancestry walk.
+ * Null when the OS could not be asked (never folded into "none running").
+ */
+export async function listDesktopEngines(): Promise<DesktopEngine[] | null> {
+  const rows = process.platform === 'win32' ? await windowsClaudeRows() : await unixClaudeRows()
+  if (rows === null) return null
+  const engines: DesktopEngine[] = []
+  for (const r of rows) {
+    const instanceDir = desktopEngineDir(r.exe)
+    if (instanceDir) engines.push({ pid: r.pid, instanceDir })
+  }
+  return engines
+}
+
+// ----------------------------------------------------------------------------
+// "Who just called me?" — the owner of a loopback TCP connection.
+// ----------------------------------------------------------------------------
+
+/**
+ * The pid of the process that owns the LOCAL TCP port `port` on this machine, or null.
+ *
+ * WHY THIS EXISTS: this daemon serves MCP over HTTP (`POST /api/mcp`, and mcp-register.ts
+ * registers exactly that transport), so `whoami` used to walk the DAEMON'S ancestry — the tray
+ * and whatever started it — and answer "this process does not look like it is running under
+ * Claude Code at all" for every caller alive. True of the daemon, useless to the agent asking,
+ * and it took `to: "here"` and check_my_usage down with it (2026-09-11). The caller is not
+ * unknowable: it opened a loopback socket, and the OS knows which process owns it. Resolve that
+ * pid and the EXISTING ancestry signals do the rest — the caller IS `claude.exe` under an
+ * instance dir.
+ *
+ * Never throws: every failure (no connection table, no lsof, unparseable output, two matching
+ * rows) resolves to null, which callers must treat as "could not tell", never as "nobody".
+ *
+ * ⛔ DELIBERATELY NOT CACHED. An ephemeral port is recycled, so a remembered answer can name a
+ * process that no longer owns that socket - and this answer decides which ACCOUNT an agent is,
+ * which is how `move_chats { to: "here" }` once landed 13 chats on the wrong one (2026-09-08,
+ * docs/AI_USAGE_SELFCHECK.md). On Windows every lookup reads the live table in-process
+ * (win-tcp-table.ts), so no answer is older than its question.
+ */
+export async function pidOwningLocalPort(port: number): Promise<number | null> {
+  if (!Number.isInteger(port) || port <= 0) return null
+  try {
+    return process.platform === 'win32' ? await windowsPortOwner(port) : await unixPortOwner(port)
+  } catch {
+    return null
+  }
+}
+
+/** The pid owning the one ESTABLISHED TCP connection whose LOCAL port is `port`, or null.
+ *
+ *  Exactly one owner or nothing. Two rows claiming one local port is a table we do not
+ *  understand, and guessing which one is the caller is how an identity answer becomes a lie. */
+export function tcpOwnerPid(rows: TcpRow[], port: number): number | null {
+  const pids = new Set<number>()
+  for (const r of rows)
+    if (r.localPort === port && r.state === TCP_STATE_ESTABLISHED) pids.add(r.pid)
+  return pids.size === 1 ? [...pids][0]! : null
+}
+
+/** Windows: the connection table read in-process, never a `netstat` on the spawn worker, which
+ *  queued behind every other capture and timed CliMayte managers' MCP connections out (2026-10-11,
+ *  win-tcp-table.ts). */
+async function windowsPortOwner(port: number): Promise<number | null> {
+  const rows = windowsTcpTable()
+  return rows === null ? null : tcpOwnerPid(rows, port)
+}
+
+/** Unix: lsof, reading each connection's name as well as its pid. `-iTCP:PORT` matches the port at
+ *  EITHER end, so a loopback call lists the caller (whose LOCAL port it is) and the server it called
+ *  (whose REMOTE port it is): measured with lsof 4.95 on 2026-10-12, `p<server>` with
+ *  `n127.0.0.1:60313->127.0.0.1:38296` and `p<caller>` with `n127.0.0.1:38296->127.0.0.1:60313`.
+ *  Reading pids alone saw two owners and answered null for every HTTP caller off Windows. Only a name
+ *  whose local side (before `->`) ends in the port counts. */
+async function unixPortOwner(port: number): Promise<number | null> {
+  const stdout = await runCaptureStdout([
+    'lsof',
+    '-nP',
+    `-iTCP:${port}`,
+    '-sTCP:ESTABLISHED',
+    '-Fpn',
+  ])
+  if (stdout === null) return null
+  const pids = new Set<number>()
+  let pid: number | null = null
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim()
+    const p = /^p(\d+)$/.exec(line)
+    if (p) pid = Number(p[1])
+    else if (
+      pid !== null &&
+      line.startsWith('n') &&
+      line.slice(1).split('->')[0]!.endsWith(`:${port}`)
+    )
+      pids.add(pid)
+  }
+  return pids.size === 1 ? [...pids][0]! : null
+}
+
+// ----------------------------------------------------------------------------
+// Ancestry walk — "which process launched me?" (core/self-identity.ts).
+// ----------------------------------------------------------------------------
+
+/** One ancestor of the current process. */
+export interface AncestorProcess {
+  pid: number
+  name: string | null
+  executablePath: string | null
+  commandLine: string | null
+}
+
+/** Hard cap on how far up the tree to walk. Twelve is far more than any real
+ *  agent → MCP-server chain (observed: 3) and bounds the cost of a pid-reuse cycle. */
+const MAX_ANCESTRY_DEPTH = 12
+
+/**
+ * The chain of parent processes above `startPid`, NEAREST PARENT FIRST.
+ *
+ * WHY THIS EXISTS: a stdio MCP server spawned by Claude Code gets a REDUCED environment — no
+ * `CLAUDE_CODE_EXECPATH`, no `CLAUDE_CONFIG_DIR` — so env alone cannot say which Claude Desktop
+ * instance it belongs to. The answer is sitting in plain sight one and two hops up the tree: the
+ * parent is `<instanceDir>/claude-code/<ver>/claude.exe` and the grandparent is the Electron host
+ * carrying `--user-data-dir=<instanceDir>`.
+ *
+ * ONE spawn, not one per hop: the Windows path does the whole walk inside PowerShell, the unix
+ * path takes a single `ps` snapshot and walks it in memory. Never throws — every failure
+ * (PowerShell absent, permission denied, malformed output, timeout) resolves to null, which
+ * callers must treat as "could not enumerate", never as "no ancestors".
+ */
+export async function processAncestry(
+  startPid = process.pid,
+  opts: { includeSelf?: boolean } = {},
+): Promise<AncestorProcess[] | null> {
+  // `includeSelf` puts startPid itself at the head of the chain. The default is off because the
+  // original caller asks "who launched ME?" and already knows itself. It is on for the OTHER
+  // question this walk now answers - "who is the process that just called me?" (pidOwningLocalPort
+  // above, for MCP over HTTP), where the caller's OWN command line is the whole answer: it is the
+  // engine, `<instanceDir>/claude-code/<ver>/claude.exe`.
+  const includeSelf = opts.includeSelf === true
+  try {
+    return process.platform === 'win32'
+      ? await windowsAncestry(startPid, includeSelf)
+      : await unixAncestry(startPid, includeSelf)
+  } catch {
+    return null
+  }
+}
+
+/** The same walk as {@link windowsAncestry}'s PowerShell loop, over one in-process snapshot. Null
+ *  when the table cannot be read here. */
+function windowsAncestryNative(startPid: number, includeSelf: boolean): AncestorProcess[] | null {
+  const table = nativeProcessTable({ mustHave: startPid })
+  if (!table) return null
+  const byPid = new Map(table.map((p) => [p.pid, p]))
+  const out: AncestorProcess[] = []
+  const seen = new Set<number>()
+  let pid = startPid
+  for (let i = 0; i < MAX_ANCESTRY_DEPTH; i++) {
+    if (!pid || seen.has(pid)) break
+    seen.add(pid)
+    const proc = byPid.get(pid)
+    if (!proc) break
+    if (i > 0 || includeSelf) {
+      const info = nativeProcessInfo(pid)
+      out.push({
+        pid,
+        name: proc.name || null,
+        executablePath: info?.executablePath ?? null,
+        commandLine: info?.commandLine ?? null,
+      })
+    }
+    pid = proc.ppid
+  }
+  return out
+}
+
+async function windowsAncestry(
+  startPid: number,
+  includeSelf = false,
+): Promise<AncestorProcess[] | null> {
+  const native = windowsAncestryNative(startPid, includeSelf)
+  if (native) return native
+  // The loop lives in PowerShell so the whole chain costs ONE spawn (~300ms) instead of one per
+  // hop. `$out` is forced to an array with @() — ConvertTo-Json serializes a single-element array
+  // as a bare object otherwise, and the parse below would have to guess.
+  const script = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$p = ${startPid}`,
+    '$out = @()',
+    '$seen = @{}',
+    `for ($i = 0; $i -lt ${MAX_ANCESTRY_DEPTH}; $i++) {`,
+    '  if (-not $p -or $seen.ContainsKey($p)) { break }',
+    '  $seen[$p] = $true',
+    '  $proc = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$p"',
+    '  if (-not $proc) { break }',
+    '  $parent = $proc.ParentProcessId',
+    // `-gt 0` skips the start process itself (the ancestors-only walk); `-ge 0` keeps it.
+    `  if ($i -${includeSelf ? 'ge' : 'gt'} 0) {`,
+    '    $out += [pscustomobject]@{ ProcessId = $proc.ProcessId; Name = $proc.Name; ' +
+      'ExecutablePath = $proc.ExecutablePath; CommandLine = $proc.CommandLine }',
+    '  }',
+    '  $p = $parent',
+    '}',
+    'ConvertTo-Json -InputObject @($out) -Compress -Depth 3',
+  ].join('; ')
+
+  const stdout = await runCaptureStdout([
+    'powershell',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    script,
+  ])
+  if (stdout === null) return null
+
+  const trimmed = stdout.trim()
+  if (!trimmed || trimmed === '[]') return []
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    const records = Array.isArray(parsed) ? parsed : [parsed]
+    return records
+      .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
+      .map((r) => ({
+        pid: typeof r.ProcessId === 'number' ? r.ProcessId : Number(r.ProcessId),
+        name: typeof r.Name === 'string' ? r.Name : null,
+        executablePath: typeof r.ExecutablePath === 'string' ? r.ExecutablePath : null,
+        commandLine: typeof r.CommandLine === 'string' ? r.CommandLine : null,
+      }))
+      .filter((r) => Number.isFinite(r.pid))
+  } catch {
+    return null
+  }
+}
+
+async function unixAncestry(
+  startPid: number,
+  includeSelf = false,
+): Promise<AncestorProcess[] | null> {
+  // One snapshot of every process, then walk the pid→ppid map in memory. `ps` has no ancestry
+  // mode, and a per-hop `ps -p <pid>` would be a spawn each.
+  const stdout = await runCaptureStdout(['ps', '-eo', 'pid=,ppid=,command='])
+  if (stdout === null) return null
+
+  const byPid = new Map<number, { ppid: number; command: string }>()
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)
+    if (!m) continue
+    byPid.set(Number.parseInt(m[1]!, 10), {
+      ppid: Number.parseInt(m[2]!, 10),
+      command: m[3]!.trim(),
+    })
+  }
+
+  const entry = (pid: number, row: { command: string }): AncestorProcess => {
+    // `command` is the full argv; argv[0] is the executable path on both macOS and Linux.
+    const exe = row.command.split(/\s+/)[0] ?? null
+    return {
+      pid,
+      name: exe ? (exe.split('/').pop() ?? null) : null,
+      executablePath: exe,
+      commandLine: row.command,
+    }
+  }
+  const out: AncestorProcess[] = []
+  const seen = new Set<number>([startPid])
+  const self = byPid.get(startPid)
+  if (includeSelf && self) out.push(entry(startPid, self))
+  let pid = byPid.get(startPid)?.ppid
+  for (let i = 0; i < MAX_ANCESTRY_DEPTH && pid && !seen.has(pid); i++) {
+    seen.add(pid)
+    const row = byPid.get(pid)
+    if (!row) break
+    out.push(entry(pid, row))
+    pid = row.ppid
+  }
+  return out
+}

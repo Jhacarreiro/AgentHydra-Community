@@ -1,0 +1,100 @@
+base_url = "https://api.openai.com/v1"
+about = "OpenAI language models through the Responses API; address a model as openai:<model ID>."
+website = "https://openai.com"
+key_url = "https://platform.openai.com/api-keys"
+docs = "https://developers.openai.com/api/reference/resources/responses"
+transport = "openai-responses"
+capabilities = ["chat"]
+key_billing = "unknown"
+models_path = "/models"
+passthrough = ["openai:"]
+options = ["reasoning_effort"]
+anthropic_url = "facade"
+# Owner, 2026-10-13: OpenAI's keys are the last resort, after his CliMayte accounts. Its routes sort
+# behind every other route that meets a task's floors, and a task CliMayte can take goes there before it steps onto
+# one (climayte_route.climayte_first, dispatch._walk_legs); only when CliMayte cannot serve does an OpenAI leg run.
+after_climayte = true
+# The catalog includes non-chat models. Choose a Chat Completions-capable model explicitly.
+
+# Ranked routes (owner, 2026-10-07): the benchmarked GPT-6 models on OpenAI's own API. Prices and the 1,050,000-token
+# context are from OpenAI's pricing page (developers.openai.com/api/docs/pricing). tools = true since 2026-10-13: the
+# provider speaks the Responses API (transport "openai-responses", hswarm/openai_responses.py), which takes function
+# tools beside reasoning_effort. On Chat Completions they ran tool-free (function calling only at reasoning_effort
+# "none"), so the code profile had no live route while these 82 keys served only tool-free asks. The -high routes run the same model at
+# reasoning_effort "high", as openrouter.toml registers them. vision = true: each model's page
+# (developers.openai.com/api/docs/models/<api_id>) lists "Input modalities: text, image" with Chat Completions
+# supported (read 2026-10-10), and GPT-6.1 Sol read a screenshot correctly through this provider that day. Without it
+# every critical or decision ask with an image fell below its floor onto Gemini Flash.
+# The routes whose benchmark point is the model at max effort send max: OpenAI runs a request that names no effort at
+# medium (probed 2026-10-13), so until then they claimed the max scores and ran at medium.
+[models."rank:gpt-6-astra:openai"]
+api_id = "gpt-6-astra"
+benchmark_slug = "gpt-6-astra"
+ctx = 1050000
+vision = true
+tools = true
+price_ref = "openai/rank:gpt-6-astra:openai"
+default_reasoning_effort = "max"
+cc_effort = false
+
+[models."rank:gpt-6-astra-high:openai"]
+api_id = "gpt-6-astra"
+benchmark_slug = "gpt-6-astra-high"
+ctx = 1050000
+vision = true
+tools = true
+price_ref = "openai/rank:gpt-6-astra-high:openai"
+default_reasoning_effort = "high"
+cc_effort = false
+
+[models."rank:gpt-6-luna:openai"]
+api_id = "gpt-6-luna"
+benchmark_slug = "gpt-6-luna"
+ctx = 1050000
+vision = true
+tools = true
+price_ref = "openai/rank:gpt-6-luna:openai"
+default_reasoning_effort = "max"
+cc_effort = false
+
+[models."rank:gpt-6-luna-high:openai"]
+api_id = "gpt-6-luna"
+benchmark_slug = "gpt-6-luna-high"
+ctx = 1050000
+vision = true
+tools = true
+price_ref = "openai/rank:gpt-6-luna-high:openai"
+default_reasoning_effort = "high"
+cc_effort = false
+
+[models."rank:gpt-6-sol:openai"]
+api_id = "gpt-6-sol"
+benchmark_slug = "gpt-6-sol"
+ctx = 1050000
+vision = true
+tools = true
+price_ref = "openai/rank:gpt-6-sol:openai"
+default_reasoning_effort = "max"
+cc_effort = false
+
+[models."rank:gpt-6-sol-high:openai"]
+api_id = "gpt-6-sol"
+benchmark_slug = "gpt-6-sol-high"
+ctx = 1050000
+vision = true
+tools = true
+price_ref = "openai/rank:gpt-6-sol-high:openai"
+default_reasoning_effort = "high"
+cc_effort = false
+
+# gpt-6.1-sol's context and output limit: developers.openai.com/api/docs/models/gpt-6.1-sol. Its over-272K tier is priced in prices.json.
+[models."rank:gpt-6-1-sol:openai"]
+api_id = "gpt-6.1-sol"
+benchmark_slug = "gpt-6-1-sol"
+ctx = 1050000
+max_out = 128000
+vision = true
+tools = true
+price_ref = "openai/rank:gpt-6-1-sol:openai"
+default_reasoning_effort = "max"
+cc_effort = false

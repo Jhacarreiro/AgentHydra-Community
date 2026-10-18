@@ -1,0 +1,430 @@
+// server/src/usage-refresh.ts — keep every instance's usage number warm in the background.
+//
+// WHY this is safe to default ON (the old code deliberately refused to poll):
+//   - A check no longer spawns `claude`. It is a single ~300ms HTTPS GET against the same quota
+//     endpoint the CLI's `/usage` screen reads (see usage-api.ts). The 250 MB process boot that made
+//     polling unthinkable is gone.
+//   - That endpoint reports quota; it does not CONSUME it. Reading your balance is not a withdrawal:
+//     no inference call, no tokens billed.
+//   - Instances with no usable credential are skipped up front (desktopIsCheckable), so a logged-out
+//     instance is never probed on a loop.
+//
+// The sweep is STAGGERED, not a stampede: instances are checked one after another with a short gap,
+// so a fleet of ten does not fire ten simultaneous requests every interval. A sweep never overlaps
+// itself (`sweeping` guard), and a failure in one instance never aborts the rest.
+//
+// Turn it off in the Instances tab's filter menu. The manual "Refresh usage" buttons work exactly the same either
+// way; this only decides whether the numbers go stale between visits.
+//
+// It reads only what has aged: a timer looks every TICK_MS and reads each reading older than the interval, so a row
+// another reader just refreshed (CliMayte placing work, the window's catch-up, a click) is not read again, and a
+// daemon relaunch reads nothing that is fresh. Nobody looking at AgentHydra for IDLE_AFTER_MS stretches the interval
+// to IDLE_INTERVAL_MIN (owner, 2026-10-14: "if I haven't loaded the instances tab or ... the Agent Hydra UI after a
+// certain period of time, it should ... significantly lower the rate of polling"); the next look reads what aged.
+
+import { climayteJournalNudge, climayteLimitWalls, climayteLiveReadings } from './climayte'
+import type { CliMayteLiveUsage } from './climayte-lib'
+import { listCliInstances } from './core/cli-instances'
+import { listCodexInstances } from './core/codex-instances'
+import { listInstances } from './core/instances'
+import { getSetting, setSetting } from './db'
+import { readLiveRegistry } from './live-registry'
+import { getProviderSettings } from './provider-settings'
+import {
+  type KeepaliveSweepResult,
+  lastReading,
+  nudgeWindow,
+  runKeepaliveSweep,
+} from './session-keepalive'
+import type { UsageSettings, UsageSnapshot } from './types'
+import { getCachedUsage } from './usage-cache'
+import { withLiveReading } from './usage-live'
+import { asReader } from './usage-reader'
+import {
+  checkUsageForCliInstance,
+  checkUsageForCodex,
+  checkUsageForDesktop,
+  cliKey,
+  codexKey,
+  desktopIsCheckable,
+  desktopKey,
+} from './usage-service'
+
+/**
+ * Default sweep interval. Quota moves on the scale of hours, so this only has to be fresh enough
+ * to be useful, never fast.
+ *
+ * ⛔ OWNER RULE (2026-09-07): *"I don't want AgentHydra constantly checking for updates on
+ * the instances. I only want it to do it when I tell it to... or maybe at best, every 30 minutes."*
+ * Thirty is a CEILING on unattended checking, not a tuning knob - do not lower it back toward 15
+ * for freshness. The Refresh button is the on-demand path and always forces a real probe; the
+ * window-open catch-up in desk2/hydra/src/lib/usage-catchup.ts is pinned to this same number on purpose,
+ * so reopening the app can never become a way to buy a probe round.
+ */
+const DEFAULT_INTERVAL_MIN = 30
+/** Guard rails on a user-supplied interval (a 10-second sweep would be pointless, not dangerous). */
+const MIN_INTERVAL_MIN = 5
+const MAX_INTERVAL_MIN = 24 * 60
+/** Gap between instances within one sweep, so a fleet trickles instead of stampeding. */
+const STAGGER_MS = 750
+/** Nobody has looked at AgentHydra (its page on screen, or Desk's account menu) for this long: idle. */
+export const IDLE_AFTER_MS = 60 * 60_000
+/** The interval while idle, eight times the default: the readings still age into the next look. */
+export const IDLE_INTERVAL_MIN = 4 * 60
+/** How often the timer looks for a reading older than the interval. Looking reads only the cache. */
+const TICK_MS = 5 * 60_000
+
+// --- settings (db `settings` table; same getSetting/setSetting pattern as portable mode) ---------
+
+/** A setting that DEFAULTS ON: only an explicit '0' turns it off (an unset key means "never
+ *  touched", which for these must read as the default, not as false). */
+const onByDefault = (key: string): boolean => getSetting(key) !== '0'
+
+export function getUsageSettings(): UsageSettings {
+  const raw = Number(getSetting('usage_refresh_interval_min'))
+  const interval = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_INTERVAL_MIN
+  return {
+    autoRefresh: onByDefault('usage_auto_refresh'),
+    autoRefreshIntervalMin: Math.min(MAX_INTERVAL_MIN, Math.max(MIN_INTERVAL_MIN, interval)),
+    showDesktopInstances: onByDefault('show_desktop_instances'),
+    showCliInstances: onByDefault('show_cli_instances'),
+  }
+}
+
+/** Apply a partial settings patch and re-arm the timer if the schedule changed. */
+export function setUsageSettings(patch: Partial<UsageSettings>): UsageSettings {
+  if (typeof patch.autoRefresh === 'boolean')
+    setSetting('usage_auto_refresh', patch.autoRefresh ? '1' : '0')
+  if (
+    typeof patch.autoRefreshIntervalMin === 'number' &&
+    Number.isFinite(patch.autoRefreshIntervalMin)
+  )
+    setSetting(
+      'usage_refresh_interval_min',
+      String(
+        Math.min(
+          MAX_INTERVAL_MIN,
+          Math.max(MIN_INTERVAL_MIN, Math.round(patch.autoRefreshIntervalMin)),
+        ),
+      ),
+    )
+  if (typeof patch.showDesktopInstances === 'boolean')
+    setSetting('show_desktop_instances', patch.showDesktopInstances ? '1' : '0')
+  if (typeof patch.showCliInstances === 'boolean')
+    setSetting('show_cli_instances', patch.showCliInstances ? '1' : '0')
+  const next = getUsageSettings()
+  rearm(next)
+  return next
+}
+
+// --- the sweep ----------------------------------------------------------------
+
+let timer: ReturnType<typeof setInterval> | null = null
+let sweeping = false
+let lastSweepAt: string | null = null
+/** When someone last looked at AgentHydra (epoch ms); 0 until the first look since the daemon started. */
+let seenAt = 0
+/** When the timer last tried each key, so a reading that keeps failing is tried once per interval. */
+const triedAt = new Map<string, number>()
+
+/** The sweep's interval: the setting while someone looked in the last IDLE_AFTER_MS, else
+ *  IDLE_INTERVAL_MIN (or the setting, when that is longer). */
+export function sweepIntervalMs(settingMin: number, lastSeenAt: number, now: number): number {
+  const idle = now - lastSeenAt >= IDLE_AFTER_MS
+  return (idle ? Math.max(settingMin, IDLE_INTERVAL_MIN) : settingMin) * 60_000
+}
+
+/** A reading is due once it, and the last try at it, are older than the interval. A reading with no
+ *  time counts as never read. */
+export function readingDue(
+  capturedAt: string | null | undefined,
+  tried: number | undefined,
+  intervalMs: number,
+  now: number,
+): boolean {
+  const at = Date.parse(capturedAt ?? '')
+  return now - Math.max(Number.isFinite(at) ? at : 0, tried ?? 0) >= intervalMs
+}
+
+/** Someone looked at AgentHydra (POST /api/usage/seen). Back from idle, what aged is read now rather
+ *  than at the next tick. */
+export function markUsageSeen(now = Date.now()): { intervalMin: number } {
+  const settings = getUsageSettings()
+  const wasIdle = now - seenAt >= IDLE_AFTER_MS
+  seenAt = now
+  if (wasIdle && settings.autoRefresh)
+    void sweepDue().catch((err) => console.error('[usage-refresh] catch-up failed:', err))
+  return { intervalMin: sweepIntervalMs(settings.autoRefreshIntervalMin, seenAt, now) / 60_000 }
+}
+
+/** ISO timestamp of the last completed sweep, or null — surfaced so the UI can say "auto-refreshed X ago". */
+export function lastAutoRefreshAt(): string | null {
+  return lastSweepAt
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/** Desktop profiles, checked one at a time. An uncheckable one is skipped WITHOUT the stagger: it
+ *  costs nothing, so there is nothing to space out. Returns how many probes actually ran. */
+async function sweepDesktopInstances(due: (key: string) => boolean): Promise<number> {
+  let checked = 0
+  for (const inst of await listInstances()) {
+    if (!due(desktopKey(inst.dir))) continue
+    try {
+      if (!(await desktopIsCheckable(inst.dir))) continue
+      await checkUsageForDesktop(inst.dir)
+      checked++
+    } catch (err) {
+      console.error(`[usage-refresh] desktop '${inst.dir}' failed:`, err)
+    }
+    await sleep(STAGGER_MS)
+  }
+  return checked
+}
+
+/** CLI logins, checked one at a time. */
+async function sweepCliInstances(due: (key: string) => boolean): Promise<number> {
+  let checked = 0
+  for (const cli of listCliInstances()) {
+    // Nothing to check with → don't fire a doomed probe every 15 minutes.
+    if (!cli.loggedIn && !cli.associatedAccountId && !cli.associatedDesktopDir) continue
+    if (!due(cliKey(cli.id))) continue
+    try {
+      await checkUsageForCliInstance(cli.id)
+      checked++
+    } catch (err) {
+      console.error(`[usage-refresh] cli '${cli.id}' failed:`, err)
+    }
+    await sleep(STAGGER_MS)
+  }
+  return checked
+}
+
+/** Codex homes, checked one at a time. Only a ChatGPT-auth account has quota to read. */
+async function sweepCodexInstances(due: (key: string) => boolean): Promise<number> {
+  let checked = 0
+  for (const inst of await listCodexInstances()) {
+    if (inst.account?.authMode !== 'chatgpt') continue
+    if (!due(codexKey(inst.id))) continue
+    try {
+      await checkUsageForCodex(inst.codexHome, inst.id)
+      checked++
+    } catch {
+      console.error(`[usage-refresh] codex '${inst.id}' failed`)
+    }
+    await sleep(STAGGER_MS)
+  }
+  return checked
+}
+
+/** Why a signed-in CLI login must not be nudged right now, or null: CliMayte walled it at a limit, or
+ *  a Claude session runs on it (its window runs already, and a second process refreshing the same
+ *  login is how a refresh token gets invalidated). Signed-out and org-disabled logins never get this
+ *  far: listCliInstances() lists them `loggedIn: false` (CliMayte's login veto). */
+function keepaliveBlock(
+  id: string,
+  configDir: string,
+  walls: Map<string, { until: number; weekly: boolean }>,
+): string | null {
+  const wall = walls.get(id)
+  if (wall && wall.until > Date.now())
+    return `walled by CliMayte at its ${wall.weekly ? 'weekly' : '5-hour'} limit until ${new Date(wall.until).toISOString()}`
+  const running = readLiveRegistry(configDir, { transcripts: false }).length
+  return running ? `${running} Claude session${running === 1 ? '' : 's'} running on it` : null
+}
+
+/** A CLI login's freshest reading: the cached usage check, with a newer CliMayte stream reading laid
+ *  over it (usage-live.ts), the numbers the CLI table shows. */
+function keepaliveReading(
+  live: Map<string, CliMayteLiveUsage>,
+): (usageKey: string) => UsageSnapshot | null {
+  return (usageKey) =>
+    withLiveReading(lastReading(usageKey), live.get(usageKey.replace(/^cli:/, '')))
+}
+
+/** The window end the armed nudge waits for, plus a margin for the server-side window to roll. */
+const KEEPALIVE_MARGIN_MS = 90_000
+let keepaliveRunning = false
+let keepaliveTimer: ReturnType<typeof setTimeout> | null = null
+let keepaliveNextAt: number | null = null
+
+/** When the armed nudge pass runs next (epoch ms), or null when none is armed. */
+export function keepaliveNextRunAt(): number | null {
+  return keepaliveNextAt
+}
+
+/**
+ * Arm one timer for the soonest 5-hour reset among the signed-in CLI logins, so an account is nudged
+ * within a couple of minutes of its window ending instead of at the next sweep, up to 30 minutes
+ * later (a sixth of a Pro window). Nothing is armed while the switch is off.
+ */
+function armKeepalive(): void {
+  if (keepaliveTimer) clearTimeout(keepaliveTimer)
+  keepaliveTimer = null
+  keepaliveNextAt = null
+  if (!getProviderSettings().keepaliveEnabled) return
+  const now = Date.now()
+  const read = keepaliveReading(climayteLiveReadings())
+  let soonest = Number.POSITIVE_INFINITY
+  for (const c of listCliInstances()) {
+    if (!c.loggedIn) continue
+    const resetsAt = read(`cli:${c.id}`)?.session?.resetsAt
+    const at = resetsAt ? Date.parse(resetsAt) : Number.NaN
+    if (Number.isFinite(at) && at > now && at < soonest) soonest = at
+  }
+  if (!Number.isFinite(soonest)) return
+  keepaliveNextAt = soonest + KEEPALIVE_MARGIN_MS
+  keepaliveTimer = setTimeout(
+    () => {
+      keepaliveTimer = null
+      void asReader('keepalive', runCliKeepalive)
+    },
+    Math.min(keepaliveNextAt - now, 2 ** 31 - 1),
+  )
+  keepaliveTimer.unref?.()
+}
+
+/**
+ * One nudge pass over the CLI logins (session-keepalive.ts decides, spends and records). It rides on
+ * the back of a sweep, so it acts on readings seconds old, and on its own timer at the next window
+ * end (armKeepalive). A no-op unless switched on, and it declines on its own terms besides.
+ *
+ * CLI logins only. The nudge is a `claude -p` spawn pointed at a CLAUDE_CONFIG_DIR, which is what a
+ * CLI instance IS; a desktop profile keeps its credential somewhere that spawn cannot read, so a
+ * desktop-only account is reached through its linked CLI login or not at all.
+ */
+export async function runCliKeepalive(): Promise<KeepaliveSweepResult | null> {
+  if (keepaliveRunning) return null
+  keepaliveRunning = true
+  try {
+    const provider = getProviderSettings()
+    const walls = climayteLimitWalls()
+    const result = await runKeepaliveSweep({
+      enabled: provider.keepaliveEnabled,
+      weeklyFloorPct: provider.keepaliveWeeklyFloorPct,
+      targets: listCliInstances()
+        .filter((c) => c.loggedIn)
+        .map((c) => ({
+          id: c.id,
+          label: c.num ? `#${c.num}` : c.name,
+          configDir: c.configDir,
+          usageKey: `cli:${c.id}`,
+          blocked: keepaliveBlock(c.id, c.configDir, walls),
+          weekCapPct: c.placement?.maxWeekPct ?? null,
+        })),
+      reading: keepaliveReading(climayteLiveReadings()),
+      // The read-back is the usage check the sweep runs, so the tables show the new window at once.
+      nudge: (t) =>
+        nudgeWindow(t, {
+          readBack: async (x) =>
+            (await asReader('keepalive', () => checkUsageForCliInstance(x.id)))?.snapshot ?? null,
+        }),
+      // Logged, not silent: this is the one loop here that SPENDS, so every nudge is a journal line
+      // (climayte_log { group: 'keepalive' }) and a record the CLI table shows.
+      onNudge: (t, rec) =>
+        climayteJournalNudge({
+          account: t.label,
+          ok: rec.ok,
+          until: rec.resetsAt ?? undefined,
+          model: rec.model,
+          costUsd: rec.costUsd ?? undefined,
+          notice: rec.ok ? undefined : rec.note,
+        }),
+    })
+    if (result.nudged.length)
+      console.log(`[keepalive] started the 5-hour window on: ${result.nudged.join(', ')}`)
+    return result
+  } catch (err) {
+    console.error('[keepalive] sweep failed:', err)
+    return null
+  } finally {
+    keepaliveRunning = false
+    armKeepalive()
+  }
+}
+
+/** The switch or the floor changed (the settings route): re-arm, and run a pass now when it is on, so
+ *  the person who switched it on sees it act instead of waiting for the next sweep. */
+export function keepaliveSettingsChanged(): void {
+  if (getProviderSettings().keepaliveEnabled) void runCliKeepalive()
+  else armKeepalive()
+}
+
+/**
+ * One pass over the checkable instances that `due` names. Sequential + staggered on purpose (see the
+ * header): the point is to keep numbers warm quietly, not to win a race. Never throws; one bad
+ * instance is logged and skipped so the rest of the sweep still lands.
+ */
+async function sweep(due: (key: string) => boolean): Promise<number> {
+  if (sweeping) return 0 // a slow sweep must never overlap the next tick
+  sweeping = true
+  try {
+    let checked = await sweepDesktopInstances(due)
+    checked += await sweepCliInstances(due)
+    const providers = getProviderSettings()
+    if (providers.codexDesktopEnabled || providers.codexCliEnabled)
+      checked += await sweepCodexInstances(due)
+    if (checked) {
+      lastSweepAt = new Date().toISOString()
+      await runCliKeepalive()
+    }
+    return checked
+  } finally {
+    sweeping = false
+  }
+}
+
+/** Every checkable instance, now (the Refresh button: POST /api/usage/refresh). */
+export function sweepUsage(): Promise<number> {
+  return sweep(() => true)
+}
+
+/** The timer's pass: only the readings older than the interval, each judged as its turn comes, so
+ *  one another reader refreshed during the pass is skipped. */
+function sweepDue(): Promise<number> {
+  return sweep((key) => {
+    const now = Date.now()
+    const every = sweepIntervalMs(getUsageSettings().autoRefreshIntervalMin, seenAt, now)
+    const reading = key.startsWith('cli:')
+      ? keepaliveReading(climayteLiveReadings())(key)
+      : getCachedUsage(key)
+    if (!readingDue(reading?.capturedAt, triedAt.get(key), every, now)) return false
+    triedAt.set(key, now)
+    return true
+  })
+}
+
+function rearm(settings = getUsageSettings()): void {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  if (!settings.autoRefresh) return
+  timer = setInterval(() => {
+    void asReader('usage sweep', sweepDue).catch((err) =>
+      console.error('[usage-refresh] sweep failed:', err),
+    )
+  }, TICK_MS)
+  // Don't hold the process open on this timer alone.
+  timer.unref?.()
+}
+
+/**
+ * Start the background refresher (called once at daemon boot). Runs a first sweep shortly after
+ * start — delayed, not immediate, so it never competes with the daemon's own startup work or delays
+ * the first page load.
+ */
+export function startUsageRefresh(): void {
+  const settings = getUsageSettings()
+  rearm(settings)
+  // The nudge's own timer, from the readings already cached: with the sweep switched off, this is
+  // what still starts a window as the last one ends.
+  armKeepalive()
+  if (!settings.autoRefresh) return
+  const kickoff = setTimeout(() => {
+    void asReader('usage sweep', sweepDue).catch((err) =>
+      console.error('[usage-refresh] initial sweep failed:', err),
+    )
+  }, 20_000)
+  kickoff.unref?.()
+}

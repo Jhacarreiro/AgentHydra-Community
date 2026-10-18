@@ -1,0 +1,448 @@
+// Guardrail against a test file whose stub OUTLIVES it.
+//
+// `bun test` runs every file in ONE process (CI's serial run, and each --parallel worker too), and
+// two kinds of stub are process-wide rather than file-wide:
+//   · an assignment to a global - globalThis.fetch, Bun.spawn - made at module scope or inside a
+//     before* hook and never put back;
+//   · mock.module(), which Bun applies to the whole run: every file that loads that module AFTER
+//     this one gets the fake, and mock.restore() does not undo it (measured on bun 1.4.0).
+// Both are invisible in the file that made them - it passes alone, and it passes under --parallel
+// whenever the split happens to isolate it - and land on whichever file runs next. Found the hard
+// way on 2026-09-05, twice in one day. First, three probe tests parked under tmp/ patched fetch and
+// node:child_process at module scope and broke instance-pointer + updater-engine in the serial run
+// (bunfig.toml now ignores tmp/). Then request-generations.test.ts mock.module'd the old window's api and
+// resource-status.test.ts, next in order, imported the real runQueueItem and awaited a getQueue
+// nothing would ever resolve: three 5s timeouts, and because a timed-out test never reaches its
+// `finally`, ITS fetch stub then leaked on to instance-pointer as well. One unrestored mock, three
+// files red, none of them the culprit, and a bisect to find it.
+//
+// The rule, mechanical on purpose:
+//   1. A global stubbed at MODULE SCOPE or inside beforeAll/beforeEach must be assigned again inside
+//      afterAll/afterEach. A stub made inside a test body is that test's own business and is not
+//      examined; the shape this repo uses there is try/finally.
+//   2. Every mock.module(SPEC) outside an after* hook must have a mock.module(SPEC) inside one,
+//      re-mocking to a copy of the real exports taken BEFORE the fake was installed. Taken after,
+//      the copy IS the fake: mock.module rewrites the live bindings of a namespace that was already
+//      imported. server/tests/chats-route-empty-account.test.ts is the worked example. Where the module under
+//      test allows it, inject the dependency instead and mock nothing (tests/monitor.test.ts).
+//
+// Comments and string interiors are blanked before the scan (the same scanner as
+// spawn-test-without-timeout.mjs), so a file that DISCUSSES a leak in prose is not reported as one.
+// The mock specifier is read back from the untouched text at the same index.
+//
+// Self-contained by design (same reason as the other checks here): imports nothing but node stdlib,
+// and returns plain finding objects for the runner.
+
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ID = 'test-stub-outlives-its-file'
+
+// The globals this repo's tests actually stub. `fetch` is the whole HTTP boundary of the web and
+// orchestrator composables and of every daemon client; Bun.spawn/spawnSync are its process
+// boundary. Listed by name so a new one is a deliberate addition here, never a silent widening.
+// `=` must not be the start of `==` or `=>`.
+const GLOBAL_STUB = /(?<![\w$.])((?:globalThis|global|window)\.fetch|Bun\.spawnSync|Bun\.spawn)\s*=(?![=>])/g
+const MODULE_MOCK = /(?<![\w$.])mock\.module\s*\(/g
+const BEFORE_HOOK = /(?<![\w$.])(?:beforeAll|beforeEach)\s*\(/g
+const AFTER_HOOK = /(?<![\w$.])(?:afterAll|afterEach)\s*\(/g
+
+// RULE C, a stub that outlives its file by way of the code under test's OWN module state, added
+// 2026-09-14 after it took GitHub's Linux runner red. The orchestrator keeps one route lock per
+// script name in a module-level Map, and that map is as process-wide as globalThis is. A spawn
+// stubbed never to settle - which is how orchestrator-stale-lock.test.ts pins "a young lock still
+// blocks a second caller" - leaves the lock behind FOREVER: the run that holds it can never reach
+// the `finally` that releases it. Every later file's run of that script is then refused `409 busy`
+// by a run that does not exist. It cost the preempt suite three red tests on ubuntu and green on
+// windows, off nothing but which file readdir listed first, and the red named the innocent file.
+// So: a test that parks a never-settling orchestrator run must hand the module state back in an
+// after hook. An executor taking NO parameter is the provable case - nothing can ever settle it;
+// a stub that keeps its resolve (new Promise((r) => …)) can be released by the test itself and is
+// not reported, which keeps this rule free of the false reds that get a check ignored.
+const ORCH_CALL = /(?<![\w$.])(?:runOrchestrator|startOrchestratorOperation)\s*\(/g
+const NEVER_SETTLES = /(?<![\w$.])new\s+Promise\s*(?:<[^>(]*>\s*)?\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/g
+const ORCH_RESET = /(?<![\w$.])resetOrchestratorOperationsForTests\s*\(/g
+
+// RULE D, a request through the shared Hono app, added 2026-10-12 after it held both CI legs red for
+// a day. server/src/http-app.ts exports ONE `app` for the whole process; every routes/*.ts module
+// registers on it when imported, and Hono builds its router on the first request and refuses a new
+// route after that. fourman.test.ts and dashboards.test.ts sent requests through it directly, so
+// every later file that loaded a routes/*.ts module died at import with "Can not add a route since
+// the matcher is already built" (9 files on windows, more on ubuntu). Worse, three of those files
+// had installed mock.module fakes before the import that threw, so their after hooks never ran and
+// session-launch's fakes reached every file after them: 109 red tests on ubuntu, none in either
+// culprit. The fixed shape is queue-patch-guard.test.ts's: request through a copy,
+// `const http = new Hono().route('/', app)`, which has its own router and leaves the shared one open.
+// The import is read from the untouched text (its specifier is a string the scanner blanks) and
+// accepted only where the blanked code still shows it, so an import quoted in a comment is ignored.
+const SHARED_APP_IMPORT =
+  /\bimport\s*\{([^}]*)\}\s*from\s*(['"])[^'"\n]*\/http-app(?:\.[cm]?[jt]s)?\2|\{([^}]*)\}\s*=\s*await\s+import\s*\(\s*(['"])[^'"\n]*\/http-app(?:\.[cm]?[jt]s)?\4\s*\)/g
+
+const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'tmp', '.arkitect', 'coverage', 'build'])
+const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
+
+/** Recursively yield every test file under `dir`. */
+function* testFiles(dir) {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue
+    const p = join(dir, e.name)
+    if (e.isDirectory()) {
+      if (!SKIP_DIRS.has(e.name)) yield* testFiles(p)
+    } else if (TEST_FILE.test(e.name)) {
+      yield p
+    }
+  }
+}
+
+/** Index just past the regex literal opening at `start`, or -1 if it does not close on that line.
+ *  `/` inside a `[...]` class is literal, so classes are tracked. */
+function endOfRegex(text, start) {
+  let inClass = false
+  for (let j = start + 1; j < text.length; j++) {
+    const c = text[j]
+    if (c === '\\') {
+      j++
+      continue
+    }
+    if (c === '\n') return -1
+    if (inClass) {
+      if (c === ']') inClass = false
+      continue
+    }
+    if (c === '[') inClass = true
+    else if (c === '/') return j + 1
+  }
+  return -1
+}
+
+// A `/` opens a regex only where an expression is expected. A missed regex can carry a bare quote,
+// which opens a string that never closes and inverts code/string for the rest of the file.
+const REGEX_OPENS_AFTER = new Set(
+  ['(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '^', '~', '<', '>'],
+)
+const REGEX_OPENS_AFTER_KEYWORD =
+  /\b(?:return|typeof|instanceof|case|in|of|new|delete|void|do|else|yield|await)$/
+
+/** One scanner step inside a string/template literal opened by `quote`: blanks the current char (or
+ *  escape pair) in `out` in place. */
+function advanceInString(text, out, i, quote, prev) {
+  const ch = text[i]
+  if (ch === '\\') {
+    if (text[i] !== '\n') out[i] = ' '
+    if (text[i + 1] !== '\n') out[i + 1] = ' '
+    return { i: i + 2, inString: quote, prev }
+  }
+  if (ch === quote) {
+    return { i: i + 1, inString: null, prev: ch }
+  }
+  if (ch !== '\n') out[i] = ' '
+  return { i: i + 1, inString: quote, prev }
+}
+
+/** One scanner step outside a string: opens a string, blanks a comment or a regex literal, or
+ *  advances one character while tracking `prev`, the last non-whitespace char. */
+function advanceCode(text, out, i, prev) {
+  const ch = text[i]
+  if (ch === '"' || ch === "'" || ch === '`') {
+    return { i: i + 1, inString: ch, prev }
+  }
+  if (ch === '/' && text[i + 1] === '/') {
+    let j = i
+    while (j < text.length && text[j] !== '\n') out[j++] = ' '
+    return { i: j, inString: null, prev }
+  }
+  if (ch === '/' && text[i + 1] === '*') {
+    const end = text.indexOf('*/', i + 2)
+    const stop = end === -1 ? text.length : end + 2
+    for (let j = i; j < stop; j++) if (text[j] !== '\n') out[j] = ' '
+    return { i: stop, inString: null, prev }
+  }
+  if (
+    ch === '/' &&
+    (prev === '' ||
+      REGEX_OPENS_AFTER.has(prev) ||
+      REGEX_OPENS_AFTER_KEYWORD.test(text.slice(0, i).trimEnd()))
+  ) {
+    const end = endOfRegex(text, i)
+    if (end !== -1) {
+      for (let j = i; j < end; j++) if (text[j] !== '\n') out[j] = ' '
+      return { i: end, inString: null, prev: '/' }
+    }
+  }
+  const nextPrev = /\s/.test(ch) ? prev : ch
+  return { i: i + 1, inString: null, prev: nextPrev }
+}
+
+/** Blank comments and the INTERIOR of every string/template literal with spaces, so every surviving
+ *  character keeps its original index (line numbers and the specifier lookup both rely on that).
+ *  Quotes and braces are preserved so spans and depth still balance. */
+function blankNonCode(text) {
+  const out = text.split('')
+  let inString = null
+  let prev = ''
+  let i = 0
+  while (i < text.length) {
+    const step = inString ? advanceInString(text, out, i, inString, prev) : advanceCode(text, out, i, prev)
+    i = step.i
+    inString = step.inString
+    prev = step.prev
+  }
+  return out.join('')
+}
+
+/** Extract `text` from `open` (a bracket) through its match. Operates on blanked code. */
+function extractBalanced(text, open, oc = '(', cc = ')') {
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    const c = text[i]
+    if (c === oc) depth++
+    else if (c === cc) {
+      depth--
+      if (depth === 0) return text.slice(open, i + 1)
+    }
+  }
+  return text.slice(open)
+}
+
+/** [start, end) index spans of every call whose head matches `head` - the whole argument list, so a
+ *  hook's callback body is inside its span. */
+function callSpans(code, head) {
+  head.lastIndex = 0
+  const spans = []
+  for (const m of code.matchAll(head)) {
+    const open = m.index + m[0].length - 1
+    spans.push([open, open + extractBalanced(code, open).length])
+  }
+  return spans
+}
+
+const within = (spans, index) => spans.some(([a, b]) => index >= a && index < b)
+
+/** Brace depth at `index`: 0 is module scope. Braces inside strings and comments are already
+ *  blanked, so only code braces count. */
+function depthAt(code, index) {
+  let depth = 0
+  for (let i = 0; i < index; i++) {
+    const c = code[i]
+    if (c === '{') depth++
+    else if (c === '}') depth--
+  }
+  return depth
+}
+
+/** `globalThis.fetch`, `global.fetch` and `window.fetch` are one global; the Bun ones are their own. */
+const normalizeGlobal = (name) => (name.endsWith('.fetch') ? 'fetch' : name)
+
+/** The literal first argument of the mock.module call at `index` in the UNTOUCHED text, or null when
+ *  it is not a string literal. */
+function mockSpecifier(text, index) {
+  const m = text.slice(index, index + 400).match(/^mock\.module\s*\(\s*(['"`])([^'"`\n]+)\1/)
+  return m ? m[2] : null
+}
+
+/** Every stub in `text` that outlives the file: a module-scope or before-hook global assignment with
+ *  no after-hook assignment to the same global, and a mock.module(SPEC) with no mock.module(SPEC)
+ *  inside an after hook. Exported so the rule can be unit-tested against fixture strings. */
+export function findViolations(text) {
+  const code = blankNonCode(text)
+  const before = callSpans(code, BEFORE_HOOK)
+  const after = callSpans(code, AFTER_HOOK)
+  const hits = []
+
+  const restored = new Set()
+  const stubs = []
+  GLOBAL_STUB.lastIndex = 0
+  for (const m of code.matchAll(GLOBAL_STUB)) {
+    const name = normalizeGlobal(m[1])
+    if (within(after, m.index)) restored.add(name)
+    else if (depthAt(code, m.index) === 0 || within(before, m.index)) stubs.push({ index: m.index, name })
+  }
+  for (const s of stubs) if (!restored.has(s.name)) hits.push({ index: s.index, kind: 'global', name: s.name })
+
+  // A mock whose specifier is not a literal cannot be matched by name; any re-mock in an after hook
+  // is then accepted, which errs towards silence rather than a false red on an exotic shape.
+  const remocked = new Set()
+  const mocks = []
+  MODULE_MOCK.lastIndex = 0
+  for (const m of code.matchAll(MODULE_MOCK)) {
+    const spec = mockSpecifier(text, m.index) ?? '*'
+    if (within(after, m.index)) remocked.add(spec)
+    else mocks.push({ index: m.index, spec })
+  }
+  for (const k of mocks) {
+    if (remocked.has(k.spec) || remocked.has('*')) continue
+    hits.push({ index: k.index, kind: 'module', name: k.spec })
+  }
+
+  // Rule C: a never-settling spawn parked in the orchestrator's route lock, with nothing in an
+  // after hook to hand it back. The reset must be INSIDE the hook: a test that fails or times out
+  // never reaches the rest of its own body, which is the same reason rule A demands a hook.
+  ORCH_CALL.lastIndex = 0
+  ORCH_RESET.lastIndex = 0
+  const callsOrchestrator = [...code.matchAll(ORCH_CALL)].length > 0
+  const releasesInAfterHook = [...code.matchAll(ORCH_RESET)].some((m) => within(after, m.index))
+  if (callsOrchestrator && !releasesInAfterHook) {
+    NEVER_SETTLES.lastIndex = 0
+    for (const m of code.matchAll(NEVER_SETTLES)) hits.push({ index: m.index, kind: 'orchestrator-lock', name: 'the route lock' })
+  }
+
+  // Rule D: a request or fetch through the shared app, under whatever local name it was imported as.
+  for (const name of sharedAppNames(text, code)) {
+    const call = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}\\s*\\.\\s*(?:request|fetch)\\s*\\(`, 'g')
+    for (const m of code.matchAll(call)) hits.push({ index: m.index, kind: 'shared-app', name })
+  }
+
+  return hits.sort((a, b) => a.index - b.index)
+}
+
+/** The local names this file binds http-app's `app` to: `import { app } from '../src/http-app'`,
+ *  `{ app as shared }`, or `const { app } = await import(...)`. Only imports the blanked code still
+ *  shows count, so one quoted in a comment or a string is not read as real. */
+function sharedAppNames(text, code) {
+  const names = new Set()
+  SHARED_APP_IMPORT.lastIndex = 0
+  for (const m of text.matchAll(SHARED_APP_IMPORT)) {
+    const isImport = m[1] !== undefined
+    if (isImport ? !code.startsWith('import', m.index) : code[m.index] !== '{') continue
+    for (const part of (isImport ? m[1] : m[3]).split(',')) {
+      const bind = part.trim().match(isImport ? /^app(?:\s+as\s+([\w$]+))?$/ : /^app(?:\s*:\s*([\w$]+))?$/)
+      if (bind) names.add(bind[1] ?? 'app')
+    }
+  }
+  return names
+}
+
+const lineAt = (text, index) => text.slice(0, index).split('\n').length
+
+const CHEAP_REJECT =
+  /mock\.module|(?:globalThis|global|window)\.fetch\s*=|Bun\.spawn(?:Sync)?\s*=|runOrchestrator|startOrchestratorOperation|\/http-app/
+
+/** The four rules' user-facing text, keyed by hit kind, so a new rule cannot be added without
+ *  saying what it found, why it matters and what to do - the half a check is actually read for. */
+function explain(hit) {
+  if (hit.kind === 'global')
+    return {
+      what: `${hit.name} stubbed, never restored`,
+      message:
+        `This file stubs ${hit.name} at module scope or in a before* hook and never assigns ` +
+        'it back in afterAll/afterEach. bun test runs every file in one process, so the ' +
+        "stub is what the NEXT file's code calls: three probe tests that did this to fetch " +
+        "on 2026-09-05 made instance-pointer's findLiveInstance probe its own server " +
+        'through a fake and count 0 hits, in a file nobody had touched.',
+      fix:
+        `Keep the original (const real = ${hit.name === 'fetch' ? 'globalThis.fetch' : hit.name}) ` +
+        'and assign it back in afterAll, or stub inside the test with a try/finally restore ' +
+        'around the stub.',
+    }
+  if (hit.kind === 'module')
+    return {
+      what: `mock.module(${hit.name}) never re-mocked`,
+      message:
+        `mock.module(${JSON.stringify(hit.name)}) is global for the whole bun test run and ` +
+        'mock.restore() does not undo it: every file that loads this module after this one ' +
+        "gets the fake. request-generations.test.ts did this to the old window's api on " +
+        '2026-09-05 and resource-status.test.ts, next in the serial order, waited 5s three ' +
+        'times on a getQueue nothing would ever resolve.',
+      fix:
+        'Copy the real exports BEFORE installing the fake - ' +
+        '`const realApi = { ...(await import(SPEC)) }` - and re-mock to that copy in afterAll: ' +
+        '`afterAll(() => { mock.module(SPEC, () => realApi) })`. A copy taken after the fake ' +
+        "is a copy of the fake, because mock.module rewrites the namespace's live bindings. " +
+        'Better still, inject the dependency and mock nothing (tests/monitor.test.ts).',
+    }
+  if (hit.kind === 'shared-app')
+    return {
+      what: `a request through the shared http-app (${hit.name})`,
+      message:
+        `${hit.name} is http-app.ts's one Hono app for the whole bun test run. Hono builds its ` +
+        'router on the first request and refuses new routes after it, so every LATER file that ' +
+        'imports a routes/*.ts module dies at import with "Can not add a route since the matcher ' +
+        'is already built". On 2026-10-12 fourman.test.ts and dashboards.test.ts did this: nine ' +
+        'files red on windows and 109 tests on ubuntu, because files that died at import never ' +
+        'ran the after hooks that put their mock.module fakes back.',
+      fix:
+        `Request through a copy with its own router: \`const http = new Hono().route('/', ${hit.name})\` ` +
+        'after importing the routes the test needs, then http.request(...) or http.fetch(...) - ' +
+        'the shape server/tests/queue-patch-guard.test.ts ships.',
+    }
+  return {
+    what: 'a never-settling orchestrator run leaves its route lock behind',
+    message:
+      'This file parks an orchestrator run on a spawn stub that can never settle, so the run ' +
+      'never reaches the `finally` that releases its route lock - and that lock lives in a ' +
+      'module-level Map, which is as process-wide as globalThis is. Every LATER file that runs ' +
+      'the same script is refused `409 busy` by a run that does not exist. On 2026-09-14 that ' +
+      'took three preempt tests red on ubuntu and left them green on windows, off nothing but ' +
+      'which file readdir listed first, and the red named a file nobody had touched.',
+    fix:
+      'Call resetOrchestratorOperationsForTests() inside afterEach/afterAll (it clears the ' +
+      'operation registry AND the route locks) - the shape ' +
+      'server/tests/orchestrator-stale-lock.test.ts ships. Inside the after hook, not at the end ' +
+      'of a test body: a test that fails or times out never reaches the rest of its own body.',
+  }
+}
+
+export const audit = {
+  id: ID,
+  title:
+    'a test file must put back every global it stubs, every module it mocks, and every route lock it parks before it ends, and never freeze the shared app with a request',
+  category: 'custom',
+  domain: 'code',
+  requires: {},
+  // Gating: the cost lands on a DIFFERENT file, in the serial run CI uses, as a red that reads as
+  // a bug in code nobody touched.
+  gating: true,
+  async run(ctx) {
+    const root = ctx?.root ?? process.cwd()
+    const findings = []
+    let filesScanned = 0
+
+    for (const file of testFiles(root)) {
+      const rel = relative(root, file).replace(/\\/g, '/')
+      let text
+      try {
+        if (statSync(file).size > 2_000_000) continue
+        text = readFileSync(file, 'utf8')
+      } catch {
+        continue
+      }
+      if (!CHEAP_REJECT.test(text)) continue // cheap reject before the scanner runs
+      filesScanned += 1
+      for (const hit of findViolations(text)) {
+        findings.push({
+          id: ID,
+          file: rel,
+          line: lineAt(text, hit.index),
+          severity: 'error',
+          ...explain(hit),
+        })
+      }
+    }
+
+    const failed = findings.length > 0
+    const report = failed
+      ? `Found ${findings.length} stub(s) that outlive their test file:\n${findings
+          .map((f) => `- ${f.file}:${f.line} (${f.what})`)
+          .join('\n')}`
+      : `Every module-scope or before-hook global stub, every mock.module and every parked ` +
+        `orchestrator route lock in the test tree is put back in an after hook, and no test ` +
+        `requests through the shared http-app (${filesScanned} stubbing file(s) scanned). ✓`
+
+    return { failed, findings, report }
+  },
+}
+
+// Standalone CLI (used by CI): prints the report and exits 1 on any violation. During an arkitect
+// run the module is only IMPORTED, so this block is inert there; it fires only on direct invocation.
+if (process.argv[1] && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {
+  const res = await audit.run({ root: process.cwd() })
+  console.log(res.report)
+  if (res.failed) process.exit(1)
+}

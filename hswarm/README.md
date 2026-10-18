@@ -1,0 +1,416 @@
+# HydraSwarm (hswarm)
+
+HydraSwarm is AgentHydra's swarm. It began as a copy of ZSwarm and replaced it when ZSwarm was retired (2026-10-03); `hswarm import-zswarm` brings a ZSwarm home's history across. The public ZergSwarm site and repository were retired on 2026-10-11: zergswarm.lunarwerx.com now redirects to the HSwarm section of AgentHydra's site (https://agenthydra.lunarwerx.com/#hswarm).
+
+**TL;DR**
+
+- Run `python -m hswarm ui` for the console or `python -m hswarm ask "your question"` for a worker.
+- Keys added through the console, CLI and API use the same provider lists and encrypted vault.
+- Paired machines sync key additions and removals; provider settings and work history stay local.
+
+<details><summary>Setup, configuration and development</summary>
+
+## What is HydraSwarm?
+
+A cheap worker swarm: hands work from Claude Code, Claude Desktop or Codex to many cheap AI models at once, with a flagship orchestrator (MCP server + CLI, costed against the Claude it displaces).
+
+## Running HydraSwarm
+
+```bash
+# Start the console (web UI)
+python -m hswarm ui --no-open --port 7793
+
+# Run a command
+python -m hswarm ask "your question"
+
+# Check status
+python -m hswarm status
+
+# Get help
+python -m hswarm help
+```
+
+## Configuration
+
+### API Keys
+
+HydraSwarm reads API keys from:
+
+1. Environment variables: `<PROVIDER>_API_KEYS` or `<PROVIDER>_API_KEY`
+2. Legacy `keys` fields in `$HSWARM_HOME/providers/<provider>.toml`
+3. Files in `$HSWARM_HOME/secrets/<provider>_api_keys`
+
+Add or remove keys in the console or with `hswarm keys add|remove`; these edit the provider lists in `secrets/`
+and sync the encrypted vault immediately when configured. The next key edit moves a provider's legacy TOML keys
+into its list and keeps its other settings, comments and priority numbers. Environment keys are read-only.
+An explicit addition clears that key's older `.dead` and `.unfunded` classifications.
+Key validation uses an authenticated free read or an explicitly free model check; adding a key never starts paid
+generation. A provider without a safe check keeps the key as unverified. Credential acceptance does not prove
+paid credit, and a service endpoint's permission denial leaves the key unchecked rather than marking it dead.
+
+For example:
+```bash
+export DEEPSEEK_API_KEYS="sk-..."
+export OPENROUTER_API_KEYS="sk-..."
+```
+
+Import a checker export containing `<provider>_alive_keys.txt` and `<provider>_dead_keys.txt`:
+
+```bash
+python -m hswarm import-keys --from /path/to/key-export --dry-run --json
+python -m hswarm import-keys --from /path/to/key-export --json
+```
+
+The dry run reports counts and changes nothing. Import adds alive keys, removes only explicitly dead keys from
+active lists, and preserves existing keys omitted from the export. New alive evidence clears older dead/unfunded
+classifications. Credit and manual disables remain local measurements. The import also moves legacy provider TOML
+keys into the shared lists while preserving their settings, then syncs the encrypted vault. Output contains counts,
+never key values. Existing `<provider>_api_keys` lists and a legacy clone's `.secrets/` folder are accepted too.
+Exporter aliases declared by a provider share its canonical pool: `google_*_keys.txt` imports into
+`gemini_api_keys`. Unconfigured providers in checker exports fail before editing any lists; add their provider
+configuration first. Alias routing is included in the count report.
+
+### Key vault
+
+Keys follow you between machines, encrypted, never through git. `$HSWARM_HOME/secrets/` holds one list per provider
+(`openrouter_api_keys`, plus `.dead` and `.unfunded` lists). The vault is one encrypted file on a server only you can
+reach, and every paired H Swarm merges its lists with it every two minutes while `mcp --http` runs. The format
+remains compatible with the legacy Z Swarm vault, so H Swarm can adopt an existing vault after Z Swarm is retired.
+
+```bash
+python -m hswarm vault init ssh://user@host/hswarm-vault   # first machine: makes the vault from the keys it has
+python -m hswarm vault adopt                               # this machine's ZSwarm is already paired: use its vault
+python -m hswarm vault pair                                # prints the pairing code (a terminal only; hand it over directly)
+python -m hswarm vault join                                # other machine: paste the code at the hidden prompt
+python -m hswarm vault add openrouter                      # keys from stdin or a hidden prompt; synced at once
+python -m hswarm vault remove openrouter <fingerprint>     # a rolled key; every machine drops it at its next sync
+python -m hswarm vault list [openrouter]  |  status  |  sync [--dry-run] [--allow-removals] [--rebase]
+```
+
+- **What is stored.** AES-256-GCM, a random vault key in `$HSWARM_HOME/vault.key` (owner-only). The server holds
+  ciphertext only, so a plain SSH box, a shared folder (`dir:<folder>`) or any other backend is a placement choice,
+  not a trust decision.
+- **What is synced.** The list files in `$HSWARM_HOME/secrets/`, including keys added through settings, the CLI
+  and the API. These lists are local runtime copies of the encrypted vault. Provider/model settings and the
+  disabled slot (`keys.json`) are each machine's own configuration and measurements.
+- **How two machines agree.** Each key is one entry: the key, a time and who wrote it, or a tombstone when removed.
+  The newer entry wins and a removal wins a tie. A write is compare-and-swap on the file's hash, so a writer that
+  lost a race re-reads, merges and retries.
+- **Safety.** A machine's first sync only adds. A sync that would remove a quarter of the keys or empty a list stops
+  and says so (`--allow-removals`; `--rebase` brings everything back from the vault). A server that went back to an
+  older vault is refused. The server keeps the last 40 versions. A failed background sync is logged once and the
+  next tick retries.
+- **Local edits.** Key edits and syncs share an exclusive local lock so a background sync cannot overwrite an
+  edit in progress. A busy lock refuses the operation. A failed upload reports that the local change was saved
+  and remains pending for the next sync.
+- **`adopt`.** When `~/.zswarm` (or `ZSWARM_HOME`) holds `vault.key` and `vault.json` and `$HSWARM_HOME` has no
+  vault, `adopt` copies those two files here owner-only (only once the key opens the stored vault), then runs a
+  first sync, which only adds. `vault status` says when it is available.
+- **Output.** Every verb prints counts and 8-character fingerprints. `pair` prints the code only to a terminal: the
+  code opens every key, so it goes person to person, never into a chat or a ticket.
+
+### Provider services
+
+Speech, image, video, search, embedding, vector-store and observability providers use service operations with their
+provider's request schema. List operations offline, or pass a JSON file and save binary output when needed:
+
+```bash
+python -m hswarm service tavily
+python -m hswarm service tavily search --input search.json
+python -m hswarm service elevenlabs synthesize --path voice_id=example --input speech.json --output speech.mp3
+```
+
+The service CLI reports the selected key's fingerprint so an asynchronous operation can be polled with the same
+key. A request goes to a second key only when the provider refused the first before doing anything (a 401, a 402, a
+403 or 429 saying the balance is gone, or a rate-limit 429): that key is marked in the pool and the same request tries
+another, up to 8 keys. A call that names its key, or sends a file as a stream, never moves, and a network failure is
+never retried. Where a provider file sets `[limits]`, a request waits unsent for a key with headroom
+([docs/SERVICE-PROVIDERS.md](docs/SERVICE-PROVIDERS.md)). Chat endpoints accept explicit live model IDs using provider
+prefixes such as `openai:`, `baseten:`, `chutes:`, `xai:`, `nebius:`, `together:`, `stepfun:` and `inworld:`; these
+models become candidates for automatic routing only after evaluation.
+
+Benchmarked models from OpenAI, Z.ai, Hugging Face, Baseten, Chutes and Together are ranked routes (`rank:<benchmark slug>:<provider>`) in their provider files, priced from each provider's own published rate in `data/prices.json`. Nebius's are priced from its own model listing (`/v1/models?verbose=true`), the only place it publishes per-token rates. StepFun has none: its live model IDs are not the ones Artificial Analysis scores, and it prices in yuan.
+
+### Configuration Directory
+
+Default: `~/.hswarm`
+
+Set `HSWARM_HOME` environment variable to use a different location:
+
+```bash
+export HSWARM_HOME=/path/to/config
+```
+
+The HSWARM_HOME directory structure:
+```
+~/.hswarm/
+├── settings.toml              # Configuration: roles, pricing, routing
+├── providers/                 # Provider configurations (TOML files)
+├── secrets/                   # API key files (`hswarm import-keys` fills it)
+│   ├── deepseek_api_keys
+│   ├── openrouter_api_keys
+│   └── ...
+├── jobs/                      # Job store (execution history)
+├── ledger.jsonl               # Usage ledger (one job per line)
+├── routing.jsonl              # Routing decisions (one per line)
+├── openrouter-models.json     # Model catalog (auto-generated)
+├── history/                   # Archived job data (daily archives)
+├── spill/                     # Tool output overflow cache
+├── skills/                    # Banked procedures (unreviewed .md files)
+├── claude-config/             # Claude Code worker configuration
+├── native/                    # This machine's scanner winner and A/B reports (`hswarm native bench`)
+└── hswarm.html               # Console view (auto-generated)
+```
+
+## Inside AgentHydra
+
+The AgentHydra daemon starts HydraSwarm by default (`python -m hswarm mcp --http --port 7793`), restarts it with backoff if it exits or stops answering (its `/health` silent for 3 minutes ends it and starts it again; `GET /api/hswarm-status` reports `answering`), and proxies its console API at `/api/hswarm/*` for the HSwarm tab. The log is `<AgentHydra data>/logs/hswarm.log`.
+
+- `AGENTHYDRA_HSWARM_ENABLED=0` keeps it off.
+- `AGENTHYDRA_HSWARM_DIR` names the folder holding `hswarm/` when it is not beside the app (a wrong folder is reported in the tab, not replaced).
+- `AGENTHYDRA_PYTHON` names the interpreter (default `python`, `python3` off Windows).
+
+## Free accounts first
+
+A tool-free task (`tools: none`, no images, no `zdr`, `model` auto, profile `routine`, `general`, `research` or
+`decision`, purpose not `evaluation`, at most 100,000 characters) may run on the owner's signed-in Free claude.ai and
+ChatGPT accounts through AgentHydra (`free_status`, `free_chat`, `free_results` on `POST /api/mcp`) before any paid API
+leg, at no cost; `routine` and `general` ask for Haiku 5.5 (the lightest on a free account's limit), the others for the account's usual model. A schema's JSON is parsed and checked as on the API route. The daemon being down, no idle account, a
+failed, slow or unparseable reply keeps the API route. With every account busy a task does not wait for one: a Free
+task took 16 s at the median and 42 s at the 90th percentile against about 3 s on the API (2026-10-08), so waiting
+would make a burst's overflow 5-10x slower to save a fraction of a cent a task, and under steady load the accounts
+are full anyway. A ChatGPT account the daemon has paced out of new chats (`server/src/mcp-free.ts`) counts as busy.
+A live burst of 22 tasks ran 11 on Free accounts at once (job `20261009-000737-6a7e`); the fixed cap of 6 at a time
+before it had turned away about 2,800 eligible tasks in a day. `free_status` cannot show a task sent moments ago, so
+a task subtracts from the idle count every still-running task this process sent from 2 s before it asked for its
+snapshot onward, however long that read took: counted from the answer instead, a slow read (up to 5 s) let two tasks
+take one idle account (2026-10-09). `selection.route` shows the route a task took (`via: free`), the
+ledger line says provider `free`. Order: free accounts first, then CliMayte, then the paid API (docs/CLIMAYTE.md, "Which route first"). Settings: `route_via_free` (default on), `route_via_free_max` (default: as many as are idle), `route_via_free_profiles`.
+
+A task with tools goes to a Free thread too when every tool it is offered only reads (`route_via_free_tools`; the web
+tools only for a profile in `route_via_free_web_profiles`, default research) and its profile is in
+`route_via_free_tool_profiles` (default routine, general, decision, research, critical, code). `route_via_free_tool_asks` names the
+model and provider a profile's thread asks for, best first: decision and research ask for Sonnet on a Claude account
+(`sonnet@claude`) with under 80% of its 5-hour window used; with none, research goes to GPT-5.6 mini on a ChatGPT
+account (`@chatgpt`) and decision takes its API route. Critical read work asks for Luna Thinking (GPT-5.6 Thinking
+mini) on a ChatGPT account: over 29 real critical read tasks it won 13, lost 15 and tied 1 against the API answers, with
+19 judged errors to the API's 42, in half the time; about a third of its threads fail at once and take their API route.
+Code read work (reviews and investigations offered only read tools) asks for it too: 7 to 5 over 12 real tasks, mean 5.9
+vs 5.0, 16 judged errors to the API's 53.
+A critical or code task with no tools still takes its API route (`route_via_free_profiles` gates tool-free work and leaves
+critical and code out). In a blind A/B on real tasks (2026-10-13) Sonnet there beat the
+API answers on that work 10 to 0 (1 tie), while ChatGPT's threads (GPT-5.6 mini, GPT-6, Luna Thinking) lost it: they
+read a median of 3 times before answering where the API read 20. A ChatGPT thread of a profile in
+`route_via_free_check_profiles` (default decision, research) that would finish on fewer than 8 tool results is asked
+once to check its claims with its tools; mini then read a median 6 times and drew level, research 8 to 4 against the
+API. Routine and general work runs on whichever account is idle, where mini held level with the API. A turn that
+AgentHydra's restart cut off (it restarts onto each update it pulls) is read back from its thread once AgentHydra
+answers again, rather than paid for on the API route.
+
+`hswarm_decide`'s escalations take this route one question per message. Putting all of one state's open questions in
+one Free message was measured on Dredd's gold asks and not shipped (2026-10-08,
+[docs/BENCH-2026-10-08-free-batch.md](docs/BENCH-2026-10-08-free-batch.md)): batching cost 1-2 points against the
+same Free models one question at a time, but the Free models scored 4.8 points under the paid route on choice
+questions, so a batch that replaces paid escalations loses 6-7 points. Re-run `scripts/rsi/decide-free-batch.py`
+before routing more decisions to the Free accounts.
+
+A Python caller outside the server calls `hswarm.booking.decide(items, escalate_below=..., model=...)`: the body of
+`hswarm_decide`, booked the same way (a ledger line per Jev leg, the fallback asks in the savings total), on this
+process's one `jobs.manager()`. It imports no MCP SDK and no pydantic. Measured 2026-10-10 on Python 3.14, a fresh
+interpreter costs 63 MB and 661 modules importing it, against 101 MB and 998 modules for
+`from hswarm.mcp_server import hswarm_decide`.
+
+### Keeping Free on the newest models
+
+Claude families (`haiku`, `sonnet`) follow new models by themselves, and so do ChatGPT's role names `gpt-instant`,
+`gpt-thinking` and `gpt-auto`: each resolves per account to the newest model it lists in that role.
+`hswarm models --free` shows what every account lists, what each role and each `route_via_free_tool_asks` entry
+resolves to, and what is new or gone since the last scan (exit code 3 when something is new; `hswarm doctor` carries a
+`free_model_watch` line, and Desk notifies once per new model). To measure a new one, run
+`python -m hswarm.free_ab pick --profile critical --n 30`, then `arm --model <slug>` (and an arm of the model used
+today), `judge` and `report`, then `compare --arms <today's> <new>`, which scores both on only the tasks both served;
+when the new one wins there, adopt it with one setting, `route_via_free_tool_asks`. Pinned names such as `luna-thinking` stay where an A/B chose
+them until another A/B moves them.
+
+## How many more free accounts would help
+
+A task the Free accounts or CliMayte could have taken but found no account free for runs on a paid key, and its ledger
+line says which pool turned it away and why (`short_pool`, `short_why`). `GET /api/shortfall?days=1` on the console
+(`shortfall.py`) counts the turn-aways more accounts would have fixed (every Free account busy, paced or resting; every
+CliMayte account busy or at its ceiling), lists the rest apart (a `route_via_*_max` cap, signed-out accounts, a PC too
+busy to start a worker), and replays them against k more accounts of each kind: an account takes a task only when free
+at that moment, then stays busy for its kind's median time per task. `more` is the last k whose own account still takes
+5% of them, `would_take` what that many would have taken. AgentHydra reads it hourly and says "We would love 6 more Free
+ChatGPT accounts" at most once a day (`server/src/hswarm-shortfall.ts`); HSwarm's overview shows the same line.
+
+## Jobs ping their chat
+
+A `wait: false` job (or a `wait_s` that ran out) pings the chat that started it when it finishes, through AgentHydra: one line with the job id, state, counts, cost and `hswarm_results('<id>')`. There is no need to poll `hswarm_status` or build a watcher. A job whose result came back inside the call never pings.
+
+## One tool with CliMayte
+
+The owner's Claude subscription costs nothing extra, so an agentic task goes there first whenever CliMayte can start it
+now (owner, 2026-10-13: the free accounts first when available, then the cheapest API key quite certain to finish the
+job, paid keys last). Before the task runs, HSwarm reads AgentHydra's idle CliMayte accounts (`GET /api/corch/capacity`,
+at `AGENTHYDRA_URL`, default `http://127.0.0.1:7787`), less the workers queued there and the tasks it sent in the last
+2 s. A task may go when it has an absolute `cwd`, tools `read`, `edit` or `all`, no `writable` globs, receipts, scripted
+diff or runtime, and is not already inside a CliMayte worker (`AGENTHYDRA_CLIMAYTE_WORKER`). With an account free it
+runs as a CliMayte worker (kind `code` for edit/all, else `review` or `sweep`), polled every 10 s up to the task's
+`timeout_s`; the worker's report is the answer. With none free it runs on its API route at once and its
+`selection.route` says `no CliMayte account was idle`; it is never queued behind CliMayte. No answer within 2 s, any
+error, or a failed or cancelled worker keeps the API route (a failed worker falls back once). The ledger line of a
+served task says provider `climayte`.
+
+While a worker runs, the task's row in `hswarm_status` names it (`climayte:<model>`), and each new line of the worker's
+log or each rise in its output stamps the row's progress, so a working worker is never listed under `quiet_running`. A
+worker that is running but whose model gives no reply within `QUIET_TASK_S` (180 s) is a silent leg: it is cancelled
+and the task runs on its API route, with the worker named in `failover` (`failover_errors` kind `slow`) and
+`selection.route` giving `climayte_silent` and why. A worker that failed, was cancelled or never started is named in
+`failover` the same way, kind `unavailable`.
+
+A task whose own plan misses its bar (2026-10-09, `floor_miss`): its plan stepped down below its profile
+(`below_floor`) or has no live leg, or its pinned model has no key that can serve now. It goes to CliMayte, which meets
+the bar, waiting up to `route_via_climayte_start_s` for an account to come free when none is; its
+`selection.route` says `decided: subscription` and why. If CliMayte does not take it, it runs on its stepped-down plan,
+or errors (pointing at `climayte_run`) when no route can serve it at all. `hswarm_run` refuses up front only the tasks
+CliMayte could not take either.
+
+AgentHydra's routing switch (Hydra Desk 2's Routing page: AgentHydra pane, HSwarm tab, Routing, or
+`PUT /api/routing/settings`) is the main one; `route_via_climayte = false` in `settings.toml` (default on) is a local
+opt-out on this machine. Two more settings bound it: `route_via_climayte_max` (default unset: as many as are idle) caps
+the routed tasks running at once, and `route_via_climayte_start_s`
+(default 90) cancels a routed worker that has not started and falls back to the API. A CliMayte worker's own calls
+are never routed (header `x-hswarm-climayte-worker`). The plan prices behind the monthly cost figures are read from
+AgentHydra's Routing page when it answers (2 s timeout, cached a few minutes); the built-in list prices and
+`~/.hswarm/plan.json` are the offline fallback and the override.
+
+**A give-up steps up one level, once** (owner, 2026-10-13). When an auto task's API leg gives up (`FAILED:`, a turn
+budget spent with no answer, a reply that asks instead of answering, its last three tool calls all errors), the task
+goes one level up: an idle CliMayte account first, waiting up to `route_via_climayte_start_s` for one, for a task
+CliMayte takes (the worker is told a cheaper model tried, not what it said); else the cheapest leg of the task's own
+plan whose published score is above the leg that gave up, run with the failed trace behind the `UNTRUSTED_TRACE`
+guard. Never the same tier again, never more than once, never for a leg that could not serve (that is failover's) and
+never for a pinned model. Both runs' spend lands on the result; `escalation` and the ledger's `escalated` record it.
+A task that names its own `escalate` model keeps that path, which also banks a skill.
+
+## Isolation
+
+- All state is isolated under `HSWARM_HOME` (default `~/.hswarm`)
+- Console runs on port 7793 (`--port` or `HSWARM_PORT` to change)
+- All environment variables use the `HSWARM_*` prefix
+- Keys come from env vars or `HSWARM_HOME/secrets`; nothing is shared with any other install unless you pair a key vault (`hswarm vault`, above)
+
+## Worker safety
+
+These match ZSwarm (ported 2026-10-03; ideas from CopilotKit's OpenBot and OpenTag, MIT, no code copied).
+
+- **Key files never reach a worker.** Every path tool refuses `HSWARM_HOME/secrets`, `HSWARM_HOME/providers` and
+  any `.secrets` folder, and the walking tools skip them silently; the shell
+  policy refuses a command naming one of them or a `*_api_keys` / `*_api_key` file; and every tool result has any
+  token equal to a key this process holds replaced by `[hswarm key withheld]`, redaction on or off. No grant,
+  capability or preset lifts it (`tools.is_key_path`, `shellpolicy._secrets_access`, `redaction.scrub_keys`).
+- **A worker's search never stalls the run.** `list_dir`, `glob` and grep's hit filter run beside the event loop,
+  so task time limits and checkpoints keep firing while one walks. A walk never enters `node_modules`-style folders
+  or a folder link (a symlink or a Windows junction, which rg does not follow either), and it stops after a minute
+  with what it found and a line saying so, so no walk outlives its task and holds the process open (`walk.py`).
+- **A web fetch connects only to the address its check accepted.** `read_url` resolves a host and refuses a
+  private answer; the connection is then pinned to those addresses, so a name that answers differently the
+  second time (DNS rebinding to 127.0.0.1 or a cloud metadata address) is never reached (`web.PinnedBackend`).
+- **A web search sends only its query, and its results obey the same policy.** `web_search` (the `web` preset)
+  asks Tavily, then Jina, on the owner's keys through `ServiceClient`; a provider on the admin block list is not
+  asked, blocked or private results are dropped, results outside `web_hosts` are marked, and at most 8 short results
+  come back (`web._search`).
+- **A tool-free `cc` worker gets no built-in tools** (`--tools ""`, Read only when the task attaches files), with
+  the read-only denylist kept as a belt.
+- **Every worker and ask is told today's UTC date as authoritative**, right after the safety charter
+  (`guard.current_date_line`).
+
+## Routing and memory (ported 2026-10-03)
+
+- **AUTO may pick Claude Sonnet and Haiku 5.5; only Haiku 4.5 and older stay barred.** Those are rejected on every leg
+  (evaluated, sibling and backup) with the reason `family`; naming a model (`model=`) is the explicit override
+  (`selection.AUTO_BARRED_FAMILIES`). Haiku 5.5 (2026-10-07) is an ordinary candidate, ranked by its evidence like any
+  other. Artificial Analysis scored it in full the same day, so its index point is AA's rather than Anthropic's launch
+  scores, and its low, medium, high and xhigh effort levels have points of their own. It is a Claude Code (`cc`) leg
+  for tool work as well as a tool-free one, and CliMayte's scorecard also tries it first on every kind of task.
+- **A `cc` leg whose key cannot start a worker is listed unavailable and refused.** A headless Claude Code worker's first
+  turn is tens of thousands of input tokens (`config.CC_FIRST_TURN_TOKENS`, 40,000). `input_limit.py` records each key's
+  input-tokens-per-minute limit per model (Anthropic's header on native calls, or the 429 a cc worker dies of) for 3 days
+  in `HSWARM_HOME/input_limits.json`, keyed by fingerprint. A leg whose every live key is under that is kept out of the
+  candidates, named under `unavailable` with the reason, refused at submit, and shown in `hswarm_select`'s `input_limit`.
+- **`hswarm distill --live` triages its facts in the same run**, and `hswarm triage` saves each `keep` to the Connections
+  memory store as a tentative memory (a duplicate, trivial or rejected candidate never reaches it; an existing slug is left
+  alone). Nothing is staged on disk. `--dry-run` prints what would be saved. The memory kit checkout (its `global/` and
+  `repos/` indexes and `home/tools/memstore.py`) is `HSWARM_MEMORY_REPO`, default `~/claude-memory`.
+- `indexdiet` and the hooks module it fed are retired along with the memory index they served.
+
+## Model watch (owner, 2026-10-07)
+
+`model_watch.py` keeps routing current. Every chat provider with a key that still has credit is asked for its model
+list (one free GET, all in parallel; a provider that fails is recorded with its error and hides nothing else), and each
+id lands in `~/.hswarm/model-watch.json` with a standing. A provider whose keys are all spent is not scanned, so its
+table keeps the last scan's standings until a key is topped up; `model_watch.scan(["<provider>", ...])` scans named
+providers anyway (listing models costs no credit).
+
+- `routed`: a registered model or `rank:` route on that provider serves the id. A route whose `api_id` pins a host
+  (`model:host`, as the Hugging Face routes do) serves the bare model id too.
+- `benchmarked_unrouted`: the index (`data/published-models.json`) scores it and no route here does. Register the route with its sourced price.
+- `superseded` (reported, not stored): benchmarked and unrouted, but a route on the same provider serves a model of the
+  same maker released later that scores higher on the index, so it gets no route (owner, 2026-10-10). Artificial
+  Analysis's maker "Kimi" counts as Moonshot AI.
+- `unbenchmarked`: no index point. Source its published scores into the index.
+- `gone`: listed before, not now.
+
+`hswarm models --watch` scans and prints, per provider, counts first and then the ids: new, benchmarked but unrouted, and
+unbenchmarked. Each benchmarked model comes with its strengths, weaknesses and blended price (Artificial Analysis's 3:1
+input-to-output blend, USD per 1M tokens). An index point is a strength on a benchmark above the index's 75th percentile
+on it and a weakness below the 25th; a benchmark with fewer than four scores ranks nothing. `hswarm doctor` (and
+`hswarm_doctor`) carries one line from the stored file with the age of the last scan, no network. The MCP server rescans
+in the background at most once a day, never blocking a call. `hswarm_models` takes `refresh='watch'`.
+
+The standing instruction, also in `data/agent-instructions.md`: when the watch reports benchmarked-but-unrouted or
+unbenchmarked models, the agent working on HSwarm registers the route with its sourced price, or sources the model's
+published scores into the index, before other HSwarm work. Never a guessed score or price.
+
+`hswarm index add <slug>...` adds a model's point from Artificial Analysis. `hswarm index refresh` re-reads every point,
+and a point whose `source` is not AA (a vendor's launch scores, held until AA publishes the model) becomes AA's once AA
+scores the model in full; the command names each point it upgraded, and keeps a point AA does not yet score in full.
+
+**How a dead best route steps down.** When the best route is dead (no live key, an open breaker, or a leg that fails for a
+reason another leg cannot fix), dispatch walks the profile's remaining candidates in order, with the rescue legs of the
+lower profiles queued behind them, and the first that serves wins. Only when a profile has no route left does it step down
+one level (critical to code, code to general, general to routine, and routine stays tool-free), so a task ends on the
+cheapest model that is up rather than on a dead route.
+
+## Transcript scanners
+
+`hswarm savings` reads every Claude Code transcript on the machine. That scan exists three times with identical
+numbers: Python (the reference), Rust (`native/zscan-rs`) and Go (`native/zscan-go`).
+
+- `hswarm native build` compiles the arms whose toolchain is present (cargo, go; also found under `~/.cargo/bin` and
+  `~/go/bin` when not on PATH) into `native/bin/`, which git ignores.
+- `hswarm native bench` runs the arms interleaved on this machine's transcripts, refuses any arm whose numbers differ
+  from Python's, and writes the fastest to `HSWARM_HOME/native/winner.json`. The scan uses that winner from then on and
+  falls back to Python when its binary is missing. `HSWARM_SCANNER=python|rust|go` forces an arm.
+- `tests/test_native.py` and `tests/test_scanner_parity.py` check each built arm against Python (skipped when unbuilt).
+
+## Development
+
+For debugging, set environment variables:
+
+```bash
+# Enable signing in to the UI
+export HSWARM_UI_SIGN_IN=1
+
+# Set a custom config directory
+export HSWARM_HOME=/custom/path
+
+# Set console port
+export HSWARM_PORT=7793
+```
+
+Run the tests with `python -m pytest hswarm/tests -q` from the repository root. Tests that call real providers are
+marked `live` and skipped by default (`addopts` in `pyproject.toml`): on Windows a hung network call made
+pytest-timeout end the whole run. Run them with `-m live`; each call is bounded at 90 s.
+
+</details>

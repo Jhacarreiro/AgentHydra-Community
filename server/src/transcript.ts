@@ -1,0 +1,2380 @@
+import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
+import {
+  readFile as readFileAsync,
+  rename as renameAsync,
+  rm as rmAsync,
+  stat as statAsync,
+  writeFile as writeFileAsync,
+} from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
+import { extraRootsWithFormat } from './agent-catalog'
+import { CLAUDE_PROJECTS_ROOT, DATA_DIR, OPENCODE_DB_PATH, REMOTE_CHATS_DIR } from './config'
+import { codexInstanceStores } from './core/codex-instances'
+import { readCodexTail } from './core/codex-transcript-lineage'
+import { dshInstanceStores } from './core/dsh-instances'
+import { walkFolderTree } from './core/folder-tree'
+import { fsSlot } from './core/fs-slots'
+import { intern } from './core/intern'
+import { timeSlice } from './core/loop-yield'
+import { mapPool } from './core/map-pool'
+import { listDshSessions, readDshSession } from './dsh-sessions'
+import {
+  type ForeignSession,
+  listForeignSessions,
+  listForeignSessionsAsync,
+  readForeignSession,
+} from './foreign-sessions'
+import {
+  type HermesStore,
+  listHermesSessions,
+  listHermesStores,
+  readHermesSession,
+} from './hermes-sessions'
+import { hswarmHome } from './hswarm'
+import {
+  type HSwarmSessionRecord,
+  listHSwarmSessions,
+  listHSwarmSessionsAsync,
+  readHSwarmSession,
+} from './hswarm-sessions'
+import {
+  listOpenCodeSessions,
+  listOpenCodeSessionsAsync,
+  readOpenCodeSession,
+} from './opencode-sessions'
+import {
+  type ContinuationLink,
+  pruneContinuationHeadCache,
+  readContinuationLink,
+  resolveContinuations,
+  supersededSessions,
+} from './session-continuations'
+import { dedupeKey, makeLocator, matchesLocator, parseLocator } from './session-locator'
+import type { SessionSource, TailEvent, TailResult } from './types'
+
+// --- cwd folder-name encoding (forward only; reverse is lossy) --------------
+
+/** Mirror Claude Code's project-folder key: non [A-Za-z0-9_-] chars collapse to '-'. */
+export function encodeCwdKey(cwd: string): string {
+  return cwd.replace(/[\\/]+$/, '').replace(/[^A-Za-z0-9_-]/g, '-')
+}
+
+/** Best-effort reverse of a project folder name back to a path (only used if no cwd on events). */
+export function decodeProjectKey(key: string): string {
+  // e.g. "C--Projects-MyApp" -> "C:\Projects\MyApp" (heuristic)
+  const m = key.match(/^([A-Za-z])--(.*)$/)
+  if (m) return `${m[1]}:\\${m[2].replace(/-/g, '\\')}`
+  return key.replace(/-/g, '/')
+}
+
+// --- transcript file index (TTL-cached) -------------------------------------
+
+export interface TranscriptFile {
+  session_id: string
+  source: SessionSource
+  path: string
+  project: string
+  mtime_ms: number
+  size_bytes: number
+  archived: boolean
+  /** OpenCode already stores these as indexed columns, so metadata scans need not re-derive them. */
+  title?: string
+  cwd?: string
+  created_at?: number | null
+  /**
+   * The OTHER files carrying this same session id.
+   *
+   * In practice one case: a rollout briefly visible in both the live and archived roots while a move
+   * settles. Deliberately NOT the conversation's subagent rollouts — those replay a session-wide
+   * token counter, so treating them as extra files to add multiplied Codex spend by 53x before this
+   * was understood. A total must take the LARGEST of these, never their sum; see
+   * server/src/analytics.ts.
+   */
+  siblingPaths?: string[]
+  /**
+   * Which PRODUCT wrote this, as an agent-catalog.ts id.
+   *
+   * `source` is the FORMAT — which reader can parse the file — and several products share one.
+   * OpenClaude forked Claude Code and kept its JSONL, so its sessions are `source: 'claude'` and
+   * would otherwise be indistinguishable from Claude Code's on screen. This is the field that says
+   * which tool the user actually ran.
+   */
+  tool?: string
+  /**
+   * The session that spawned this one, when the store records a subagent as a session of its own.
+   *
+   * Set by the OpenCode reader, which is the only store that keeps its subagents as sibling rows in
+   * the same table rather than as nested files: Claude's are folded into the parent by
+   * {@link claudeParentId} and Codex's are dropped by `isSubagent` before they ever reach the index.
+   *
+   * A row carrying this stays in the index ON PURPOSE. It is a real session — its own messages, its
+   * own model, its own tokens (1.74M of them on this machine, a sixth of all OpenCode spend), and
+   * analytics reads it by id like any other, so dropping it here would delete that money from every
+   * total. It is filtered out one layer up, where the list of CONVERSATIONS is built.
+   */
+  parentId?: string | null
+  /**
+   * The session that CONTINUED this one, when a compaction moved the conversation into a new file.
+   *
+   * Claude Code does not keep writing to a transcript it has compacted: it opens a new file with a
+   * new session id and carries on, so one conversation becomes two, three, four transcripts that an
+   * index keyed on session id has no way to tell apart from separate chats. This is that link, and
+   * the session list uses it to show the conversation once. See server/src/session-continuations.ts.
+   *
+   * The row stays in the index. It is a real transcript holding real turns and real spend, and
+   * analytics reads it by id like any other; it is folded together only where CONVERSATIONS are
+   * listed, which is the same treatment subagents get.
+   */
+  supersededBy?: string
+  /**
+   * The opaque, versioned session-locator.ts identity for THIS row: `source` + product identity
+   * + physical store, never just source + session_id.
+   *
+   * `source` is a FORMAT and `session_id` alone is not unique across it — two OpenCode-format
+   * products (Kilo, MiMo Code) or two Hermes profiles can hold the same session id (audit AH-35).
+   * This is what every route, the done-mark key and the index's own de-dup now key on instead, so a
+   * caller that already knows which exact row it means (because it just listed it) can say so
+   * rather than falling back to the first match for `source` alone. Always set by finishIndex.
+   */
+  locator?: string
+  /**
+   * Which ACCOUNT's store this row was found in, when the store is split per account.
+   *
+   * Codex only, today, and it is the answer to "which Codex account was doing this" — the question
+   * AgentHydra exists to answer and could not, because the reader resolved one hardcoded
+   * CODEX_HOME and every managed instance's history was therefore not merely untagged but
+   * INVISIBLE (see codexInstanceStores in core/codex-instances.ts).
+   *
+   * Undefined for every other store, and for a catalog root (TraeX) that is a separate PRODUCT
+   * rather than a second account of this one — `tool` already says which product that is.
+   */
+  instance?: TranscriptInstance
+  /**
+   * Another PC's desktop chat, in the chat sync's viewer (REMOTE_CHATS_DIR). No Desktop record on
+   * this PC speaks for it: an archived copy an earlier sync landed here shares its session id, and
+   * must not make the other PC's live chat read as archived or as one of this PC's accounts.
+   */
+  remote?: true
+}
+
+/** The account that owns a per-account store, carried on every row it holds. */
+export interface TranscriptInstance {
+  /** `codex:<id>` — the ref instance-numbers.ts and usage-service.ts key on. */
+  ref: string
+  /** The permanent short handle (`#7`). 0 when the number registry could not be read. */
+  num: number
+  /** What the UI calls it. */
+  name: string
+}
+
+/**
+ * Does this row's own instance answer to `scope` — the `instance=` a caller typed?
+ *
+ * Accepts the same spellings core/instance-ref.ts does, minus the bare id: `7` / `#7` (the
+ * permanent number), `codex:<id>` (the explicit ref), or the instance's NAME, case-insensitively.
+ * The bare id is deliberately NOT matched, because the default Codex install's id is the literal
+ * string `default` and that already means the non-isolated CLAUDE install to this filter — one
+ * scope cannot mean two accounts.
+ *
+ * Shared by the session list and the body search so the two can never disagree about what
+ * `instance=` selected; a filter that silently answered "nothing" for a Codex account would
+ * recreate, one layer up, exactly the blind spot codexInstanceStores was written to close.
+ */
+export function instanceScopeMatches(tf: TranscriptFile, scope: string): boolean {
+  const inst = tf.instance
+  if (!inst) return false
+  const want = scope.trim()
+  if (!want) return false
+  if (want === inst.ref) return true
+  if (inst.num > 0 && (want === String(inst.num) || want === `#${inst.num}`)) return true
+  return want.toLowerCase() === inst.name.toLowerCase()
+}
+
+let cache: { at: number; files: TranscriptFile[]; seeded?: true } | null = null
+/**
+ * How long a snapshot is trusted before a background sweep is started.
+ *
+ * This has to be LONGER THAN A SWEEP TAKES, or the snapshot is already stale when it lands and the
+ * next request starts another one — the daemon then rebuilds forever. That is not hypothetical: at
+ * the old 2 s, against a store of ~23,000 transcripts where a sweep measures ~9 s, the index was
+ * being rebuilt continuously and each rebuild blocked the event loop, so `/api/health` — a route
+ * that reads nothing — answered in 6.6 s. Opening a chat took 16-23 s regardless of its size,
+ * because the wait was the queue, not the file.
+ *
+ * Two other things keep that from coming back: {@link finishIndex} stamps the snapshot when the
+ * sweep FINISHES (stamping the start is what made a 2 s window unsatisfiable), and background
+ * revalidation goes through {@link startIndexBuild}, which is async and never blocks a request.
+ *
+ * There is a ceiling as well as a floor, and it is the web app's 12 s session-list poll. Set this
+ * ABOVE that interval and the poll which notices the snapshot is stale lands only every OTHER tick,
+ * so a new or renamed session waits two full cycles to appear rather than one. Ten seconds sits
+ * between the two bounds: ~10x a warm sweep, and just under the poll that consumes it.
+ */
+const TTL_MS = 10_000
+
+export interface CodexRolloutIdentity {
+  sessionId: string
+  isSubagent: boolean
+}
+
+/**
+ * Codex writes one rollout per execution thread, including every spawned subagent. The filename
+ * suffix and payload.id identify that rollout, while payload.session_id identifies the user-owned
+ * chat all of those threads belong to. Only the top-level rollout is the conversation shown by
+ * Codex itself; indexing child rollouts produces dozens of overlapping rows with the same title.
+ */
+export function codexRolloutIdentity(event: unknown, fallbackId: string): CodexRolloutIdentity {
+  const payload =
+    event &&
+    typeof event === 'object' &&
+    (event as any).type === 'session_meta' &&
+    (event as any).payload &&
+    typeof (event as any).payload === 'object'
+      ? (event as any).payload
+      : null
+  const sessionId =
+    typeof payload?.session_id === 'string' && payload.session_id.trim()
+      ? payload.session_id.trim()
+      : fallbackId
+  const isSubagent =
+    payload?.thread_source === 'subagent' ||
+    !!(payload?.source && typeof payload.source === 'object' && payload.source.subagent)
+  return { sessionId, isSubagent }
+}
+
+const codexIdentityCache = new Map<string, CodexRolloutIdentity>()
+
+export interface CodexSessionIndexEntry {
+  title: string
+  updatedAt: number | null
+}
+
+/** Parse Codex Desktop's append-style sidebar index. Later rows win when a title is regenerated or
+ * renamed, while malformed/incomplete rows are ignored so an active write cannot break browsing. */
+export function parseCodexSessionIndex(text: string): Map<string, CodexSessionIndexEntry> {
+  const entries = new Map<string, CodexSessionIndexEntry>()
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let row: any
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (typeof row?.id !== 'string' || typeof row?.thread_name !== 'string') continue
+    const id = row.id.trim()
+    const title = row.thread_name.trim()
+    if (!id || !title) continue
+    const timestamp = typeof row.updated_at === 'string' ? Date.parse(row.updated_at) : Number.NaN
+    entries.set(id, {
+      title,
+      updatedAt: Number.isNaN(timestamp) ? null : timestamp,
+    })
+  }
+  return entries
+}
+
+/** Keyed by index PATH, because every CODEX_HOME keeps its own sidebar index: a managed instance's
+ *  titles live in its own `session_index.jsonl` and one shared cache slot would hand the default
+ *  install's titles to every other account's rollouts. */
+const codexSessionIndexCache = new Map<
+  string,
+  {
+    mtimeMs: number
+    size: number
+    entries: Map<string, CodexSessionIndexEntry>
+  }
+>()
+
+/** The caller always names the store, because there is no longer one Codex home to default to. */
+function readCodexSessionIndex(path: string): Map<string, CodexSessionIndexEntry> {
+  try {
+    const stat = statSync(path)
+    const cached = codexSessionIndexCache.get(path)
+    if (cached?.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.entries
+    const entries = parseCodexSessionIndex(readFileSync(path, 'utf8'))
+    codexSessionIndexCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, entries })
+    return entries
+  } catch {
+    return new Map()
+  }
+}
+
+/** Read only the first JSONL record. Session metadata can be tens of KB because it includes base
+ * instructions, while the rollout itself can be many MB; loading the whole file here would make
+ * every session-list refresh unnecessarily expensive. */
+function readCodexRolloutIdentity(path: string, fallbackId: string): CodexRolloutIdentity {
+  const cached = codexIdentityCache.get(path)
+  if (cached) return cached
+
+  const chunks: Buffer[] = []
+  const chunk = Buffer.allocUnsafe(64 * 1024)
+  let total = 0
+  let fd: number | null = null
+  try {
+    fd = openSync(path, 'r')
+    while (total < 1024 * 1024) {
+      const read = readSync(fd, chunk, 0, chunk.length, null)
+      if (read === 0) break
+      const newline = chunk.subarray(0, read).indexOf(0x0a)
+      if (newline >= 0) {
+        chunks.push(Buffer.from(chunk.subarray(0, newline)))
+        break
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, read)))
+      total += read
+    }
+  } catch {
+    // Active rollouts can move to the archive between discovery and this read.
+    return { sessionId: fallbackId, isSubagent: false }
+  } finally {
+    if (fd !== null) closeSync(fd)
+  }
+
+  let event: unknown = null
+  try {
+    event = JSON.parse(Buffer.concat(chunks).toString('utf8').trim())
+  } catch {
+    // A just-created or legacy malformed rollout still remains discoverable by its filename.
+  }
+  const identity = codexRolloutIdentity(event, fallbackId)
+  // Do not pin a failed/incomplete first-line read forever; the next index refresh may see it after
+  // Codex has finished writing the session_meta record.
+  if (event) codexIdentityCache.set(path, identity)
+  return identity
+}
+
+/**
+ * Async twin of {@link readCodexRolloutIdentity}, for the non-blocking index build.
+ *
+ * Same contract and the same shared cache; the only difference is that it never holds the event
+ * loop. The 64 KiB first slice is the overwhelmingly common case (a session_meta record is a few
+ * KB); the 1 MiB retry matches the sync reader's ceiling for a pathological single-line head.
+ */
+async function readCodexRolloutIdentityAsync(
+  path: string,
+  fallbackId: string,
+): Promise<CodexRolloutIdentity> {
+  const cached = codexIdentityCache.get(path)
+  if (cached) return cached
+
+  let head = ''
+  try {
+    const file = Bun.file(path)
+    head = await file.slice(0, 64 * 1024).text()
+    if (!head.includes('\n') && file.size > 64 * 1024)
+      head = await file.slice(0, 1024 * 1024).text()
+  } catch {
+    // Active rollouts can move to the archive between discovery and this read.
+    return { sessionId: fallbackId, isSubagent: false }
+  }
+
+  const newline = head.indexOf('\n')
+  let event: unknown = null
+  try {
+    event = JSON.parse((newline >= 0 ? head.slice(0, newline) : head).trim())
+  } catch {
+    // A just-created or legacy malformed rollout still remains discoverable by its filename.
+  }
+  const identity = codexRolloutIdentity(event, fallbackId)
+  if (event) codexIdentityCache.set(path, identity)
+  return identity
+}
+
+/**
+ * The one in-flight sweep, shared by every path that can start one.
+ *
+ * ONE guard, not two. The sync and async builders used to keep separate ones (`refreshing` here and
+ * `indexBuild` down by ensureTranscriptIndex), which did not see each other — so a background
+ * revalidate and a request-driven build could sweep the same store at the same time, each paying
+ * the other's cost on top of its own.
+ */
+let indexBuild: Promise<TranscriptFile[]> | null = null
+
+/**
+ * Start a sweep unless one is already running, and hand back whichever is now in flight.
+ *
+ * Never rejects: a sweep that fails leaves the previous snapshot in place and the next caller tries
+ * again, which is the same bargain the old catch made.
+ */
+function startIndexBuild(): Promise<TranscriptFile[]> {
+  if (!indexBuild) {
+    indexBuild = buildTranscriptIndexAsync()
+      .catch(() => cache?.files ?? [])
+      .finally(() => {
+        indexBuild = null
+      })
+  }
+  return indexBuild
+}
+
+let freshBuild: Promise<TranscriptFile[]> | null = null
+
+/**
+ * A sweep guaranteed to have STARTED after this call, for a caller that needs to know what is on
+ * disk right now.
+ *
+ * {@link startIndexBuild} cannot answer that. It coalesces onto whatever is already running, which
+ * is exactly right for "the snapshot is getting old" and exactly WRONG for a miss: a sweep that
+ * began before the transcript was written enumerated a filesystem the new file was not in, so
+ * joining it returns the same miss and then stamps the snapshot fresh for another full TTL. A
+ * just-dispatched run would read as "transcript not found" long past the one sweep the miss path is
+ * meant to cost.
+ *
+ * So this WAITS OUT any in-flight sweep and then starts its own. Concurrent callers still share one
+ * — the point is that the sweep began after they asked, not that each gets a private one.
+ */
+function startFreshIndexBuild(): Promise<TranscriptFile[]> {
+  if (freshBuild) return freshBuild
+  const running = indexBuild
+  freshBuild = (running ? running.then(noop, noop) : Promise.resolve())
+    .then(() => startIndexBuild())
+    .finally(() => {
+      freshBuild = null
+    })
+  return freshBuild
+}
+
+function noop(): void {}
+
+/**
+ * The store's file index: every transcript's id, mtime and size.
+ *
+ * Served stale-while-revalidate, because building it is the one cost in this app that scales with
+ * how much history you have KEPT rather than with what you asked to see: it globs the whole store
+ * and stats every file (measured: 145 ms warm / 414 ms cold for 1,255 transcripts, and ~9 s at
+ * 23,000). Paying that inside a request put a folder-sized tax on every poll. Callers now get the
+ * last snapshot immediately and a fresh sweep runs just after, so request latency tracks the number
+ * of rows asked for, not the size of ~/.claude.
+ *
+ * `force` is for the two callers that cannot tolerate a stale answer — looking up a session that
+ * ISN'T in the snapshot, which is exactly what a just-created transcript looks like.
+ */
+export function listTranscriptFiles(force = false): TranscriptFile[] {
+  const now = performance.now()
+  if (!force && cache) {
+    // The ASYNC builder, and this is the whole point. Revalidating through the SYNC one — which is
+    // what the setTimeout here used to do — held the event loop for the entire sweep, so the
+    // "background" refresh was really a full stop for every request in flight. Measured: an
+    // /api/health that reads nothing answered in 6.6 s while one of these ran.
+    if (cache.seeded || now - cache.at >= TTL_MS) void startIndexBuild()
+    return cache.files
+  }
+  return coldIndexFallback()
+}
+
+let syncIndexBuildAllowed = true
+/** The daemon calls this once at boot. A cold-cache sync build is 25-54 s of the event loop on a big
+ *  store, so with it off a sync caller that finds no snapshot gets an empty list ("nothing yet")
+ *  while the async build starts. Scripts and tests keep the default: the one-shot sync build. */
+export function forbidSyncIndexBuild(): void {
+  syncIndexBuildAllowed = false
+  void seedIndexFromSnapshot()
+}
+
+function coldIndexFallback(): TranscriptFile[] {
+  if (syncIndexBuildAllowed) return buildTranscriptIndex()
+  void startIndexBuild().catch(noop)
+  return []
+}
+
+let lastMissSweepAt = Number.NEGATIVE_INFINITY
+
+/**
+ * How long after one miss-driven sweep before another may start.
+ *
+ * Separate from TTL_MS on purpose. This throttle exists for the id that will NEVER be found — a
+ * deleted transcript the UI is still polling every 4 s — and its job is to stop that poll buying a
+ * sweep apiece. It is deliberately shorter than TTL_MS because the sweep it gates is now async and
+ * coalesced, so the cost of being wrong is CPU rather than a frozen daemon.
+ */
+const MISS_SWEEP_MS = 5_000
+
+/** Whether a fresh miss-driven sweep is allowed to start, recording the decision when it is. */
+function claimMissSweep(): boolean {
+  const now = performance.now()
+  if (cache && now - lastMissSweepAt < MISS_SWEEP_MS) return false
+  lastMissSweepAt = now
+  return true
+}
+
+/**
+ * The index as seen after a miss, for a SYNCHRONOUS caller.
+ *
+ * It does NOT sweep. It cannot: the only sweep available to a sync function is the blocking one,
+ * and this is the path a poll for a not-yet-indexed session takes every few seconds — which is how
+ * the daemon used to freeze for the length of a whole-store scan several times a minute. So it
+ * starts an async sweep and answers from the snapshot it has. A caller that genuinely needs the
+ * just-created transcript in THIS call should be async and use {@link findTranscriptAsync}, which
+ * can wait for that sweep without stopping the loop for everyone else.
+ */
+export function listTranscriptFilesAfterMiss(): TranscriptFile[] {
+  if (claimMissSweep()) void startFreshIndexBuild()
+  return cache?.files ?? coldIndexFallback()
+}
+
+/**
+ * The index as seen after a miss, for a caller that can wait — and every caller that can, should.
+ *
+ * This is the honest version of the contract the sync one used to claim: a transcript created
+ * moments ago really is worth re-globbing the store for, and awaiting the async builder gets that
+ * answer without holding the event loop while it happens.
+ *
+ * A sweep ALREADY UNDER WAY is joined whether or not the throttle would allow a new one. It costs
+ * nothing to await something that is running regardless, and refusing would answer "not found" for
+ * a session the sweep two milliseconds from finishing is about to reveal. The throttle exists to
+ * stop a poll for a session that will never exist from STARTING sweeps, which is a different thing.
+ */
+async function ensureTranscriptIndexAfterMiss(): Promise<TranscriptFile[]> {
+  if (freshBuild) return freshBuild
+  if (!claimMissSweep()) return cache?.files ?? []
+  return startFreshIndexBuild()
+}
+
+/**
+ * Every transcript root is created lazily by the CLI that owns it, so on a machine that has never
+ * run Claude (or Codex, or archived a rollout) the folder simply is not there — and `scanSync`
+ * answers a missing root by THROWING ENOENT rather than yielding nothing. An absent store is not an
+ * error, it is an empty one.
+ *
+ * This is load-bearing, not defensive dressing: the index is warmed at startup from an unawaited
+ * call, so the throw surfaced as an unhandled rejection and killed the daemon before it could serve
+ * /api/health. A fresh install saw a process that exited instead of an empty Sessions list. The
+ * release smoke job caught it on all three OSes; nothing on a developer machine can, because every
+ * developer machine has the folders.
+ *
+ * Materialized inside the try because the iterator throws lazily: the ENOENT arrives on first
+ * advance, not at the scanSync call, so wrapping only the call would catch nothing.
+ */
+function scanRootSync(glob: Bun.Glob, cwd: string): string[] {
+  try {
+    // `dot: true` because a real store hides transcripts behind a dot directory: Cowork's sandbox
+    // keeps the run's own Claude Code home at `local_<id>/.claude/projects/...`, and the default
+    // scan silently skipped every one of them. Found by the store audit, not by reading this line.
+    return [...glob.scanSync({ cwd, onlyFiles: true, dot: true })]
+  } catch {
+    return []
+  }
+}
+
+/** A `**` + name-pattern glob (`**\/*.jsonl`, `**\/rollout-*.jsonl`) as a plain name test, so the
+ *  walk below does not run the glob engine on every one of 60,000 entries; anything else keeps
+ *  the glob's own matcher. */
+function nameMatcher(pattern: string): (rel: string, name: string) => boolean {
+  const m = /^\*\*\/([^*/{}?[\]]*)\*([^*/{}?[\]]*)$/.exec(pattern)
+  if (m) {
+    const head = m[1] as string
+    const tail = m[2] as string
+    return (_rel, name) =>
+      name.length >= head.length + tail.length && name.startsWith(head) && name.endsWith(tail)
+  }
+  const glob = new Bun.Glob(pattern)
+  return (rel) => glob.match(rel)
+}
+
+/** A pattern {@link scanRootAsync} does not walk, scanned whole by the glob engine. */
+async function scanRootGlobAsync(pattern: string, cwd: string): Promise<string[]> {
+  const out: string[] = []
+  try {
+    // See scanRootSync: a dot directory can hold real transcripts.
+    for await (const rel of new Bun.Glob(pattern).scan({ cwd, onlyFiles: true, dot: true }))
+      out.push(rel)
+  } catch {
+    // A missing root is an empty one.
+  }
+  return out
+}
+
+/** Async twin of {@link scanRootSync}, with the same "a missing root is an empty one" contract.
+ *
+ *  A single Bun glob scan held the loop ~270 ms on a 60,000-file Claude store, and scanning one
+ *  folder at a time still did on a folder of 28,000 subagent files. So a `**` pattern is matched
+ *  over the shared folder tree (core/folder-tree.ts), which is walked a level at a time with pooled
+ *  calls and lists again only the folders whose mtime moved; the kit's Claude ingest reads the same
+ *  tree. A pattern that does not start with `**` is scanned whole, as before. */
+async function scanRootAsync(pattern: string, cwd: string): Promise<string[]> {
+  if (!pattern.startsWith('**/')) return scanRootGlobAsync(pattern, cwd)
+  const out: string[] = []
+  const matches = nameMatcher(pattern)
+  for (const folder of (await walkFolderTree(cwd)).values())
+    for (const name of folder.files) {
+      const rel = folder.rel ? `${folder.rel}/${name}` : name
+      if (matches(rel, name)) out.push(rel)
+    }
+  return out
+}
+
+/**
+ * Every JSONL under a Claude store, not just the top level.
+ *
+ * WHY IT IS NOT ONE LEVEL DEEP ANY MORE. A Task-tool subagent gets its OWN transcript, at
+ * `<project>/<parent-session>/subagents/agent-<id>.jsonl` (one level deeper again for workflows),
+ * carrying its parent's session id and its own `usage` blocks. Those are separate API calls and
+ * separate money. Measured on this machine: 1,229 top-level transcripts hold 64.5 BILLION tokens
+ * and 16,552 subagent transcripts hold another 89.8 billion, so the old glob was showing 42% of
+ * real Claude spend and calling it the total.
+ *
+ * They are still not session ROWS — a subagent is an implementation detail of the turn that spawned
+ * it, and listing thousands of them would bury the conversations. They attach to their parent as
+ * siblings, which only a total ever reads. See claudeParentId.
+ */
+const CLAUDE_TRANSCRIPT_GLOB = '**/*.jsonl'
+const CODEX_ROLLOUT_GLOB = '**/rollout-*.jsonl'
+/** How many files the async build stats/reads at once. Wide enough to keep the disk busy, bounded
+ *  so a huge store cannot open thousands of handles at once. */
+const INDEX_SCAN_WIDTH = 6
+
+/**
+ * The last stat of every Claude transcript, so a sweep re-stats only what can have moved. Measured
+ * 2026-09-29: one sweep stat'ed all 4,910 transcripts on this machine, ~10 CPU-s across the fs
+ * thread pool (8-10 cores for about a second) every time the 10 s TTL lapsed - each web-UI sessions
+ * poll, and the five-minute title sweep when nothing else was asking. A transcript is appended only
+ * while its session runs, so one quiet for COLD_AFTER_MS is trusted between full re-stats, which
+ * still run every COLD_RESTAT_MS; a new transcript appears at once, because the glob runs every sweep.
+ * Ten minutes, not one: an idle daemon's only sweep is the five-minute title sweep, so a one-minute
+ * window made every sweep a full re-stat (measured the same day, a 2.4-2.8 core burst per sweep). A
+ * continued or compacted chat writes a NEW transcript, so what waits up to ten minutes is only a
+ * chat reopened after an hour of quiet moving up the list.
+ */
+const COLD_AFTER_MS = 60 * 60_000
+const COLD_RESTAT_MS = 10 * 60_000
+const claudeStatCache = new Map<string, { mtimeMs: number; size: number }>()
+let lastFullClaudeStatAt = 0
+
+/** Tests: forget every remembered stat, so the next sweep stats the store whole. */
+export function resetClaudeStatCache(): void {
+  claudeStatCache.clear()
+  lastFullClaudeStatAt = 0
+}
+
+/** One claude-format store to scan: where it is, how its files are laid out, and whose it is. */
+interface ClaudeStore {
+  root: string
+  tool: string
+  glob: string
+  idFrom: 'basename' | 'parent-dir'
+  idPrefix: string
+  /** When set, only this filename is a session; everything else attaches to the nearest ancestor
+   *  directory whose name starts with idPrefix. See AgentTool.sessionFile. */
+  sessionFile: string
+  /** The chat sync's viewer of other PCs' chats: its rows carry `remote`. */
+  remote?: true
+}
+
+/** `<project>/<session-id>.jsonl` — Claude Code's own layout, and every fork's. */
+const CLAUDE_STORE_DEFAULTS = {
+  glob: CLAUDE_TRANSCRIPT_GLOB,
+  idFrom: 'basename' as const,
+  idPrefix: '',
+  sessionFile: '',
+}
+
+/**
+ * The session id in a matched path.
+ *
+ * Two rules because two layouts exist. Claude Code names the FILE after the session, so the
+ * basename is the id. Cowork writes every run to a fixed `audit.jsonl` inside a directory named
+ * after the session, so the id is that directory — reading the basename there would give every
+ * Cowork session the id "audit" and collapse the whole store into one row.
+ */
+function claudeSessionId(rel: string, store: ClaudeStore): string {
+  const parts = rel.split(/[\\/]/)
+  const raw =
+    store.idFrom === 'parent-dir'
+      ? (parts[parts.length - 2] ?? '')
+      : (parts[parts.length - 1] ?? '').replace(/\.jsonl$/, '')
+  return store.idPrefix && raw.startsWith(store.idPrefix) ? raw.slice(store.idPrefix.length) : raw
+}
+
+/**
+ * The session a nested transcript belongs to, or null when the path IS a session's own transcript.
+ *
+ * Claude Code nests a subagent under the session that spawned it, so the parent id is simply the
+ * directory below the project. Returning null for a two-segment path is what keeps a real session a
+ * row rather than a sibling of itself.
+ */
+export function claudeParentId(rel: string, store: ClaudeStore): string | null {
+  const parts = rel.split(/[\\/]/)
+  const name = parts[parts.length - 1] ?? ''
+
+  // A store that NAMES its session file (Cowork) decides by name, not by depth: its runs sit at
+  // several depths, and each run directory also contains a whole Claude Code home of its own —
+  // the CLI's transcript and that session's subagents/ tree, which are the same run's spend.
+  if (store.sessionFile) {
+    const owner = lastIndexStartingWith(parts, store.idPrefix)
+    if (owner < 0) return null
+    // The session file, directly inside the run's own directory, IS the session.
+    if (name === store.sessionFile && owner === parts.length - 2) return null
+    const raw = parts[owner] as string
+    return raw.startsWith(store.idPrefix) ? raw.slice(store.idPrefix.length) : raw
+  }
+
+  // `<project>/<session>.jsonl` is a session; anything deeper is a subagent of parts[1].
+  if (parts.length <= 2) return null
+  return parts[1] ?? null
+}
+
+/** Index of the last path segment beginning with `prefix`, or -1. An empty prefix matches nothing,
+ *  which is what keeps this out of the default layout's way. */
+function lastIndexStartingWith(parts: string[], prefix: string): number {
+  if (!prefix) return -1
+  for (let i = parts.length - 1; i >= 0; i--) if ((parts[i] ?? '').startsWith(prefix)) return i
+  return -1
+}
+
+function claudeRecord(rel: string, mtimeMs: number, sizeBytes: number, store: ClaudeStore) {
+  return {
+    session_id: claudeSessionId(rel, store),
+    source: 'claude' as const,
+    path: join(store.root, rel),
+    project: rel.split(/[\\/]/)[0] ?? store.tool,
+    mtime_ms: mtimeMs,
+    size_bytes: sizeBytes,
+    archived: false,
+    tool: store.tool,
+    ...(store.remote ? { remote: true as const } : {}),
+  }
+}
+
+/**
+ * A nested transcript whose owning session does not exist becomes a session itself.
+ *
+ * Found by the store audit rather than by reasoning: some Cowork runs write the sandbox's own
+ * Claude Code transcript but never an `audit.jsonl`, so attaching their files to an owner that is
+ * not there would drop the run entirely. Nothing may be silently unowned — either it belongs to a
+ * session or it IS one.
+ */
+function promoteOrphans(
+  files: TranscriptFile[],
+  children: Map<string, string[]>,
+  pending: Array<{
+    parentId: string
+    rel: string
+    store: ClaudeStore
+    mtimeMs: number
+    size: number
+  }>,
+): void {
+  const known = new Set(files.map((f) => f.session_id))
+  for (const c of pending) promoteOrphan(known, files, children, c)
+}
+
+type PendingChild = Parameters<typeof promoteOrphans>[2][number]
+
+function promoteOrphan(
+  known: Set<string>,
+  files: TranscriptFile[],
+  children: Map<string, string[]>,
+  c: PendingChild,
+): void {
+  if (known.has(c.parentId)) {
+    rememberChild(children, c.parentId, join(c.store.root, c.rel))
+    return
+  }
+  const orphan = { ...c.store, idFrom: 'basename' as const, idPrefix: '' }
+  files.push(claudeRecord(c.rel, c.mtimeMs, c.size, orphan))
+}
+
+/** {@link promoteOrphans} for the async build: tens of thousands of subagent files, so it hands the
+ *  loop back by the clock between them. */
+async function promoteOrphansAsync(
+  files: TranscriptFile[],
+  children: Map<string, string[]>,
+  pending: PendingChild[],
+): Promise<void> {
+  const known = new Set(files.map((f) => f.session_id))
+  const slice = timeSlice()
+  for (const c of pending) {
+    promoteOrphan(known, files, children, c)
+    if (slice.due()) await slice.pause()
+  }
+}
+
+/** Every claude-format store on this machine: Claude Code's own, the chat sync's viewer of other
+ *  PCs' chats, then the catalog's. */
+function claudeStores(): ClaudeStore[] {
+  const stores: ClaudeStore[] = [
+    { root: CLAUDE_PROJECTS_ROOT, tool: 'claude-code', ...CLAUDE_STORE_DEFAULTS },
+    { root: REMOTE_CHATS_DIR, tool: 'claude-code', ...CLAUDE_STORE_DEFAULTS, remote: true },
+  ]
+  for (const r of extraRootsWithFormat('claude')) {
+    stores.push({
+      root: r.root,
+      tool: r.tool.id,
+      glob: r.tool.glob ?? CLAUDE_STORE_DEFAULTS.glob,
+      idFrom: r.tool.idFrom ?? CLAUDE_STORE_DEFAULTS.idFrom,
+      idPrefix: r.tool.idPrefix ?? CLAUDE_STORE_DEFAULTS.idPrefix,
+      sessionFile: r.tool.sessionFile ?? CLAUDE_STORE_DEFAULTS.sessionFile,
+    })
+  }
+  return stores
+}
+
+/** The rollout uuid embedded in the filename — the identity fallback when the first record does
+ *  not parse (a rollout still being written, or a legacy shape). */
+function codexFallbackId(rel: string): string {
+  const name = basename(rel).replace(/\.jsonl$/, '')
+  return name.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i)?.[1] ?? name
+}
+
+/** One codex-format directory to scan: where it is, whether it is the archive half, whose account
+ *  it belongs to, and which sidebar index carries its titles. */
+interface CodexStoreRoot {
+  root: string
+  archived: boolean
+  /** The agent-catalog product id. 'codex' for every instance of Codex itself; a fork (TraeX) that
+   *  merely shares the rollout format brings its own. */
+  tool: string
+  /** That store's own `session_index.jsonl`. Every codex-format home keeps one beside its
+   *  `sessions/`; a fork that does not simply has no titles to offer, which reads as a miss. */
+  indexPath: string
+  /** The Codex account this store belongs to, or null for a fork that is a separate product. */
+  instance: TranscriptInstance | null
+}
+
+/**
+ * Every codex-format directory on this machine, the DEFAULT install's first.
+ *
+ * This is the fix for the finding this function exists because of: the two roots here used to be
+ * the two CODEX_HOME constants and nothing else, so a managed Codex instance's `sessions/` — where
+ * every chat on that account lives — was never globbed at all, and list/search/tail agreed that
+ * those conversations did not exist. Roots now come from the instance registry (which
+ * `list_codex_instances` already reads), so adding an account adds its history.
+ *
+ * Each instance contributes BOTH halves of its own store, and they keep one `tool` id on purpose:
+ * `storeKeyOf` (session-locator.ts) treats a tool's live and archived roots as one family, which is
+ * what lets a rollout mid-move between them stay a single row.
+ */
+function codexStoreRoots(): CodexStoreRoot[] {
+  const roots: CodexStoreRoot[] = []
+  for (const store of codexInstanceStores()) {
+    const instance: TranscriptInstance = { ref: store.ref, num: store.num, name: store.name }
+    const indexPath = join(store.codexHome, 'session_index.jsonl')
+    roots.push({
+      root: join(store.codexHome, 'sessions'),
+      archived: false,
+      tool: 'codex',
+      indexPath,
+      instance,
+    })
+    roots.push({
+      root: join(store.codexHome, 'archived_sessions'),
+      archived: true,
+      tool: 'codex',
+      indexPath,
+      instance,
+    })
+  }
+  // The catalog's OTHER codex-format products (TraeX and anything that follows it). Not accounts of
+  // ours and not instances — a different program that kept the rollout format. Its sidebar is
+  // looked for in ITS home (the parent of the roots the catalog names), never in Codex's: reading
+  // one product's titles out of another's index is how a fork ends up wearing someone else's
+  // chat names.
+  for (const r of extraRootsWithFormat('codex'))
+    roots.push({
+      root: r.root,
+      archived: r.archived,
+      tool: r.tool.id,
+      indexPath: join(dirname(r.root), 'session_index.jsonl'),
+      instance: null,
+    })
+  return roots
+}
+
+function codexRecord(
+  store: CodexStoreRoot,
+  rel: string,
+  mtimeMs: number,
+  sizeBytes: number,
+  identity: CodexRolloutIdentity,
+  indexed: CodexSessionIndexEntry | undefined,
+): TranscriptFile {
+  const { root, archived, tool } = store
+  return {
+    session_id: identity.sessionId,
+    source: 'codex',
+    path: join(root, rel),
+    project: tool,
+    mtime_ms: Math.max(mtimeMs, indexed?.updatedAt ?? 0),
+    size_bytes: sizeBytes,
+    archived,
+    title: indexed?.title,
+    ...(store.instance ? { instance: store.instance } : {}),
+    tool,
+  }
+}
+
+function openCodeRecords(dbPath: string = OPENCODE_DB_PATH, tool = 'opencode'): TranscriptFile[] {
+  return openCodeRowsOf(listOpenCodeSessions(dbPath), dbPath, tool)
+}
+
+async function openCodeRecordsAsync(
+  dbPath: string = OPENCODE_DB_PATH,
+  tool = 'opencode',
+): Promise<TranscriptFile[]> {
+  return openCodeRowsOf(await listOpenCodeSessionsAsync(dbPath), dbPath, tool)
+}
+
+function openCodeRowsOf(
+  sessions: ReturnType<typeof listOpenCodeSessions>,
+  dbPath: string,
+  tool: string,
+): TranscriptFile[] {
+  return sessions.map((session) => ({
+    session_id: session.session_id,
+    source: 'opencode' as const,
+    path: dbPath,
+    project: session.project,
+    mtime_ms: session.last_activity_at,
+    size_bytes: session.size_bytes,
+    archived: session.archived,
+    title: session.title,
+    cwd: session.cwd,
+    created_at: session.created_at,
+    parentId: session.parent_id,
+    tool,
+  }))
+}
+
+/** One Hermes store's sessions, as index rows. `store.profile` is carried through as `project` and
+ *  as the `tool` catalog id stays `hermes` regardless of profile — a profile is a second database,
+ *  not a second product. */
+function hermesRecords(store: HermesStore, tool = 'hermes'): TranscriptFile[] {
+  return listHermesSessions(store.dbPath, store.profile).map((session) => ({
+    session_id: session.session_id,
+    source: 'hermes' as const,
+    path: store.dbPath,
+    project: session.project,
+    mtime_ms: session.last_activity_at,
+    size_bytes: session.size_bytes,
+    archived: session.archived,
+    title: session.title,
+    cwd: session.cwd,
+    created_at: session.created_at,
+    parentId: session.parent_id,
+    tool,
+  }))
+}
+
+/** One DeepSeek Harness home's sessions, as index rows.
+ *
+ *  Unlike the two database stores above, `path` is the SESSION's own log rather than the store: DSH
+ *  writes a file per session, so every row already names the exact bytes to read and nothing
+ *  downstream has to carry a store path plus an id to find a conversation again. */
+function dshRecords(root: string, tool = 'deepseek-harness'): TranscriptFile[] {
+  return listDshSessions(root).map((session) => ({
+    session_id: session.session_id,
+    source: 'dsh' as const,
+    path: session.path,
+    project: session.project,
+    mtime_ms: session.last_activity_at,
+    size_bytes: session.size_bytes,
+    archived: session.archived,
+    title: session.title,
+    cwd: session.cwd,
+    created_at: session.created_at,
+    tool,
+  }))
+}
+
+/** HSwarm's jobs (ZSwarm's too, imported into HSwarm's home when ZSwarm retired, 2026-10-03), as
+ *  index rows. The source AND the tool stay `'zswarm'`: the source is a frozen MCP API value, and
+ *  the tool is half of every job's identity (the done-mark key `zswarm:<id>` in session_marks, the
+ *  locator, the search index's docKey), so renaming it would orphan the marks people already set
+ *  (2026-10-03). Only what a person reads says HSwarm, agent-catalog.ts's row name among it.
+ *
+ *  Unlike dshRecords above, there is only ONE root: HSwarm is not a login product with a home per
+ *  account, so its home (hswarmHome()) is read directly here the same way OPENCODE_DB_PATH is,
+ *  rather than through an instance-store list. `path` is the job's own job.json, so - same as DSH -
+ *  every row already names the exact bytes to read. */
+function hswarmRow(session: HSwarmSessionRecord): TranscriptFile {
+  return {
+    session_id: session.session_id,
+    source: 'zswarm' as const,
+    path: session.path,
+    project: session.project,
+    mtime_ms: session.last_activity_at,
+    size_bytes: session.size_bytes,
+    archived: session.archived,
+    title: session.title,
+    cwd: session.cwd,
+    created_at: session.created_at,
+    // An identity key, never a display name; see the docstring above.
+    tool: 'zswarm',
+  }
+}
+
+function hswarmRecords(root: string = hswarmHome()): TranscriptFile[] {
+  return listHSwarmSessions(root).map(hswarmRow)
+}
+
+/** hswarmRecords for the async sweep; see listHSwarmSessionsAsync. */
+async function hswarmRecordsAsync(root: string = hswarmHome()): Promise<TranscriptFile[]> {
+  return (await listHSwarmSessionsAsync(root)).map(hswarmRow)
+}
+
+/**
+ * The stores from the catalog that are NOT one of the three built-ins.
+ *
+ * Each is read with the reader its format names, because that is what "same format" means: an
+ * OpenClaude transcript is a Claude Code transcript, a TraeX rollout is a Codex rollout, and Kilo
+ * is OpenCode's SQLite under another filename. If one of those claims turns out to be wrong the
+ * store simply parses to nothing — the reader either finds records or it does not, and either way
+ * the three original stores are untouched.
+ */
+function foreignRow(s: ForeignSession, toolId: string): TranscriptFile {
+  return {
+    session_id: s.session_id,
+    source: 'foreign',
+    path: s.path,
+    project: s.project,
+    mtime_ms: s.last_activity_at,
+    size_bytes: s.size_bytes,
+    archived: s.archived,
+    title: s.title,
+    cwd: s.cwd,
+    created_at: s.created_at,
+    tool: toolId,
+  }
+}
+
+/**
+ * Every foreign store's sessions, without holding the event loop.
+ *
+ * The sync version below is still right for a sync caller, but this is the one the whole-store
+ * sweep uses. A VS Code store has to be JSON-parsed in full to be listed at all, which measured
+ * 5.2 s cold — a single unbroken block inside the "async" builder, which froze the daemon for about
+ * six seconds on the first sweep after launch until the adapter learned to yield.
+ */
+async function foreignRecordsAsync(): Promise<TranscriptFile[]> {
+  const out: TranscriptFile[] = []
+  for (const r of extraRootsWithFormat('foreign'))
+    for (const s of await listForeignSessionsAsync(r.tool.id, r.root))
+      out.push(foreignRow(s, r.tool.id))
+  return out
+}
+
+/** Every foreign store's sessions, as index rows. One adapter per tool; see foreign-sessions.ts. */
+function foreignRecords(): TranscriptFile[] {
+  const out: TranscriptFile[] = []
+  for (const r of extraRootsWithFormat('foreign')) {
+    for (const s of listForeignSessions(r.tool.id, r.root)) {
+      out.push({
+        session_id: s.session_id,
+        source: 'foreign',
+        path: s.path,
+        project: s.project,
+        mtime_ms: s.last_activity_at,
+        size_bytes: s.size_bytes,
+        archived: s.archived,
+        title: s.title,
+        cwd: s.cwd,
+        created_at: s.created_at,
+        tool: r.tool.id,
+      })
+    }
+  }
+  return out
+}
+
+function extraStoreRecords(): {
+  openCodeFiles: TranscriptFile[]
+  hermesFiles: TranscriptFile[]
+  dshFiles: TranscriptFile[]
+} {
+  const openCodeFiles: TranscriptFile[] = []
+  for (const r of extraRootsWithFormat('opencode')) {
+    if (!r.tool.dbName) continue
+    try {
+      openCodeFiles.push(...openCodeRecords(join(r.root, r.tool.dbName), r.tool.id))
+    } catch {
+      // A store whose schema is not actually OpenCode's contributes nothing, which is the whole
+      // safety story for a speculative entry.
+    }
+  }
+  // Hermes' own profiles (a second, third… database under the SAME catalog root) are not
+  // themselves catalog rows, so they are not something extraRootsWithFormat can hand back — they
+  // are found by listHermesStores, one root at a time.
+  const hermesFiles: TranscriptFile[] = []
+  for (const r of extraRootsWithFormat('hermes')) {
+    if (!r.tool.dbName) continue
+    try {
+      for (const store of listHermesStores(r.root, r.tool.dbName))
+        hermesFiles.push(...hermesRecords(store, r.tool.id))
+    } catch {
+      // A store whose schema is not actually Hermes' contributes nothing, same safety story as above.
+    }
+  }
+  // DeepSeek Harness: a home, not a database — the reader walks `sessions/` under it and reads the
+  // harness's own projection cache beside that for titles and totals.
+  //
+  // The set of homes comes from dshInstanceStores(), NOT from the catalog row: a machine can have
+  // several homes (one per DeepSeek account, the same way a machine has several CODEX_HOMEs), and
+  // reading only the default one would make every conversation in the others invisible to listing,
+  // search and analytics. The catalog row still earns its place — it is what DETECTS the harness on
+  // a machine — which is why 'deepseek-harness' is in BUILT_IN_TOOL_IDS: indexed from here, once.
+  const dshFiles: TranscriptFile[] = []
+  for (const home of dshInstanceStores()) {
+    try {
+      dshFiles.push(...dshRecords(home))
+    } catch {
+      // A directory that is not actually a DSH home contributes nothing, same safety story as above.
+    }
+  }
+  return { openCodeFiles, hermesFiles, dshFiles }
+}
+
+/** One session can spawn thousands of subagents; capped so a runaway fan-out cannot put an
+ *  unbounded array on an index row. */
+const MAX_CHILD_PATHS = 4000
+
+function rememberChild(map: Map<string, string[]>, sessionId: string, path: string): void {
+  const list = map.get(sessionId)
+  if (!list) {
+    map.set(sessionId, [path])
+    return
+  }
+  if (list.length < MAX_CHILD_PATHS) list.push(path)
+}
+
+/** A moved JSONL can briefly appear in both active and archived roots while filesystem caches
+ *  settle. Source + id is the identity; newest wins, matching findTranscript's tie-break.
+ *  The newest-wins rule is permanent and kept the same across both lookup paths.
+ *
+ * One row per session, keeping the newest file as its face — and REMEMBERING the rest.
+ *
+ * The dedupe is what makes the session list a list of conversations rather than of files, and it
+ * has to stay. What it must not do is destroy the fact that the others existed: Codex writes a
+ * rollout per execution thread, so a conversation is routinely hundreds of files. What those extra
+ * files are NOT is extra spend: Codex's token counter is session-wide and every thread replays the
+ * whole counter into its own file, so a total that adds them multiplies it (measured: 11.9B tokens
+ * reported as 637B). Subagent rollouts are therefore not carried here at all. `siblingPaths` exists
+ * for the genuine case — the same rollout appearing in both the live and archived roots while a move
+ * settles — and server/src/analytics.ts takes the LARGEST of them rather than the sum, so even that
+ * cannot double count.
+ */
+function finishIndex(
+  files: TranscriptFile[],
+  /** Claude subagent transcripts, by the session that spawned them. Their spend is the parent's. */
+  claudeChildren?: Map<string, string[]>,
+): TranscriptFile[] {
+  const unique = new Map<string, TranscriptFile>()
+  const siblings = new Map<string, string[]>()
+  for (const file of files) {
+    // source + PRODUCT + STORE, not just source + session_id (audit AH-35): a bare source+id key
+    // collapsed two OpenCode-format products (Kilo, MiMo Code) holding the same session id into one
+    // row, keeping only the newer. dedupeKey still merges the genuine same-store case this dedup
+    // exists for — a Codex rollout briefly visible in both the live and archived roots while a move
+    // settles — because storeKeyOf treats codex's live+archived roots as one family. See
+    // session-locator.ts.
+    const key = dedupeKey(file)
+    const paths = siblings.get(key)
+    if (paths) paths.push(file.path)
+    else siblings.set(key, [file.path])
+    const previous = unique.get(key)
+    if (!previous || file.mtime_ms >= previous.mtime_ms) unique.set(key, file)
+  }
+  const result: TranscriptFile[] = [...unique.values()].map((file): TranscriptFile => {
+    const key = dedupeKey(file)
+    // Only the OTHERS: `path` is already read by every caller, and listing it twice would double
+    // that file's tokens.
+    const rest = (siblings.get(key) ?? []).filter((p) => p !== file.path)
+    // A Claude session's subagent transcripts are separate API calls and separate money, so they
+    // join the files a total must read. Safe to ADD here, unlike Codex's rollouts, because every
+    // record carries its own request id and the usage parser charges a request once.
+    if (file.source === 'claude')
+      for (const p of claudeChildren?.get(file.session_id) ?? [])
+        if (p !== file.path) rest.push(intern(p)) // the stat cache's copy (core/intern.ts)
+    const withSiblings = rest.length ? { ...file, siblingPaths: rest } : file
+    // Computed once per sweep, not on demand: every row gets a stable public identity whether or
+    // not a caller ever asks for it, so a session found through the plain list is immediately
+    // addressable by locator (see routes/sessions.ts and desk2/hydra/src/lib/api.ts).
+    return { ...withSiblings, locator: makeLocator(file) }
+  })
+  // A map lookup and nothing else. Working out WHICH session continued which means reading whole
+  // transcripts, so that happens between sweeps (see resolveContinuations); this only applies what
+  // is already known.
+  const superseded = supersededSessions()
+  if (superseded.size)
+    for (let i = 0; i < result.length; i++) {
+      const file = result[i] as TranscriptFile
+      if (file.source !== 'claude') continue
+      const by = superseded.get(file.session_id)
+      if (by && by !== file.session_id) result[i] = { ...file, supersededBy: by }
+    }
+  // Stamped on COMPLETION, not on the timestamp the sweep started with. A sweep of a large store
+  // runs for seconds, so a start-stamped snapshot is born older than any sane TTL and every caller
+  // that checks freshness immediately asks for another sweep — the rebuild-forever loop this
+  // module used to sit in. The age of a snapshot is how long ago it became TRUE, which is now.
+  cache = { at: performance.now(), files: result }
+  persistIndexSnapshot(result)
+  return result
+}
+
+/**
+ * The daemon's last index on disk, read back at boot. Every update relaunches the daemon, and a
+ * relaunched one had no snapshot, so its first `/api/sessions` waited out a full store sweep (9-17 s
+ * on this PC's store, 2026-10-08) before the window could list a single session. Seeded from this
+ * file, the first caller gets the last known rows at once and the real sweep starts behind it.
+ * Scripts and tests (which may build synchronously) neither read nor write it.
+ */
+const INDEX_SNAPSHOT_PATH = join(DATA_DIR, 'transcript-index.json')
+const INDEX_SNAPSHOT_VERSION = 1
+/** A sweep's result is written at most this often, and only when the store changed. */
+const INDEX_SNAPSHOT_EVERY_MS = 2 * 60_000
+let snapshotAt = 0
+let snapshotStamp = ''
+let snapshotWriting = false
+
+function persistIndexSnapshot(files: TranscriptFile[]): void {
+  if (syncIndexBuildAllowed || snapshotWriting) return
+  const now = Date.now()
+  if (now - snapshotAt < INDEX_SNAPSHOT_EVERY_MS) return
+  let newest = 0
+  let bytes = 0
+  for (const f of files) {
+    if (f.mtime_ms > newest) newest = f.mtime_ms
+    bytes += f.size_bytes
+  }
+  const stamp = `${files.length}:${newest}:${bytes}`
+  if (stamp === snapshotStamp) return
+  snapshotWriting = true
+  snapshotAt = now
+  const tmp = `${INDEX_SNAPSHOT_PATH}.${process.pid}.tmp`
+  void writeFileAsync(tmp, JSON.stringify({ v: INDEX_SNAPSHOT_VERSION, files }))
+    .then(() => renameAsync(tmp, INDEX_SNAPSHOT_PATH))
+    .then(() => {
+      snapshotStamp = stamp
+    })
+    .catch(() => rmAsync(tmp, { force: true }).catch(noop))
+    .finally(() => {
+      snapshotWriting = false
+    })
+}
+
+async function seedIndexFromSnapshot(): Promise<void> {
+  try {
+    const saved = JSON.parse(await readFileAsync(INDEX_SNAPSHOT_PATH, 'utf8')) as {
+      v?: unknown
+      files?: unknown
+    }
+    if (cache || saved?.v !== INDEX_SNAPSHOT_VERSION || !Array.isArray(saved.files)) return
+    // Stale on arrival: whoever asks first gets these rows and starts the real sweep. Marked
+    // `seeded` rather than back-dated, so the stamp stays the moment it was stored (rule B of
+    // scripts/checks/transcript-index-born-stale.mjs); the sweep's own snapshot clears it.
+    cache = { at: performance.now(), files: saved.files as TranscriptFile[], seeded: true }
+  } catch {
+    // none yet, or unreadable: the first sweep builds the index as before
+  }
+}
+
+function buildTranscriptIndex(): TranscriptFile[] {
+  const files: TranscriptFile[] = []
+  const extra = extraStoreRecords()
+  const claudeChildren = new Map<string, string[]>()
+  const pendingChildren: Array<{
+    parentId: string
+    rel: string
+    store: ClaudeStore
+    mtimeMs: number
+    size: number
+  }> = []
+  for (const store of claudeStores()) {
+    for (const rel of scanRootSync(new Bun.Glob(store.glob), store.root)) {
+      let st: ReturnType<typeof statSync>
+      try {
+        st = statSync(join(store.root, rel))
+      } catch {
+        continue
+      }
+      const parent = claudeParentId(rel, store)
+      if (parent) {
+        pendingChildren.push({ parentId: parent, rel, store, mtimeMs: st.mtimeMs, size: st.size })
+        continue
+      }
+      files.push(claudeRecord(rel, st.mtimeMs, st.size, store))
+    }
+  }
+  promoteOrphans(files, claudeChildren, pendingChildren)
+
+  for (const store of codexStoreRoots()) {
+    // Per store, not once for the machine: a managed instance's titles live in its own sidebar.
+    const codexSessionIndex = readCodexSessionIndex(store.indexPath)
+    const glob = new Bun.Glob(CODEX_ROLLOUT_GLOB)
+    for (const rel of scanRootSync(glob, store.root)) {
+      const path = join(store.root, rel)
+      let st: ReturnType<typeof statSync>
+      try {
+        st = statSync(path)
+      } catch {
+        continue
+      }
+      const identity = readCodexRolloutIdentity(path, codexFallbackId(rel))
+      // Subagents are an implementation detail of their parent chat. Their visible user history is
+      // a forked copy of that chat, so merging them would duplicate turns; the top-level rollout is
+      // the complete user-facing conversation and is the only row Codex itself exposes.
+      //
+      // They are REMEMBERED rather than discarded, because a subagent burns its own tokens and the
+      // parent rollout does not contain them. Dropping them outright made the analytics report a
+      // fraction of real Codex spend: on this machine 4,716 of 4,860 archived rollouts are
+      // subagents. See TranscriptFile.siblingPaths, which only a total ever reads.
+      if (identity.isSubagent) continue
+      files.push(
+        codexRecord(
+          store,
+          rel,
+          st.mtimeMs,
+          st.size,
+          identity,
+          codexSessionIndex.get(identity.sessionId),
+        ),
+      )
+    }
+  }
+
+  files.push(...openCodeRecords())
+  files.push(...extra.openCodeFiles)
+  files.push(...extra.hermesFiles)
+  files.push(...extra.dshFiles)
+  files.push(...hswarmRecords())
+  files.push(...foreignRecords())
+  return finishIndex(files, claudeChildren)
+}
+
+/**
+ * The same index, built WITHOUT holding the event loop.
+ *
+ * This exists because the sync builder is not merely slow, it is *blocking*: globbing the store,
+ * statting every transcript and reading the head of every Codex rollout measured 1,288 ms for 1,405
+ * files on the author's machine. The daemon binds its port ~250 ms after launch, so a startup warm
+ * that used the sync builder left the socket accepting connections while nothing could be answered
+ * — the browser's very first GET sat in the queue for over a second, and moving the warm call after
+ * `Bun.serve` (which it already was) could not help, because the block is inside the same turn.
+ *
+ * Correctness is identical: same globs, same records, same dedupe, same cache slot.
+ */
+async function buildClaudeRecordsAsync(
+  files: TranscriptFile[],
+  continuations: ContinuationLink[],
+  claudeChildren: Map<string, string[]>,
+  pendingChildren: Array<{
+    parentId: string
+    rel: string
+    store: ClaudeStore
+    mtimeMs: number
+    size: number
+  }>,
+  statNow: number,
+  restatCold: boolean,
+  statSeen: Set<string>,
+): Promise<void> {
+  for (const store of claudeStores()) {
+    const claudeRels = await scanRootAsync(store.glob, store.root)
+    const scanned = await mapPool(claudeRels, INDEX_SCAN_WIDTH, async (rel) => {
+      const path = join(store.root, rel)
+      statSeen.add(path)
+      const known = claudeStatCache.get(path)
+      if (known && !restatCold && statNow - known.mtimeMs > COLD_AFTER_MS)
+        return { rel, mtimeMs: known.mtimeMs, size: known.size }
+      try {
+        const st = await fsSlot(() => statAsync(path))
+        claudeStatCache.set(intern(path), { mtimeMs: st.mtimeMs, size: st.size })
+        return { rel, mtimeMs: st.mtimeMs, size: st.size }
+      } catch {
+        claudeStatCache.delete(path)
+        return null
+      }
+    })
+    const tops: Array<{ record: TranscriptFile; mtimeMs: number; size: number }> = []
+    const slice = timeSlice()
+    for (const f of scanned) {
+      if (slice.due()) await slice.pause()
+      if (!f) continue
+      const parent = claudeParentId(f.rel, store)
+      if (parent) {
+        pendingChildren.push({ parentId: parent, ...f, store })
+        continue
+      }
+      const record = claudeRecord(f.rel, f.mtimeMs, f.size, store)
+      files.push(record)
+      tops.push({ record, mtimeMs: f.mtimeMs, size: f.size })
+    }
+    // Through the same bounded pool as the stat scan, not one await at a time: this is a head read
+    // per top-level transcript (~1,200 of them here) and it runs on every sweep. Cached against
+    // mtime+size, so after the first pass it is a map lookup.
+    const links = await mapPool(tops, INDEX_SCAN_WIDTH, async (t) => ({
+      record: t.record,
+      mtimeMs: t.mtimeMs,
+      link: await readContinuationLink(t.record.path, t.mtimeMs, t.size),
+    }))
+    for (const l of links)
+      if (l?.link)
+        continuations.push({
+          sessionId: l.record.session_id,
+          logicalParentUuid: l.link,
+          path: l.record.path,
+          mtimeMs: l.mtimeMs,
+        })
+  }
+  await promoteOrphansAsync(files, claudeChildren, pendingChildren)
+  if (restatCold) lastFullClaudeStatAt = statNow
+  // A transcript the glob no longer lists is gone; its remembered stat goes with it.
+  const prune = timeSlice()
+  for (const path of [...claudeStatCache.keys()]) {
+    if (!statSeen.has(path)) claudeStatCache.delete(path)
+    if (prune.due()) await prune.pause()
+  }
+}
+
+async function buildCodexRecordsAsync(files: TranscriptFile[]): Promise<void> {
+  for (const store of codexStoreRoots()) {
+    // Same per-store sidebar read as the sync builder.
+    const codexSessionIndex = readCodexSessionIndex(store.indexPath)
+    const rels = await scanRootAsync(CODEX_ROLLOUT_GLOB, store.root)
+    const records = await mapPool(rels, INDEX_SCAN_WIDTH, async (rel) => {
+      const path = join(store.root, rel)
+      try {
+        const st = await fsSlot(() => statAsync(path))
+        const identity = await readCodexRolloutIdentityAsync(path, codexFallbackId(rel))
+        // Same rule as the sync builder.
+        if (identity.isSubagent) return null
+        return codexRecord(
+          store,
+          rel,
+          st.mtimeMs,
+          st.size,
+          identity,
+          codexSessionIndex.get(identity.sessionId),
+        )
+      } catch {
+        return null
+      }
+    })
+    for (const record of records) if (record) files.push(record)
+  }
+}
+
+async function appendExtraAndForeignRecordsAsync(
+  files: TranscriptFile[],
+  extra: {
+    openCodeFiles: TranscriptFile[]
+    hermesFiles: TranscriptFile[]
+    dshFiles: TranscriptFile[]
+  },
+): Promise<void> {
+  files.push(...(await openCodeRecordsAsync()))
+  files.push(...extra.openCodeFiles)
+  files.push(...extra.hermesFiles)
+  files.push(...extra.dshFiles)
+  // Async, like the foreign listing below: HSwarm's job.json files are hundreds of MB of JSON,
+  // and reading the changed ones inline held the thread for 1.2 s (see listHSwarmSessionsAsync).
+  files.push(...(await hswarmRecordsAsync()))
+  // The async listing, which yields while it parses.
+  files.push(...(await foreignRecordsAsync()))
+}
+
+/**
+ * The same index, built WITHOUT holding the event loop.
+ *
+ * This exists because the sync builder is not merely slow, it is *blocking*: globbing the store,
+ * statting every transcript and reading the head of every Codex rollout measured 1,288 ms for 1,405
+ * files on the author's machine. The daemon binds its port ~250 ms after launch, so a startup warm
+ * that used the sync builder left the socket accepting connections while nothing could be answered
+ * — the browser's very first GET sat in the queue for over a second, and moving the warm call after
+ * `Bun.serve` (which it already was) could not help, because the block is inside the same turn.
+ *
+ * Correctness is identical: same globs, same records, same dedupe, same cache slot.
+ */
+async function buildTranscriptIndexAsync(): Promise<TranscriptFile[]> {
+  const files: TranscriptFile[] = []
+  const continuations: ContinuationLink[] = []
+
+  const extra = extraStoreRecords()
+  const claudeChildren = new Map<string, string[]>()
+  const pendingChildren: Array<{
+    parentId: string
+    rel: string
+    store: ClaudeStore
+    mtimeMs: number
+    size: number
+  }> = []
+  const statNow = Date.now()
+  const restatCold = statNow - lastFullClaudeStatAt >= COLD_RESTAT_MS
+  const statSeen = new Set<string>()
+
+  await buildClaudeRecordsAsync(
+    files,
+    continuations,
+    claudeChildren,
+    pendingChildren,
+    statNow,
+    restatCold,
+    statSeen,
+  )
+
+  await buildCodexRecordsAsync(files)
+
+  await appendExtraAndForeignRecordsAsync(files, extra)
+
+  const built = finishIndex(files, claudeChildren)
+  // The head cache tracks the store, not everything ever seen: a deleted transcript should not keep
+  // its slot for the life of the daemon.
+  pruneContinuationHeadCache(new Set(files.filter((f) => f.source === 'claude').map((f) => f.path)))
+  // Deliberately NOT awaited. Working out which session continued which means reading whole
+  // transcripts, which is the one thing this sweep must never do inline; the answers land in the
+  // memo and the NEXT sweep applies them. A newly compacted conversation therefore merges a few
+  // seconds after it first appears rather than instantly, which is the right way round.
+  void resolveContinuations(continuations)
+  return built
+}
+
+/**
+ * The async, request-safe way to get the index — prefer this over {@link listTranscriptFiles} in
+ * any caller that is already async.
+ *
+ * Keeps listTranscriptFiles's stale-while-revalidate contract (a caller holding a snapshot never
+ * waits for the sweep) and adds coalescing: concurrent callers on a cold cache share ONE build
+ * instead of each paying for their own, which is exactly the startup shape — the boot warm-up and
+ * the first `/api/sessions` request arrive within milliseconds of each other.
+ */
+export async function ensureTranscriptIndex(force = false): Promise<TranscriptFile[]> {
+  const now = performance.now()
+  if (!force && cache && !cache.seeded && now - cache.at < TTL_MS) return cache.files
+  const build = startIndexBuild()
+  if (!force && cache) return cache.files
+  return build
+}
+
+/**
+ * Every row a lookup could mean, narrowed as far as the caller told us.
+ *
+ * A `locator` that parses AND has at least one exact match wins outright (audit AH-35: it is the
+ * one identity that survives two products sharing a format), which is why it short-circuits before
+ * the plain id/source filter even runs — falling through to that filter on a locator naming a row
+ * that is not (yet) in this snapshot would silently answer with some OTHER session sharing the bare
+ * id instead of "not here yet". A locator that fails to parse, or that matches nothing in THIS
+ * snapshot, is treated exactly like no locator at all: the caller may be a step behind a sweep, and
+ * a hard error over a stale query param would be the wrong failure mode for what is, from here, an
+ * ordinary miss.
+ */
+const pickSession =
+  (sessionId: string, source?: SessionSource, locator?: string) => (files: TranscriptFile[]) => {
+    const parsed = parseLocator(locator)
+    if (parsed) {
+      const exact = files.filter((f) => matchesLocator(f, parsed))
+      if (exact.length) return exact
+    }
+    return files.filter((f) => f.session_id === sessionId && (!source || f.source === source))
+  }
+
+/** newest wins if a session id appears under multiple project folders */
+const newestOf = (matches: TranscriptFile[]): TranscriptFile | null =>
+  matches.length === 0 ? null : matches.reduce((a, b) => (b.mtime_ms > a.mtime_ms ? b : a))
+
+export function findTranscript(
+  sessionId: string,
+  source?: SessionSource,
+  locator?: string,
+): TranscriptFile | null {
+  const pick = pickSession(sessionId, source, locator)
+  // A miss is the one answer the snapshot can get wrong — a transcript created seconds ago is
+  // absent from it — so a sweep is started. This cannot WAIT for it (see
+  // listTranscriptFilesAfterMiss), which is why an async caller should prefer findTranscriptAsync.
+  let matches = pick(listTranscriptFiles())
+  if (matches.length === 0) matches = pick(listTranscriptFilesAfterMiss())
+  return newestOf(matches)
+}
+
+/**
+ * findTranscript for a caller that is already async — which is nearly all of them, and all the hot
+ * ones.
+ *
+ * The difference is what a MISS costs. The sync version can only start a sweep and answer from the
+ * snapshot it already had, so a session created moments ago reads as absent until some later poll.
+ * This one waits for the sweep, and waiting is free here: the async builder yields, so the daemon
+ * keeps answering everything else while it runs.
+ */
+export async function findTranscriptAsync(
+  sessionId: string,
+  source?: SessionSource,
+  locator?: string,
+): Promise<TranscriptFile | null> {
+  const pick = pickSession(sessionId, source, locator)
+  let matches = pick(await ensureTranscriptIndex())
+  if (matches.length === 0) matches = pick(await ensureTranscriptIndexAfterMiss())
+  return newestOf(matches)
+}
+
+// --- byte-tail reader --------------------------------------------------------
+
+async function readTailBytes(path: string, maxBytes: number): Promise<string> {
+  const file = Bun.file(path)
+  const size = file.size
+  const start = Math.max(0, size - maxBytes)
+  const blob = start > 0 ? file.slice(start) : file
+  return await blob.text()
+}
+
+// --- text helpers ------------------------------------------------------------
+
+function compact(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * `truncate(compact(s), n)`, byte for byte, without collapsing the whole of a multi-MB string to keep
+ * its first n characters (that held the event loop 100+ ms). The first n+1 characters of compact(s)
+ * are fixed by a prefix of s; only the prefix's last character can differ (a space that the rest of s
+ * extends or trims), so a prefix whose collapsed form is n+2 characters long settles them. A string
+ * too short or too whitespace-heavy for that grows the prefix 4x until it does, up to s itself.
+ */
+function compactTo(s: string, n: number): string {
+  if (s.length <= 65_536) return truncate(compact(s), n)
+  for (let k = Math.max(n * 8, 4096); k < s.length; k *= 4) {
+    const head = s.slice(0, k).replace(/\s+/g, ' ').trimStart()
+    if (head.length >= n + 2) return `${head.slice(0, n)}…`
+  }
+  return truncate(compact(s), n)
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s
+}
+
+function stringifyToolResult(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((c) =>
+        c && typeof c === 'object' && typeof (c as any).text === 'string' ? (c as any).text : '',
+      )
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (content == null) return ''
+  try {
+    return JSON.stringify(content)
+  } catch {
+    return String(content)
+  }
+}
+
+const CODEX_INJECTED_USER_BLOCK =
+  /^\s*<(recommended_plugins|environment_context|app-context|permissions|collaboration_mode|apps_instructions|plugins_instructions|skills_instructions|multi_agent_mode|turn_aborted)\b/i
+
+/** Codex Desktop carries request/runtime context as user-role blocks. They are transport metadata,
+ * not human turns, and must not become titles or transcript bubbles. */
+export function isCodexInjectedUserText(text: string): boolean {
+  return (
+    CODEX_INJECTED_USER_BLOCK.test(text) ||
+    // Codex may deliver a repository's AGENTS.md preamble as a user-role transport message even
+    // though it came from the runtime, not the human. Without this guard it becomes the title.
+    /^\s*#\s*AGENTS\.md instructions\b/i.test(text)
+  )
+}
+
+/** {@link codexEventToTailEvents}'s `message` payload handler, split out (with the two handlers
+ * below) so the dispatch table there can stay a flat lookup instead of an if/else chain. Same
+ * role gate, same block filtering, same truncation. */
+function codexMessageEvents(payload: any, timestamp: string | null): TailEvent[] {
+  const role = payload.role
+  if (role !== 'user' && role !== 'assistant') return []
+  const out: TailEvent[] = []
+  const blocks = Array.isArray(payload.content) ? payload.content : []
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue
+    if (block.type !== 'input_text' && block.type !== 'output_text') continue
+    if (typeof block.text !== 'string') continue
+    if (role === 'user' && isCodexInjectedUserText(block.text)) continue
+    const text = compactTo(block.text, 6000)
+    if (!text) continue
+    out.push({
+      role,
+      kind: 'text',
+      text,
+      tool_name: null,
+      timestamp,
+    })
+  }
+  return out
+}
+
+/** `function_call` / `custom_tool_call` payload handler for {@link codexEventToTailEvents}. */
+function codexToolCallEvent(payload: any, timestamp: string | null): TailEvent[] {
+  const input = compactTo(stringifyToolResult(payload.arguments ?? payload.input), 1200)
+  return [
+    {
+      role: 'assistant',
+      kind: 'tool_use',
+      text: input,
+      tool_name: payload.name ?? 'tool',
+      timestamp,
+    },
+  ]
+}
+
+/** `function_call_output` / `custom_tool_call_output` payload handler for
+ * {@link codexEventToTailEvents}. */
+function codexToolResultEvent(payload: any, timestamp: string | null): TailEvent[] {
+  const output = compactTo(stringifyToolResult(payload.output), 2000)
+  return output
+    ? [
+        {
+          role: 'user',
+          kind: 'tool_result',
+          text: output,
+          tool_name: null,
+          timestamp,
+        },
+      ]
+    : []
+}
+
+const CODEX_PAYLOAD_HANDLERS: Record<
+  string,
+  (payload: any, timestamp: string | null) => TailEvent[]
+> = {
+  message: codexMessageEvents,
+  function_call: codexToolCallEvent,
+  custom_tool_call: codexToolCallEvent,
+  function_call_output: codexToolResultEvent,
+  custom_tool_call_output: codexToolResultEvent,
+}
+
+/** Convert one Codex rollout item. event_msg mirrors message text for live UI updates, so only
+ * response_item is consumed; reading both would duplicate every visible turn. */
+export function codexEventToTailEvents(ev: any): TailEvent[] {
+  if (ev?.type !== 'response_item') return []
+  const payload = ev?.payload
+  const timestamp: string | null = typeof ev?.timestamp === 'string' ? ev.timestamp : null
+  const handler = payload?.type ? CODEX_PAYLOAD_HANDLERS[payload.type] : undefined
+  return handler ? handler(payload, timestamp) : []
+}
+
+/**
+ * Bookkeeping the CLI writes into its own transcript that was never part of the conversation.
+ *
+ * Resuming a session whose last turn died on an API error makes `claude` repair the dangling tail
+ * by appending a canned pair — user `isMeta: true` "Continue from where you left off." plus a
+ * `<synthetic>` assistant "No response requested." — both stamped with the SAME millisecond,
+ * because no model was ever called. Rendering them as real turns tells a story that never happened:
+ * it reads as though we prompted the session and it refused, when the CLI was talking to itself
+ * (mis-read exactly that way 2026-07-15; the run had in fact been sent nothing but "resume").
+ *
+ * The rate-limit notice is the ONE synthetic message worth keeping: it is also `<synthetic>` but
+ * carries `isApiErrorMessage: true`, and it is the only thing on screen that explains why a session
+ * stopped. Keep that; drop the self-talk.
+ */
+function isCliBookkeeping(ev: any): boolean {
+  if (ev?.isMeta === true) return true
+  return ev?.message?.model === '<synthetic>' && ev?.isApiErrorMessage !== true
+}
+
+/**
+ * Plumbing the CLI wraps in pseudo-tags and stores as an ordinary user message: slash-command
+ * invocations, hook output, bash echoes, the local-command caveat. It is addressed to the MODEL,
+ * not written by the human, so it must never stand in for what a session is "about".
+ *
+ * Unlike the bookkeeping above, most of these carry no `isMeta` flag, so this tag scan is the only
+ * thing that catches them. It is what keeps a `/usage` probe — a transcript holding nothing but a
+ * caveat and a `<command-name>` line — from being listed as a real session (see sessions.ts).
+ */
+const COMMAND_WRAPPER =
+  /^\s*<\/?(local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder|user-prompt-submit-hook|bash-input|bash-stdout|bash-stderr)\b/i
+
+export function isCommandWrapperText(text: string): boolean {
+  return COMMAND_WRAPPER.test(text)
+}
+
+/**
+ * Pull a readable label out of a turn that is real work wrapped in a pseudo-tag.
+ *
+ * Distinct from COMMAND_WRAPPER above, and the difference is the whole point: that list is
+ * plumbing to be ignored outright, whereas a `<scheduled-task name="…">` turn IS the session's
+ * actual prompt — it just arrives wearing an envelope. Dropping it would leave a genuine session
+ * titled with its uuid; keeping it whole titled one "<scheduled-task name="studio-executor-parity-
+ * sweep" file="C:\Users\…">".
+ *
+ * Prefers a `name` attribute (someone chose that string as a label) and otherwise falls back to the
+ * body text. Anything that isn't a wrapped turn passes through untouched.
+ */
+export function unwrapTaggedText(text: string): string {
+  return describeTaggedText(text).label
+}
+
+/**
+ * {@link unwrapTaggedText}, but it also reports WHAT it did — which envelope it opened, if any.
+ *
+ * The label on its own cannot explain a surprising title. A `name` attribute is chosen by whatever
+ * wrote the envelope, and that may be a scheduler, a hook or a harness the user never named: the
+ * owner hit exactly this, reporting threads titled "Watcher" when no account, instance or project
+ * of his was called that, and there was no way to ask the app where the string had come from.
+ * `tag` is that answer, and the session list carries it to the UI as SessionSummary.title_tag.
+ *
+ * `envelope` is true ONLY when the name attribute won. A tag whose BODY became the label is not
+ * carrying an externally chosen name — it is punctuation around the user's own words — so that
+ * case is reported as ordinary message text and gets no "where did this come from?" affordance.
+ */
+export function describeTaggedText(text: string): {
+  label: string
+  envelope: boolean
+  tag: string | null
+} {
+  const open = text.match(/^\s*<([a-z][\w-]*)\b([^>]*)>/i)
+  if (!open) return { label: text, envelope: false, tag: null }
+  const name = open[2].match(/\bname\s*=\s*"([^"]+)"/i)?.[1]
+  if (name?.trim()) return { label: name.trim(), envelope: true, tag: open[1].toLowerCase() }
+  const body = text
+    .slice(open[0].length)
+    .replace(new RegExp(`</${open[1]}\\s*>\\s*$`, 'i'), '')
+    .trim()
+  return { label: body || text, envelope: false, tag: null }
+}
+
+/** What a caller wants kept out of the raw stream. Every field defaults to the historical
+ *  behaviour, so an unchanged caller gets an unchanged answer. */
+export interface TailFilter {
+  /** Emit `thinking` blocks as their own events instead of dropping them. Off by default: they are
+   *  the bulkiest part of a transcript and the least useful part to skim. */
+  thinking?: boolean
+}
+
+/*
+ * THE hide-"thinking" filter. Turns one raw transcript JSONL event into zero or more
+ * displayable TailEvents. Reused for both disk-tail reading and the live stream-json path,
+ * so the rule lives in exactly one place (per the rebuild plan).
+ *
+ * Rules:
+ *  - keep only user/assistant events
+ *  - drop the CLI's own resume bookkeeping (see isCliBookkeeping)
+ *  - drop `thinking` and `redacted_thinking` content blocks unless `filter.thinking` asks for them
+ *  - assistant `text` -> text event
+ *  - `tool_use` -> collapsed tool event (name + compact input)
+ *  - user `tool_result` -> collapsed tool_result event
+ *  - a plain-string user message -> text event
+ */
+/** One content-array block from a message, turned into its TailEvent (or none — a block that
+ *  produces no visible text, or a thinking block dropped by the filter, is skipped). Split out of
+ *  eventToTailEvents's `for` loop so each block kind is a flat branch here instead of nested two
+ *  levels deep (array check, then loop, then this chain) inside that function. */
+function blockToTailEvent(
+  block: any,
+  r: 'user' | 'assistant',
+  ts: string | null,
+  filter: TailFilter,
+): TailEvent | null {
+  if (!block || typeof block !== 'object') return null
+  const bt = block.type
+  if (bt === 'thinking' || bt === 'redacted_thinking') {
+    // <- the filter. `redacted_thinking` carries an encrypted `data` field and no readable
+    // text, so asking for thinking still shows nothing for it: there is nothing to show.
+    if (!filter.thinking) return null
+    const t = compactTo(typeof block.thinking === 'string' ? block.thinking : '', 6000)
+    return t
+      ? {
+          role: 'assistant',
+          kind: 'thinking',
+          text: t,
+          tool_name: null,
+          timestamp: ts,
+        }
+      : null
+  }
+  if (bt === 'text' && typeof block.text === 'string') {
+    const t = compactTo(block.text, 6000)
+    return t ? { role: r, kind: 'text', text: t, tool_name: null, timestamp: ts } : null
+  }
+  if (bt === 'tool_use') {
+    const input = block.input ? compactTo(JSON.stringify(block.input), 1200) : ''
+    return {
+      role: 'assistant',
+      kind: 'tool_use',
+      text: input,
+      tool_name: block.name ?? 'tool',
+      timestamp: ts,
+      ...(typeof block.id === 'string' && block.id ? { tool_use_id: block.id } : {}),
+    }
+  }
+  if (bt === 'tool_result') {
+    const t = compactTo(stringifyToolResult(block.content), 2000)
+    return t
+      ? {
+          role: 'user',
+          kind: 'tool_result',
+          text: t,
+          tool_name: null,
+          timestamp: ts,
+          // The CLI's own verdict, so the viewer can mark a failed step without guessing from text.
+          ...(block.is_error === true ? { error: true } : {}),
+        }
+      : null
+  }
+  return null
+}
+
+export function eventToTailEvents(ev: any, filter: TailFilter = {}): TailEvent[] {
+  const message = ev?.message
+  const role: string | undefined = message?.role ?? ev?.type
+  const type: string | undefined = ev?.type
+  if (type !== 'user' && type !== 'assistant' && role !== 'user' && role !== 'assistant') return []
+  if (isCliBookkeeping(ev)) return []
+  const r: 'user' | 'assistant' =
+    role === 'assistant' || type === 'assistant' ? 'assistant' : 'user'
+  const ts: string | null = ev?.timestamp ?? null
+  const content = message?.content
+  const out: TailEvent[] = []
+
+  if (typeof content === 'string') {
+    const t = compactTo(content, 6000)
+    if (t) out.push({ role: r, kind: 'text', text: t, tool_name: null, timestamp: ts })
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      const te = blockToTailEvent(block, r, ts, filter)
+      if (te) out.push(te)
+    }
+  }
+  // The compaction summary is filed as a user message, so without this it reads as something the
+  // person typed; the API notice is the one synthetic message kept (see isCliBookkeeping).
+  const notice =
+    ev?.isCompactSummary === true ? 'compact' : ev?.isApiErrorMessage === true ? 'error' : null
+  if (notice) for (const te of out) if (te.kind === 'text') te.notice = notice
+  // A reply names its line, so the viewer can branch a new chat from it (session-branch.ts).
+  if (r === 'assistant' && !notice && typeof ev?.uuid === 'string' && ev.uuid)
+    for (const te of out) if (te.kind === 'text') te.uuid = ev.uuid
+  return out
+}
+
+export function eventToTailEventsForSource(
+  source: SessionSource,
+  ev: any,
+  filter: TailFilter = {},
+): TailEvent[] {
+  return source === 'codex' ? codexEventToTailEvents(ev) : eventToTailEvents(ev, filter)
+}
+
+export interface TailOptions {
+  /** How many MESSAGES the window holds; tool traffic and reasoning ride along (see tailEventCap). */
+  limit?: number
+  /** When true, drop tool_use/tool_result. */
+  textOnly?: boolean
+  /** Include the model's reasoning blocks (see TailFilter). */
+  thinking?: boolean
+  /** Only what a person typed. The point of `limit` is a window of turns, so this has to be applied
+   *  BEFORE the window is counted — filtering 40 mixed turns client-side yields a handful of human
+   *  ones, which is not a readable session. */
+  humanOnly?: boolean
+  title?: string
+  cwd?: string
+  /** A Codex chat's: the page that ends here in its history (a TailResult.history_start); the newest page when left out. */
+  before?: number
+}
+
+/** The display filter, as one predicate, so the two source paths below cannot drift apart.
+ *  Exported for server/tests/tail-filter.test.ts, which pins the rules rather than the callers. */
+export function tailKeeper(opts: TailOptions): (e: TailEvent) => boolean {
+  if (opts.humanOnly) return (e) => e.kind === 'text' && e.role === 'user' && !e.notice
+  if (opts.textOnly) return (e) => e.kind === 'text' || e.kind === 'thinking'
+  return () => true
+}
+
+/**
+ * The window counts MESSAGES, and tool traffic and reasoning ride along with the messages around
+ * them. A viewer folds a run of tool calls into one work row, so counting each call as a turn would spend a 40-turn window on one busy stretch of work and show
+ * three messages; counted this way, 40 turns is 40 messages and the work between them.
+ *
+ * Unbounded, a session that ran 500 tools between two messages would ship all of them on every 4 s
+ * poll, so the events in one window are capped as well. Hitting the cap ends the window like the
+ * limit does: `more` is true and the next page reaches further back.
+ */
+export function tailEventCap(limit: number): number {
+  return Math.min(1500, Math.max(200, limit * 10))
+}
+
+const isMessage = (e: TailEvent) => e.kind === 'text'
+
+/** Parse a raw transcript tail newest-line-first into up to `limit` messages (with the tool and
+ *  reasoning events between them, see tailEventCap), plus whatever cwd the scanned lines revealed.
+ *  Pulled out of tailTranscript's default (non-foreign, non-opencode) path so the byte-tail parsing
+ *  loop isn't nested inside the source-branch chain.
+ *
+ *  `more` says whether an older kept message exists above the window. It is found by reaching ONE
+ *  message past the limit, not by asking "were there lines left": a session_meta header or a
+ *  filtered-out tool turn is a line, and a "Load older turns" button that loads nothing is a lie.
+ *  Exported for server/tests/tail-filter.test.ts. */
+export function collectTailEventsFromRaw(
+  raw: string,
+  source: SessionSource,
+  filter: TailFilter,
+  keep: (e: TailEvent) => boolean,
+  limit: number,
+): { events: TailEvent[]; cwd: string; more: boolean; firstLine: number } {
+  const lines = raw.split('\n')
+  const collected: TailEvent[][] = []
+  const lineOf: number[] = []
+  const cap = tailEventCap(limit)
+  let cwd = ''
+  let messages = 0
+  let total = 0
+  let more = false
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    let ev: any
+    try {
+      ev = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!cwd && typeof ev?.cwd === 'string') cwd = ev.cwd
+    if (!cwd && typeof ev?.payload?.cwd === 'string') cwd = ev.payload.cwd
+    const tes = eventToTailEventsForSource(source, ev, filter).filter(keep)
+    if (tes.length === 0) continue
+    const message = tes.some(isMessage)
+    if ((message && messages === limit) || total + tes.length > cap) {
+      more = true
+      break
+    }
+    collected.push(tes)
+    lineOf.push(i)
+    total += tes.length
+    if (message) messages++
+  }
+  const events = collected.reverse().flat()
+  lineOf.reverse()
+  const kept = more ? dropOrphanWork(events) : events
+  // The line the earliest kept event came from: a page above this window ends there.
+  let dropped = events.length - kept.length
+  let firstLine = lines.length
+  for (let g = 0; g < collected.length; g++) {
+    if (dropped < collected[g].length) {
+      firstLine = lineOf[g]
+      break
+    }
+    dropped -= collected[g].length
+  }
+  return { events: kept, cwd, more, firstLine }
+}
+
+/** A window cut off above opens on whatever survived the cut. Work that sits above YOUR message
+ *  belongs to the reply before it, which the window left out, so it would open the transcript as a
+ *  work row answering nothing; it goes. Work above a reply is that reply's own lead-in and stays. */
+function dropOrphanWork(events: TailEvent[]): TailEvent[] {
+  const first = events.findIndex(isMessage)
+  return first > 0 && events[first].role === 'user' ? events.slice(first) : events
+}
+
+/** The last `limit` kept messages of a store read whole (with the work between them, as above),
+ *  and whether anything older was cut off. */
+export function lastTurns(
+  events: TailEvent[],
+  limit: number,
+): { events: TailEvent[]; more: boolean } {
+  const cap = tailEventCap(limit)
+  let messages = 0
+  for (let i = events.length - 1; i >= 0; i--) {
+    const message = isMessage(events[i])
+    if ((message && messages === limit) || events.length - i > cap)
+      return { events: dropOrphanWork(events.slice(i + 1)), more: true }
+    if (message) messages++
+  }
+  return { events, more: false }
+}
+
+/**
+ * The result shape every branch of tailTranscript returns.
+ *
+ * Extracted because it was written out six times with the same four fallback chains, and a chain
+ * copied six times is a chain that will eventually differ in one of them — the title and cwd
+ * fallbacks in particular (`opts` first, then whatever the index knows, then the id) are behaviour,
+ * not formatting. One place to read them, one place to change them.
+ */
+function tailResult(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  events: TailEvent[],
+  error?: string,
+  more = false,
+): TailResult {
+  return {
+    session_id: sessionId,
+    source: tf.source,
+    title: opts.title ?? tf.title ?? sessionId,
+    cwd: opts.cwd ?? tf.cwd ?? '',
+    events,
+    has_more: more,
+    ...(error ? { error } : {}),
+  }
+}
+
+/** tailResult for a store read whole: windows it and reports what the window cut off. */
+function windowedResult(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  all: TailEvent[],
+  limit: number,
+): TailResult {
+  const { events, more } = lastTurns(all, limit)
+  return tailResult(sessionId, tf, opts, events, undefined, more)
+}
+
+/** Foreign adapters return the WHOLE conversation; these stores are small enough that a windowed
+ *  read would add a code path for no gain. */
+function tailForeignStore(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  keep: (e: TailEvent) => boolean,
+  limit: number,
+): TailResult {
+  return windowedResult(
+    sessionId,
+    tf,
+    opts,
+    readForeignSession(tf.tool ?? '', tf.path).filter(keep),
+    limit,
+  )
+}
+
+/** Hermes: `tf.path` is passed through because a Hermes profile is a SEPARATE database from the
+ *  default store, so reading without it would silently answer from the wrong one whenever more
+ *  than one store exists. */
+function tailHermesStore(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  keep: (e: TailEvent) => boolean,
+  limit: number,
+): TailResult {
+  const content = readHermesSession(sessionId, tf.path)
+  if (!content) return tailResult(sessionId, tf, opts, [], 'transcript not found')
+  return windowedResult(sessionId, tf, opts, content.events.filter(keep), limit)
+}
+
+/** OpenCode: `tf.path` is THE store (audit AH-34). Kilo, MiMo Code and IcodeMate are
+ *  OpenCode-format stores with their own databases, and discovery already put each row's database
+ *  here. Reading the default OpenCode database instead answered "transcript not found" for every
+ *  session those products had, and a colliding id would have shown the wrong product's chat. */
+function tailOpenCodeStore(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  keep: (e: TailEvent) => boolean,
+  limit: number,
+): TailResult {
+  const content = readOpenCodeSession(sessionId, tf.path)
+  if (!content) return tailResult(sessionId, tf, opts, [], 'transcript not found')
+  return windowedResult(sessionId, tf, opts, content.events.filter(keep), limit)
+}
+
+/** DeepSeek Harness: one file per session, so `tf.path` IS the log — but it is zstd, so it cannot
+ *  go through the byte-tail path Claude and Codex use below. A tail of the last N events therefore
+ *  costs a whole decode: the frames are chained, so there is no suffix of the file that can be
+ *  decompressed on its own, and a session large enough for that to hurt is bounded by the reader's
+ *  own output cap rather than by anything this function could do. */
+function tailDshLog(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  keep: (e: TailEvent) => boolean,
+  limit: number,
+): TailResult {
+  const content = readDshSession(tf.path)
+  if (!content) return tailResult(sessionId, tf, opts, [], 'transcript not found')
+  return windowedResult(sessionId, tf, opts, content.events.filter(keep), limit)
+}
+
+function tailHSwarmJob(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  keep: (e: TailEvent) => boolean,
+  limit: number,
+): TailResult {
+  const content = readHSwarmSession(tf.path)
+  if (!content) return tailResult(sessionId, tf, opts, [], 'transcript not found')
+  return windowedResult(sessionId, tf, opts, content.events.filter(keep), limit)
+}
+
+/** Read the last `limit` real turns of a session's transcript, thinking filtered out.
+ *
+ *  One branch per STORE KIND, each in its own helper above: the stores answer the same question in
+ *  genuinely different ways (a database read, an adapter, a windowed byte read off the end of a
+ *  .jsonl), and inlining all four put this function over the complexity gate while hiding which
+ *  fallbacks belonged to which store. */
+export async function tailTranscript(
+  sessionId: string,
+  opts: TailOptions = {},
+  source?: SessionSource,
+  locator?: string,
+): Promise<TailResult> {
+  const limit = opts.limit ?? 40
+  const keep = tailKeeper(opts)
+  const filter: TailFilter = { thinking: opts.thinking ?? false }
+  // Async: this is the endpoint the open chat polls every 4 s, and the one a just-dispatched run
+  // hits before its transcript exists. The sync lookup would answer "not found" until some later
+  // poll — or, before the sweep became async, freeze the daemon while it looked.
+  const tf = await findTranscriptAsync(sessionId, source, locator)
+  if (!tf) {
+    // No row at all, so there is no TranscriptFile to take a title or cwd from — this is the one
+    // return that cannot go through tailResult().
+    return {
+      session_id: sessionId,
+      source: source ?? 'claude',
+      title: opts.title ?? sessionId,
+      cwd: opts.cwd ?? '',
+      events: [],
+      error: 'transcript not found',
+    }
+  }
+  if (tf.source === 'foreign') return tailForeignStore(sessionId, tf, opts, keep, limit)
+  if (tf.source === 'hermes') return tailHermesStore(sessionId, tf, opts, keep, limit)
+  if (tf.source === 'opencode') return tailOpenCodeStore(sessionId, tf, opts, keep, limit)
+  if (tf.source === 'dsh') return tailDshLog(sessionId, tf, opts, keep, limit)
+  if (tf.source === 'zswarm') return tailHSwarmJob(sessionId, tf, opts, keep, limit)
+
+  // Claude and Codex: a real .jsonl on disk, read from the END rather than parsed whole.
+  //
+  // The open chat asks this every 4 s, and almost every time the file has not changed since the
+  // last ask. The answer depends on nothing but the file's bytes and the options, so it is
+  // remembered by the file's size and mtime: an idle open session costs a stat, not a 6 MB read
+  // and a JSON parse of every line back to the window's start.
+  const st = await statAsync(tf.path).catch(() => null)
+  const sig = st ? `${st.size}:${st.mtimeMs}` : null
+  const memoKey = [
+    tf.path,
+    sessionId,
+    limit,
+    `${opts.textOnly ? 1 : 0}${opts.thinking ? 1 : 0}${opts.humanOnly ? 1 : 0}`,
+    opts.title ?? '',
+    opts.cwd ?? '',
+    opts.before ?? '',
+  ].join('\u0000')
+  const hit = sig ? tailMemo.get(memoKey) : undefined
+  if (hit && hit.sig === sig) return hit.result
+  // A Codex chat's newest rollout can hold only the rows since an earlier one (history_base): its tail reads back
+  // through them, and `before` pages above it.
+  const page =
+    tf.source === 'codex' ? await readCodexTail(tf.path, 6 * 1024 * 1024, opts.before) : null
+  const raw = page ? page.text : await readTailBytes(tf.path, 6 * 1024 * 1024)
+  const result = tailFromJsonl(sessionId, tf, opts, raw, { filter, keep, limit }, page?.start)
+  if (sig) {
+    tailMemo.delete(memoKey)
+    tailMemo.set(memoKey, { sig, result })
+    if (tailMemo.size > TAIL_MEMO_MAX) tailMemo.delete(tailMemo.keys().next().value!)
+  }
+  return result
+}
+
+/** The last few JSONL tail answers, newest last (a Map keeps insertion order, so the oldest is the
+ *  first key). A handful covers every open window and the session a reader flips back to. */
+const TAIL_MEMO_MAX = 24
+const tailMemo = new Map<string, { sig: string; result: TailResult }>()
+
+function tailFromJsonl(
+  sessionId: string,
+  tf: TranscriptFile,
+  opts: TailOptions,
+  raw: string,
+  w: { filter: TailFilter; keep: (e: TailEvent) => boolean; limit: number },
+  /** Where `raw` begins in a Codex chat's history (readCodexTail's `start`); the result then says where it begins. */
+  historyAt?: number,
+): TailResult {
+  const {
+    events,
+    cwd: rawCwd,
+    more,
+    firstLine,
+  } = collectTailEventsFromRaw(raw, tf.source, w.filter, w.keep, w.limit)
+  // A window its message limit cut begins at its earliest kept line; one read to its top begins where it was read from.
+  const historyStart =
+    historyAt === undefined
+      ? undefined
+      : more
+        ? historyAt +
+          Buffer.byteLength(raw.split('\n', firstLine).join('\n')) +
+          (firstLine > 0 ? 1 : 0)
+        : historyAt
+  const title = opts.title || sessionId
+  const cwd = opts.cwd || rawCwd
+  return {
+    session_id: sessionId,
+    source: tf.source,
+    title,
+    cwd: cwd || decodeProjectKey(tf.project),
+    events,
+    has_more: more || (historyStart ?? 0) > 0,
+    ...(historyStart === undefined ? {} : { history_start: historyStart }),
+  }
+}
+
+/**
+ * A Task-tool subagent's own run, found from the call that started it. Claude writes each run to
+ * `<project>/<session>/subagents/agent-<id>.jsonl` (a level deeper for workflows) beside an
+ * `agent-<id>.meta.json` naming the `toolUseId` of that call, so the viewer can open an Agent step
+ * into what the agent did. Only that one session's subagents folder is searched, and the id must
+ * look like an id, so a request names a call, never a file.
+ */
+export async function tailSubagent(
+  sessionId: string,
+  toolUseId: string,
+  opts: TailOptions = {},
+  locator?: string,
+): Promise<TailResult> {
+  const nothing = (error: string): TailResult => ({
+    session_id: sessionId,
+    source: 'claude',
+    title: opts.title ?? sessionId,
+    cwd: opts.cwd ?? '',
+    events: [],
+    error,
+  })
+  if (!TOOL_CALL_ID.test(toolUseId)) return nothing('not a tool call id')
+  const tf = await findTranscriptAsync(sessionId, 'claude', locator)
+  if (tf?.source !== 'claude') return nothing('transcript not found')
+  const run = await findSubagentRun(
+    join(dirname(tf.path), basename(tf.path, '.jsonl'), 'subagents'),
+    toolUseId,
+  )
+  if (!run) return nothing('no transcript of that agent')
+  return tailFromJsonl(
+    sessionId,
+    { ...tf, path: run.path },
+    { ...opts, title: run.title || opts.title },
+    await readTailBytes(run.path, 6 * 1024 * 1024),
+    {
+      filter: { thinking: opts.thinking ?? false },
+      keep: tailKeeper(opts),
+      limit: opts.limit ?? 40,
+    },
+  )
+}
+
+const TOOL_CALL_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/** The run a call started, by its meta file. One session's folder holds its own agents (dozens,
+ *  not thousands), so reading those small files on demand beats keeping an index of them. */
+async function findSubagentRun(
+  dir: string,
+  toolUseId: string,
+): Promise<{ path: string; title: string } | null> {
+  try {
+    for await (const rel of new Bun.Glob('**/*.meta.json').scan({ cwd: dir, onlyFiles: true })) {
+      const metaPath = join(dir, rel)
+      let meta: { toolUseId?: unknown; description?: unknown }
+      try {
+        meta = JSON.parse(await Bun.file(metaPath).text())
+      } catch {
+        continue
+      }
+      if (meta?.toolUseId !== toolUseId) continue
+      const path = `${metaPath.slice(0, -'.meta.json'.length)}.jsonl`
+      if (!(await Bun.file(path).exists())) continue
+      return { path, title: typeof meta.description === 'string' ? meta.description : '' }
+    }
+  } catch {
+    // no subagents folder: the session never started an agent
+  }
+  return null
+}

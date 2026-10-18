@@ -1,0 +1,75 @@
+// Self-update adapter — dispatches to the right mechanism per distribution:
+//   · SOURCE checkout  → the shared git engine (createUpdater / updater-engine.mjs): git pull +
+//     reinstall + rebuild.
+//   · COMPILED release → the GitHub-Releases updater (./github-updater): download the latest
+//     release's platform bundle and swap the self-contained executable in place.
+// Both expose the identical UpdateStatus / UpdateApplyResult shape, so the /api/update routes, the
+// auto-update loop, and the web UI drive whichever is active without knowing which it is.
+import { APP_ROOT, IS_RELEASE, SERVICE_NAME } from './config'
+import { spawnCaptured } from './core/process'
+import { applyUpdate as ghApplyUpdate, checkForUpdate as ghCheckForUpdate } from './github-updater'
+import { beginUpdateProgress, finishUpdateProgress, setUpdatePhase } from './update-progress'
+import { createUpdater, type UpdateApplyResult, type UpdateStatus } from './updater-engine.mjs'
+
+export type { UpdateApplyResult, UpdateStatus }
+
+// Pre-rename override kept working. The shared kit engine takes a SINGLE env-var name, so mirror
+// the legacy spelling forward here rather than fork updater-engine.mjs for one alias.
+if (!process.env.AGENTHYDRA_UPDATE_REPO && process.env.CCMANAGERUI_UPDATE_REPO) {
+  process.env.AGENTHYDRA_UPDATE_REPO = process.env.CCMANAGERUI_UPDATE_REPO
+}
+
+const gitUpdater = createUpdater({
+  appRoot: APP_ROOT,
+  serviceName: SERVICE_NAME,
+  appLabel: 'AgentHydra',
+  updateRepoEnvVar: 'AGENTHYDRA_UPDATE_REPO',
+  installCmd: ['bun', 'install'],
+  // Desk 2 (desk2/) is AgentHydra 2.0's window: its own `bun install` then `bun run build`, in desk2/.
+  // The kit engine takes one command, so a short bun script runs the two and fails on the first error.
+  buildCmd: [
+    'bun',
+    '-e',
+    "for (const a of [['install'], ['run', 'build']]) { const r = Bun.spawnSync(['bun', ...a], { cwd: 'desk2', stdout: 'inherit', stderr: 'inherit' }); if (r.exitCode !== 0) process.exit(r.exitCode ?? 1) }",
+  ],
+  // Every git, install and build step runs on the spawn worker's own lane (core/spawn-worker.ts):
+  // the engine's node spawn of git held the daemon's thread (21.7 s in 7 STALL blocks on
+  // updater-engine.mjs:58, 2026-10-11), and that thread serves every route.
+  run: async (args, { cwd, env, timeoutMs }) => {
+    const r = await spawnCaptured(args, { cwd, env, timeoutMs, lane: 'updater' })
+    return r.code === null && !r.timedOut && !r.stdout && !r.stderr
+      ? { ...r, stderr: `${args[0]} could not be started` }
+      : r
+  },
+})
+
+/** `fresh` bypasses the compiled path's 5-minute result cache, for a check a PERSON asked for.
+ *  It is only meaningful there: the source path shells out to git on every call and holds no
+ *  cache, so it is already as fresh as it can be and the flag is silently irrelevant rather than
+ *  ignored. The shared kit engine's signature is untouched either way. */
+export function checkForUpdate(opts: { fresh?: boolean } = {}): Promise<UpdateStatus> {
+  return IS_RELEASE ? ghCheckForUpdate(opts) : gitUpdater.checkForUpdate()
+}
+
+export async function applyUpdate(): Promise<UpdateApplyResult> {
+  // The compiled path publishes its own fine-grained progress (it owns the download loop).
+  if (IS_RELEASE) return ghApplyUpdate()
+
+  // The source path cannot: git pull / `bun install` / the web build all run inside the shared kit
+  // engine, which is synced and not ours to instrument. So report the phase honestly and say why it
+  // is slow, rather than leaving a mute spinner over several minutes of real work — that silence is
+  // the whole complaint. Coarse and true beats precise and invented.
+  beginUpdateProgress('Starting the update…')
+  setUpdatePhase(
+    'building',
+    'Pulling, reinstalling dependencies and rebuilding the web app. This runs three commands back to back and usually takes a few minutes.',
+  )
+  try {
+    const result = await gitUpdater.applyUpdate()
+    finishUpdateProgress(result.ok, result.message ?? (result.ok ? 'Updated.' : 'Update failed.'))
+    return result
+  } catch (e) {
+    finishUpdateProgress(false, e instanceof Error ? e.message : String(e))
+    throw e
+  }
+}

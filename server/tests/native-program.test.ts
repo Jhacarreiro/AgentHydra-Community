@@ -1,0 +1,811 @@
+import { describe, expect, test } from 'bun:test'
+import { win32 as path } from 'node:path'
+import { runInNewContext } from 'node:vm'
+import { type NativeRequest, nativeProgram } from '../src/core/claude-native/native-program'
+
+// The shapes the generated program hands to, and reads from, Claude's managers.
+interface FixtureSession {
+  sessionId: string
+  cliSessionId: string
+}
+interface ArchiveOptions {
+  cleanupWorktree?: boolean
+}
+interface HtmlPreview {
+  cwd: string
+}
+
+// Tests the generated program's own guards in an inert runtime against stand-in managers;
+// this suite needs no installed app.
+function harness() {
+  const profileDir = 'D:\\profiles\\target'
+  // Content-hashed bundle names: the program must find these by export, not by file name.
+  const appPath = 'D:\\Claude\\app.asar'
+  const managerPath = path.join(appPath, '.vite', 'build', 'index.chunk-AAA.js')
+  const mainPath = path.join(appPath, '.vite', 'build', 'index.chunk-BBB.js')
+  const strayPath = path.join('D:\\elsewhere', 'index.chunk-CCC.js')
+  const target: any = {
+    sessionId: 'local_target',
+    cliSessionId: 'cli-target',
+    title: 'Same title',
+    isArchived: false,
+    isRunning: false,
+    query: null,
+    backend: { kind: 'local' },
+    cwd: 'D:\\work\\target',
+    model: 'claude-opus-5',
+    effort: 'max',
+    permissionMode: 'acceptEdits',
+    sessionSettings: { ultracode: true },
+    alwaysAllowedReasons: new Set(['fixture']),
+    sessionPermissionUpdates: [],
+  }
+  const other: any = {
+    ...target,
+    sessionId: 'local_other',
+    cliSessionId: 'cli-other',
+    cwd: 'D:\\work\\other',
+    sessionSettings: { ultracode: true },
+  }
+  const sessions = new Map([
+    [target.sessionId, target],
+    [other.sessionId, other],
+  ])
+  const calls: any[] = []
+  const requireBases: string[] = []
+  const manager: any = {
+    sessions,
+    currentAccountId: 'account',
+    currentOrgId: 'org',
+    userDataPath: profileDir,
+    startingSessionIds: new Set(),
+    parked: new Set(),
+    movesInFlight: new Map(),
+    deletingSessionIds: new Map(),
+    sideSessionStartsInFlight: new Map(),
+    permissionBroker: { hasPendingFor: () => false },
+    userDialogBroker: { hasPendingFor: () => false },
+    waitForInitialization: async () => {},
+    ensureArchivedSessionsLoaded: async () => {},
+    getSessionList: async () => ({ sessions: [], loadGeneration: 7 }),
+    archiveCascadeClosureOf: () => [],
+    losableWorkKind: () => undefined,
+    hasPendingUserInput: () => false,
+    localLineageIds: (s: FixtureSession) => [s.cliSessionId],
+    // Shaped like Claude's: archive forwards cleanupWorktree to teardown, which reads it.
+    teardownSession: async (_id: string, _reason: string, options?: ArchiveOptions) =>
+      options?.cleanupWorktree,
+    archiveSession: async (id: string, options?: ArchiveOptions) => {
+      if (options?.cleanupWorktree !== false) throw Error('fixture expects cleanupWorktree: false')
+      calls.push({ id, options })
+      sessions.get(id)!.isArchived = true
+    },
+  }
+  let version = '2.9999.0'
+  const hash = 'manager-source-hash'
+  const mainHash = 'main-source-hash'
+  const previews: any = {
+    getServersForWorktree: () => [],
+    // Claude's prefix match, which the preview guard models and the pre-dispatch check reads.
+    stopServersForWorktree: (cwd: string) =>
+      [...previews.htmlPreviews.values()].filter((p: HtmlPreview) => p.cwd.startsWith(cwd)).length,
+    htmlPreviews: new Map(),
+  }
+  const cache: any = {
+    [managerPath]: { loaded: true, exports: { claudeCodeSessionManager: manager } },
+    [mainPath]: { loaded: true, exports: { Ac: previews } },
+    // Another application's module, and an unfinished one, are both out of scope for discovery.
+    [strayPath]: { loaded: true, exports: { claudeCodeSessionManager: {}, Ac: previews } },
+  }
+  const require: any = (name: string) => {
+    if (name === 'node:module')
+      return {
+        createRequire: (filename: string) => {
+          requireBases.push(filename)
+          return require
+        },
+      }
+    if (name === 'electron')
+      return {
+        app: {
+          isReady: () => true,
+          getVersion: () => version,
+          getPath: () => profileDir,
+          getAppPath: () => 'D:\\Claude\\app.asar',
+        },
+      }
+    if (name === 'node:path') return path
+    if (name === 'node:fs') return { readFileSync: (filename: string) => filename }
+    if (name === 'node:crypto')
+      return {
+        createHash: () => ({
+          update: (filename: string) => ({
+            digest: () => (filename === mainPath ? mainHash : hash),
+          }),
+        }),
+      }
+    throw Error(`Unexpected require; fixture must never load a manager: ${name}`)
+  }
+  require.resolve = (name: string) => name
+  require.cache = cache
+  const process = {
+    pid: 400,
+    platform: 'win32',
+    mainModule: { filename: 'electron', require },
+  }
+  const request: NativeRequest = {
+    action: 'archive',
+    pid: 400,
+    profileDir,
+    accountId: 'account',
+    orgId: 'org',
+    sessionId: target.sessionId,
+    cliSessionId: target.cliSessionId,
+    expectedTitle: target.title,
+  }
+  return {
+    appPath,
+    manager,
+    target,
+    other,
+    calls,
+    requireBases,
+    cache,
+    managerPath,
+    mainPath,
+    strayPath,
+    previews,
+    request,
+    version: (v: string) => {
+      version = v
+    },
+    run: (patch: Partial<NativeRequest> = {}) =>
+      runInNewContext(nativeProgram({ ...request, ...patch }), { process }),
+  }
+}
+
+describe('native inspector program guards (inert runtime, no connection)', () => {
+  test('inspection loads archived records and rechecks account identity afterward', async () => {
+    const h = harness()
+    h.manager.sessions.delete(h.target.sessionId)
+    h.manager.ensureArchivedSessionsLoaded = async (reason: string) => {
+      expect(reason).toBe('ownership')
+      h.target.isArchived = true
+      h.manager.sessions.set(h.target.sessionId, h.target)
+    }
+    const inspected = await h.run({ action: 'inspect', sessionId: undefined })
+    const inspectedTarget = inspected.sessions.find(
+      (session: FixtureSession) => session.sessionId === h.target.sessionId,
+    )
+    expect(inspectedTarget.isArchived).toBe(true)
+    expect(await h.run()).toMatchObject({ ok: true, changed: false, dispatch: 'not-sent' })
+    expect(h.calls).toEqual([])
+    h.manager.ensureArchivedSessionsLoaded = async () => {
+      h.manager.currentAccountId = 'changed'
+    }
+    expect(await h.run({ action: 'inspect' })).toMatchObject({ ok: false, dispatch: 'not-sent' })
+  })
+  test('inspection uses loaded singleton and returns native evidence without a mutation', async () => {
+    const h = harness()
+    delete h.cache[h.mainPath]
+    const result = await h.run({ action: 'inspect', sessionId: undefined })
+    expect(result).toMatchObject({
+      ok: true,
+      verified: true,
+      dispatch: 'not-sent',
+      loadGeneration: 7,
+    })
+    expect(result.sessions).toHaveLength(2)
+    expect(result.evidence).toContain('not screenshot proof')
+    expect(h.calls).toEqual([])
+    expect(h.requireBases).toEqual(['D:\\Claude\\app.asar\\package.json'])
+  })
+  test('wrong process, profile, account, organization and CLI ID refuse without archive', async () => {
+    for (const patch of [
+      { pid: 401 },
+      { profileDir: 'D:\\wrong' },
+      { accountId: 'wrong' },
+      { orgId: 'wrong' },
+      { cliSessionId: 'rotated-cli' },
+      { sessionId: 'Same title' },
+    ]) {
+      const h = harness()
+      expect(await h.run(patch)).toMatchObject({ ok: false, dispatch: 'not-sent' })
+      expect(h.calls).toEqual([])
+    }
+  })
+  test('unloaded, missing and ambiguous singletons fail closed, never importing another', async () => {
+    for (const change of [
+      (h: ReturnType<typeof harness>) => {
+        delete h.cache[h.managerPath]
+      },
+      (h: ReturnType<typeof harness>) => {
+        delete h.cache[h.mainPath]
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.cache[h.managerPath].loaded = false
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.cache[h.mainPath].loaded = false
+      },
+      // A second in-app module exporting a DIFFERENT manager is ambiguous, so nothing is chosen.
+      (h: ReturnType<typeof harness>) => {
+        h.cache[path.join(h.appPath, 'rival.js')] = {
+          loaded: true,
+          exports: { claudeCodeSessionManager: { sessions: new Map() } },
+        }
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.cache[path.join(h.appPath, 'rival.js')] = {
+          loaded: true,
+          exports: { Ac: { ...h.previews, htmlPreviews: new Map() } },
+        }
+      },
+    ]) {
+      const h = harness()
+      change(h)
+      expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+      expect(h.calls).toEqual([])
+    }
+  })
+
+  test('a new Claude version needs no code change, and its bundle members are reported', async () => {
+    const h = harness()
+    h.version('3.0.0-brand-new')
+    const result: any = await h.run({ action: 'inspect', sessionId: undefined })
+    expect(result).toMatchObject({ ok: true, verified: true })
+    expect(result.identity).toMatchObject({
+      version: '3.0.0-brand-new',
+      managerMember: path.join('.vite', 'build', 'index.chunk-AAA.js'),
+      managerSha256: 'manager-source-hash',
+    })
+  })
+
+  test('a module beside the app that merely shares its path prefix is never a candidate', async () => {
+    const h = harness()
+    // Same prefix as app.asar, different folder: must not count as a second, ambiguous manager.
+    h.cache['D:\\Claude\\app.asar.unpacked\\rival.js'] = {
+      loaded: true,
+      exports: { claudeCodeSessionManager: { sessions: new Map() }, Zz: { ...h.previews } },
+    }
+    expect(await h.run()).toMatchObject({ ok: true, verified: true, changed: true })
+  })
+
+  test('a second preview manager inside the hinted module is still ambiguity', async () => {
+    const h = harness()
+    h.cache[h.mainPath].exports.Other = { ...h.previews, htmlPreviews: new Map() }
+    expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+    expect(h.calls).toEqual([])
+  })
+
+  test('archive refuses before dispatch when Claude stopped honouring the guards it relies on', async () => {
+    for (const change of [
+      // archive no longer takes the option that keeps the checkout's files
+      (h: ReturnType<typeof harness>) => {
+        h.manager.archiveSession = async (id: string) => {
+          h.calls.push({ id })
+        }
+      },
+      // archive still forwards it, but teardown stopped reading it
+      (h: ReturnType<typeof harness>) => {
+        h.manager.archiveSession = async (id: string, o?: ArchiveOptions) =>
+          h.manager.teardownSession(id, 'archive', { cleanupWorktree: o?.cleanupWorktree })
+        h.manager.teardownSession = async () => undefined
+      },
+      // preview cleanup no longer matches by the prefix the guard models
+      (h: ReturnType<typeof harness>) => {
+        h.previews.stopServersForWorktree = (cwd: string) => (cwd === 'exact' ? 1 : 0)
+      },
+    ]) {
+      const h = harness()
+      change(h)
+      expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+      expect(h.calls).toEqual([])
+    }
+  })
+
+  test('the preview manager is found by shape even when its export is renamed', async () => {
+    const h = harness()
+    const renamed = { ...h.cache[h.mainPath].exports.Ac }
+    h.cache[h.mainPath].exports = { Zz: renamed }
+    const result: any = await h.run()
+    expect(result).toMatchObject({ ok: true, verified: true, changed: true })
+    expect(result.identity.mainMember).toBe(path.join('.vite', 'build', 'index.chunk-BBB.js'))
+  })
+  test('account switch and resumed turn during async list read are checked before mutation', async () => {
+    for (const change of [
+      (h: ReturnType<typeof harness>) => {
+        h.manager.currentAccountId = 'new'
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.target.isRunning = true
+      },
+    ]) {
+      const h = harness()
+      h.manager.getSessionList = async () => {
+        change(h)
+        return { sessions: [], loadGeneration: 8 }
+      }
+      expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+      expect(h.calls).toEqual([])
+    }
+  })
+  test('cascade, pending start/input and attached parent refuse conservatively', async () => {
+    for (const change of [
+      (h: ReturnType<typeof harness>) => {
+        h.manager.archiveCascadeClosureOf = () => [h.other]
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.manager.startingSessionIds.add(h.target.sessionId)
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.manager.hasPendingUserInput = () => true
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.target.spawnedFrom = { sessionId: 'parent' }
+      },
+    ]) {
+      const h = harness()
+      change(h)
+      expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+      expect(h.calls).toEqual([])
+    }
+  })
+  test('2.9939.4 keeps starting ids on inFlightStarts: archive works, a start there refuses', async () => {
+    const h = harness()
+    const starting = new Map()
+    delete (h.manager as any).startingSessionIds
+    ;(h.manager as any).inFlightStarts = { startingSessionIds: starting }
+    expect(await h.run()).toMatchObject({ ok: true, dispatch: 'sent' })
+    const busy = harness()
+    delete (busy.manager as any).startingSessionIds
+    ;(busy.manager as any).inFlightStarts = {
+      startingSessionIds: new Map([[busy.target.sessionId, {}]]),
+    }
+    expect(await busy.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+    expect(busy.calls).toEqual([])
+  })
+  // 2026-10-09: 2.31226.0 moved localLineageIds to manager.transcriptIdClaims, and every native
+  // action (archive, ultracode, pause) refused with "native method unavailable: localLineageIds".
+  test('2.31226.0 keeps lineage ids on transcriptIdClaims: archive and ultracode still work', async () => {
+    const moved = (h: ReturnType<typeof harness>) => {
+      const lineage = h.manager.localLineageIds
+      delete h.manager.localLineageIds
+      h.manager.transcriptIdClaims = { localLineageIds: lineage }
+    }
+    const h = harness()
+    moved(h)
+    expect(await h.run()).toMatchObject({ ok: true, dispatch: 'sent', changedFields: [] })
+    const u = harness()
+    moved(u)
+    u.manager.applyFlagSettings = async () => {}
+    expect(await u.run({ action: 'ultracode', effort: 'max' })).toMatchObject({ verified: true })
+    const gone = harness()
+    delete gone.manager.localLineageIds
+    expect(await gone.run()).toMatchObject({
+      ok: false,
+      dispatch: 'not-sent',
+      reason: 'NATIVE_REFUSAL: native method unavailable: localLineageIds',
+    })
+  })
+  test('shared cwd is allowed when native server and HTML preview registries are empty', async () => {
+    const h = harness()
+    h.other.cwd = h.target.cwd
+    const result = await h.run()
+    expect(result).toMatchObject({ ok: true, dispatch: 'sent', bystanderArchiveChanges: [] })
+    expect(result.identity.mainSha256).toBe('main-source-hash')
+    expect(h.calls).toEqual([{ id: 'local_target', options: { cleanupWorktree: false } }])
+    expect(h.other.isArchived).toBe(false)
+  })
+  test("the archived chat's OWN servers do not block its archive; another chat's still do", async () => {
+    const h = harness()
+    h.previews.getServersForWorktree = () => [
+      { serverId: 'own-server', sessionId: h.target.sessionId, status: 'running' },
+    ]
+    expect(await h.run()).toMatchObject({ ok: true, dispatch: 'sent' })
+    expect(h.calls).toEqual([{ id: 'local_target', options: { cleanupWorktree: false } }])
+
+    const mixed = harness()
+    mixed.previews.getServersForWorktree = () => [
+      { serverId: 'own-server', sessionId: mixed.target.sessionId, status: 'running' },
+      { serverId: 'bystander', sessionId: 'local_someone_else', status: 'running' },
+    ]
+    expect(await mixed.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+    expect(mixed.calls).toEqual([])
+  })
+  test('a server whose owner is leaving in the same move, or already archived, is no bystander', async () => {
+    // 2026-09-26: a batch of chats sharing one cwd refused every source archive over its
+    // siblings' servers, leaving all the source rows visible.
+    const sibling = () => {
+      const h = harness()
+      h.other.cwd = h.target.cwd
+      h.previews.getServersForWorktree = () => [
+        { serverId: 'sibling-server', sessionId: h.other.sessionId, status: 'running' },
+      ]
+      return h
+    }
+    const leaving = sibling()
+    expect(await leaving.run({ leavingCliSessionIds: ['cli-other'] })).toMatchObject({
+      ok: true,
+      dispatch: 'sent',
+    })
+    const archived = sibling()
+    archived.other.isArchived = true
+    expect(await archived.run()).toMatchObject({ ok: true, dispatch: 'sent' })
+    const staying = sibling()
+    expect(await staying.run({ leavingCliSessionIds: ['cli-somebody'] })).toMatchObject({
+      ok: false,
+      dispatch: 'not-sent',
+    })
+    // A source at its usage limit is always archived (owner, 2026-09-26): the staying chat's
+    // server no longer refuses it, and the result names what the archive stopped.
+    const walled = sibling()
+    walled.previews.htmlPreviews.set('html-preview-other', { cwd: walled.target.cwd })
+    expect(await walled.run({ sourceAtLimit: true })).toMatchObject({
+      ok: true,
+      dispatch: 'sent',
+      stoppedBystanders: [
+        { kind: 'server', id: 'sibling-server', sessionId: 'local_other' },
+        { kind: 'html-preview', id: 'html-preview-other', cwd: walled.target.cwd },
+      ],
+    })
+  })
+  test("shared cwd refuses another chat's registry servers, whatever their state", async () => {
+    const h = harness()
+    h.other.cwd = h.target.cwd
+    h.previews.getServersForWorktree = (cwd: string) => {
+      expect(cwd).toBe(h.target.cwd)
+      return [{ serverId: 'other-server', sessionId: h.other.sessionId, status: 'stopped' }]
+    }
+    expect(await h.run()).toMatchObject({
+      ok: false,
+      dispatch: 'not-sent',
+      reason: 'NATIVE_REFUSAL: shared working directory has servers that archive would stop',
+    })
+    expect(h.calls).toEqual([])
+  })
+  test('shared cwd HTML guard preserves native prefix matching even without a separator', async () => {
+    for (const suffix of ['', '\\nested', '-unrelated-sibling']) {
+      const h = harness()
+      h.other.cwd = h.target.cwd
+      h.previews.htmlPreviews.set('html-preview-other', { cwd: h.target.cwd + suffix })
+      expect(await h.run()).toMatchObject({
+        ok: false,
+        dispatch: 'not-sent',
+        reason:
+          'NATIVE_REFUSAL: shared working directory has HTML previews that archive would stop',
+      })
+      expect(h.calls).toEqual([])
+    }
+  })
+  test('unrelated HTML previews do not block an otherwise empty shared cwd', async () => {
+    const h = harness()
+    h.other.cwd = h.target.cwd
+    h.previews.htmlPreviews.set('html-preview-unrelated', { cwd: 'D:\\elsewhere' })
+    expect(await h.run()).toMatchObject({ ok: true, dispatch: 'sent' })
+    expect(h.calls).toHaveLength(1)
+  })
+  test('HTML prefix bystanders are protected even without another session sharing exact cwd', async () => {
+    const h = harness()
+    h.other.cwd = `${h.target.cwd}-unrelated-sibling`
+    h.previews.htmlPreviews.set('html-preview-other', { cwd: h.other.cwd })
+    expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+    expect(h.calls).toEqual([])
+  })
+  test('a superseded move source archives over an attached parent and names it', async () => {
+    const ordinary = harness()
+    ordinary.target.spawnedFrom = { sessionId: 'parent' }
+    expect(await ordinary.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+    expect(ordinary.calls).toEqual([])
+
+    const superseded = harness()
+    superseded.target.spawnedFrom = { sessionId: 'parent' }
+    expect(await superseded.run({ sourceSuperseded: true })).toMatchObject({
+      ok: true,
+      dispatch: 'sent',
+      attachedParent: 'parent',
+    })
+    expect(superseded.calls).toEqual([{ id: 'local_target', options: { cleanupWorktree: false } }])
+  })
+  test('a superseded move source archives over other chats previews and names them', async () => {
+    const h = harness()
+    h.other.cwd = h.target.cwd
+    h.previews.htmlPreviews.set('html-preview-other', { cwd: h.target.cwd })
+    expect(await h.run({ sourceSuperseded: true })).toMatchObject({
+      ok: true,
+      dispatch: 'sent',
+      stoppedBystanders: [{ kind: 'html-preview', id: 'html-preview-other', cwd: h.target.cwd }],
+    })
+  })
+  test('a superseded move source still refuses cascades and pending input', async () => {
+    for (const change of [
+      (h: ReturnType<typeof harness>) => {
+        h.manager.archiveCascadeClosureOf = () => [h.other]
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.manager.hasPendingUserInput = () => true
+      },
+    ]) {
+      const h = harness()
+      change(h)
+      expect(await h.run({ sourceSuperseded: true })).toMatchObject({
+        ok: false,
+        dispatch: 'not-sent',
+      })
+      expect(h.calls).toEqual([])
+    }
+  })
+  test("a move's superseded source left 'stopping' with no engine is archived; outside a move it is busy", async () => {
+    // 2026-10-09: a move left its source row isStopping with nothing running, and every settle
+    // was refused for about ten minutes while the batch reported the move as finished.
+    const moved = harness()
+    moved.target.isStopping = true
+    expect(await moved.run({ sourceSuperseded: true })).toMatchObject({ ok: true, verified: true })
+    expect(moved.calls).toHaveLength(1)
+
+    const ordinary = harness()
+    ordinary.target.isStopping = true
+    expect(await ordinary.run()).toMatchObject({
+      ok: false,
+      dispatch: 'not-sent',
+      reason: expect.stringContaining('(isStopping)'),
+    })
+    expect(ordinary.calls).toEqual([])
+
+    // A stop with its engine or query still attached is real work, superseded or not.
+    for (const live of [{ isRunning: true }, { query: {} }]) {
+      const busy = harness()
+      Object.assign(busy.target, { isStopping: true, ...live })
+      expect(await busy.run({ sourceSuperseded: true })).toMatchObject({
+        ok: false,
+        dispatch: 'not-sent',
+      })
+      expect(busy.calls).toEqual([])
+    }
+  })
+  test('shared cwd aliases, missing managers and malformed resource state fail closed', async () => {
+    for (const change of [
+      (h: ReturnType<typeof harness>) => {
+        h.other.cwd = h.target.cwd.toLowerCase()
+      },
+      (h: ReturnType<typeof harness>) => {
+        delete h.cache[h.mainPath].exports.Ac
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.previews.getServersForWorktree = undefined
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.previews.getServersForWorktree = () => null
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.previews.htmlPreviews = []
+      },
+      (h: ReturnType<typeof harness>) => {
+        h.previews.htmlPreviews.set('malformed', {})
+      },
+    ]) {
+      const h = harness()
+      h.other.cwd = h.target.cwd
+      change(h)
+      expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+      expect(h.calls).toEqual([])
+    }
+  })
+  test('shared preview state is checked after the awaited native list refresh', async () => {
+    const h = harness()
+    h.other.cwd = h.target.cwd
+    h.manager.getSessionList = async () => {
+      h.previews.htmlPreviews.set('new-preview', { cwd: h.target.cwd })
+      return { sessions: [], loadGeneration: 8 }
+    }
+    expect(await h.run()).toMatchObject({ ok: false, dispatch: 'not-sent' })
+    expect(h.calls).toEqual([])
+  })
+  test('archive targets native ID despite duplicate titles and disables worktree cleanup', async () => {
+    const h = harness()
+    expect(await h.run()).toMatchObject({
+      ok: true,
+      verified: true,
+      dispatch: 'sent',
+      changed: true,
+      bystanderArchiveChanges: [],
+      changedFields: [],
+    })
+    expect(h.calls).toEqual([{ id: 'local_target', options: { cleanupWorktree: false } }])
+    expect(h.other.isArchived).toBe(false)
+    expect(await h.run()).toMatchObject({ ok: true, dispatch: 'not-sent', changed: false })
+    expect(h.calls).toHaveLength(1)
+  })
+  test('bystander archive and in-place settings changes produce failed postconditions', async () => {
+    const h = harness()
+    h.manager.archiveSession = async (_id: string, { cleanupWorktree }: ArchiveOptions) => {
+      expect(cleanupWorktree).toBe(false)
+      h.target.isArchived = true
+      h.other.isArchived = true
+      h.target.sessionSettings.ultracode = false
+    }
+    const result = await h.run()
+    expect(result).toMatchObject({ ok: false, verified: false, dispatch: 'sent', changed: true })
+    expect(result.bystanderArchiveChanges).toEqual([
+      { sessionId: 'local_other', before: false, after: true },
+    ])
+    expect(result.changedFields).toContain('sessionSettings')
+  })
+  test('errors after dispatch retain sent status rather than suggesting a safe retry', async () => {
+    const h = harness()
+    h.manager.archiveSession = async (_id: string, { cleanupWorktree }: ArchiveOptions) => {
+      expect(cleanupWorktree).toBe(false)
+      h.target.isArchived = true
+      throw Error('save response lost')
+    }
+    const result = await h.run()
+    expect(result).toMatchObject({ ok: false, verified: false, dispatch: 'sent' })
+    expect(result.reason).toContain('save response lost')
+  })
+  // 2026-09-28: the installed app no longer has startingSessionIds, and the ultracode action
+  // threw "reading 'has'" before dispatch on every chat. It needs only effort and the flag.
+  test('ultracode lands on a manager without the archive-only busy bookkeeping', async () => {
+    const h = harness()
+    delete h.manager.startingSessionIds
+    h.manager.applyFlagSettings = async (
+      id: string,
+      flags: { ultracode: boolean; effortLevel: NativeRequest['effort'] },
+    ) => {
+      const s = h.manager.sessions.get(id)
+      s.sessionSettings = { ...s.sessionSettings, ultracode: flags.ultracode }
+      s.effort = flags.effortLevel
+    }
+    expect(await h.run({ action: 'ultracode', effort: 'xhigh', ultracode: false })).toMatchObject({
+      ok: true,
+      verified: true,
+      before: { effort: 'max', ultracode: true },
+      after: { effort: 'xhigh', ultracode: false },
+    })
+    expect(h.other.sessionSettings.ultracode).toBe(true)
+  })
+  // 2026-10-09: a move clicked the picker on screen for every landed chat (5.5s each). The
+  // ultracode call now takes bypass too, through the app's own setPermissionMode('picker').
+  test('ultracode with bypass sets the mode through the picker call and reads it back', async () => {
+    const h = harness()
+    const modes: any[] = []
+    h.manager.applyFlagSettings = async (
+      id: string,
+      flags: { ultracode: boolean; effortLevel: NativeRequest['effort'] },
+    ) => {
+      const s = h.manager.sessions.get(id)
+      s.sessionSettings = { ...s.sessionSettings, ultracode: flags.ultracode }
+      s.effort = flags.effortLevel
+    }
+    h.manager.setPermissionMode = async (id: string, mode: string, via: string) => {
+      modes.push({ id, mode, via })
+      h.manager.sessions.get(id).permissionMode = mode
+      return true
+    }
+    expect(await h.run({ action: 'ultracode', effort: 'xhigh', bypass: true })).toMatchObject({
+      ok: true,
+      verified: true,
+      before: { permissionMode: 'acceptEdits' },
+      after: { permissionMode: 'bypassPermissions' },
+    })
+    expect(modes).toEqual([{ id: 'local_target', mode: 'bypassPermissions', via: 'picker' }])
+    expect(h.other.permissionMode).toBe('acceptEdits')
+    // The app refusing (a root or remote-spawned chat) reads back as not verified.
+    const refused = harness()
+    refused.manager.applyFlagSettings = h.manager.applyFlagSettings
+    refused.manager.setPermissionMode = async () => false
+    expect(await refused.run({ action: 'ultracode', effort: 'max', bypass: true })).toMatchObject({
+      ok: false,
+      verified: false,
+    })
+  })
+  // Owner, 2026-10-15: "If the app doesn't accept bypass or whatever, it should just be auto."
+  test('ultracode with bypass falls back to Auto when the app will not keep Bypass', async () => {
+    const h = harness()
+    const modes: string[] = []
+    h.manager.applyFlagSettings = async (id: string, flags: any) => {
+      const s = h.manager.sessions.get(id)
+      s.sessionSettings = { ...s.sessionSettings, ultracode: flags.ultracode }
+      s.effort = flags.effortLevel
+    }
+    h.manager.setPermissionMode = async (id: string, mode: string) => {
+      modes.push(mode)
+      if (mode === 'bypassPermissions') throw new Error('Bypass is not available for this chat')
+      h.manager.sessions.get(id).permissionMode = mode
+      return true
+    }
+    expect(await h.run({ action: 'ultracode', effort: 'xhigh', bypass: true })).toMatchObject({
+      ok: true,
+      verified: true,
+      after: { permissionMode: 'auto' },
+      bypassRefused: 'Bypass is not available for this chat',
+    })
+    expect(modes).toEqual(['bypassPermissions', 'auto'])
+  })
+  // 2026-10-09: each import started a second claude.exe only to hand over a claude://resume link.
+  test('import makes the deep link call directly and reads the landing back', async () => {
+    const h = harness()
+    const cli = '0b0e5c1a-1111-4222-8333-444455556666'
+    const calls: any[] = []
+    h.manager.importCliSession = async (id: string, options: { source: string }) => {
+      calls.push({ id, options })
+      h.manager.sessions.set(`local_${id}`, {
+        ...h.target,
+        sessionId: `local_${id}`,
+        cliSessionId: id,
+      })
+      return `local_${id}`
+    }
+    expect(await h.run({ action: 'import', cliSessionId: cli })).toMatchObject({
+      ok: true,
+      verified: true,
+      dispatch: 'sent',
+      importedSessionId: `local_${cli}`,
+    })
+    expect(calls).toEqual([{ id: cli, options: { source: 'deep_link' } }])
+    const archived = harness()
+    archived.manager.importCliSession = async () => archived.target.sessionId
+    archived.target.isArchived = true
+    expect(await archived.run({ action: 'import', cliSessionId: cli })).toMatchObject({
+      ok: false,
+      dispatch: 'sent',
+    })
+    expect(() => nativeProgram({ ...h.request, action: 'import', cliSessionId: 'x"' })).toThrow(
+      'UUID',
+    )
+  })
+  // 2026-10-10: every prewarm shell the idle pass stopped left its ConPTY conhost running.
+  test('idle closes the pseudoconsole of the unused prewarm shell it stops, and touches no other', async () => {
+    const h = harness()
+    const now = Date.now()
+    // Claude's pty host runs node-pty's kill (ClosePseudoConsole) only for a pty it still holds;
+    // the app's stop ends the shell, and the pty host then drops the pty without closing it.
+    const held = new Set(['local_target', 'local_target::2'])
+    const closed: string[] = []
+    const stopped: string[] = []
+    const pty = (key: string, pid: number) => ({
+      pid,
+      kill: () => held.delete(key) && closed.push(key),
+    })
+    const shellPtyProcesses = new Map([
+      ['local_target', pty('local_target', 4101)],
+      ['local_target::2', pty('local_target::2', 4102)],
+    ])
+    h.manager.shellPty = {
+      shellPtyProcesses,
+      shellPtyStats: new Map([
+        ['local_target', { spawnReason: 'prewarm', hadInput: false, reads: 0, startedAt: now }],
+        ['local_target::2', { spawnReason: 'prewarm', hadInput: true, reads: 0, startedAt: now }],
+      ]),
+      stopShellPty: (key: string) => {
+        shellPtyProcesses.delete(key)
+        held.delete(key)
+        stopped.push(key)
+      },
+    }
+    h.manager.pauseSession = async () => {}
+    h.manager.warmLifecycle = {
+      config: { idleTimeoutMs: 0 },
+      sessions: new Map([
+        [
+          'local_target',
+          { visibilityKnown: true, isTabVisible: false, lastHiddenTime: now - 20 * 60_000 },
+        ],
+      ]),
+      startIdleTimeout: () => {},
+      getTimeoutMs: () => 0,
+    }
+    expect(await h.run({ action: 'idle', idleMs: 10 * 60_000 })).toMatchObject({
+      ok: true,
+      shellsStopped: ['local_target'],
+    })
+    expect(stopped).toEqual(['local_target'])
+    expect(closed).toEqual(['local_target'])
+  })
+  test('serialized identifiers cannot inject additional inspector code', async () => {
+    const h = harness()
+    const value = 'local_target");globalThis.injected=true;//'
+    expect(await h.run({ sessionId: value })).toMatchObject({ ok: false, dispatch: 'not-sent' })
+    expect(h.calls).toEqual([])
+    expect(() => nativeProgram({ ...h.request, action: 'delete' as any })).toThrow('Unsupported')
+  })
+})

@@ -1,0 +1,288 @@
+// The Free login sync between two PCs (free-instances/sync.ts): each PC a FreeInstances of its own in a
+// temp home, the store a stand-in for the login-sync Worker's /v1/free (the Worker's own tests own its
+// compare-and-swap; this one keeps that contract and nothing else). DPAPI is real, so Windows only.
+
+import { afterEach, expect, jest, test } from 'bun:test'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { FreeInstance, FreeJob } from '@shared/free-instances'
+import { createServer, type DeskServer } from '../src/index'
+import type { FreeRunner, RunOutput } from '../src/free-instances/runner'
+import type { FreeRuntime } from '../src/free-instances/runtime'
+import { FreeInstances } from '../src/free-instances/service'
+import { FreeSync, newer, readLogin, writeLogin } from '../src/free-instances/sync'
+
+const dirs: string[] = []
+const services: FreeInstances[] = []
+afterEach(async () => { await Promise.all(services.splice(0).map(async s => { await s.settled(); await s.stop() })); dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })) })
+
+/** /v1/free as the Worker keeps it: version 0 creates, the current version replaces, else 409. */
+function fakeStore(token: string) {
+  const rows = new Map<string, { id: string; version: number; blob: string; meta: unknown }>()
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      if (req.headers.get('authorization') !== `Bearer ${token}`) return Response.json({ error: 'unauthorized' }, { status: 401 })
+      const path = new URL(req.url).pathname
+      if (path === '/v1/free') return Response.json({ free: [...rows.values()].map(({ blob: _b, ...r }) => r) })
+      const id = path.slice('/v1/free/'.length)
+      if (req.method === 'GET') return rows.has(id) ? Response.json(rows.get(id)) : Response.json({ error: 'not found' }, { status: 404 })
+      const body = (await req.json()) as { version: number; blob: string; meta: unknown }
+      if ((rows.get(id)?.version ?? 0) !== body.version) return Response.json({ error: 'version conflict' }, { status: 409 })
+      rows.set(id, { id, version: body.version + 1, blob: body.blob, meta: body.meta })
+      return Response.json({ version: body.version + 1 })
+    }
+  })
+  return { url: `http://127.0.0.1:${server.port}`, rows, stop: () => server.stop(true) }
+}
+
+/** One PC: its Free instances, with a harness whose log out deletes the session file, as the real one does. */
+function pc(onAuth?: (stateDir: string) => void) {
+  const home = mkdtempSync(join(tmpdir(), 'desk-free-sync-'))
+  dirs.push(home)
+  const runtime: FreeRuntime = {
+    ready: () => true,
+    ensure: async () => {},
+    config: id => ({ harnessDir: home, python: join(home, 'python.exe'), stateDir: join(home, 'free', 'instances', id), cacheDir: join(home, 'cache') })
+  }
+  const ok = (value: unknown): RunOutput => ({ code: 0, stdout: JSON.stringify(value) })
+  const runner: FreeRunner = async (config, request) => {
+    if (request.command === 'forget') rmSync(join(config.stateDir, request.provider === 'chatgpt' ? 'chatgpt' : '', 'session.dpapi'), { force: true })
+    if (request.command === 'auth') onAuth?.(config.stateDir)
+    return ok({ ok: true, authenticated: true })
+  }
+  const service = new FreeInstances(home, runner, runtime)
+  services.push(service)
+  return { home, service, host: service.syncHost() }
+}
+
+/** Until no operation runs (a landed login is checked at once). */
+async function settled(service: FreeInstances) {
+  for (let i = 0; i < 50 && service.status().jobs.some(j => j.state === 'running'); i++) await Bun.sleep(5)
+}
+
+const sessionKey = (value: string, expires: number) => [
+  { name: 'sessionKey', value, domain: '.claude.ai', path: '/', expires },
+  { name: 'cf_clearance', value: `cf-${value}`, domain: '.claude.ai', path: '/', expires: -1 }
+]
+const signedInAs = (file: string) => readLogin(file, 'claude')?.cookies.find(c => c.name === 'sessionKey')?.value
+
+test.skipIf(process.platform !== 'win32')('a deleted account disappears on the other PC, is not adopted again, and its tombstone settles', async () => {
+  const token = randomBytes(16).toString('hex')
+  const store = fakeStore(token)
+  try {
+    const key = randomBytes(32)
+    const creds = async () => ({ url: store.url, token, key })
+    const a = pc()
+    const b = pc()
+    const syncA = new FreeSync(a.home, a.host, creds)
+    const syncB = new FreeSync(b.home, b.host, creds)
+    const account = a.service.create({ provider: 'claude', name: 'Example account' })
+    writeLogin(a.host.sessionFile(account), 'claude', sessionKey('first', 1_900_000_000))
+    await syncA.pass()
+    await syncB.pass()
+    await settled(b.service)
+    expect(b.service.status().instances).toHaveLength(1)
+
+    await a.service.remove(account.id)
+    expect(a.host.deleted().map(d => d.id)).toEqual([account.id])
+    await syncA.pass()
+    expect(a.host.deleted()).toEqual([])
+    await syncB.pass()
+    expect(b.service.status().instances).toEqual([])
+    // Neither PC takes the account back on a later pass.
+    await syncB.pass()
+    await syncA.pass()
+    expect(b.service.status().instances).toEqual([])
+    expect(a.service.status().instances).toEqual([])
+    expect(b.host.deleted()).toEqual([])
+  } finally {
+    store.stop()
+  }
+})
+
+test.skipIf(process.platform !== 'win32')('a Free login reaches the other PC, the newer sign-in wins, and a log out reaches both', async () => {
+  const token = randomBytes(16).toString('hex')
+  const store = fakeStore(token)
+  try {
+    const key = randomBytes(32)
+    const creds = async () => ({ url: store.url, token, key })
+    const a = pc()
+    const b = pc()
+    const syncA = new FreeSync(a.home, a.host, creds)
+    const syncB = new FreeSync(b.home, b.host, creds)
+
+    const account = a.service.create({ provider: 'claude', name: 'Example account' })
+    const fileA = a.host.sessionFile(account)
+    expect(writeLogin(fileA, 'claude', sessionKey('first', 1_900_000_000))).toBe(true)
+    await syncA.pass()
+    // The store holds ciphertext only.
+    expect(JSON.stringify([...store.rows.values()])).not.toContain('first')
+
+    await syncB.pass()
+    await settled(b.service)
+    const onB = b.service.status().instances
+    expect(onB.map(i => [i.id, i.num, i.provider, i.name, i.loggedIn])).toEqual([[account.id, 1, 'claude', 'Example account', true]])
+    const fileB = b.host.sessionFile(onB[0]!)
+    expect(signedInAs(fileB)).toBe('first')
+
+    // Signed in again on B: the later sign-in goes up and lands on A.
+    writeLogin(fileB, 'claude', sessionKey('second', 1_900_500_000))
+    await syncB.pass()
+    await syncA.pass()
+    await settled(a.service)
+    expect(signedInAs(fileA)).toBe('second')
+    // An older login written back on A (an operation that started before the landing) does not go up.
+    writeLogin(fileA, 'claude', sessionKey('first', 1_900_000_000))
+    await syncA.pass()
+    await settled(a.service)
+    expect(signedInAs(fileA)).toBe('second')
+
+    // Logged out on A: B, still on that login, logs out too.
+    await a.service.logout(account.id)
+    await syncA.pass()
+    await syncB.pass()
+    expect(existsSync(fileB)).toBe(false)
+    expect(b.service.status().instances[0]!.loggedIn).toBe(false)
+  } finally {
+    store.stop()
+  }
+})
+
+// A Desk on a home that is not the real one (an e2e script's or a probe's, started outside bun test, so NODE_ENV
+// says nothing) is no sync peer: through its first pass it asks AgentHydra nothing about the Login sync, and a Free
+// operation there sets up no runtime in a folder that is thrown away.
+test('a Desk on a home that is not the real one never asks for the Login sync and sets up no Free runtime', async () => {
+  const asked: string[] = []
+  const daemon = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const path = new URL(req.url).pathname
+      asked.push(path)
+      return path === '/api/cli-instances/sync' ? Response.json({ configured: true, enabled: true }) : Response.json({ error: 'not here' }, { status: 404 })
+    }
+  })
+  const home = mkdtempSync(join(tmpdir(), 'desk-free-throwaway-'))
+  const plugins = mkdtempSync(join(tmpdir(), 'desk-free-plugins-'))
+  dirs.push(home, plugins)
+  for (const name of ['10-bridge.ts', '55-free-instances.ts']) writeFileSync(join(plugins, name), `export { default } from ${JSON.stringify(join(import.meta.dir, '../src/plugins', name))}\n`)
+  const nodeEnv = process.env.NODE_ENV
+  delete process.env.NODE_ENV
+  jest.useFakeTimers()
+  let desk: DeskServer | undefined
+  try {
+    desk = await createServer({ port: 0, home, pluginsDir: plugins, deps: { hydraUrl: `http://127.0.0.1:${daemon.port}` } })
+    // Past the sync's first pass, 15 s after start.
+    jest.advanceTimersByTime(20_000)
+  } finally {
+    jest.useRealTimers()
+    if (nodeEnv === undefined) delete process.env.NODE_ENV
+    else process.env.NODE_ENV = nodeEnv
+  }
+  try {
+    await Bun.sleep(300)
+    expect(asked.filter(p => p.startsWith('/api/cli-instances/sync'))).toEqual([])
+    expect(existsSync(join(home, 'free', 'sync.json'))).toBe(false)
+
+    const post = (path: string, body: unknown) => fetch(`${desk!.url}/api/free${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
+    const account = (await post('/instances', { provider: 'claude' })) as FreeInstance
+    let job = (await post('/jobs', { requestId: randomUUID(), instanceId: account.id, provider: 'claude', command: 'auth' })) as FreeJob
+    for (let i = 0; i < 100 && job.state !== 'done'; i++) {
+      await Bun.sleep(10)
+      job = (await fetch(`${desk!.url}/api/free/jobs/${job.id}`).then(r => r.json())) as FreeJob
+    }
+    expect(job.result?.error?.code).toBe('setup_failed')
+    expect(existsSync(join(home, 'free', 'runtime'))).toBe(false)
+  } finally {
+    await desk?.stop()
+    daemon.stop(true)
+  }
+})
+
+test.skipIf(process.platform !== 'win32')('a ChatGPT login a browser sign-in made beats an older one whose sign-in cookie expires later', () => {
+  // 2026-10-15: chatgpt.com refused every send from a login without _uasid and _umsid; a later-expiring copy from
+  // another PC must not undo a fresh sign-in.
+  const dir = mkdtempSync(join(tmpdir(), 'free-sync-fresh-'))
+  try {
+    const jar = (value: string, expires: number, fresh: boolean) => [
+      { name: '__Secure-next-auth.session-token', value, domain: '.chatgpt.com', path: '/', expires },
+      ...(fresh ? [{ name: '_uasid', value: 'u', domain: '.chatgpt.com', path: '/', expires }, { name: '_umsid', value: 'm', domain: '.chatgpt.com', path: '/', expires }] : [])
+    ]
+    const freshFile = join(dir, 'fresh.dpapi')
+    const staleFile = join(dir, 'stale.dpapi')
+    expect(writeLogin(freshFile, 'chatgpt', jar('signed-in-now', 1_900_000_000, true))).toBe(true)
+    expect(writeLogin(staleFile, 'chatgpt', jar('refreshed-elsewhere', 1_900_900_000, false))).toBe(true)
+    const fresh = readLogin(freshFile, 'chatgpt')!
+    const stale = readLogin(staleFile, 'chatgpt')!
+    expect([fresh.fresh, stale.fresh]).toEqual([true, false])
+    expect(newer(fresh, stale)).toBe(true)
+    expect(newer(stale, fresh)).toBe(false)
+    // Two logins alike in that, and Claude's, still go by expiry.
+    expect(newer({ ...stale, exp: 2 }, { ...stale, auth: 'b', exp: 1 })).toBe(true)
+    expect(readLogin(freshFile, 'chatgpt')!.fresh).toBe(true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(process.platform !== 'win32')('a round with an unchanged store row writes no login again', async () => {
+  const token = randomBytes(16).toString('hex')
+  const store = fakeStore(token)
+  try {
+    const key = randomBytes(32)
+    const creds = async () => ({ url: store.url, token, key })
+    const a = pc()
+    const b = pc()
+    const syncA = new FreeSync(a.home, a.host, creds)
+    const syncB = new FreeSync(b.home, b.host, creds)
+    const account = a.service.create({ provider: 'claude', name: 'Example account' })
+    writeLogin(a.host.sessionFile(account), 'claude', sessionKey('first', 1_900_000_000))
+    await syncA.pass()
+    await syncB.pass()
+    const fileB = b.host.sessionFile(b.service.status().instances[0]!)
+    writeLogin(a.host.sessionFile(account), 'claude', sessionKey('second', 1_900_500_000))
+    await syncA.pass()
+    await syncB.pass()
+    expect(signedInAs(fileB)).toBe('second')
+    const landed = readFileSync(fileB)
+    await syncB.pass()
+    expect(readFileSync(fileB).equals(landed)).toBe(true)
+  } finally {
+    store.stop()
+  }
+})
+
+test.skipIf(process.platform !== 'win32')('a login the harness re-saves after a landing is kept, not landed over again', async () => {
+  let checks = 0
+  const token = randomBytes(16).toString('hex')
+  const store = fakeStore(token)
+  try {
+    const key = randomBytes(32)
+    const creds = async () => ({ url: store.url, token, key })
+    const a = pc()
+    const b = pc(stateDir => { checks++; writeLogin(join(stateDir, 'session.dpapi'), 'claude', sessionKey(`rotated-${checks}`, -1)) })
+    const syncA = new FreeSync(a.home, a.host, creds)
+    const syncB = new FreeSync(b.home, b.host, creds)
+    const account = a.service.create({ provider: 'claude', name: 'Example account' })
+    writeLogin(a.host.sessionFile(account), 'claude', sessionKey('first', 1_900_000_000))
+    await syncA.pass()
+    await syncB.pass()
+    const fileB = b.host.sessionFile(b.service.status().instances[0]!)
+    writeLogin(a.host.sessionFile(account), 'claude', sessionKey('second', 1_900_500_000))
+    await syncA.pass()
+    await syncB.pass()
+    await settled(b.service)
+    const checksAfterLanding = checks
+    const rewritten = readFileSync(fileB)
+    for (let round = 0; round < 3; round++) {
+      await syncB.pass()
+      await settled(b.service)
+    }
+    expect(readFileSync(fileB).equals(rewritten)).toBe(true)
+    expect(checks).toBe(checksAfterLanding)
+  } finally {
+    store.stop()
+  }
+})

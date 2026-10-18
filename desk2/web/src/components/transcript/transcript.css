@@ -1,0 +1,892 @@
+/*
+ * Transcript styles that utilities cannot reach: markdown-it output, shiki blocks, shared controls.
+ * Values are the real app's (docs/reference/real/DESIGN.md "Transcript"); where the harvest could not
+ * see a state (code blocks, tables, cards) the choice is noted in docs/fidelity/transcript.md.
+ */
+
+/* Prose: 14/20, paragraphs padded 0 56 0 4, lists 0 56 0 28 with 7px item padding (the first item flush,
+   the rest 3.5 apart), headings one level down ("## x" is an h3 15.75/20.475 600 with 21 above, 7 below):
+   measured live on the real app and on user/real-markdown-and-file-card.png. */
+.md {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md .md-table,
+.md hr,
+.md .md-code,
+.md > .md-img {
+  margin: 10.5px 0 0;
+}
+.md p {
+  padding: 0 56px 0 4px;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 21px 0 0;
+  padding: 0 56px 0 4px;
+  font-weight: 600;
+}
+.md h1,
+.md h2 {
+  font-size: 17.5px;
+  line-height: 22.75px;
+}
+.md h3 {
+  font-size: 15.75px;
+  line-height: 20.475px;
+}
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 14px;
+  line-height: 20px;
+}
+.md h1 + *,
+.md h2 + *,
+.md h3 + *,
+.md h4 + *,
+.md h5 + *,
+.md h6 + * {
+  margin-top: 7px;
+}
+.md ul,
+.md ol {
+  padding: 0 56px 0 28px;
+}
+/* A paragraph after a list sits a full 21px below it (whole-window.png, user/window.webp); a heading does not. */
+.md > ul + p,
+.md > ol + p {
+  margin-top: 21px;
+}
+.md ul {
+  list-style: disc;
+}
+.md ul ul {
+  list-style: circle;
+}
+.md ul ul ul {
+  list-style: square;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  padding-inline-start: 7px;
+  margin-top: 3.5px;
+}
+.md li:first-child {
+  margin-top: 0;
+}
+.md ol > li::marker {
+  font-variant-numeric: tabular-nums;
+}
+.md li > p {
+  padding: 0;
+}
+.md li > ul,
+.md li > ol {
+  margin-top: 3.5px;
+  padding-inline-end: 0;
+}
+.md a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-text) 40%, transparent);
+  text-underline-offset: 2px;
+}
+.md a:hover {
+  text-decoration-color: currentColor;
+}
+.md strong {
+  font-weight: 600;
+}
+.md blockquote {
+  margin-inline-start: 4px;
+  border-inline-start: 2px solid var(--border-strong);
+  padding: 0 56px 0 12px;
+  color: var(--text-2);
+}
+.md blockquote p {
+  padding: 0;
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 21px 4px;
+}
+
+/* Inline code, measured: 12.6px mono, #ec7e7e on white 5%, 1px white-10% border, r5.04, padding .7875/3.15. */
+.md :not(pre) > code {
+  font-size: 12.6px;
+  padding: 0.7875px 3.15px;
+  border-radius: 5.04px;
+  border: 1px solid var(--border);
+  background: var(--fill-5);
+  color: var(--code-text);
+}
+
+/* Tables: a bordered grid in its own sideways-scrolling box (the measured thin scrollbar on a white-5%
+   track), the header row on white 5%, cells 6/12, 13/19 text. Not measured live (no table was on screen). */
+.md .md-table {
+  margin-inline-start: 4px;
+  max-width: calc(100% - 4px);
+  overflow-x: auto;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--fill-5);
+}
+.md table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 13px;
+  line-height: 19px;
+}
+.md th,
+.md td {
+  border-bottom: 1px solid var(--border);
+  border-inline-start: 1px solid var(--border);
+  padding: 6px 12px;
+  text-align: start;
+  vertical-align: top;
+}
+.md th:first-child,
+.md td:first-child {
+  border-inline-start: 0;
+}
+.md th {
+  font-weight: 600;
+  background: var(--fill-5);
+  white-space: nowrap;
+}
+.md tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Code blocks: a rounded block on the raised panel surface with a 1px white-10% ring, a 32px header (the
+   language muted at left, Copy at right turning to Copied), code 13/19 mono that scrolls sideways and
+   never wraps; past CODE_CAP_LINES it is capped with a fade and "Show more". The real block was not on
+   screen to measure; the surfaces, ring, radius, code size and scrollbar are the measured tokens. */
+.md-code {
+  margin-inline-start: 4px !important;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+.md-code-lang {
+  font-family: var(--font-mono);
+}
+.md-copy {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 60ms, color 60ms;
+}
+.md-copy:hover {
+  background: var(--fill-hover);
+  color: var(--text);
+}
+.md-copy .md-copy-done,
+.md-copy.is-copied .md-copy-idle {
+  display: none;
+}
+.md-copy.is-copied .md-copy-done {
+  display: inline-flex;
+}
+.md-copy span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.md-code-body {
+  position: relative;
+}
+.md-code pre {
+  margin: 0;
+  padding: 10px 16px 12px;
+  overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--text);
+  background: transparent !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--fill-5);
+  font-feature-settings: 'calt' 0, 'liga' 0;
+}
+.md-code pre code {
+  font-family: var(--font-mono);
+}
+.md-code-long:not(.is-open) .md-code-body {
+  max-height: calc(19px * 20 + 22px);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 52px), transparent);
+}
+.md-code-more {
+  display: block;
+  padding: 4px 16px 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text);
+  cursor: pointer;
+}
+.md-code-more:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Diff fences: whole-line tints in the git palette. */
+.md-code .line.diff-add,
+.md-code .line.diff-del {
+  display: inline-block;
+  min-width: 100%;
+}
+.md-code .line.diff-add {
+  background: color-mix(in srgb, var(--git-add) 12%, transparent);
+  color: var(--git-add);
+}
+.md-code .line.diff-del {
+  background: color-mix(in srgb, var(--git-del) 12%, transparent);
+  color: var(--git-del);
+}
+.md-code .line.diff-hunk {
+  color: var(--accent-text);
+}
+
+/* Markdown pictures, measured: at most 360 high, r5, zoom-in cursor; the picture ring and drop shadow (style.css). */
+.md-img {
+  display: block;
+  max-width: 100%;
+  border-radius: 5px;
+  cursor: zoom-in;
+}
+.md-img img,
+.tx-inline-picture img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  width: auto;
+  border-radius: 5px;
+  background: var(--bg-picture);
+  box-shadow: var(--shadow-picture);
+}
+.tx-inline-picture {
+  align-self: flex-start;
+  max-width: 100%;
+  border-radius: 5px;
+  cursor: zoom-in;
+}
+/* Videos: the picture's box (at most 360 high, r5, 1px ring), black behind the frame while it loads. */
+.md-video,
+.tx-inline-video {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-pure-black);
+}
+.tx-inline-video {
+  align-self: flex-start;
+}
+/* A muted video's speaker is the speaker alone: hovering it slides out no volume slider stuck at zero, and a click
+   unmutes. Once it has sound (lib/chat-audio.ts marks it data-unmuted) hovering the speaker shows the slider again. */
+.md-video:not([data-unmuted])::-webkit-media-controls-volume-slider,
+.tx-inline-video:not([data-unmuted])::-webkit-media-controls-volume-slider {
+  display: none;
+}
+.md-video:not([data-unmuted])::-webkit-media-controls-volume-control-container,
+.tx-inline-video:not([data-unmuted])::-webkit-media-controls-volume-control-container {
+  min-width: 0;
+}
+/* An html file's live preview (lib/markdown.ts htmlPreviewMarkup): a rounded card on the chat with a slim bar (the
+   page's name, Desktop and Phone width, Expand) over the page in its frame. Phone shows the page at a phone's width on
+   a dark stage. The page's thin scrollbar is the server's (plugins/35-media.ts): the window's styles never reach into
+   the frame. The frame is see-through: the browser paints a light page with no background of its own on white (its
+   colour scheme is not the window's dark one), and the scrollbar's track shows the stage, never a white strip. */
+.html-preview {
+  display: block;
+  width: 100%;
+  margin: 8px 0;
+  border-radius: var(--radius-12);
+  overflow: hidden;
+  background: var(--bg-popover);
+  box-shadow: 0 0 0 1px var(--border), 0 4px 20px #0000004d;
+}
+.html-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.html-preview-bar svg {
+  flex: none;
+}
+.html-preview-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-weight: 500;
+}
+.html-preview-views {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-7);
+  background: var(--fill-5);
+}
+.html-preview-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: var(--radius-5);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast),
+    background-color var(--dur-fast);
+}
+.html-preview-btn:hover {
+  color: var(--text);
+  background: var(--fill-hover);
+}
+.html-preview-btn[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--fill-selected);
+}
+.html-preview-btn[data-html-expand] {
+  height: 26px;
+}
+.html-preview-grow,
+.html-preview.is-big .html-preview-shrink {
+  display: flex;
+}
+.html-preview-shrink,
+.html-preview.is-big .html-preview-grow {
+  display: none;
+}
+.html-preview-stage {
+  display: block;
+  background: var(--bg-deepest);
+  transition: padding var(--dur-slow) var(--ease-default);
+}
+.html-preview-frame {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: 600px;
+  margin: 0 auto;
+  border: 0;
+  transition:
+    height var(--dur-slow) var(--ease-default),
+    max-width var(--dur-slow) var(--ease-default),
+    border-radius var(--dur-slow) var(--ease-default);
+}
+.html-preview.is-big .html-preview-frame {
+  height: max(600px, 85vh);
+}
+.html-preview.is-phone .html-preview-stage {
+  padding: 16px 0;
+}
+.html-preview.is-phone .html-preview-frame {
+  max-width: 390px;
+  border-radius: var(--radius-10);
+  box-shadow: var(--shadow-picture);
+}
+.md-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--fill-5);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+  vertical-align: middle;
+}
+
+/* Picture tiles (user bubble, tool results): 8px rounded, 96 high, the picture ring and drop shadow (style.css). */
+.tx-tile {
+  display: block;
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--bg-picture);
+  box-shadow: var(--shadow-picture);
+  cursor: zoom-in;
+}
+.tx-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* the tile already has the picture's own aspect ratio: nothing is cropped */
+  border-radius: 8px;
+}
+
+/* Several pictures in one markdown paragraph share a wrapping row instead of stacking. */
+.md p:has(> .md-img ~ .md-img) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.md p:has(> .md-img ~ .md-img) > .md-img img {
+  height: 200px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+/* The real file card (user/real-markdown-and-file-card.png, sampled): 120x120, r8, #20201f, 1px #4d4d4c
+   (white 20%) ring, badge 18 high at 8/10 with the same ring, name 13px #f0efec, size 12px #c3c2b7. */
+.tx-file-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 120px;
+  height: 120px;
+  padding: 8px 10px 7px;
+  border-radius: 8px;
+  background: var(--bg-popover);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  text-align: start;
+}
+button.tx-file-card {
+  cursor: zoom-in;
+}
+button.tx-file-card:hover {
+  background: color-mix(in srgb, var(--bg-popover), white 3%);
+}
+.tx-file-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+  color: var(--text-2);
+}
+
+/* The workflow card (user/real-workflow-card.png, sampled): 318 wide, r8, 1px #2d2d2d (white 10%) on the
+   page, padding 9/11/11; title 14/20, meta 13/18 4px below, 6px squares 2 apart 11px below. */
+.tx-workflow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 318px;
+  max-width: 100%;
+  padding: 9px 11px 11px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color 60ms;
+}
+.tx-workflow:hover {
+  background: var(--fill-hover);
+}
+.tx-workflow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--workflow-dot-idle);
+}
+.tx-workflow-dot[data-state='done'] {
+  background: var(--workflow-dot-done);
+}
+.tx-workflow-dot[data-state='running'] {
+  background: var(--accent);
+  animation: var(--animate-dot-blink);
+}
+.tx-workflow-dot[data-state='pending'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--workflow-dot-ring);
+}
+.tx-workflow-dot[data-state='failed'] {
+  background: var(--danger);
+}
+
+/* Settled background tasks: the status row in secondary text (#c3c2b7, sampled), as the real app writes
+   "18 background commands completed". */
+.tx-status-tasks {
+  color: var(--text-2);
+}
+.tx-task-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 19px;
+  text-align: start;
+  cursor: pointer;
+}
+.tx-task-line:hover {
+  background: var(--fill-hover);
+}
+
+/* A tool run's steps, open: one box, as Claude Desktop draws them (r10, a 1px border, a hairline between rows and
+   none after the last). The box clips its rows' hover fill to its corners. */
+.tx-steps {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.tx-steps > * + * {
+  border-top: 1px solid var(--border);
+}
+
+/* What a row opens (parts/Collapse.vue): a flow root keeps its children's margins inside, so the height it slides
+   to is the height it keeps. */
+.tx-collapse {
+  display: flow-root;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tx-status-chevron {
+    transition: none;
+  }
+}
+
+/* Text nested in a sub-agent card is a size down. */
+.tx-nested .md {
+  font-size: 13px;
+  line-height: 19px;
+}
+
+/* The streaming cursor after the last block of a message being written. */
+.md-streaming > :last-child::after,
+.stream-cursor {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-inline-start: 2px;
+  vertical-align: text-bottom;
+  background: var(--text-muted);
+  border-radius: 1px;
+  animation: tx-blink 1s steps(2, start) infinite;
+}
+.md-streaming > pre:last-child::after,
+.md-streaming > .md-code:last-child::after,
+.md-streaming > ul:last-child::after,
+.md-streaming > ol:last-child::after {
+  display: block;
+  margin: 4px 0 0 4px;
+}
+@keyframes tx-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* Running text: the real cds-shimmer-text-shine sweep (a bright band crossing muted text), at 3.5 s a sweep, not the
+   real 2 s (owner, 2026-10-10: "excessively shimmery. It needs to be slower"). One line shimmers at a time
+   (lib/groups.ts liveRow). */
+.tx-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--text-muted) 0%,
+    var(--text-muted) 40%,
+    var(--text) 50%,
+    var(--text-muted) 60%,
+    var(--text-muted) 100%
+  );
+  background-size: 600% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: cds-shimmer-text-shine 3.5s infinite;
+}
+
+/* Status row, measured: 24 high, margin -4px 0 (applied as the row gap), padding 2px 4px, r6, gap 6, 14px muted. */
+.tx-status {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  height: 24px;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-muted);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color 60ms;
+}
+.tx-status:hover {
+  background: var(--fill-hover);
+}
+/* The capture's glyph is 4.7x7 and starts 6.5px after the text: a 14px chevron pulled 5px in. */
+.tx-status-chevron {
+  width: 14px;
+  height: 14px;
+  margin-inline-start: -5px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  /* rotate-90 sets `rotate`, not `transform`: the turn is timed with the content opening under it (Collapse.vue). */
+  transition:
+    rotate 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity var(--dur-fast);
+}
+.tx-target {
+  color: var(--text);
+}
+.tx-status:hover .tx-target {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* User bubble: padding 8/12, r10, white 5%, inner gap 6. Read off both captures (transcript-user-message.png,
+   user/window.webp): a 20px line pitch (the computed style said 14/18), at most 85% of the 768 text column
+   (652; the harvest's 638 was the old pane) and only as wide as its longest line (UserMessage fits it). */
+.tx-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--fill-5);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text);
+}
+/* A long message is clamped at 9 lines; the last two fade out over 52px above "Show more" (user/window.webp). */
+.tx-bubble-clamped {
+  max-height: 180px;
+  overflow: hidden;
+}
+.tx-bubble-fade {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 52px), transparent);
+}
+.tx-bubble-more {
+  align-self: flex-start;
+  padding-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text);
+  cursor: pointer;
+}
+.tx-bubble-more:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Message actions, measured: 24px buttons r6, 16px icons, #898781 -> #f0efec on #ffffff13; opacity 0 until hover. */
+.tx-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  opacity: 0;
+  transition: opacity 60ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.group\/message-row:hover > .tx-actions,
+.tx-actions:focus-within,
+.tx-actions-pinned {
+  opacity: 1;
+  transition: opacity var(--dur-fast) cubic-bezier(0.32, 0.72, 0, 1) 0.1s;
+}
+.tx-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 60ms, color 60ms;
+}
+.tx-action:hover {
+  background: var(--fill-hover);
+  color: var(--text);
+}
+.tx-actions-time {
+  padding: 0 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Cards (todos, sub-agents, background tasks): the menu/strip language, r10 with a 1px inset ring. */
+.tx-card {
+  border-radius: 10px;
+  background: var(--fill-5);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* Needs-you cards (permission, question, plan): Hydra Desk's amber cue on the popover surface. */
+.tx-ask {
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--bg-popover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 45%, transparent), var(--shadow-soft);
+  animation: epitaxy-approval-inline-enter 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* The step arrows at the transcript's top right: the sidebar's Search and Filter size (a 24px square, r6, a 16px glyph;
+   owner, 2026-10-10: "Square, and make them smaller. So, make the arrows about the size of these icons"). At rest a
+   glyph at half strength with no box (2026-10-09: "only 50% visible"); hover or keyboard focus brings it up whole in
+   its box and outline ("only have the outline show when you hover on them"). The box is opaque, so a line of the
+   transcript under it does not show through. Their wrapper lets clicks through to the rows; the arrows take their own. */
+.tx-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-6);
+  color: var(--text-2);
+  opacity: 0.5;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 60ms, box-shadow 60ms, color 60ms, opacity 120ms;
+}
+.tx-step:hover,
+.tx-step:focus-visible,
+.tx-step[aria-pressed='true'] {
+  opacity: 1;
+  color: var(--text);
+  background: var(--bg-popover);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* Buttons and inputs inside cards: the real 28px button (r6, 13px) language. */
+.tx-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 0;
+  background: var(--fill-5);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 60ms;
+}
+.tx-btn:hover:not(:disabled) {
+  background: var(--fill-hover);
+}
+.tx-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.tx-btn-primary {
+  background: var(--accent);
+  box-shadow: none;
+  color: var(--on-accent);
+}
+.tx-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.tx-btn-ghost {
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+}
+.tx-btn-danger {
+  background: var(--danger);
+  box-shadow: none;
+  color: var(--on-accent);
+}
+.tx-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger), white 10%);
+}
+.tx-kbd {
+  font-size: 12px;
+  color: var(--text-shortcut);
+  font-variant-numeric: tabular-nums;
+}
+.tx-btn-primary .tx-kbd,
+.tx-btn-danger .tx-kbd {
+  color: var(--on-accent-muted);
+}
+.tx-input {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 0;
+  background: var(--bg-page);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text);
+  font-size: 16px;
+  outline: none;
+}
+@media (pointer: fine) {
+  .tx-input {
+    font-size: 13px;
+  }
+}
+.tx-input::placeholder {
+  color: var(--text-muted);
+}
+.tx-input:focus {
+  box-shadow: var(--focus-ring);
+}
+
+/* Hydra Desk 2's session header Find (TranscriptView paints these with the CSS Custom Highlight API). */
+::highlight(desk-find) {
+  background-color: var(--find-match);
+  color: inherit;
+}
+::highlight(desk-find-active) {
+  background-color: var(--find-active);
+  color: var(--on-accent);
+}

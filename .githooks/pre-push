@@ -1,0 +1,139 @@
+#!/bin/sh
+# AgentHydra pre-push gate. Enabled by `git config core.hooksPath .githooks` (package.json's
+# prepare does this).
+#
+# 1. Refuse a push to a PUBLIC remote unless AGENTHYDRA_PUSH_PUBLIC=1 is set for this command.
+#    The heading is printed either way; the rule is announce-then-do.
+# 2. Refuse a release tag (v*.*.*) while docs/todo/TODO.md has an open section. No override.
+# 3. Run the host-only lane GitHub structurally cannot: kit drift in what the push carries
+#    (check-kit-sync-pushed.mjs, the same report `check:local` reads), on every push.
+#    A release tag in the push also needs CI to have passed on the exact commit the tag points to:
+#    `gh` is asked for a ci.yml run on that sha whose conclusion is success. When there is one, only
+#    `check:local` runs, because every other lane of `check:deep` (Biome, i18n, every typecheck,
+#    `bun test`, orchestrator/server's tests, the orchestrator Python suite) is a ci.yml step and
+#    already passed on that very commit. Re-running them here was a duplicate 25-minute gate on
+#    every release (measured on 1.7.0, 2026-10-02), after docs/RELEASING.md had already made "push
+#    main, wait for green CI" the step before tagging. When it cannot be confirmed (no gh, not
+#    signed in, offline, a remote that is not GitHub, no run on that sha, a run still going or not
+#    green), one line says why and the whole `check:deep` runs, which includes the kit check.
+#
+# Rules 1 and 2 and their history live in .githooks/check-public-push.mjs. Git hands this hook the
+# remote's name and URL as arguments and the refs on stdin; both are passed straight through.
+#
+# FAIL CLOSED. The kit-sync and Biome pre-commit guards step aside when their runtime is missing,
+# because a commit is local and cheap to redo. A push is neither, so with no node and no bun on
+# PATH this refuses rather than guessing, and says how to proceed.
+#
+# Rule 3 needs the private lunarwerx-ui kit as a sibling checkout (the same path check:kit reads).
+# Without it, as on every contributor's machine and in CI, it says so and steps aside: those lanes
+# cannot run there at all. With it, a missing bun is refused, like rule 1's missing runtime.
+remote="$1"
+url="$2"
+# stdin can only be read once, and rule 3 needs the refs as well as the guard.
+refs=$(cat)
+
+if command -v node >/dev/null 2>&1; then
+  runner=node
+elif command -v bun >/dev/null 2>&1; then
+  runner=bun
+else
+  echo "" >&2
+  echo "# WARNING: THIS REPOSITORY IS **PUBLIC**" >&2
+  echo "" >&2
+  echo "  pre-push: neither node nor bun is on PATH, so the public-push guard cannot look up" >&2
+  echo "  whether $remote ($url) is public. Treated as public and refused." >&2
+  if [ "$AGENTHYDRA_PUSH_PUBLIC" = "1" ]; then
+    echo "  AGENTHYDRA_PUSH_PUBLIC=1 is set for this command: announced, proceeding." >&2
+    exit 0
+  fi
+  echo "  Install node, or if the owner has decided this push goes out: AGENTHYDRA_PUSH_PUBLIC=1 git push ..." >&2
+  exit 1
+fi
+
+printf '%s\n' "$refs" | "$runner" .githooks/check-public-push.mjs "$remote" "$url" || exit 1
+
+# The same release-tag shape check-public-push.mjs gates on; a deleted tag (all-zero sha) is not a
+# release. An annotated tag's sha is the tag object, so it is peeled to the commit CI ran on. This
+# runs before the unset below, while git still points at the pushing checkout.
+release_commits=""
+unpeeled=""
+for sha in $(printf '%s\n' "$refs" | awk '$2 !~ /^0+$/ && $3 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+/ { print $2 }'); do
+  commit=$(git rev-parse --verify --quiet "$sha^{commit}") || commit=""
+  if [ -n "$commit" ]; then
+    release_commits="$release_commits $commit"
+  else
+    unpeeled="$sha"
+  fi
+done
+
+# Git runs this hook with GIT_DIR exported (and, from a linked worktree, GIT_WORK_TREE and
+# GIT_INDEX_FILE too). The lanes below are not git commands on this repo: their tests build
+# throwaway repos and the kit check asks the kit's own git, and every one inherited these and aimed
+# git at this checkout instead. Pushing the 1.5.0 tag from a worktree (2026-10-01) read a clean kit
+# as dirty and failed 29 git-backed tests. The lanes find this repo from the working directory.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
+
+kit=../../lunarwerx-ui/sync.mjs
+if [ ! -f "$kit" ]; then
+  echo "pre-push: no lunarwerx-ui kit checkout at $kit, so the host-only kit lanes cannot run here; skipped." >&2
+  exit 0
+fi
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-push: the lunarwerx-ui kit is checked out but bun is not on PATH, so the kit lanes cannot run. Refused; install bun." >&2
+  exit 1
+fi
+
+# The kit drift lane judges what this push carries (check-kit-sync-pushed.mjs), not every file in a
+# working tree other sessions are editing: `check:local` over the whole tree let one session's
+# unfinished edit to a synced file block every other session's push.
+kit_drift() {
+  printf '%s\n' "$refs" | node .githooks/check-kit-sync-pushed.mjs "$remote" agenthydra orchestrator
+}
+
+if [ -z "$release_commits" ] && [ -z "$unpeeled" ]; then
+  echo "› kit drift (what this push carries)…" >&2
+  kit_drift || exit 1
+  exit 0
+fi
+
+# A release tag: has ci.yml passed on the commit it points to? `why` stays empty only when every
+# tagged commit has a ci.yml run whose conclusion is success.
+slug=$(printf '%s\n' "$url" | sed -n -e 's#/*$##' -e 's#\.git$##' -e 's#^.*github\.com[:/]\([^/][^/]*/[^/][^/]*\)$#\1#p')
+why=""
+if [ -n "$unpeeled" ]; then
+  why="the tag's sha $unpeeled does not resolve to a commit"
+elif ! command -v gh >/dev/null 2>&1; then
+  why="gh is not on PATH"
+elif [ -z "$slug" ]; then
+  why="$url is not a GitHub remote"
+else
+  for commit in $release_commits; do
+    answer=$(gh run list -R "$slug" --workflow ci.yml --commit "$commit" --limit 20 \
+      --json status,conclusion,url \
+      --jq 'if any(.[]; .conclusion == "success") then "success " + ([.[] | select(.conclusion == "success")][0].url) elif length == 0 then "none" else .[0].status + "/" + (.[0].conclusion // "") end' \
+      2>&1) || {
+      why="gh could not read ci.yml's runs (not signed in or offline?): $(printf '%s\n' "$answer" | head -n 1)"
+      break
+    }
+    case "$answer" in
+      success\ *) echo "pre-push: ci.yml passed on the tagged commit $commit: ${answer#success }" >&2 ;;
+      none)
+        why="ci.yml has no run on the tagged commit $commit"
+        break
+        ;;
+      *)
+        why="ci.yml has not passed on the tagged commit $commit (newest run: $answer)"
+        break
+        ;;
+    esac
+  done
+fi
+
+if [ -z "$why" ]; then
+  echo "› kit drift (what this push carries; CI already ran every other check:deep lane on this commit)…" >&2
+  kit_drift || exit 1
+else
+  echo "pre-push: CI not confirmed, so the full check:deep runs (25+ minutes): $why." >&2
+  bun run check:deep || exit 1
+fi

@@ -1,0 +1,194 @@
+// The orchestrator's planner: each open chat's one next move, read from its summary and its transcript. A chat is a
+// Desk chat or an outside session (a Claude Desktop, CLI, CliMayte or Codex session AgentHydra knows): both become a
+// Subject first. Pure: the plugin (plugins/70-orchestrator.ts) fetches, this decides, and only the armed
+// orchestrator (act.ts) sends anything.
+
+import type { ChatStatus, ChatSummary, ExternalSession, TranscriptItem } from '@shared/protocol'
+import { ORCHESTRATOR_FROM, ORCHESTRATOR_MOVES, type OrchestratorRow } from '@shared/orchestrator'
+
+/** A person wrote in the chat this recently: it is theirs, and the orchestrator leaves it alone. */
+export const PERSON_QUIET_MS = 10 * 60_000
+
+/** An idle chat whose last reply says it waits on work is nudged once nothing has moved this long (one constant). */
+export const WAIT_MS = 20 * 60_000
+/** Only chats active in this window are looked at for waiting. */
+export const WAIT_ACTIVE_MS = 24 * 3_600_000
+
+/** The words of a reply that hands the next step to work still running: "I'll pick it up when it finishes", "waiting on". */
+const WAITS_ON =
+  /\b(?:waiting (?:on|for)|wait(?:ing)? until|will be notified|i['’]ll (?:pick|check|come back|resume|continue|report)[^.\n]{0,80}(?:when|once|after)|(?:when|once) (?:it|they|the (?:job|jobs|worker|workers|task|tasks)) (?:finish|finishes|complete|completes|is done|are done)|background (?:jobs?|tasks?)|hswarm job|climayte worker)/i
+const HSWARM_JOB = /\b\d{8}-\d{6}-[0-9a-f]{4}\b/g
+const WORKER_ID = /\bw-[0-9a-f]{8}\b/g
+
+/** What a reply waits on, or null when it does not wait: HSwarm job ids and CliMayte worker ids it names, else the
+ *  sentence that says so. Only the last 1500 characters are read. */
+export function waitedOn(text: string): string[] | null {
+  const tail = text.slice(-1500)
+  const m = WAITS_ON.exec(tail)
+  if (!m) return null
+  const ids = [...new Set([...(tail.match(HSWARM_JOB) ?? []), ...(tail.match(WORKER_ID) ?? [])])]
+  if (ids.length) return ids
+  const start = Math.max(tail.lastIndexOf('\n', m.index), tail.lastIndexOf('. ', m.index) + 1, 0)
+  const end = tail.indexOf('\n', m.index)
+  return [tail.slice(start, end < 0 ? undefined : end).trim().slice(0, 200)]
+}
+
+
+const NEED = /🔴\s*NEED:\s*/
+/** A reply that hands the next step back: "Want me to ...?", "Should I ...?". Only its last 600 characters are read. */
+const ASKS_BACK = /\b(want me to|shall I|should I|do you want me to|would you like me to)\b[^?]{0,300}\?/i
+
+/** What the planner reads of a chat, whichever app runs it. */
+export interface Subject {
+  id: string
+  /** Its Claude session id, when known: a CreAitor ask carries it so the answer can be graded against the owner's reply there. */
+  session: string | null
+  title: string
+  cwd: string
+  account: string
+  source: OrchestratorRow['source']
+  status: ChatStatus
+  updatedAt: number
+  activity: string | null
+  queuedCount: number
+  accountAuto: boolean
+  limitResetsAt: number | null
+  lastError: string | null
+}
+
+export function fromChat(c: ChatSummary): Subject {
+  return {
+    id: c.id, session: c.sessionId, title: c.title, cwd: c.cwd, account: c.account.label, source: 'desk', status: c.status, updatedAt: c.updatedAt,
+    activity: c.activity, queuedCount: c.queuedCount, accountAuto: c.accountAuto, limitResetsAt: c.limitResetsAt, lastError: c.lastError
+  }
+}
+
+/** An outside session reports only working, needs you, idle or stale; stale reads as closed. */
+export function fromExternal(s: ExternalSession): Subject {
+  return {
+    id: s.id, session: s.id, title: s.title, cwd: s.cwd ?? '', account: s.instance ?? '', source: s.source, status: s.status === 'stale' ? 'closed' : s.status,
+    updatedAt: s.lastActivityAt ?? 0, activity: s.activity, queuedCount: 0, accountAuto: false, limitResetsAt: null, lastError: null
+  }
+}
+
+/** The question a finished reply leaves, and its lettered choices ("A) x ★ B) y"), or null when it asks nothing. */
+export function askedIn(text: string): { question: string; options: string[] } | null {
+  const at = text.search(NEED)
+  if (at >= 0) {
+    const line = text.slice(at).replace(NEED, '').split('\n')[0]
+    const parts = line.split(/\s+([A-H])\)\s+/)
+    const options: string[] = []
+    for (let i = 2; i < parts.length; i += 2) options.push(parts[i].replace(/\s*★\s*$/, '').trim())
+    return { question: (parts[0] || line).trim(), options }
+  }
+  const tail = text.slice(-600)
+  const m = ASKS_BACK.exec(tail)
+  if (!m) return null
+  const start = Math.max(tail.lastIndexOf('\n', m.index), tail.lastIndexOf('. ', m.index) + 1, 0)
+  return { question: tail.slice(start, m.index + m[0].length).trim(), options: [] }
+}
+
+const short = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+function last<K extends TranscriptItem['kind']>(items: readonly TranscriptItem[], kind: K): Extract<TranscriptItem, { kind: K }> | undefined {
+  for (let i = items.length - 1; i >= 0; i--) if (items[i].kind === kind) return items[i] as Extract<TranscriptItem, { kind: K }>
+  return undefined
+}
+
+type Asked = { question?: unknown; options?: unknown }
+
+const unquote = (s: string): string => {
+  try {
+    return JSON.parse(`"${s}"`) as string
+  } catch {
+    return s
+  }
+}
+
+/** An AskUserQuestion call's questions. AgentHydra cuts a call's input at 1200 characters and hands a cut one over
+ *  as { raw } (bridge/external.ts parseInput); its questions and the labels that survived the cut are read out of it. */
+function questionsOf(input: Record<string, unknown>): Asked[] {
+  if (Array.isArray(input.questions)) return input.questions.filter((q): q is Asked => q !== null && typeof q === 'object')
+  if (typeof input.raw !== 'string') return []
+  return input.raw.split(/(?="question"\s*:)/).flatMap((part) => {
+    const q = /^"question"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(part)
+    if (!q) return []
+    return [{ question: unquote(q[1]), options: [...part.matchAll(/"label"\s*:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => ({ label: unquote(m[1]) })) }]
+  })
+}
+
+/** A question waiting for an answer: Desk's question card, or, in an outside session's transcript, an
+ *  AskUserQuestion call still running. */
+function waitingQuestion(items: readonly TranscriptItem[]): { question: string; options: string[] } | null {
+  const card = items.find((i) => i.kind === 'question' && i.state === 'pending')
+  const call = card ? undefined : [...items].reverse().find((i) => i.kind === 'tool_use' && i.name === 'AskUserQuestion' && i.status === 'running')
+  const asks: Asked[] = card?.kind === 'question' ? card.questions : call?.kind === 'tool_use' ? questionsOf(call.input) : []
+  if (!asks.length) return null
+  const first = Array.isArray(asks[0].options) ? (asks[0].options as unknown[]) : []
+  const labels = first.map((o) => (o !== null && typeof o === 'object' && typeof (o as { label?: unknown }).label === 'string' ? (o as { label: string }).label : '')).filter(Boolean)
+  return { question: asks.map((x) => (typeof x.question === 'string' ? x.question : '')).filter(Boolean).join(' / '), options: labels }
+}
+
+type Move = Pick<OrchestratorRow, 'move' | 'reason'>
+
+/** A person, or the orchestrator itself, wrote in the chat within PERSON_QUIET_MS: its move then, or null. */
+function recentMove(chat: Subject, all: readonly TranscriptItem[], now: number): Move | null {
+  const person = last(all, 'user')
+  if (person && now - person.ts < PERSON_QUIET_MS) {
+    const who = chat.source === 'climayte' ? 'its dispatcher' : 'a person' // a CliMayte worker's messages come from the chat that runs it
+    return { move: 'leave', reason: `${who} wrote in it ${Math.max(1, Math.round((now - person.ts) / 60_000))} min ago` }
+  }
+  // The armed orchestrator's own "continue" (act.ts) is a note, never the person's; it waits as long before another.
+  const sent = last(all, 'note')
+  if (sent?.from === ORCHESTRATOR_FROM && now - sent.ts < PERSON_QUIET_MS)
+    return { move: 'watch', reason: `the orchestrator continued it ${Math.max(1, Math.round((now - sent.ts) / 60_000))} min ago` }
+  return null
+}
+
+/** A chat its account's usage limit stopped: on auto the engine moves it, otherwise the babysitter continues it after
+ *  the reset (plugins/72-babysitter.ts). */
+function limitMove(chat: Subject, now: number): Move {
+  if (chat.accountAuto) return { move: 'watch', reason: 'placed on auto: the engine moves it to another account itself' }
+  const left = chat.limitResetsAt === null ? null : Math.ceil((chat.limitResetsAt - now) / 60_000)
+  const when = left === null ? 'once it resets' : left > 0 ? `in ${left < 120 ? `${left} min` : `about ${Math.round(left / 60)} h`}, when it resets` : 'now: it has reset since'
+  return { move: 'resume-after-limit', reason: `its account hit the usage limit; the babysitter continues it ${when}` }
+}
+
+/** An idle chat's last reply waits on work, nobody has written since, and it has sat WAIT_MS: the waiting move. */
+function waitingMove(all: readonly TranscriptItem[], reply: Extract<TranscriptItem, { kind: 'assistant_text' }>, now: number): (Move & { waitingOn: string[] }) | null {
+  const at = all.lastIndexOf(reply)
+  if (all.slice(at + 1).some((i) => i.kind === 'user' || i.kind === 'note')) return null
+  const on = waitedOn(reply.text)
+  const idle = now - reply.ts
+  if (!on || idle < WAIT_MS) return null
+  return { move: 'waiting', reason: `its last reply, ${Math.round(idle / 60_000)} min ago, waits on ${on.join(', ')}`, waitingOn: on }
+}
+
+/** The move for one chat. `items` is its transcript, or null when it was not read (a working chat needs none). */
+export function classify(chat: Subject, items: readonly TranscriptItem[] | null, now: number): OrchestratorRow {
+  const row = { id: chat.id, title: chat.title, cwd: chat.cwd, account: chat.account, source: chat.source, status: chat.status, updatedAt: chat.updatedAt }
+  if (chat.status === 'working' || chat.status === 'starting') return { ...row, move: 'watch', reason: chat.activity ? `working: ${chat.activity}` : chat.status }
+  if (chat.queuedCount > 0) return { ...row, move: 'watch', reason: `${chat.queuedCount} message(s) queued; the engine takes them up` }
+  const all = items ?? []
+  const recent = recentMove(chat, all, now)
+  if (recent) return { ...row, ...recent }
+  if (chat.status === 'limited') return { ...row, ...limitMove(chat, now) }
+  if (chat.status === 'error') return { ...row, move: 'retry-error', reason: short(chat.lastError || 'the last turn failed', 200) }
+  const asking = waitingQuestion(all)
+  if (asking) return { ...row, move: 'answer-question', reason: 'a question waits for an answer', ...asking }
+  const pending = all.find((i) => 'state' in i && i.state === 'pending')
+  if (pending) return { ...row, move: 'leave', reason: `a ${pending.kind} waits; only a person grants one` }
+  if (chat.status === 'needs_you') return { ...row, move: 'leave', reason: 'it waits on a person in its own window' }
+  const reply = last(all, 'assistant_text')
+  const asked = reply && askedIn(reply.text)
+  if (asked) return { ...row, move: 'answer-need', reason: NEED.test(reply.text) ? 'the last reply ended on a NEED line' : 'the last reply asks what to do next', ...asked }
+  if (chat.status === 'stopped') return { ...row, move: 'leave', reason: 'a person stopped it' }
+  const waiting = reply && chat.status === 'idle' && now - chat.updatedAt < WAIT_ACTIVE_MS ? waitingMove(all, reply, now) : null
+  if (waiting) return { ...row, ...waiting }
+  return { ...row, move: 'done', reason: 'finished; nothing asked' }
+}
+
+/** Most urgent first, then the most recently active. */
+export function rank(rows: OrchestratorRow[]): OrchestratorRow[] {
+  return [...rows].sort((a, b) => ORCHESTRATOR_MOVES.indexOf(a.move) - ORCHESTRATOR_MOVES.indexOf(b.move) || b.updatedAt - a.updatedAt)
+}

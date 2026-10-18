@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Atlas</title>
+<style>
+  body { margin: 0; padding: 24px; font: 14px/1.5 system-ui, sans-serif; color: #1f2328; background: #fff; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .card { border: 1px solid #d0d7de; border-radius: 8px; padding: 14px; }
+  .label { color: #656d76; font-size: 12px; }
+  .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+  ul { margin: 16px 0 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<h1>Atlas</h1>
+<div class="grid">
+  <div class="card"><div class="label">Open issues</div><div class="value">14</div></div>
+  <div class="card"><div class="label">Nightly build</div><div class="value">Passing</div></div>
+  <div class="card"><div class="label">Release 2.4</div><div class="value">18 of 24</div></div>
+</div>
+<ul>
+  <li>Write the migration notes</li>
+  <li>Review the import PR</li>
+  <li>Retire the legacy export</li>
+</ul>
+</body>
+</html>

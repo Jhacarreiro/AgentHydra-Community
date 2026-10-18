@@ -1,0 +1,1103 @@
+# Reference
+
+Everything the README deliberately leaves out. The README is for deciding whether you want this;
+this file is for running, configuring and hacking on it.
+
+- [MCP server](#mcp-server)
+- [Claude Desktop session mapping](#claude-desktop-session-mapping)
+- [Config (env)](#config-env)
+- [ChatGPT handoff](#chatgpt-handoff)
+- [Keeping the daemon alive](#keeping-the-daemon-alive)
+- [Auto-update](#auto-update)
+- [Instance appearance](#instance-appearance)
+- [Stack](#stack)
+- [Layout](#layout)
+- [Checks](#checks)
+
+Agents looking for the quota tools specifically want [AI_USAGE_SELFCHECK.md](AI_USAGE_SELFCHECK.md).
+
+## MCP server
+
+The daemon's REST API is also exposed over MCP, so agents (Claude Code, Claude Desktop, Cursor) can
+drive sessions, the run queue, accounts, the scheduler, and instances the same way the web UI does.
+Two transports, one dispatcher (`handleRpc`), so they cannot drift:
+
+- **HTTP**: `POST /api/mcp` on the running daemon. One shared server process however many clients
+  connect to it. **This is the one to use.**
+- **stdio**: `server/src/mcp.ts`, or `bun run mcp`. One process per client, each a relay to the
+  daemon over HTTP anyway. Kept for clients that speak nothing else.
+
+### It registers itself
+
+**The daemon writes its own entry into Claude Code's user-scope config on every
+start**, pointing at the port it actually bound (`server/src/mcp-register.ts`):
+
+```json
+{ "mcpServers": { "agenthydra": { "type": "http", "url": "http://127.0.0.1:7787/api/mcp" } } }
+```
+
+It is on by default and lives in **Settings → MCP server → Register with Claude Code**, which also
+shows what the config file actually says. Turning it off removes the entry. It touches those keys
+and nothing else, and it refuses to write a [`~/.claude.json`](CLAUDE-CONFIG-LAYOUT.md) it could not parse rather than
+replacing state it cannot read. `CLAUDE_CONFIG_DIR` is honoured; `AGENTHYDRA_MCP_CONFIG` names the
+file outright.
+
+Re-registering on every boot is the point: the URL carries the bound port, so a hop off a busy 7787
+would otherwise leave an entry pointing at nothing. The same setting also keeps a `browser` entry beside
+it, `{ "type": "http", "url": "http://127.0.0.1:7798/mcp/browser" }`, so every Claude Code session on
+the PC gets Desk's browser tools; a `browser` entry that is not AgentHydra's is left alone and reported
+as a conflict.
+
+**A session already open when it is registered will not see the new tools**: a client fixes its
+tool list at startup. Start a new one. `claude mcp list` should say `✔ Connected`.
+
+### Why this exists
+
+Until 2026-09-07 the instruction here was `claude mcp add --scope user agenthydra -- bun run --cwd
+<path-to-agenthydra> mcp`, and it is wrong for everyone who did not clone the repo: a downloaded
+release has no checkout to point `--cwd` at, and usually no Bun to run it with. The people most
+likely to want the tools were the least able to get them, and the failure is silent: a client with
+no entry simply has no tools and nothing says why. Found twice: registered **nowhere at all** on
+2026-08-30, and again on a release install on 2026-09-07.
+
+Register by hand only if you have turned the automatic one off:
+
+```sh
+claude mcp add --scope user --transport http agenthydra http://127.0.0.1:7787/api/mcp
+```
+
+User scope is load-bearing: it makes the tools available from any directory. A project-scoped
+registration gives the server its tools in one repo and nowhere else, which is close to not having
+them.
+
+### Moving chats needs the Python toolbox, not just the server
+
+`move_chat`, `move_chats` and the `orchestrator_*` tools do not do the work themselves. They run a
+script out of `orchestrator/`, which releases ship beside the executable. An install without that
+folder answers `no orch.py under <dir>` to all of them while every other tool works perfectly, which
+reads as the feature being broken rather than absent. `GET /api/orchestrator` says `present: false`,
+and **Settings → MCP server** says so too, with a **Repair install** button: re-applying the current
+release restores the folder (see `missingComponents` in `server/src/github-updater.ts`).
+
+This is not hypothetical either. The component-aware updater landed *in* v0.39.0, so the update that
+installed 0.39.0 was performed by the previous one and brought the executable alone, leaving
+installs on the newest version with no toolbox and, until the repair path existed, no update that
+could ever fix it.
+
+Tools cover sessions (list / get / tail / search / export across Claude, Codex, OpenCode, Hermes,
+DeepSeek Harness and the foreign readers), project discovery (`list_projects`), chats a usage limit cut off
+(`list_rate_limited_sessions`), the queue (list / add /
+update / run / cancel / events), accounts (secrets always masked), the scheduler (get / set),
+Claude Desktop instances (list / launch / quit), Claude CLI instances (including their limit
+reset via `cli_limit_reset`, see [CLI-LIMIT-RESET.md](CLI-LIMIT-RESET.md)), and Codex CLI/Desktop
+instances (list / create / CLI launch / login helper / desktop open / focus / quit / redeem a
+banked `/usage reset` credit via `redeem_codex_reset_credit`), usage-check (`check_usage`,
+`check_my_usage`), the auto-resume monitor (get / set), an update check, and the orchestrator
+(`orchestrator_menu`, `orchestrator_run`, `orchestrator_loop`, `orchestrator_switch`,
+`orchestrator_operation` to read a run's result and `orchestrator_cancel` to stop one that is
+still going - see [The orchestrator](#the-orchestrator) below), plus **`move_chat`** - the
+one-call account move
+(`{chat, from?, to?}`: fuzzy title, account by name/number/label/email, `to` defaults to `"here"`
+and accepts `"best"`; every landing is stamped `bypassPermissions` and the mode is read back from
+disk - see [Moving chats](MOVING-CHATS-BETWEEN-ACCOUNTS.md#the-fast-path-one-call)), and
+**`fan_out`** / **`fan_out_status`** / **`fan_out_send`** - one task list spread over OTHER
+accounts as visible desktop chats, one account each, then read and steered as a group (the
+orchestrator table below has the mechanics), with **`report_progress`** - the typed beacon a
+member reports about itself (mode planning / execution / verification, cumulative summary, next
+step, review paths, confidence, blocked-on-user), which `fan_out_status` shows per member with
+blocked members first.
+and **`unblock_prompts`** - press the Allow/Accept/Continue a chat is stopped on, mid-turn, for a
+chat you name (the act `fan_out_send` structurally cannot perform, since a chat frozen on a prompt
+reads as `working`; see [Clearing a stuck prompt](UNBLOCKING-STUCK-PROMPTS.md)).
+Mutating tools say `MUTATES:` in their description; there is deliberately no shutdown tool.
+
+The **Free accounts** (the claude.ai and chatgpt.com free web logins in AgentHydra 2.0's Instances →
+Free, which Desk 2's server keeps) have **`free_status`**, **`free_chat`**, **`free_results`**,
+**`free_threads`** and **`free_read`** (`server/src/mcp-free.ts`). `free_chat {tasks:[{prompt, chat_id?,
+name?, account?, provider?, model?, web_search?}]}` starts each task as a private thread (Claude incognito,
+ChatGPT temporary chat) on an idle signed-in account with room (ChatGPT's unlimited text and a Claude
+5-hour window under half used count alike), the one used longest ago first, skipping accounts at 90% of
+their week unless one is named, or continues a thread by `chat_id` on its own account. `model` picks a new
+chat's model: a Claude family (`haiku` or `sonnet`) goes to a Claude account only, and `gpt-6` or `luna-thinking`
+to a ChatGPT account only (Luna Instant when the account does not offer it); a continued thread keeps its
+model. Each account runs one operation at a time, so tasks wait for an idle account. Each ChatGPT account is
+also paced under the burst at which ChatGPT locks it out (a learned cap of new chats per 30 minutes, kept in
+`free-pace.json`); a paced account is busy for now, and one named in the task is never held back.
+`free_status` gives each account's `plan`, its last hour (`lastHour`, marked FAILING at 90% failed of 5 or
+more) and its pace (`paced` until a time, or `pace`: new chats of the cap in the last 30 minutes). Free
+threads are private, so unlike probe chats they need no deleting. The call answers within 45 s
+with a `batch` for `free_results` while the sending goes on; batches live in the daemon's memory for 6
+hours, the threads in Desk 2 (`free_threads`, `free_read`). Desk 2 must be running.
+
+**`babysitter`** (`server/src/mcp-babysitter.ts`) answers which chats a usage limit stopped right now: each
+one (a Desk chat, a Claude Desktop or CLI session) with its account, when it stopped, when its limit resets,
+its state (`waiting`, `resumed`, `no-engine`, `gave-up`) and why, the count and soonest reset per account, and
+the last 10 continues the babysitter sent. It reads Desk 2's `GET /api/babysitter`, which answers from the
+babysitter's last look (every 5 minutes and when a known reset passes; no model is asked), so a call costs
+milliseconds; `fresh: true` looks first. `enabled` (MUTATES) turns it on or off. Each session row's
+`limit_stop` carries `resets_at` for it: the notice's "resets 11:40pm (America/Chicago)" read against the
+moment of the stop.
+
+**Routines** is the babysitter's third sibling (Desk 2's `plugins/73-routines.ts`, logic in
+`desk2/server/src/routines/`, contract in `desk2/shared/routines.ts`, Settings > Managers > Routines). A routine is one
+standing job on this PC, on a schedule: a command, an AI prompt that runs as a chat you can open, or a Windows scheduled
+task. Routines run on the PC through AgentHydra's own CLI and accounts; the manager asks no model itself. The owner's
+rule for them: a routine runs only for something the owner asked for in the owner's own words, and an AI can only propose one.
+
+One file per routine, `<desk home>/routines/<id>.json`, the id is the file name and matches `^[a-z0-9][a-z0-9-]{0,39}$`:
+
+```json
+{
+  "name": "Example routine",
+  "askedBy": "Example Owner, 2026-10-12: \"check the inbox every weekday morning\"",
+  "schedule": "57 8,12 * * 1-5",
+  "prompt": "Check the replies ...",
+  "cwd": "C:/Users/me/project",
+  "timeoutMinutes": 60,
+  "until": "2026-10-23"
+}
+```
+
+- `name` and `askedBy` are required. `askedBy` is who asked, in their words, with the date (at most 500 characters); a file
+  without it is `broken`.
+- WHEN, exactly one of: `schedule` (a 5-field cron expression in local time: `*`, numbers, `a-b`, lists, `*/n` and `a-b/n`,
+  day-of-week 0-7 with 0 and 7 Sunday, and when both day-of-month and day-of-week are restricted either one matching counts;
+  no names, no `@daily`, no seconds field); `status` (argv, which prints one JSON status object within 60 s and paces itself:
+  `next_tick_at`, `last_tick_at`, `off`, `headline`, `totals`, `settings`); or `windowsTask` (the full path of a Task Scheduler
+  task, e.g. `"\\Example nightly job"`; Windows runs it, the manager shows it and can run, pause and resume it; Windows only).
+- WHAT, for `schedule` and `status` routines, exactly one of: `run` (argv, run hidden with no shell by a runner outside
+  Desk's process tree, so a Desk restart leaves the run going and the next Desk goes on watching it: exit 0 is `ok`, 75 is
+  `busy`, any other exit is `failed`, past the timeout the tree is killed and recorded `timed-out`, a runner its launcher
+  could not start is `failed` at once with the launcher's reason, one that has not started within 60 s is `failed` (Desk
+  takes its spec back, so it never runs late), a run whose runner ended without a word is `interrupted` (off Windows its
+  command's process group is ended first, when its leader is proven by its start time; on Windows the runner's end took its
+  command), and a runner still alive 2 minutes past the timeout whose process cannot be read is `interrupted` and left
+  alone; a run is settled as the kind it started as, whatever its file says by then; the output goes to the log and its
+  last line is kept), or `prompt` (an AI run: a Desk chat is started the way a new chat starts, titled
+  `Routine: <name>`, in group `routine-<id>-<YYYYMMDDHHmm>`, in `cwd`, which a prompt needs). A `windowsTask` routine has
+  neither. The old field `tick` is refused: `run` replaces it.
+- `cwd` is required for `prompt`, optional otherwise. `timeoutMinutes` is 5 to 360, 120 by default. `until` (`YYYY-MM-DD`)
+  makes the routine `ended` after that local day: it never runs but stays listed.
+
+States: `idle`, `due`, `running`, `paused` (the owner paused it), `off` (its status says off), `ended` (past `until`),
+`broken` (with its reason) and `waiting` (a proposal waiting for the owner's yes, listed under "Waiting for your yes").
+
+Schedule semantics: the memory keeps each schedule routine's last slot. The first time a routine is seen it starts from now,
+so a slot already past never runs. A look runs the newest slot at or before now, once, when it is later than the last slot
+run, is at most 12 hours old, the manager is on, and the routine is not paused, ended or running; a slot missed by more than
+12 hours is skipped. A look runs every 5 minutes, or sooner for the earliest upcoming slot. A `status` routine waits 15 minutes
+after its last run ends. A Windows task routine is read in one hidden PowerShell call per look (state, last run, last result,
+next run); its paused state is Windows' Disabled state. Run now starts an idle or due routine at once, and refuses a paused one
+(409).
+
+Data: the memory is `<desk home>/routines.json` (each routine's last 30 runs, its running run, its last slot and paused);
+the logs are `<desk home>/routines/logs/<id>.log` (moved to `.log.1` past 2 MB); a command run's files are in
+`<desk home>/routines/runs/`: `<id>.spec.json` (what to run, with Desk's environment; the runner deletes it once it runs),
+`<id>.run.json` (the runner's pid and start, and its command's pid with a time it had started by) and `<id>.result.json`
+(how it ended), which Desk deletes once it has recorded the run;
+proposals wait in
+`<desk home>/routines/proposed/<id>.json`. The agents and memory of earlier builds of this manager are not read.
+
+Who may do what. Any caller (the window or an agent) may read, run one now, pause one, and propose one. Only the window (the
+owner's click, `X-Desk-Caller: window`) may resume, approve, discard, switch the manager (`enabled`), or edit a routine; an
+agent's request for those gets 403 `only the owner can do that, in Settings > Managers > Routines`. On that page each routine
+is one row (icon, name, status, last run, next run) that opens for its schedule in words, its history, Run now and Open
+chat; the row's own switch pauses or resumes it, and the switch beside the Routines title is the manager's `enabled`. A proposal is a routine's
+contract plus `why` (one or two sentences: what it does and why it should be a routine rather than a background task the agent
+runs itself). It is checked with the same parser, refused with 400 when it does not check out, and never run; approve moves it
+into `routines/<id>.json` without `why`, discard deletes it.
+
+`GET /api/routines` answers the last look (`?fresh=1` looks first): `enabled`, `everyMs`, `checkedAt`, `nextCheckAt`, each
+routine's state, reason, kind, schedule in its own words, `askedBy`, `paused`, `headline`, `totals`, `settings`, last run,
+`nextRunAt`, the run going on (`kind` `command` or `prompt`, its runner's `pid` or its chat), and its last 30 runs, plus
+`proposals` and `error`. `POST /api/routines` takes one action per call:
+`{ enabled?: boolean }` (window only), or one of `{ run, pause, resume, approve, discard }` (an id; `resume`, `approve` and
+`discard` are window only), or `{ propose: { id, why, ...contract } }`. Anything else answers 400 with the expected shape.
+
+The `routines` MCP tool (`server/src/mcp-routines.ts`) reads the same answer (`fresh`) and takes `run`, `pause` and `propose`,
+each marked MUTATES. It cannot resume, approve, discard or switch the manager, and its description tells the agent to propose
+a routine rather than add one, and to prefer a temporary background task it manages itself.
+
+`list_sessions`, `get_session`, and `tail_session` accept a `source` of `claude`, `codex`,
+`opencode` or `foreign` (the shared reader for Cursor, Windsurf, Zed, Copilot CLI, Pi and the
+rest; a Pi session shows its active branch, and each branch left behind with /tree lists as a
+fork of it);
+every returned session is source-tagged. Session viewing/search is unified, but queue dispatch,
+composing replies, and rate-limit auto-resume remain Claude-only.
+
+### Reading ALL the history, not just today's
+
+`list_sessions` defaults to the **last 24 hours**, because the list it powers answers "what am I
+working on". An agent told to go through "all my chat histories" therefore has to say so, and the
+tool description says the default out loud so it knows to:
+
+- `period: "24h" | "7d" | "30d" | "all"`, or explicit `since` / `until` bounds (epoch ms or an ISO
+  date) for a real date range.
+- `offset`, for paging past the 500-row ceiling. Pages are contiguous: `offset: 500, limit: 500` is
+  exactly page 2 of the same ordering, because the offset is counted in returned rows rather than
+  in index entries, which would skip an unknown number of them.
+- `project`, a case-insensitive substring of the working directory or project key.
+- `list_projects {}` lists every folder that has conversations in it, with a session count and a
+  per-provider breakdown. Read from the transcript index, never a transcript, so it is cheap. This
+  is the index of the index: start here to find out what "all" contains, then scope a real query.
+
+### What compaction dropped from your own session
+
+A long Claude Code session loses exact details at every compaction (a path, an error line, the
+person's own wording), yet its full transcript is still on disk. `history_search { query }` searches
+the CALLING session's own transcript for text from before its last compaction: user and assistant
+text, tool calls and tool results (reasoning blocks and the compaction summary are left out). A
+source matches when it holds every term (`"quote a phrase"` to keep it whole); up to 8 excerpts of
+up to 600 characters come back, most matches first, each with a stable `sourceId`
+(`<line uuid>#<block index>`) and the `offset` the excerpt starts at. `history_read { source_id,
+offset? }` then returns that source exactly, 4,000 characters a page, with `nextOffset` until the
+end. `all: true` on both widens the scope to the whole transcript.
+
+- The session is found the way `whoami` finds the caller: the calling engine's pid (or, over
+  stdio, this server's parent chain) is matched against the CLI's own live registry,
+  [`~/.claude/sessions/<pid>.json`](CLAUDE-CONFIG-LAYOUT.md). `how` says which match won; `session_id` names a session outright
+  when detection cannot.
+- Everything returned is marked as historical data (`notice`), never instructions, and secrets in
+  recognisable formats are redacted the same way as `export_session`.
+- Read-only, lexical, nothing stored: the transcript is parsed on demand and the last one parsed is
+  kept until the file changes.
+
+### Chats a usage limit cut off
+
+`list_rate_limited_sessions { pendingOnly?, period?, project?, limit? }` lists the conversations a
+quota wall ended: "You've hit your weekly limit · resets 3am". Every session row also carries the
+same verdict as `limit_stop`, and `rateLimited: "only" | "pending"` narrows `list_sessions` the same
+way; the web UI exposes it as **List options -> Usage limits**.
+
+`pending: true` means nothing followed the notice, so that session is *still* stopped there, the
+actionable half. `pending: false` means it was resumed afterwards and is history. Pending-ness is a
+pure function of the file, recomputed on every scan: the CLI cannot resume a session that died on an
+API error without appending its own bookkeeping, so any resume flips it on its own.
+
+Detection trusts only the CLI's own error report (`isApiErrorMessage` / a `<synthetic>` assistant
+turn / an errored terminal `result`), never model prose or tool output, so a session that merely
+*discussed* rate limits is not listed. It is Claude-only: Codex, OpenCode, Hermes and the DeepSeek
+Harness record an error,
+but not in a form worth trusting, and a false claim here would be worse than a missing one. The judgment
+lives in one place (`createLimitStopTracker` in `server/src/rate-limit-signal.ts`) and is shared with
+the auto-resume monitor, so the badge and the resume queue cannot disagree.
+
+**Empty re-wakes are held back.** When the auto-resume monitor schedules a resume it notes how many
+real turns the transcript holds (model turns and typed messages; not bookkeeping, the wall notice or
+its own `resume` prompt). If two resumes in a row added none, the next one waits an extra 2 minutes
+on top of the reset, doubling for each further empty resume up to 30 minutes, and the resume list
+says so ("held 4m: the last 3 resumes added no turns"). Any real turn, the model's or yours, resets
+it. The per-session resume cap still applies; this only slows an empty loop down
+(`server/src/rewake-cooldown.ts`).
+
+### Working, waiting on you, or done
+
+`agent_status { session? }` (and `GET /api/agent-status[/:sessionId]`) answers what a Claude Code
+session is doing right now: `working`, `blocked` (waiting on you: a permission prompt, a question,
+or `rate-limit`) or `done`. The session list shows the same answer as a badge. It is fed by Claude
+Code's own hooks, which are opt-in: `status_hooks { install: true }` (or
+`POST /api/agent-status/hooks {"install":true}`) writes one `curl` hook per event
+(UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, SessionEnd) into
+Claude Code's user `settings.json`, posting to `POST /api/agent-status/hook`; `install: false`
+removes only those. Every other hook in the file is left alone, an unreadable file is never
+rewritten, a boot re-points installed hooks at the port the daemon bound, and a session picks the
+hooks up on its next start. `CLAUDE_CONFIG_DIR` is honoured; `AGENTHYDRA_HOOKS_CONFIG` names the
+file outright. The rate-limit scan writes into the same store when it finds a session still at a
+usage wall, and drops that row once it no longer finds the stop (the session was resumed), so a
+setup without the hooks never keeps a stale "waiting on you". A side-run daemon (relocated store)
+never re-points the installed hooks at itself.
+
+Known limit: Claude Code fires no `Stop` when you interrupt a turn (Esc), so an interrupted turn
+reads `working` until the session's next hook event.
+
+Three rules keep the answer honest (`server/src/agent-status.ts`; the design follows stablyai/orca's
+agent status store, MIT):
+
+- **Precedence is decided once, when a row is written**, and the row carries its provenance
+  (`source`, `event`, `at`). Readers show `state` as written and never re-derive it.
+- **A row read back after a daemon restart is `restoredUnconfirmed`** and never reads as live
+  (the web badge hides it): hooks kept firing while the daemon was down and nobody heard them.
+- **The lead's own state is kept beside the folded one** (`mainState`, `subagents`), so a lead
+  that finished while a sub-agent it started is still running reads `working`, not `done`.
+
+Only the hook's routing fields are kept (session id, event, tool name, notification type, cwd);
+prompts, tool inputs and notification text never reach the store.
+
+### Why a thread is called what it is called
+
+Every session row carries `title_source`: `custom` (a saved title the writing app displays), `ai`
+(the model's own summary), `store` (the provider handed us one as a field), `envelope`, `message`
+(the first thing said) or `id`. `envelope` is the one worth knowing about: the first turn arrived
+wrapped in a pseudo-tag carrying a `name` attribute, `<scheduled-task name="nightly-sweep">`, and
+that name became the title, so the string was chosen by whatever wrote the wrapper (a scheduler, a
+hook, a harness) and may match nothing you have ever named. `title_tag` names that tag, and the web
+UI prints it beside the title. This exists because threads turned up under a name their owner did
+not recognise and there was no way to ask the app where the label had come from.
+
+### Usage-check
+
+`check_usage { account?, configDir? }` and `check_my_usage {}` let any MCP-speaking agent read an
+account's remaining Claude subscription quota without asking a human. Pass `account` (a saved
+dispatch account id or label) or `configDir` (a `CLAUDE_CONFIG_DIR` that's been `/login`'d once);
+`check_my_usage` is a self-check that works out which account the calling process actually bills to.
+Both report the session (5h) %, the weekly (all-models) %, and any per-model weekly %.
+
+### A 429 is obeyed, never re-hit
+
+`/api/oauth/usage` limits per account, and when it says 429 it hands back a `Retry-After` measured
+in TENS OF MINUTES. That instant is recorded per account and honoured at the single chokepoint
+(`checkUsage`, `server/src/usage.ts`), so the 30 minute fleet sweep, the reset watcher, the resume
+monitor and an open web app all back off together. Inside the window nothing calls the endpoint at
+all: the failure is re-asserted with the REMAINING seconds, so a reader still sees "rate limited,
+retry in N min" counting down, and the last cached reading is served rather than a fresh and false
+0%.
+
+The limiter is rolling, which is what makes this load-bearing rather than polite. Before it, several
+independent pollers re-hit a limited account roughly every 30 seconds and each early knock re-armed
+the window being waited out, so an account that tripped a limit could never recover: measured on
+2026-09-11, accounts that had read fine two hours earlier sat at 429 all day. The number obeyed is
+always the server's own. None is invented here.
+
+### Built-in guidance
+
+The MCP `initialize` handshake returns an `instructions` block (`SERVER_INSTRUCTIONS` in
+`server/src/mcp.ts`), which clients show the model once per session before any tool call, and every
+usage or identity answer carries a one-line `nextStep`. Between them an agent gets AgentHydra's
+operating rules (check your quota unprompted before heavy work, save state when `shouldOffload` is
+true, gate a fan-out on current + projected cost, never quote an unattributed percentage) without a
+human typing any of it. The handshake block is length-capped by a test, because it sits in context
+for the whole session.
+
+### Asking for less: `jmespath` and the size cap
+
+Every read tool (any tool whose description does not say `MUTATES:`) takes an optional `jmespath`
+argument, applied server-side to the tool's answer, so an agent that wants one field of each
+session row gets that field and not the rows: `list_sessions {jmespath: "sessions[].{id:id,title:title}"}`.
+It is parsed before the tool runs, so a malformed expression refuses the call with nothing done and
+the grammar in the error. Once the tool has run, a projection that fails on the answer's types or
+matches nothing answers as data (`result: null`, `projectionError`, and the answer's top-level keys
+with their types), never as a failed call, so the retry can be written right without fetching the
+shape first. The evaluator is `server/src/jmespath.ts`, written for this with no dependency.
+
+Every answer, projected or not, is then measured in exact UTF-8 bytes of the text sent and held to
+`AGENTHYDRA_MCP_MAX_RESULT_BYTES` (default 80000, floor 4096). At 80% of the cap an object answer
+gains a `_responseSize` note; over it, the answer is cut in five progressively harsher phases (long
+strings, then list lengths, then nesting, then a top-level skeleton) until it fits, and leads with
+`_truncated`: the original size, the phase, what was cut, and the tool's own arguments for asking
+for less. A write's confirmation survives every phase: the answer's top-level scalars (`ok`,
+`verdict`, `operationId`, ...) and the per-item outcome lists named in `COMMITTED_FIELDS`
+(`server/src/mcp-output.ts`), reduced to their scalar fields, so an oversized `move_chats` answer
+still reads as the success it was. Both apply on stdio and on `/api/mcp` alike.
+
+### Self-identification
+
+`whoami {}` answers "which instance am I?" and shows its working: the permanent number, account
+email, plan and rate-limit tier, plus a `confidence` (`exact` / `assumed` / `none`), the `method`
+that won, the literal `clues`, and everything `ruledOut`. `check_my_usage` and a no-argument
+`usage_budget` embed the same answer as an `identity` block, so a quota reading is never
+unattributed.
+
+It is not one env var. A Claude **CLI** instance sets `CLAUDE_CONFIG_DIR`; a Claude **Desktop**
+instance sets none, because the account is chosen by the Electron host's `--user-data-dir`. So
+detection layers `CODEX_HOME` → `CLAUDE_CONFIG_DIR` → `CLAUDE_CODE_EXECPATH` → the instance folder
+holding this session's `claude-code-sessions` file → the parent `claude.exe`'s image path → the
+Electron host's `--user-data-dir`, stopping at the first hit and only spawning a process scan when
+everything cheaper came up empty. It runs in the MCP server process, never on the daemon, which
+would faithfully identify the daemon. See [AI_USAGE_SELFCHECK.md](AI_USAGE_SELFCHECK.md) for the
+three signals that look authoritative and are wrong.
+
+**The weekly (all-models) % is the binding cap.** A fresh session % is a red herring when weekly is
+near 100, and switching the flagship model doesn't dodge the shared weekly bucket. An agent should
+check its own quota before a heavy multi-agent fan-out and pace accordingly, routing heavy work to
+whichever account has the lowest weekly %.
+
+### The Hydra family
+
+AgentHydra is one of three products on a PC that should know each other exist: AgentHydra (accounts,
+quota, sessions, CliMayte, HSwarm), Project Hydra (every codebase, its state and marketability) and
+MonkeyWerx (the marketing platform). Each member writes one manifest file of its own, atomically,
+into `~/.hydra-family/` (`HYDRA_FAMILY_DIR` moves it), and reads the others' to learn what they are
+for and how to reach them. No member needs another: a peer that is not installed or does not answer
+is reported down and the caller carries on.
+
+- **The manifest.** The daemon writes `agenthydra.json` (schema `hydra-family/1`: name, what it is
+  for, what to ask it, its HTTP root, health URL and MCP endpoint, version) on every start, with the
+  port it actually bound (`server/src/hydra-family.ts`). A failed write is logged and never stops
+  the daemon. A side-run daemon, or one under a scratch `AGENTHYDRA_HOME`, leaves the machine's
+  folder alone unless `HYDRA_FAMILY_DIR` names one of its own.
+- **`hydra_family {}`** lists the three members with `up` (health URL answers 2xx within 1.5 s, or,
+  with no health URL, the member's command line exists), what each is for and how to reach it.
+- **`project_context {cwd}`** asks Project Hydra which project a folder belongs to, by running the
+  command line its manifest names (`which <cwd> --json`, 20 s limit): the project's name, group, the
+  owner's mark (watch or retired means hands off) and its production and marketability scores. It
+  answers `{available: false, reason}` when Project Hydra is not installed or fails.
+
+Both tools are read-only and answer without the daemon.
+
+### The box doctor
+
+`box_doctor {}` (read-only; `GET /api/box-doctor`) says what is wrong with this PC and, where
+Project Hydra is installed, with Project Hydra itself. It replaced Project Hydra's `ph doctor` on
+2026-10-10: Project Hydra only measures (`ph facts --json`, raw facts with no verdicts) and
+AgentHydra judges everything, so every machine gets the checks and they improve in one place.
+
+- **The machine** (`server/src/box-doctor*.ts`): a `.cmd` shim fronting a real exe on PATH, commit
+  memory running out, leaked console hosts, the orphan reaper not running, a process hoarding idle
+  children; the clock (the Windows Time service, one NTP sample an hour, Project Hydra's stamps: a
+  stopped or self-synced time service is a note, more than five minutes off a problem); and every
+  drive agents worked on in the last 30 days, plus Project Hydra's search roots, listed in a child
+  process so a dead drive cannot stall the daemon.
+- **Project Hydra** (`hydra:*` keys): registry against disk, missing archives, unregistered or
+  nested checkouts, old test scratch, scan folders, a stale sweep, the record and index, unread
+  instruments, Loki, the scheduled sweep, prerequisites and the pre-push hook. The facts are read at
+  most hourly; `GET` serves the last read, `POST /api/box-doctor/sync` reads them fresh. Without
+  Project Hydra these checks are skipped and the machine checks still run.
+- **Incidents.** Every 15 minutes a pass records each `problem` as an incident (scope `box-doctor`)
+  and resolves the ones that cleared. It resolves only what it actually checked (`checked` in the
+  answer: exact keys and `prefix:` families), so a section Project Hydra could not take, a search
+  walk that ran out of time or a drive that did not answer leaves its incidents open. Messages carry
+  no counts or ages (an incident's signature includes its text); those are in `detail`. Notes never
+  become incidents.
+
+### Behavioural eval: can an agent reach the answer?
+
+`bun run eval:mcp` (`scripts/mcp-eval/`) checks the tools by USE, not by lint. It starts a frozen,
+fictional fleet on a loopback port (`fixture.ts`), spawns the stdio server against it exactly as an
+MCP client would, and asks the questions in `qa-pairs.xml` ("which instance has the most weekly
+quota left?"). Each pair is read-only, independent, stable and has one verifiable answer. The report
+gives accuracy plus, per question, the tool calls, which tools, and the time taken.
+
+- **Default**: a scripted reference agent answers each question by the path a competent agent would
+  take, and the command exits 1 on any miss. The test suite runs this
+  (`server/tests/mcp-eval.test.ts`), so a renamed tool, a changed argument or a reshaped result on a
+  question's path fails CI.
+- **`--serve`**: starts the fixture and prints the server config for a chat you can see. The agent
+  answers using only that server and writes `[{"id","answer","feedback","toolCalls"}]`, where
+  `feedback` is its view of the tools. **`--score <file>`** scores that file. Nothing here launches a
+  model on its own.
+
+Every non-GET the fixture receives is refused with 405, and the harness's own client will not call
+a `MUTATES:` tool. Both are listed under "refused mutations". A route the fixture does not serve
+answers 404, so the server reports an error. It never falls back to reading this machine's real
+accounts. To add a question, add a `<qa_pair id=...>` and its reference solution in `harness.ts`.
+A pair without a solution is refused, never skipped.
+
+### Frozen API levels
+
+Agents call these tools from prompts, skills and scripts that outlive a release, and nothing checks
+their arguments client-side, so a tool that disappears or an optional argument that becomes
+required breaks them silently. Each release therefore freezes its tool surface as
+`server/mcp-api-levels/<version>.json`: every tool's name, `since` (the earliest level holding it;
+1.2.0 is the baseline, so it means "at or before 1.2.0") and its input schema with the description
+prose stripped. Nobody lists tools by hand; the level is generated from `TOOLS`.
+
+`server/tests/mcp-api-levels.test.ts` replays every committed level against the live tools and
+fails on a removed tool or argument, an optional argument made required, a new required argument,
+a dropped enum value, a narrowed type or a tightened bound, at any depth. Adding tools, optional
+arguments or enum values and rewording descriptions never fails it. It also fails when the
+`package.json` version has no level, so a release cannot ship an unfrozen surface.
+
+| Command | What it does |
+| --- | --- |
+| `bun run mcp:api-level` | lists every break against every level and says whether this version is frozen; exits 1 on either |
+| `bun run mcp:api-level --write` | freezes the live surface for this version (a release step, [RELEASING.md](RELEASING.md)); refuses to overwrite a level that differs unless `--force` |
+
+A deliberate break goes in `ACCEPTED_BREAKS` (`server/src/mcp-api-levels.ts`), keyed
+`<level>:<tool>.<argument>`, with the reason and where callers were told. Frozen levels are never
+edited and are outside biome's formatter for that reason.
+
+## Claude Desktop session mapping
+
+> **Moving a chat to another account?** Read
+> [MOVING-CHATS-BETWEEN-ACCOUNTS.md](MOVING-CHATS-BETWEEN-ACCOUNTS.md) first. The store is keyed by
+> `<accountUuid>/<orgUuid>`, so re-logging an instance orphans its chats where the new account
+> cannot see them; migrate leaves a pointer in BOTH profiles; a session with no metadata entry can
+> never be archived and shows as live forever; and a session tool's `send_message` silently steals
+> a chat onto the caller's own account. Each of those produced a wrong result that looked correct.
+
+Claude Desktop and the `claude` CLI write the same transcript store under
+[`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`](CLAUDE-CONFIG-LAYOUT.md). Desktop separately keeps per-chat metadata
+under `<user-data-dir>/claude-code-sessions/<org>/<user>/local_*.json`; the metadata's
+`cliSessionId` is the only reliable link to the shared transcript. The scanner in
+`server/src/instance-sessions.ts` therefore:
+
+- matches only by `cliSessionId`, never metadata filenames or titles;
+- scans both `%APPDATA%/Claude/` and every [`~/.claude-instances/<name>/`](CLAUDE-CONFIG-LAYOUT.md) store; and
+- treats Desktop activity timestamps as advisory because externally appended turns do not
+  reliably update them.
+
+Never use `claude://resume?session=<uuid>` to refresh a live chat. It is a one-way import for a
+finished CLI session: it rewrites the shared transcript without thinking blocks and creates a
+second Desktop chat. External dispatch can append valid turns to a Desktop-backed transcript, but
+whether reopening an existing Desktop chat causes the renderer to request those turns is not a
+stable interface and must not be assumed by product logic.
+
+## Config (env)
+
+| Var | Default | Meaning |
+|---|---|---|
+| `PORT` | `7787` | preferred API/UI port (hops if busy) |
+| `AGENTHYDRA_INSTANCE_PORT` | `PORT + 1` | preferred port for `--instances` quick mode (hops if busy; separate from the full daemon) |
+| `HOST` | `127.0.0.1` | loopback bind host; only `127.0.0.1`, `localhost`, and `::1` are accepted because the local API is intentionally passwordless |
+| `AGENTHYDRA_PORT_FIXED` | unset | `1` = bind `PORT` exactly, skip the single-instance/port-hop |
+| `AGENTHYDRA_HOME` | `~/.agenthydra` | config dir (`runtime.json`, instance-identity cache) |
+| `HYDRA_FAMILY_DIR` | `~/.hydra-family` | folder of the [Hydra family](#the-hydra-family) manifests, one JSON file per member |
+| `AGENTHYDRA_SHUTDOWN_TOKEN` | unset | if set, `/api/shutdown` requires a matching `x-agenthydra-shutdown-token` header (the tray sets it) |
+| `AGENTHYDRA_DATA_DIR` | `~/.agenthydra/data` | state directory (sqlite db, run logs, caches) |
+| `AGENTHYDRA_DB` | `~/.agenthydra/data/agenthydra.db` | sqlite path |
+| `AGENTHYDRA_RUN_LOG_DIR` | `~/.agenthydra/data/run-logs` | detached-run log and sidecar directory |
+| `AGENTHYDRA_CODEX_HOME` | `~/.codex` | default Codex rollout store to scan |
+| `AGENTHYDRA_MCP_MAX_RESULT_BYTES` | `80000` | per-answer byte cap for MCP tool results (floor 4096); over it an answer is cut with notes, see [Asking for less](#asking-for-less-jmespath-and-the-size-cap) |
+| `AGENTHYDRA_CLAUDE_PATH` | npm-global install / `claude` | Claude CLI executable for every spawn (usage probe, keepalive, launches); point it at `server/tests/mocks/bin/claude(.cmd)` to replay a recording |
+| `AGENTHYDRA_CODEX_PATH` | auto-detected / `codex` | Codex executable used by managed Codex instances |
+| `AGENTHYDRA_CODEX_DESKTOP_PATH` | auto-detected | Codex Desktop GUI executable; useful for nonstandard installs |
+| `AGENTHYDRA_HOOKS_CONFIG` | `$CLAUDE_CONFIG_DIR/settings.json` or [`~/.claude/settings.json`](CLAUDE-CONFIG-LAYOUT.md) | Claude Code settings file the opt-in agent-status hooks are written to (`status_hooks`) |
+| `AGENTHYDRA_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode CLI/Desktop SQLite session store |
+| `AGENTHYDRA_BOOT_DEADLINE_MS` | `120000` (full daemon) / `30000` (`--instances`) | startup-liveness watchdog deadline; if boot hasn't reached a bound port by then, the process logs its last-known phase and exits `87` for the supervisor to restart it (see `server/src/boot-watchdog.ts`) |
+
+`/api/health` returns `service: "agenthydra"`, which is load-bearing for the single-instance
+pointer. It also returns `dataDir`, `dbPath` and `dataDirNotice`, which answer "which database is
+this daemon actually using" by looking rather than by inference.
+
+**One state directory, both modes.** A source checkout used to keep its state in the repo's
+`server/data` while a packaged build used `~/.agenthydra/data`, so `bun run start` and the
+installed daemon were the same app reading two different sqlite files: settings, the run queue
+and the done-mark ledger all diverged, silently, and forensics
+run against the wrong one answered confidently and wrongly. Both modes now resolve to
+`~/.agenthydra/data`, and a checkout's existing `server/data` is moved across on first run (by
+copy when the two live on different volumes, which is the normal Windows layout). If BOTH already
+hold state, nothing is moved or merged: the per-user directory is used and the other one is named
+in the boot log and in `dataDirNotice`, because the only unrecoverable version of this problem is
+the one nobody is told about.
+
+**What the first real migration proved (2026-08-26).** A live fleet's state moved 33 MB from a
+checkout on `D:` to a profile on `C:`, verified row-for-row afterwards: 22/22 done-marks, 27/27
+monitor rows and 46/46 settings present at the destination, `dataDirNotice`
+null. Two things only surfaced by running it rather than designing it. `renameSync` throws `EXDEV`
+across volumes, and repo-on-`D:` with profile-on-`C:` is the *normal* Windows layout here, so a
+rename-only migration would have silently never run for exactly the people who have the split. The
+fallback copies and then deletes, in that order, so an interrupted migration leaves two copies
+rather than none. And when both directories already hold real state there is no safe arbiter:
+mtime inverts the moment someone runs the other mode once, so the code refuses to choose and says
+so instead. Stop the daemon before moving anything: a copy taken while it holds the sqlite WAL is
+not a copy of a consistent database.
+
+Manually added dispatch API keys and OAuth tokens are stored as plain values in the per-user SQLite
+database so the database remains portable. The state directories and database receive owner-only
+POSIX modes where supported, and the daemon cannot bind beyond loopback. This protects the local
+service boundary but is not a password vault: anyone who can read files as the same OS user can
+read those manually supplied credentials.
+
+## ChatGPT handoff
+
+Enable **Sessions list → ⋯ → Session settings → ChatGPT handoff** to add a ChatGPT action to the single-session
+composer. It uses the composer task and effective working directory to create a Markdown
+attachment, downloads it in the browser, copies a matching prompt, and opens
+<https://chatgpt.com/>. AgentHydra never signs in, submits the prompt, uploads the attachment, or
+reads the response.
+
+The pack is capped at roughly 100,000 estimated tokens and 256 KiB per file. Git checkouts respect
+standard Git ignore rules; non-Git directories use a bounded walk with common dependency/build and
+credential directories excluded. Common secret filenames, private keys, and high-confidence token
+patterns are omitted and reported as warnings. This is a guardrail, not a guarantee: review the
+download before attaching private source code.
+
+The endpoint is `POST /api/chatgpt/context-pack` with `{ "cwd": "...", "task": "..." }`; it is
+available only while the provider toggle is enabled.
+
+## Keeping the daemon alive
+
+Everything that talks to AgentHydra talks to it over HTTP, so a daemon that is not running is not a
+degraded fleet, it is a silent one: it stops answering rather than failing loudly, and each
+automation just fails its own call until a person happens to notice.
+
+Three scripts under `misc/` cover this, and the difference between them matters:
+
+- **`Ensure-Daemon.ps1`** is a preflight. If a healthy daemon of ours answers, it does nothing and
+  exits 0. Only when nothing of ours answers does it restart and then prove recovery. Call this
+  before the first API call of any automation.
+- **`Restart-Daemon.ps1`** is unconditional. Anything of ours dies, always, so a rebuild can never
+  leave you on stale code. Never use it as a preflight.
+- **`Wait-Daemon.ps1`** proves the daemon came up and *stayed* up, rather than answering once.
+
+"Ours" is a hard question with a hard answer in all three: `/api/health` must return JSON with
+`ok: true` and a `service` equal to this app's package name. Absence of identity is never identity,
+which is what stops a Vite dev server on a neighbouring port from being adopted or murdered.
+
+### The supervisor
+
+`Install-DaemonSupervisor.ps1` registers a scheduled task that runs `Ensure-Daemon.ps1` every five
+minutes and at logon:
+
+```powershell
+.\misc\Install-DaemonSupervisor.ps1            # install
+.\misc\Install-DaemonSupervisor.ps1 -Status    # what is registered, and the last tick's result
+.\misc\Install-DaemonSupervisor.ps1 -Uninstall # remove it
+```
+
+A stock Windows PowerShell prompt may refuse to run it at all ("running scripts is disabled on this
+system"). That is the machine's execution policy stopping the INSTALLER, not a problem with the
+task: run it from PowerShell 7 (`pwsh`), or as
+`powershell -ExecutionPolicy Bypass -File .\misc\Install-DaemonSupervisor.ps1`. The scheduled task
+itself is unaffected either way, because the tick already launches with `-ExecutionPolicy Bypass`.
+
+It needs no elevation and stores no credentials: the task runs as the current user in their own
+interactive session, which is also the only place a daemon can see and drive the desktop windows it
+exists to manage. The action is `Supervisor-Tick.vbs` rather than `powershell.exe` directly, because
+a task firing every five minutes forever must not flash a console window each time; the VBS runs it
+hidden and forwards the real exit code, so Task Scheduler's Last Run Result answers "is the
+supervisor actually keeping it up?" instead of always reading 0.
+
+This exists because it did not. On 2026-08-30 a census of the machine running the fleet found no
+scheduled task, no Startup shortcut and no Run key entry for this app; the live daemon's parent was
+a bare `cmd /c bun server/src/index.ts` typed five hours earlier, with nothing above it. Every piece
+needed to recover already existed and nothing ever called it.
+
+### Why it froze: the `STALL` lines
+
+The daemon runs on one thread, and the tray reaps it after three missed health probes in a row with a kill
+that leaves nothing behind. `server/src/stall-sentinel.ts` writes down what the thread was doing, in
+`logs/daemon.log`:
+
+- `STALL main thread unresponsive for N s ... in flight: ...` comes from a worker thread while the main thread
+  is stuck (from 2 s on), naming the requests in flight; `STALL over` says when it answered again.
+- `STALL one block of N s ...; it followed: ... | profile: ...` follows a single block of 2 s or more, at most
+  one such line every 30 s.
+- A saturated line follows many short blocks that add up to 5 s in 10 s, which look like no freeze at all yet
+  starve the health probe the same way.
+
+The profile comes from a sampler that runs from boot: `on top` is where the samples were,
+`innermost daemon frame` the daemon function closest to them and `outermost daemon frame` the timer or
+route that started it. That is how the 2026-10-07 and 2026-10-08 freezes were found (a `spawnSync` in message
+delivery, a synchronous chat list and process queries, CliMayte's boot reading every finished worker), and the
+3,510 s the daemon spent blocked in the 24 h to 2026-10-11 (the spend report's cold read, CliMayte's check and
+wave judges running git, the account map reading every profile's past logins, the Sessions list re-checking
+CliMayte's finished workers, a cancel's `taskkill`; each now runs off the thread), so read these lines before
+profiling a second daemon.
+
+## Auto-update
+
+Background self-update, on by default since 2026-10-05 (it restarts the daemon; turn it off in
+Settings or with `{ "enabled": false }`):
+
+```
+POST /api/update/settings   { "enabled": true, "intervalSecs": 21600 }
+```
+
+`intervalSecs` clamps to [900, 604800]; default 21600 (6h). Each tick checks the remote and, only if
+the working tree is clean, applies (`git pull --ff-only` + reinstall + rebuild) and relaunches itself
+on the same port (`AGENTHYDRA_RELAUNCH=1` makes the successor wait for the predecessor to free it).
+A dirty tree is never touched.
+
+Because updates are a `git pull --ff-only` against `origin/main`, **pushing `main` is the release**:
+as soon as `main` moves, every instance with auto-update enabled fast-forwards to it on its next
+check. Treat a push to `main` as user-facing rather than as a staging step.
+
+## Instance appearance
+
+Renaming an instance changes only its display label; it never renames the profile folder. Windows
+can hold a running profile folder open, and the folder name is also the stable session/instance id.
+The removed `POST /api/instances/:dir/rename` endpoint must not be restored as a live folder rename.
+
+### The four names on an instance row
+
+They are four independent sources, and a row can legitimately show a different one in each column.
+Written down here because "where is this name coming from?" is otherwise unanswerable from the UI:
+
+| Shown as | Source | Changes when |
+|---|---|---|
+| **Name** column | `label` from `instance-meta.json`, else the account's friendly name, else the folder basename (`desk2/hydra/src/lib/instance-appearance.ts` `displayName`) | you rename the instance |
+| **Instance account** column | the local part of the account's email, one rule for every row (`accountHandle`) | the profile signs into a different account |
+| the hover on that badge | the full email, plus the Anthropic profile display name (`full_name`) when the account has one | that account's profile is edited at Anthropic |
+| profile **folder** | fixed by the name typed at creation (`server/src/core/lifecycle.ts`), sanitized | never |
+
+The account column deliberately does **not** use `accountName`. That resolver returns `full_name`
+when set and an email fragment when not, so the column rendered a mix: one row a person's name, the
+next an email fragment, with nothing distinguishing them. `accountName` remains the right
+choice for *naming* a row (`displayName`), where a friendly string is wanted and its provenance
+does not matter.
+
+Appearance metadata `{ label, icon, color }` lives in
+`~/.agenthydra/instance-meta.json`, keyed by normalized folder path and cleaned up when the
+instance is deleted. `POST /api/instances/:dir/meta` applies a present value, clears a field when it
+is `null`, and leaves an absent field unchanged. The curated icon/color keys live in
+`server/src/core/shared.ts`; the web mapping and deterministic defaults live in
+`desk2/hydra/src/lib/instance-appearance.ts`.
+
+### The usage numbers on a row
+
+The 5-hour and weekly columns of the Instances, CLI and Codex tables come from three stores in the
+data directory (`~/.agenthydra/data/`), and the tables read them only through `GET /api/usage/cache`
+and `GET /api/cli-instances` (the quick panel serves the same two):
+
+| Store | Holds | Written when |
+|---|---|---|
+| `usage-cache.json` | each signed-in account's newest reading | a check (the background sweep, a row's refresh, the tab's catch-up on open) |
+| `usage-last-known.json` | a signed-out account's last reading, shown dimmed | the account signs out (`dropCachedUsage(key, { keepLastKnown: true })`) |
+| `usage-cleared.json` | when each row's usage was cleared from the tables | **Clear usage stats** in the row's ⋯ menu (`POST /api/usage/clear`) |
+
+A CLI row also carries its reading on its own record (`lastUsageCheck`), and CliMayte lays its
+workers' streamed readings and limit walls over both routes (docs/CLIMAYTE.md).
+
+**Clear usage stats** deletes nothing: the routes stop serving any reading of that row taken at or
+before the clear, so a signed-out row stays blank and a signed-in one fills in again at its next
+check. CliMayte, fan_out and the account survey read the stores directly, never these routes, so a
+clear never changes where work goes. The open browser keeps the clear time too
+(`desk2/hydra/src/composables/useUsage.ts`), because its usage maps only ever merge and a poll in flight at
+the click would otherwise put the old number back until a reload.
+
+## The analytics kit routes
+
+The kit (`server/src/kit/`) is the one store of model-call usage: every source (Claude CLI and
+desktop, CliMayte, HSwarm, Codex, OpenCode and more) is ingested as one record per call and rolled
+up per hour. Its routes live in `server/src/routes/kit.ts`; the MCP tool `usage_query` is the same
+query. The temporary comparison route that set the kit beside the old producers is gone with those
+producers.
+
+What "one record per call" means for each source, finest first (`server/src/kit/ingest-claude.ts`,
+`ingest-foreign.ts`, `ingest-hswarm.ts`):
+
+| Source | One record is | Kept once by |
+|---|---|---|
+| Claude CLI, desktop, CliMayte | an assistant message with usage | its message id |
+| Codex, since 2026-09 | an API response (`token_usage_record`) | its response id, so a chat moved to another account, a page of a long thread (`history_mode: paginated`) and the live and archived copies all count it once, under the first file read |
+| Codex, older rollouts | a turn: the growth of the running total (`token_count`) since the last one | the rollout and the turn's number; a session's other rollouts keep only the largest. A sub-agent's turns count as agent `subagent`, minus the parent history it copied at the spawn |
+| OpenCode | a step (`step-finish` part), at the part's own time, with OpenCode's own cost | its part id |
+| DSH | an assistant message that reported usage | the session and the message's place in it |
+| Hermes | a (session, model) total, placed at the session's newest use | the session and model; Hermes keeps no per-call clock |
+| HSwarm | a ledger line: one attempt of one task | the job, task and attempt |
+
+Codex rollouts packed into `archived_sessions/_packed/*.zip` are read in place, 512 MB a sweep, so a
+first read of a large history takes several sweeps (`coverage` shows how far it got). A version bump of
+an ingest (`FOREIGN_INGEST_VERSION`) reads its files again; when a bump changes the ids, a one-time
+step first drops that source's own rows (raw, hourly and session ledger), never another PC's.
+
+| Route | What it does |
+|---|---|
+| `GET /api/kit/usage` | Usage from the store. Pick ONE window: `last` (`5h`, `24h`, `7d`, `30d`, `all`), `from` / `to` (epoch ms), or `kind` (`5h` or `week`) with `windowAccount` (else the first `account`), which cuts that account's current quota window from its latest quota snapshot, else rolling. Filters take a value or a comma list: `account`, `instance`, `pc`, `source`, `model`, `provider`, `session`, `ref`, `agent`, `agent_id`, `ok` (`true` / `false`). `groupBy` is a comma list of `day`, `hour`, `account`, `instance`, `pc`, `source`, `model`, `provider`, `session`, `ref`, `agent_id`. `agent_id` is the sub-agent's file id (the `<agent>` of `subagents/<agent>.jsonl`, with its folders for workflow files; null for main and non-Claude calls). Like `session` and `ref`, and like `ok`, it exists on raw calls only (35 days), so a query using it reads raw rows, leaves out hours older than the raw cut with a note, and fills in for older Claude rows through a one-time re-read of the recent sub-agent files after the schema 5 upgrade `measures` is a comma list of `tokens`, `list_usd`, `billed_usd`, `unbilled_usd`, `cost_usd`, `weighted`, `calls`, `ok`, `failed`, `seconds` (all by default) plus the opt-in token kinds `input`, `output`, `cache_read`, `cache_write`, `cache_write_5m`, `cache_write_1h`. `tz` is the IANA zone the `day` buckets are cut in. A bad value is a `400` with `{ "error": … }` |
+| `POST /api/kit/sync` | Run the cross-PC pass now (see below). The sweep runs the same pass every 15 minutes |
+
+`GET /api/kit/usage` answers `{ rows, totals, unpriced, priceVer, coverage, window, notes }`: `rows`
+hold the group keys and the measures, `totals` the measures over the whole window, `unpriced` the
+models whose tokens count but whose dollars do not (the dollar total is then a floor), `coverage`
+which sources are ingested up to when (`sources`, `cursors`, and `dirtyFrom`, non-null while recent
+hours are still being rolled up), `window` the resolved span and how it was resolved (`basis`), and
+`notes` any place the answer is narrower than asked. A low figure beside a lagging source is
+partial, not true.
+
+### Usage across PCs (`POST /api/kit/sync`)
+
+Each PC writes its own hourly rows as one gzip shard, `kit/<machine>.jsonl.gz`, into the private git
+repo HSwarm's usage sync already uses (`HSWARM_SYNC_REPO`, the `sync` branch checked out under the
+HSwarm home's `sync-tree`), and imports every other PC's shard as rows carrying that PC's `pc`, so
+the Analytics tab and `pc=` filters can show all PCs or one. The kit lives in a `kit/` subfolder so
+HSwarm's own shards at the tree root are never touched. An import replaces that PC's rows, hour range
+by hour range: importing the same shard twice changes nothing and a shard that shrank removes what
+it no longer holds. Sync is off, with the reason in `notes`, when `HSWARM_SYNC_REPO` is unset, is not
+a git checkout, or is this (public) repo: a shard carries project paths and session ids, so name a
+private repo.
+
+A PC counts only once it runs an AgentHydra with this sync (2.x) and has written its `kit/` shard. The
+HSwarm shards at the tree root (`<machine>.jsonl`) are HSwarm's own ledger and carry no other usage, so
+a PC that has only those adds nothing to the Analytics tab or the home screen's stats.
+
+The request takes no body (any is ignored). The pass is forced, ignoring the 15-minute spacing; a call
+that arrives while a pass runs joins it. It answers `200` with
+
+```json
+{ "on": true, "notes": [], "exported": 1234, "imported": { "other-pc": 980 }, "committed": true, "pushed": true }
+```
+
+`on` is false when sync is off; `notes` holds that reason or a step that failed (pull, import,
+commit, push), and the pass carries on past a failed step; `exported` is the number of this PC's
+hourly rows in its shard; `imported` maps each PC whose shard changed to the rows imported (a PC
+whose shard is unchanged is absent); `committed` and `pushed` say whether the shard reached git. An
+unexpected failure is a `500` with `{ "error": … }`.
+
+## Known noise in an instance's own log
+
+Every Claude Desktop instance keeps its own `logs/main.log` under its profile folder. One line there
+is permanent, harmless, and not AgentHydra's:
+
+```
+[error] [Chrome Extension MCP] Registry verification failed for Edge: expected
+  ...\.claude-instances\<this instance>\ChromeNativeHost\com.anthropic.claude_browser_extension.json,
+  got ...\.claude-instances\<another instance>\ChromeNativeHost\...
+```
+
+Claude Desktop registers its browser-extension native host under ONE per-user registry key
+(`HKCU\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.anthropic.claude_browser_extension`, and the
+Chrome twin), pointing at a manifest inside its own profile folder. Every instance re-registers that
+same key at startup, so whichever started last owns it and every other instance's verification
+"fails" against it, in both directions, on every start. Measured on this machine on 2026-09-12:
+1,687 registrations logged against 20 verification failures. It is the app's own behaviour with
+several profiles on one account; nothing in this repository touches native messaging, and no
+AgentHydra screen or tool surfaces an instance log, so there is nothing here to fix.
+
+Recorded because on 2026-09-07 an unrelated logout investigation read this line as evidence that
+AgentHydra had done something to the instance. It had not, and the whole logout question is settled
+from the app's own `main.log` (the `/logout` navigation) rather than from the daemon's log. The cost
+of the line is credibility: a permanent `[error]` that means nothing teaches a reader to skip the
+next one.
+
+## Stack
+
+| Layer | Choice |
+|---|---|
+| Frontend | Vue 3 + Vite, a shared LunarWerx UI kit (shadcn-vue `reka-mira` on Reka UI), Tailwind v4, `@lucide/vue`, TypeScript |
+| Backend | **Bun + Hono**, `bun:sqlite` (queue / dispatch / scheduler / accounts and read-only OpenCode/Hermes access) + JSON under `CONFIG_DIR`, SSE (`hono/streaming`) for live run output |
+| Dispatch | `Bun.spawn` of the real `claude` CLI (no Agent SDK) |
+| Multi-instance | per-OS Claude and Codex Desktop discovery / launch / focus / quit plus isolated Claude/Codex CLI homes (`server/src/core/*`); Windows DPAPI / macOS Keychain / Linux libsecret read Claude Desktop credentials |
+| Launcher | Windows browser + system-tray (`misc/`) |
+
+## Layout
+
+```
+server/        Bun + Hono daemon: sqlite, Claude/Codex/OpenCode/Hermes/DSH session readers, transcript tail,
+               dispatch, scheduler, instance pointer, core/ (Claude + Codex Desktop/CLI instances,
+               DeepSeek Harness homes)
+desk2/         AgentHydra 2.0's window (its own README): desk2/web, and desk2/hydra, its copy of
+               AgentHydra's pages, served at /ah/
+orchestrator/  THE ORCHESTRATOR - the Python toolbox that decides what should happen to a chat
+               (orch.py + scripts/), its own tests (scripts/tests/), and its remote front-end
+               (orchestrator/server + orchestrator/web). Driven by the daemon through
+               server/src/orchestrator.ts; its own manual is orchestrator/README.md
+tests/         launcher.test.ts (the tray guard, Windows-gated) + server/instance unit tests
+misc/          the Windows launcher toolkit (tray .ps1 / .vbs / .ico / Create-Shortcut / Make-Icon / rebuild_agenthydra.bat)
+               plus the files the RUNNING daemon opens by path, listed in
+               server/src/misc-assets.ts as RUNTIME_MISC_FILES. The release build embeds
+               exactly that list and FAILS when one is missing, and resolveMiscAsset hands
+               back a real path at runtime: misc\ when there is one, else written out of
+               app/server.js once. Adding a runtime dependency on a misc\ file without adding
+               it to that list ships a release where the feature is simply gone.
+scripts/       repo tooling (screenshots/: regenerate the README images)
+```
+
+## The orchestrator
+
+Since 2026-09-03 the orchestrator is part of this repo again - as a **sibling folder, not a
+rewrite**. `orchestrator/` is the v3 Python toolbox (stdlib only; one script per act, each with
+its own rails and tests) that talks to this daemon over HTTP and decides what *should* happen
+to a chat: the dry loop, the sweep's lanes, moving chats between accounts, archiving, naming,
+the tray-icon switch. It was split out on 2026-08-31 so the daemon could never again act on a
+chat by itself; folding it back in as a folder keeps that boundary (the scripts still only ever
+talk to the daemon's API) while giving agents ONE surface, because the owner was tired of
+explaining "you have to use both".
+
+The daemon exposes it (`server/src/orchestrator.ts`):
+
+| surface | what |
+| --- | --- |
+| `GET /api/orchestrator` | the toolbox's own menu, where it lives, whether python answers |
+| `POST /api/orchestrator/run` `{script, args, timeoutMs}` | run one script by its menu name - exactly `python orch.py <script> <args>` in `orchestrator/`; stdout, stderr, exit code and what the driver's codes mean come back. Every run is also an OPERATION with an id (audit AH-09), because a 30-minute act used to lose its result to the daemon's 255-second idle timeout: send `X-Idempotency-Key` (or `idempotencyKey` in the body) and a retry after a dropped connection returns THE ORIGINAL operation instead of starting a second act, while `async: true` answers `202` with the id at once so a caller can poll instead of holding the connection open. A refusal that never ran does not pin the key |
+| `GET /api/orchestrator/operations` · `GET /api/orchestrator/operations/:id` | what ran and what it returned, for an hour after it finished (bounded, in memory: this reconciles a dropped connection, it is not the audit log - the toolbox's own ledgers are that) |
+| `POST /api/orchestrator/operations/:id/cancel` | stop a running operation; the child's whole process tree is killed and the outcome reads `cancelled` rather than failed. Same origin rule as `run` |
+| MCP `orchestrator_cancel` | the cancel POST above (added 2026-09-13). The route had existed since AH-09 and only the MCP surface was missing, so every agent that read `orchestrator_operation`'s "starts nothing and cancels nothing" correctly concluded no cancel existed and reached for `taskkill` instead. ⛔ Cancel is NOT an undo: what the run already did stays done, and the per-item report dies with the process, so read the fleet afterwards rather than assuming the run had not got that far. It frees the route lock, which is what lets a corrected call run at once instead of being refused `409 busy`. A finished operation is a safe no-op |
+| MCP `orchestrator_menu` | the GET above |
+| MCP `orchestrator_run` | the POST above |
+| MCP `orchestrator_loop` | `loop` (dry by default; `live: true` acts) |
+| MCP `orchestrator_switch` | the tray icon: `armed` (read) · `arm` · `arm_now` · `resume` · `pause` · `disarm` |
+| MCP `move_chat` | `migrate_chat <chat> --to <n> --from <n> --stop-idle --now --idle-wait 330 --json` in one call, run detached under a key that makes a re-fire return the same operation; the call waits at most 45s for the verdict and otherwise answers with `operationId` (2026-09-30): resolves `from`/`to` (number, name, label, email, `here`, `best`) before posting; the script does the fuzzy title match, the background-job scan behind `--now`, the verified landing and the bypass read-back Both carry the COLLATERAL WATCH (2026-09-17): every chat record on the machine is read before the move and after it, and a chat OUTSIDE the move that went archived meanwhile is named in `collateral` with the account to unarchive it from, with `ok` false - a move that archived a bystander used to report a clean run. |
+| MCP `move_chats` | `migrate_batch --to <n> [--from <n>] --chat <c>... \| --all-unarchived --stop-idle --now --idle-wait 60 --json` (+ `--force`, `--archived --archived-count N`, `--limit`, `--dry-run`): the plural, by PHASE (move all, settle all, stamp all). Phase one moves every chat that is ready first: each is tried with no wait, and one refused only because it has not been quiet long enough is tried again after the rest with the batch's wait (2026-10-08). ⛔ **The `archived` boolean is GONE (2026-09-13), replaced by `archived_count: number` with no shim, so an old caller fails the schema loudly.** A boolean could not tell the human's instruction from an agent's own initiative: one set it for itself while draining an account and queued all 22 of that account's archived chats behind the 3 it had been asked for. The engine refuses the WHOLE batch unless the count MATCHES the archived chats it actually holds and unless they are the whole batch, because archived chats riding along with unarchived ones is exactly how that happened. Counting them first is the point. ⛔ **The call AUTO-DETACHES past 50s (2026-09-13; 120s until 2026-09-30, when the desktop app's MCP client was measured dropping calls at about 60s)**, which is nearly always: a one-chat batch's own floor is 180s. It answers at once with `operationId`, and the full per-chat report is read with `orchestrator_operation {id}`; `background: false` forces blocking for a caller who knows its transport can wait. Each post-landing phase (settle, stamp, resume) is bounded on a worker thread and NAMES its timeout on any chat left without a verdict, rather than the whole call dying with no report at all, which is what it used to do. Two flags are the batch's own (2026-09-06): `resume: "<text>"` -> `--resume`, which stages the text against every landed chat and delivers it through the courier's hand-run path (the thing that makes a migrated chat continue working instead of sitting dormant); `terminate_live: true` -> `--terminate-live`, a person's word to kill a live engine that stands in the way (code-4 refusals only, never a hold or the breaker) and move anyway. Together: draining an account in one call. See `docs/MOVING-CHATS-BETWEEN-ACCOUNTS.md` Both carry the COLLATERAL WATCH (2026-09-17): every chat record on the machine is read before the move and after it, and a chat OUTSIDE the move that went archived meanwhile is named in `collateral` with the account to unarchive it from, with `ok` false - a move that archived a bystander used to report a clean run. |
+| MCP `fan_out` / `fan_out_status` / `fan_out_send` / `fan_out_recover` | `fan_out --spec <json> --json` (+ `--per-account`, `--only`, `--exclude`, `--open-closed`, `--parent`, `--caller-session`, `--max-nodes`, `--max-depth`, `--ceiling-pct`, `--force`, `--dry-run`), `fan_out status [<group>] --json`, `fan_out send <group> --text ... --json`: ONE task list -> N visible desktop chats, one account each, tracked as a group (owner ask, 2026-09-04). The MCP tool turns `{cwd, prompt, title?}` tasks into the spec (a temp file when it would exceed the 4000-character arg limit), resolves `only`/`exclude` refs to instance numbers, and excludes the CALLING chat's own account by default (`exclude_self: false` to allow it; only on an exact identity). The script ranks accounts by real room (balance.py's fill ceiling minus peak; unknown is never room), open instances first, with each chat the ledger spawned into an account in the last 20 minutes (about the reading's lag) lowering that account's ORDER by 15 points (a load bias the lagging usage reading has not caught up with; its room and eligibility stay the reading's own). A member that fans out again is found by `--parent <group or member sessionId>` (MCP `parent`) or, when it names none, by its own session ids, which the MCP passes as `--caller-session` (a caller that is no ledger member starts a new tree), and gets a narrow-only envelope derived from its parent's: depth + 1 toward the cap (2), instance sets intersected, exclusions united, per-account cap, tree node cap (12 chats, a new root included, MCP `max_nodes`; depth MCP `max_depth`) and quota ceiling (MCP `ceiling_pct`) the smaller, closed apps opened only if both allow it; the tree's chats are counted and recorded under the ledger lock before anything spawns, so the node cap bounds the metered spend. It spawns each chat through `spawn_chat.py` ONE AT A TIME (two lanes driving two windows at once is how text lands in the wrong pane), refuses a task whose prompt already runs in the fleet while letting one spec share a prompt across its own tasks, reports an unassigned task rather than dropping it, and keeps the group in `orchestrator/state/fanouts.json`. every prompt carries a task receipt (`lib/receiptlib.py`: token, repo, task id, expected artifact) the chat is asked to echo, and `--receipt-secs N` (MCP `receipt_secs`, default 180; `receipt: false` / `--no-receipt` opts out) waits for every echo after the last spawn and nudges a never-started chat ONCE, never a wrong-chat one. `status` reads each member's gate verdict + last words + receipt verdict, plus its latest self-reported beacon (`fan_out beacon <group> --beacon <json>`, MCP `report_progress`, kept in `orchestrator/state/fanout-beacons.json`; each member's first prompt ends with a `[fan-out beacon]` line naming its group and index, which the duplicate check ignores), members blocked on a person listed first; `send` stops each member's IDLE engine first (the peer pipe does not steer a chat nobody has clicked - measured on the first drill) and lets the daemon's message route boot it through the app's composer, holds respected; `recover` (MCP `fan_out_recover`, `fan_out recover <group> --json`) meets each FAILED member with its recipe from `orchestrator/scripts/lib/recoverylib.py`, a closed table of known failures with one automatic attempt each and an escalation after it (delivery-failed: re-send once only when the route refused before typing (400/404/409, never a 422), then alert-human; chat-stalled: ask once whether it is stuck, the attempt spent until the member stops being stalled, then alert-human; account-at-cap: re-rank once inside the group's recorded `--exclude`/`--only` fence and spawn where there is room, then log-and-continue; tray-not-armed: no automatic step, abort), and every attempt and escalation lands on the recovery ledger (`orchestrator/state/recoveries.json`), which `status` returns as `recoveries` and `attempts.py --recoveries` prints whole; `delete` (MCP `fan_out_delete`) runs `delete_chat.py` on every member - the cleanup a probe fan-out owes (owner rule, 2026-09-04: a ping or account-identification chat is never left in the account). Deleting a chat IN THE APP is not that: the app drops its record and leaves the transcript plus a `<sid>.desktop-released.json` marker, so `orchestrator_run delete_chat --released` lists those leftovers and `--yes` removes them, each with an undo copy. None of them needs the tray icon: a person asked. `add_queue_item` and `launch_terminal_session` are refused on this machine (no-headless law) and now say so in their descriptions |
+| MCP `unblock_prompts` | `unblock_prompts --json [--session <id>...] [--min-wait N] [--max N] [--yes] [--force]`: ANSWER A PERMISSION PROMPT A CHAT IS STOPPED ON, while its engine is mid-turn - the one act `fan_out_send` cannot do, because a chat frozen on Allow/Accept/Continue reads as `working` and steering it with more text only queues behind a turn that cannot finish. `session` narrows every stage to the named chats (omitted, it is the fleet-wide sweep) and a named chat that is NOT waiting comes back in `notFound`, so "I cleared it" is distinguishable from "it was never stuck"; `min_wait_secs` defaults to 0 for a named chat and 240 for a sweep, where the wait is what stops a click landing on a command that is merely still running. Every rail of the script survives being aimed: the bypass/spawn doctrine, the hold, the verify snippet, and the tri-state gate over the PENDING COMMAND (`approval_policy.json` - a destructive one is DENIED however it was invoked, an unplaced one ESCALATES to the judgment queue instead of being pressed on a guess). ⛔ It presses nothing unless the tray icon is up - a disarmed run downgrades to plan-only and says so, which reads exactly like a chat that was not stuck, so check `orchestrator_switch {action:"armed"}` first; `force` is a person's word for one run past both the switch and an escalation. A TARGETED ACT PLANS FIRST and refuses unless the script names `--session` in its own `supports` - the daemon runs whatever orchestrator is installed beside it, and an older copy would ignore the filter and sweep the fleet with `--yes`. See [Clearing a stuck prompt](UNBLOCKING-STUCK-PROMPTS.md) |
+
+The script name is validated against the menu grammar and the arguments travel as an argv
+array - no shell in the path. Every rule stays in the scripts: **nothing acts without the tray
+icon** (`orchestrator_switch {action:"armed"}` first; a disarmed fleet looks exactly like a
+quiet one), a live chat is never moved or archived, every attempt is counted, and `--force` is
+a person's word for one act. `AGENTHYDRA_ORCHESTRATOR_DIR` points the daemon at a toolbox
+somewhere else; `AGENTHYDRA_PYTHON` names the interpreter (default `python` on Windows,
+`python3` elsewhere; the spawn forces UTF-8 output and normalises CRLF). Its own tests: `bun run
+test:orchestrator` (~650 unit tests, stub daemon, no fleet needed).
+
+In a release the python half (`orch.py`, `scripts/`, `docs/`) is staged beside the launcher
+and `app/` as `orchestrator/`, which is exactly where `APP_ROOT/orchestrator` resolves; the
+remote front-end (`orchestrator/server` + `web`) needs bun and is source-checkout only. Python
+is not bundled - `GET /api/orchestrator` reports whether it answers. A machine that ran the
+standalone checkout has a one-time cut-over (scheduled tasks, tray shortcut, `state/`):
+orchestrator/README.md, "Moving a machine off the standalone checkout".
+
+## Screenshots
+
+The README's Instances and Analytics images are generated, not hand-taken:
+
+```
+bun run build                       # first: it shoots the built window
+bun run screenshots                 # shoot and install into .github/screenshots/
+bun run screenshots -- --keep       # write to tmp/screenshots/ instead, to eyeball first
+bun run screenshots -- --url <url>  # reuse a server you already have running
+```
+
+It serves the build of AgentHydra 2.0's copy of the pages (`desk2/hydra/dist`, at `/ah/`) through
+the demo server (`scripts/sue-demo/serve.ts`) on a private port (5199, so an open dev session on
+5173 is neither disturbed nor photographed), drives headless Chrome over the DevTools protocol, and
+writes one PNG per view at a viewport sized to that view's max-width shell. Not vite's dev server:
+under it the Analytics tab's code never arrived, and the build is what people get.
+
+**Nothing real is ever in frame.** These images are public, so instead of pointing a daemon at a
+synthetic home directory, `scripts/screenshots/page-fixtures.js` replaces `window.fetch` before the
+SPA boots: every `/api/` response is invented and no daemon runs at all. Any request that finds no
+fixture is recorded, and the run **fails** rather than keeping images that could contain live data.
+Adding a shot means adding an entry to `SHOTS` in `capture.mjs`; each one carries an `expect`
+predicate that must hold before the shutter fires, so a fixture that stops matching the UI fails
+the run instead of silently producing a screenshot of empty skeletons.
+
+Requires a Chromium-based browser; set `CHROME_PATH` if it is not in a standard location.
+
+## Checks
+
+`bun run check` runs Biome + a kit drift-check. The kit check needs an internal
+LunarWerx kit checkout, so it's **owner-only and skipped in CI**; external contributors should run
+the individual checks instead:
+
+- `bun run lint`: Biome.
+- `bun run --cwd desk2/hydra check:i18n`: no hardcoded UI strings in AgentHydra's pages; every `t()` key
+  resolves (also gates Desk 2's `build`).
+- `bun test`: includes the Windows-gated tray launcher guard and instance/crypto tests.
+- `bun run typecheck`: the server (`bun check`) and the orchestrator (`tsc`, `vue-tsc`); Desk 2 has its own,
+  `bun run --cwd desk2 typecheck`.
+
+`bun run check:local` is the owner-only half on its own: today it is just `check:kit`, split out under a
+name a pre-push runner can look for. It exists because the kit check is the one gate CI *structurally*
+cannot run, comparing this app's synced copies against a private sibling repo that a public repo's
+workflow can never check out. Before it had a name, a pre-commit hook was its only enforcement, and
+that hook is skipped by `--no-verify` and silently does nothing on any machine without the sibling
+checkout. External contributors should not run it; nothing in CI depends on it.
+
+CI runs these across `[ubuntu-latest, windows-latest]`, so a green local run on one OS clears one
+leg of two.
+
+### Replaying agent CLIs offline
+
+The daemon spawns real CLIs and parses what they print: `claude -p /usage`, `claude -p
+--output-format stream-json` and `codex app-server`. `server/tests/mocks/mock-agent.mjs` stands in
+for them: spawned the same way, it prints a recorded session in that CLI's own wire format, so a
+parser change can be run against the same bytes every time, with no quota spent and no network.
+
+- Tests spawn it directly: `[process.execPath, 'server/tests/mocks/mock-agent.mjs', '--as', 'claude', ...args]`
+  (see `server/tests/mock-agent-replay.test.ts`).
+- A whole daemon can run against it: set `AGENTHYDRA_CLAUDE_PATH` / `AGENTHYDRA_CODEX_PATH` to
+  `server/tests/mocks/bin/claude` / `codex` (`.cmd` on Windows), or put that folder first on `PATH`
+  on a machine with no npm-global Claude install.
+- Which recording plays: `AGENTHYDRA_MOCK_RECORDING` (a name under `server/tests/mocks/recordings/`
+  or a `.json` path), else the one whose `promptSha256` matches the prompt, else the agent and mode's
+  `"default": true` recording. `AGENTHYDRA_MOCK_RECORDINGS_DIR` swaps the folder;
+  `AGENTHYDRA_MOCK_NO_DELAY=1` skips the recorded pacing.
+- A recording is plain JSON (the shape is documented at the top of `mock-agent.mjs`). Capture one
+  from a real run, strip anything personal, and keep only what the parser under test needs.
+
+### A flake that only exists inside a full-suite run
+
+`bun test` runs the whole suite in one process, so state that a single-file run never accumulates
+(caches keyed to wall-clock granularity, shared temp dirs, module-level singletons) is reachable
+only there. The OpenCode reader's session cache was one: a write landing inside the same filesystem
+timestamp tick as a previous read could be cached away, which requires that preceding read in the
+same process to happen at all. Two rules came out of chasing it:
+
+- **An isolation run proves nothing about a flake that only fires in the full suite.** Re-run the
+  whole suite, enough times that luck is implausible: 15 consecutive green runs against a reported
+  ~1-in-3 failure rate is roughly a 0.2% chance of coincidence.
+- **Anything keyed on mtime alone needs a tiebreaker** (size, or an explicit generation counter),
+  because two writes can share one tick and the second one then looks like no write at all.
+
+### A test that waits on a real process, on a loaded box
+
+A test that passes alone and times out in `bun test --parallel=4` on a busy machine is usually
+betting that a real process (a bun child, git, a hook push, PowerShell) is as fast as it is idle.
+Tests of this class were fixed in three passes on 2026-10-11, on a box at ~90% CPU, and the rules they
+left are:
+
+- **Run the file alone first** (`bun test <file>`). Passes alone: load, so find the slow step before
+  widening. Fails alone: a bug, so fix the code the test guards.
+- **Measure before widening anything.** `--timeout 120000 --reporter=junit --reporter-outfile=<file>`
+  lets slow tests report their real durations instead of being cut off at the bound.
+- **Look for incidental work first.** Every successful update in the updater tests launched a
+  PowerShell to retire the legacy tray host, even for a test's scratch install: up to 13.6 s under
+  load. Effects on the real machine (that retirement, stopping Desk 2) run only when `installDir`
+  is `APP_ROOT`.
+- **A deadline a child must beat starts when `Bun.spawn` returns** (`spawnCaptured`), so it must
+  cover the child's boot under load: a bun child took up to 2.55 s. A capture that waited its whole
+  `timeoutMs` for the spawn worker's thread is answered `timedOut` and never started, and the main
+  thread answers by itself at 2 x `timeoutMs` + 10 s, so `spawnCaptured` always comes back. A capture
+  that must not queue behind the rest passes `lane: '<name>'` for a worker thread of its own (the
+  CliMayte runner hand-off, 2026-10-11).
+- **A test's bound covers every subprocess it runs.** A test that pushes three times gets three
+  pushes' worth (`tests/githooks/pre-push-public-guard.test.ts`).
+- **bun's timeout kills the test's children** ("killed 1 dangling process"). A `spawnSync` child
+  killed that way returns status 1, which reads like a refusal from the code under test.
+- **A failure in milliseconds is never load.** Look for a test that reads the clock separately
+  from the code it checks.
+- **Nor is a failure faster than the wait it should have made.** The search index's held-file test
+  indexed nothing in under a second against a 2 s `busy_timeout`: SQLite answers `SQLITE_BUSY` at
+  once, never waiting, to a deferred transaction that read before it asked to write. The index's
+  upgrade and rebuild now `BEGIN IMMEDIATE` (`server/src/search-index.ts`). Log what a `catch`
+  swallows before sizing anything.
+- **A budgeted search spends its budget only on searching.** The root suite's first search opened
+  the search index itself, a fresh file on GitHub's Windows runner, and that synchronous open waited
+  out `busy_timeout` for the held file until the search's 7 s budget was gone: 7,249 ms and no
+  result (2026-10-13). A search now consults the index only once it is open (`indexState` in
+  `server/src/session-search.ts`) and warms it after answering; the daemon opens it once listening.
+  A test that holds a SQLite file locks it before pointing the code at it (`holdSqlite`), or a warm-up
+  an earlier search queued opens it first.
+- **A test that fails only after another failed is a cascade.** Give it a clean start in its own
+  `beforeAll` or first lines (`resetFreeHealth()` in `mcp-free.test.ts`; the wave-judging tests in
+  `climayte-wave.test.ts` check out `main` whatever the test before left checked out).
+- **`--parallel` implies `--isolate`.** Each file gets fresh module state and a file's leftover
+  timers stop when it ends, but a timer still pending fires in the same file's next test: a helper
+  that resets a module clears the timers it starts (`setSearchIndexPathForTests` and the 1 s upkeep
+  timer).
+- **The CliMayte integration tests size every wait from one measured constant**, `ATTEMPT_MS` in
+  `server/tests/mocks/climayte-timing.ts`: a wait for k attempts is k x `ATTEMPT_MS`, and a run on an
+  idle box still ends the moment its worker does.
+- **A test about its own process tree builds the tree it asserts.** The runner's parents are not a
+  fixture: a `bun test` started from an agent's shell can have one live parent, not two.
+  `climayte-origin.test.ts`'s nearest-engine case starts a relay that starts the asker, and asserts the
+  asker's chain is exactly [relay, test]. Its children get a scratch `HOME` and `USERPROFILE` (Bun's
+  `os.homedir()` follows them), so a crashed session's stale `~/.claude/sessions/<pid>.json`, naming a
+  pid Windows has since given to the relay, cannot answer.
+- **A timing assertion says which stall it saw.** The limit-reset thread test
+  (`cli-limit-reset.test.ts`) runs a ticker on a second thread; on a failure it prints whether that
+  thread stalled too (the whole process was off the CPU) or kept ticking (the tested thread alone was
+  held). One 1,035 ms gap in nine full runs never came back in 39 later samples: if it does, read that
+  line first.
+- **A source guard keys on what it protects, not on the call that starts it.**
+  `usage-probe-discipline.test.ts` looked for `Bun.spawn([resolveClaudeExe()` and failed in 0 ms once
+  the probe moved to `spawnCaptured`; it now finds the probe's argv.
+- **State a test's own bound as a numeric literal with a comment** unless it is shared: Biome keeps
+  the hugged `}, 45_000)` layout only for a literal, and expands the whole `test()` call for a
+  constant.
+
+### Repo guardrails (`scripts/checks/`)
+
+Custom checks, each a standalone `bun scripts/checks/<name>.mjs` run as its own CI step, and each
+written from a bug that actually shipped. Node stdlib only, no install. Their headers carry the
+incident; `tests/guardrails.test.ts` proves every one of them still fires on the broken shape and
+stays quiet on the fixed one, so none can rot into a silent no-op.
+
+- `reka-popper-root-inside-tooltip.mjs`: a popper root (DropdownMenu, Popover) wrapped AROUND an
+  `IconTooltip` steals the anchor, so the real content opens off-screen and, when modal, freezes
+  pointer events.
+- `wmi-commandline-query-self-match.mjs`: a `CommandLine LIKE` query that forgets to exclude the
+  shell running it matches itself and answers "found" forever.
+- `kit-lib-type-drift.mjs`: a vendored kit lib whose `.mjs` and hand-written `.d.mts` disagree,
+  which is either a compile error on import or `undefined` at runtime.
+- `spawn-console-window.mjs`: `windowsHide` missing on a console spawn (a stray console window) or
+  present on a GUI one (the window never appears).
+- `spawn-test-without-timeout.mjs`: a test **or lifecycle hook** that reaches a subprocess while
+  inheriting bun's 5s default. Such a case times the runner, not itself, and a cold windows-latest
+  box runs this class ~10x slower than a dev machine. A repo-wide `bun test --timeout N` stands the
+  check down, which is the better answer for a suite where nearly everything spawns.
+- `fixer-only-called-by-its-test.mjs`: an exported fixer (a name matching
+  `^(sweep|reassert|run.*Once)`) that only test code names. `reassertAutomationStamps` and
+  `sweepUntitledDesktopChats` both shipped like that, unit-tested and documented as running on a
+  timer, with no production caller. Wire it or delete it with its test; never allowlist it.
+- `timer-callback-can-kill-the-daemon.mjs`: a `setInterval` callback that can throw out of itself.
+  The daemon exits on an uncaught exception, so one failed tick (a locked sqlite read is enough)
+  takes the queue, the monitor and the HTTP API down together. The callback must open with `try`,
+  end in `.catch(...)`, or name a function or `const` arrow that does. Only a plain `let` and a
+  re-entrancy flag (`if (running) return`, `running = true`) may sit above the `try`.
+- `sqlite-fixture-autocommits.mjs`: a `bun:sqlite` test fixture that makes more than three writes
+  outside one transaction. Each autocommit is a journal fsync, which windows-latest pays dearly
+  for: three such tests timed out at bun's 5s limit there on 2026-10-13. Wrap the fixture in
+  `db.exec('begin')` ... `db.exec('commit')` or `db.transaction(...)`; never raise the timeout.

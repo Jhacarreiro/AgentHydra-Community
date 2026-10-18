@@ -1,0 +1,35 @@
+{
+  "name": "orchestrator",
+  "version": "3.0.0-rewrite",
+  "private": true,
+  "type": "module",
+  "description": "Standalone fleet orchestrator. Talks to the AgentHydra daemon over HTTP; owns no state of its own.",
+  "workspaces": [
+    "web",
+    "server"
+  ],
+  "scripts": {
+    "start": "python scripts/census.py",
+    "census": "python scripts/census.py",
+    "census:mjs": "bun orchestrate.mjs",
+    "waiting": "python scripts/waiting_scan.py",
+    "dashboard": "python scripts/dashboard.py --open",
+    "balance": "python scripts/balance.py",
+    "sweep": "python scripts/sweep.py",
+    "orch": "python orch.py",
+    "loop": "python orch.py loop",
+    "smoke": "python scripts/smoke.py",
+    "test": "python -m unittest discover -s scripts/tests",
+    "//remote": "THE REMOTE FRONT-END (web/ + server/): a Bun+Hono gateway that serves the Vue dashboard, gates it behind Sign in with Connections, and opens a Cloudflare tunnel - RepoYeti's remote-access stack, vendored. The Python toolbox stays stdlib-only; this is the one TypeScript surface, because the auth stack lives there.",
+    "remote": "bun run server/src/main.ts",
+    "remote:dev": "bun run --cwd web dev",
+    "remote:build": "bun run --cwd web build",
+    "remote:typecheck": "bun run --cwd web typecheck && bun run --cwd server typecheck",
+    "remote:test": "bun run --cwd server test",
+    "check:kit": "node ../../../lunarwerx-ui/sync.mjs --check --app orchestrator"
+  },
+  "config": {
+    "//remotePort": "THE remote gateway's loopback port, written only here. server/src/config.ts, scripts/remote.py, scripts/remote_tunnel.py (the named tunnels' Cloudflare ingress), scripts/tray.ps1 and web/vite.config.ts all read it; ORCH_REMOTE_PORT overrides it for one run. 7790 was ZSwarm's MCP server (retired 2026-10-03; chats started before then still knock on it), 7791 is the Connections local MCP, 7793 is HSwarm's shared MCP server (the gateway sat there until 2026-10-04 and could not bind it) and 7787-7789 are the AgentHydra daemon's port hops. Changing it means re-running remote_tunnel.py --provision for BOTH tunnels, or their ingress keeps pointing at the old port.",
+    "remotePort": 7794
+  }
+}

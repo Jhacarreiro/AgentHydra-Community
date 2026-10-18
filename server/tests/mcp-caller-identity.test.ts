@@ -1,0 +1,115 @@
+// server/tests/mcp-caller-identity.test.ts — WHO IS ASKING, over HTTP.
+//
+// ⛔ THE BUG (live, 2026-09-11). mcp-register.ts registers the HTTP transport for every client, so
+// `whoami` ran INSIDE the daemon: it read the daemon's environment, walked the daemon's parents
+// (the tray, and whatever started that), found no --user-data-dir and no claude-code path, and
+// told a Claude Desktop agent on instance #8 that "this process does not look like it is running
+// under Claude Code at all". Everything downstream inherited that: `move_chat to:"here"` is
+// refused unless the identity is exact, and check_my_usage reported the machine's default login.
+//
+// The caller was never unknowable - it opened a loopback socket - so the route that owns the
+// socket now hands the identity tools a way to ask who that was. These tests pin that seam: the
+// binding reaches only the identity tools, a client cannot forge it, and a lookup that fails
+// degrades to "could not tell" rather than to an exception.
+
+import { describe, expect, test } from 'bun:test'
+import { callerPidFromArgs, TOOLS, toolsForCaller } from '../src/mcp'
+import { selfIdentity } from '../src/mcp-self'
+
+const CALLER_PID = 66800
+
+describe('toolsForCaller', () => {
+  test('returns the whole tool set, same names in the same order', () => {
+    const bound = toolsForCaller(async () => CALLER_PID)
+    expect(bound.map((t) => t.name)).toEqual(TOOLS.map((t) => t.name))
+  })
+
+  test('only the identity tools are rebound - every other tool is the SAME object', () => {
+    const bound = toolsForCaller(async () => CALLER_PID)
+    const rebound = bound.filter((t, i) => t !== TOOLS[i]).map((t) => t.name)
+    // history_search / history_read resolve the CALLER's own transcript, so they are bound too.
+    // The climayte_* tools resolve the calling chat as the origin a ping goes back to; climayte_cancel
+    // tells the daemon the calling chat knows what it stopped.
+    // hydra_run passes the binding on to an identity tool it runs.
+    expect(rebound.sort()).toEqual([
+      'check_my_usage',
+      'climayte_cancel',
+      'climayte_manage',
+      'climayte_run',
+      'climayte_status',
+      'core_use',
+      'fan_out',
+      'history_read',
+      'history_search',
+      'hydra_run',
+      'move_chat',
+      'move_chats',
+      'whoami',
+    ])
+  })
+
+  // ⛔ 2026-10-11: a Desk chat dispatched its workers through hydra_run { tool: 'climayte_run' };
+  // the bare tool never got the binding, took the daemon for its caller, recorded no origin, and
+  // the chat listed none of its ten running workers.
+  test('an identity tool run through hydra_run asks the same caller', async () => {
+    let asked = 0
+    const bound = toolsForCaller(async () => {
+      asked++
+      return null
+    })
+    const hydraRun = bound.find((t) => t.name === 'hydra_run')!
+    const self = (await hydraRun.run({ tool: 'whoami', args: {} })) as {
+      confidence: string
+      warning?: string
+    }
+    expect(asked).toBe(1)
+    expect(self.confidence).toBe('none')
+    expect(self.warning).toContain('could not be traced')
+  })
+
+  test('the binding is a function, which is what makes it unforgeable', async () => {
+    const bound = toolsForCaller(async () => CALLER_PID)
+    const whoami = bound.find((t) => t.name === 'whoami')
+    expect(whoami).toBeDefined()
+    // The tool reads its caller through callerPidFromArgs, and that only ever honours a callable.
+    expect(await callerPidFromArgs({ callerPid: async () => CALLER_PID })).toBe(CALLER_PID)
+  })
+})
+
+describe('callerPidFromArgs', () => {
+  test('a client-supplied callerPid in the JSON arguments is ignored', async () => {
+    // JSON cannot carry a function, so anything a client sends under this name is data - and data
+    // is never an identity here. Otherwise "which account am I" would be answerable by asking.
+    expect(await callerPidFromArgs({ callerPid: 1234 })).toBeUndefined()
+    expect(await callerPidFromArgs({ callerPid: '1234' })).toBeUndefined()
+    expect(await callerPidFromArgs({ callerPid: { pid: 1234 } })).toBeUndefined()
+  })
+
+  test('no binding at all (the stdio transport) is undefined, not an error', async () => {
+    expect(await callerPidFromArgs({})).toBeUndefined()
+    expect(await callerPidFromArgs({ fresh: true })).toBeUndefined()
+  })
+
+  test('a lookup that throws degrades to "could not tell"', async () => {
+    const angry = async () => {
+      throw new Error('netstat is not on this machine')
+    }
+    expect(await callerPidFromArgs({ callerPid: angry })).toBeNull()
+  })
+
+  test('a resolved pid comes through as the number it is', async () => {
+    expect(await callerPidFromArgs({ callerPid: async () => CALLER_PID })).toBe(CALLER_PID)
+    expect(await callerPidFromArgs({ callerPid: async () => null })).toBeNull()
+  })
+})
+
+// ⛔ 2026-09-27: the first move_chats after a watchdog respawn could not trace its socket, fell
+// back to identifying the DAEMON (whose parent is the tray) and told an agent whoami had named
+// #72 "exact" minutes earlier that it was "not running under Claude Code at all".
+test('an HTTP caller that cannot be traced is reported as untraced, never as the daemon', async () => {
+  const self = await selfIdentity(false, null)
+  expect(self.confidence).toBe('none')
+  expect(self.configDir).toBeNull()
+  expect(self.warning).toContain('could not be traced')
+  expect(self.warning).not.toContain('not look like it is running under Claude Code')
+})

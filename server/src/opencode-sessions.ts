@@ -1,0 +1,530 @@
+import { Database } from 'bun:sqlite'
+import { existsSync, statSync } from 'node:fs'
+import { OPENCODE_DB_PATH } from './config'
+import { queryInWorker } from './core/sqlite-worker'
+import type { TailEvent } from './types'
+import type { OpenCodeUsageRow } from './usage-foreign'
+
+export interface OpenCodeSessionRecord {
+  session_id: string
+  project: string
+  cwd: string
+  title: string
+  created_at: number | null
+  last_activity_at: number
+  archived: boolean
+  size_bytes: number
+  /**
+   * The session that spawned this one, or null when it is a top-level conversation.
+   *
+   * OpenCode gives a subagent its own session row — `agent` reads `general`/`investigator`/`explore`
+   * rather than `build` — so a machine that fans out has as many child rows as real conversations
+   * (47 top-level against 41 children when this was written). They are a real session with their own
+   * messages, models and tokens, so they stay in the index; what they are not is a row in a list of
+   * conversations the user held. See listSessions in server/src/sessions.ts.
+   */
+  parent_id: string | null
+}
+
+interface SessionRow {
+  id: string
+  project_id: string | null
+  directory: string | null
+  title: string | null
+  time_created: number | null
+  time_updated: number | null
+  time_archived: number | null
+  parent_id: string | null
+  size_bytes: number
+}
+
+interface MessageRow {
+  id: string
+  data: string
+  time_created: number
+}
+
+interface PartRow {
+  message_id: string
+  data: string
+  time_created: number
+}
+
+function openDb(path = OPENCODE_DB_PATH): Database | null {
+  if (!existsSync(path)) return null
+  try {
+    return new Database(path, { readonly: true })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a column exists, asked rather than assumed.
+ *
+ * `session.parent_id` arrived partway through OpenCode's life, and the stores that share this format
+ * (Kilo writes the same SQLite under another filename) lag it by their own release cadence. Naming
+ * the column unconditionally would throw inside the one try/catch that guards the whole listing, and
+ * that catch returns an empty array — so a store one version behind would report that the user has
+ * no sessions at all rather than no subagents. Cheap enough to ask on every call: sqlite answers
+ * `pragma table_info` from the schema it already has parsed.
+ */
+function hasColumn(db: Database, table: string, column: string): boolean {
+  try {
+    return db
+      .query<{ name: string }, []>(`pragma table_info(${table})`)
+      .all()
+      .some((c) => c.name === column)
+  } catch {
+    return false
+  }
+}
+
+function parseJson(value: string): any {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
+function epoch(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function iso(value: unknown, fallback: number): string {
+  return new Date(epoch(value, fallback)).toISOString()
+}
+
+function compact(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function truncate(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit)}…` : value
+}
+
+function printable(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value == null) return ''
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+/**
+ * Convert one OpenCode message and its parts to the same display DTO as the JSONL providers.
+ * Reasoning/step bookkeeping stays hidden; text and tool activity remain available.
+ */
+export function openCodePartsToTailEvents(
+  role: unknown,
+  messageCreatedAt: number,
+  parts: Array<{ data: unknown; timeCreatedAt?: number }>,
+): TailEvent[] {
+  if (role !== 'user' && role !== 'assistant') return []
+  const messageRole = role
+  const out: TailEvent[] = []
+
+  for (const row of parts) {
+    const part = row.data
+    if (!part || typeof part !== 'object') continue
+    const p = part as Record<string, any>
+    const timestamp = iso(p.time?.start, row.timeCreatedAt ?? messageCreatedAt)
+    if (p.type === 'text' && typeof p.text === 'string') {
+      const text = compact(p.text)
+      if (text) {
+        out.push({
+          role: messageRole,
+          kind: 'text',
+          text: truncate(text, 6000),
+          tool_name: null,
+          timestamp,
+        })
+      }
+      continue
+    }
+    if (p.type !== 'tool' || messageRole !== 'assistant') continue
+
+    const state = p.state && typeof p.state === 'object' ? p.state : {}
+    const input = compact(printable(state.input))
+    out.push({
+      role: 'assistant',
+      kind: 'tool_use',
+      text: truncate(input || String(state.title ?? ''), 1200),
+      tool_name: typeof p.tool === 'string' ? p.tool : 'tool',
+      timestamp,
+    })
+    const output = compact(printable(state.output))
+    if (output) {
+      out.push({
+        role: 'user',
+        kind: 'tool_result',
+        text: truncate(output, 2000),
+        tool_name: typeof p.tool === 'string' ? p.tool : null,
+        timestamp: iso(state.time?.completed, row.timeCreatedAt ?? messageCreatedAt),
+      })
+    }
+  }
+  return out
+}
+
+/**
+ * The last listing per database, valid only while the store's bytes are unchanged.
+ *
+ * The query below sizes each session with two correlated subqueries, so it walks the whole `message`
+ * and `part` tables once PER SESSION — it is the store, not the session count, that sets the cost.
+ * Measured at 939 ms for 110 sessions, paid on every whole-store sweep even though a database nobody
+ * has written to cannot have a different answer. Callers must treat the result as read-only.
+ */
+const openCodeListCache = new Map<string, { stamp: string; rows: OpenCodeSessionRecord[] }>()
+
+/**
+ * How long a store's last-write time must have been in the past before that time is evidence.
+ *
+ * A filesystem hands out last-write times from a clock far coarser than its 100 ns field suggests —
+ * 200 back-to-back writes here produced 13 distinct mtimes, and Windows documents a granularity up
+ * to ~15.6 ms — so two writes close together are given the SAME one. Size is the usual second
+ * opinion (see vsCodeChatsUnder in foreign-sessions.ts, which pairs them for exactly this reason),
+ * and it is the one thing a SQLite store will not give: an insert that fits in pages the file
+ * already had leaves the byte count alone. Measured here, a session added to a settled store moved
+ * neither half of the pair in 10% of attempts.
+ *
+ * Both halves holding still would merely be a missed sweep if the stamp caught up later. It does
+ * not: nothing moves an mtime that has already been written, so the list stays stale until some
+ * unrelated write happens to bump it — and for a session nobody returns to, that is forever.
+ *
+ * So a stamp only becomes evidence once the clock has moved past the granule that issued it, after
+ * which no later write can be handed the same one. A second of margin covers every local
+ * filesystem's granularity with room to spare. It costs at most one extra listing per store per
+ * write burst, and nothing at all in the steady state this cache exists for: the sweep runs on a
+ * timer, seconds apart, where every store has long since settled.
+ */
+const STAMP_SETTLE_MS = 1000
+
+interface DbStamp {
+  /** The (mtime, size) pair of the database and its `-wal`, as one comparable string. */
+  key: string
+  /** The newest last-write time either file carries, or null when neither exists. */
+  newestMtimeMs: number | null
+}
+
+/**
+ * Identity of a SQLite store as bytes on disk.
+ *
+ * The `-wal` file counts as much as the database itself: with write-ahead logging on — which is how
+ * OpenCode ships — a new session lands in the log first and the main file's mtime can sit perfectly
+ * still while the store has moved on. Stamping only the `.db` would serve a stale list until
+ * something happened to checkpoint it.
+ */
+function openCodeDbStamp(path: string): DbStamp {
+  let key = ''
+  let newestMtimeMs: number | null = null
+  for (const p of [path, `${path}-wal`]) {
+    try {
+      const st = statSync(p)
+      key += `${st.mtimeMs}:${st.size};`
+      if (newestMtimeMs === null || st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs
+    } catch {
+      key += 'x;'
+    }
+  }
+  return { key, newestMtimeMs }
+}
+
+/**
+ * Whether this stamp is old enough that no write still to come could be handed the same one.
+ *
+ * A store stamped in the future — a restored backup, a clock that stepped, a network share whose
+ * server runs ahead — is deliberately NOT settled: the instant it names has not elapsed yet, so a
+ * write landing at it would match. That costs a repeated listing until the clock catches up, which
+ * is the right side to err on and heals itself.
+ */
+function stampHasSettled(stamp: DbStamp, now = Date.now()): boolean {
+  if (stamp.newestMtimeMs === null) return true
+  return now - stamp.newestMtimeMs >= STAMP_SETTLE_MS
+}
+
+/** The listing query. `parentId` is the column expression, chosen by whether the store has one. */
+function sessionListSql(hasParent: boolean): string {
+  const parentId = hasParent ? 's.parent_id' : 'null as parent_id'
+  // octet_length, NOT length. length() of a TEXT value counts characters, so SQLite loads every
+  // byte of every row to count them: 2.5 s for an 8 GB store (2026-09-27), synchronous on the
+  // daemon's only thread, at every boot - long enough for the tray watchdog to kill it.
+  // octet_length() reads the size from the record header without touching the content (111 ms
+  // for the same store), and a byte count is what `size_bytes` claims to be anyway.
+  return `select
+           s.id, s.project_id, s.directory, s.title, s.time_created, s.time_updated,
+           s.time_archived, ${parentId},
+           coalesce((select sum(octet_length(m.data)) from message m where m.session_id = s.id), 0) +
+           coalesce((select sum(octet_length(p.data)) from part p where p.session_id = s.id), 0)
+             as size_bytes
+         from session s`
+}
+
+function sessionRecordsOf(rows: SessionRow[]): OpenCodeSessionRecord[] {
+  return rows.map((row) => ({
+    session_id: row.id,
+    project: row.project_id || 'opencode',
+    cwd: row.directory || '',
+    title: row.title || row.id,
+    created_at: row.time_created,
+    last_activity_at: row.time_updated ?? row.time_created ?? 0,
+    archived: row.time_archived !== null,
+    size_bytes: Number(row.size_bytes) || 0,
+    // Empty string is not a parent: an older store that writes '' rather than NULL would otherwise
+    // make every session the child of a session that does not exist.
+    parent_id: row.parent_id || null,
+  }))
+}
+
+/** Only remember an answer whose stamp is already evidence. Reading a store within a tick of
+ *  its last write cannot rule out a second write sharing that tick, and remembering it would
+ *  pin the stale list in place for good - so drop the entry instead and pay one more listing. */
+function rememberList(path: string, stamp: DbStamp, records: OpenCodeSessionRecord[]): void {
+  if (stampHasSettled(stamp)) openCodeListCache.set(path, { stamp: stamp.key, rows: records })
+  else openCodeListCache.delete(path)
+}
+
+export function listOpenCodeSessions(path = OPENCODE_DB_PATH): OpenCodeSessionRecord[] {
+  const stamp = openCodeDbStamp(path)
+  const hit = openCodeListCache.get(path)
+  if (hit?.stamp === stamp.key) return hit.rows
+  const db = openDb(path)
+  if (!db) return []
+  try {
+    const rows = db
+      .query<SessionRow, []>(sessionListSql(hasColumn(db, 'session', 'parent_id')))
+      .all()
+    const records = sessionRecordsOf(rows)
+    rememberList(path, stamp, records)
+    return records
+  } catch {
+    return []
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * {@link listOpenCodeSessions} for the async index build: the same rows and the same cache, but
+ * the query runs on a worker thread. Cold, the size sums read the whole 8 GB store from disk and
+ * held the daemon's only thread for ~1.1 s (measured 2026-10-04); warm it was 90 ms.
+ */
+export async function listOpenCodeSessionsAsync(
+  path = OPENCODE_DB_PATH,
+): Promise<OpenCodeSessionRecord[]> {
+  const stamp = openCodeDbStamp(path)
+  const hit = openCodeListCache.get(path)
+  if (hit?.stamp === stamp.key) return hit.rows
+  if (!existsSync(path)) return []
+  try {
+    const columns = await queryInWorker<{ name: string }>(path, 'pragma table_info(session)')
+    const hasParent = columns.some((c) => c.name === 'parent_id')
+    const records = sessionRecordsOf(
+      await queryInWorker<SessionRow>(path, sessionListSql(hasParent)),
+    )
+    rememberList(path, stamp, records)
+    return records
+  } catch {
+    return []
+  }
+}
+
+export interface OpenCodeSessionContent {
+  events: TailEvent[]
+  messageCount: number
+}
+
+export function readOpenCodeSession(
+  sessionId: string,
+  path = OPENCODE_DB_PATH,
+): OpenCodeSessionContent | null {
+  const db = openDb(path)
+  if (!db) return null
+  try {
+    const messages = db
+      .query<MessageRow, [string]>(
+        'select id, data, time_created from message where session_id = ? order by time_created, id',
+      )
+      .all(sessionId)
+    if (messages.length === 0) return { events: [], messageCount: 0 }
+    const partRows = db
+      .query<PartRow, [string]>(
+        'select message_id, data, time_created from part where session_id = ? order by time_created, id',
+      )
+      .all(sessionId)
+    const byMessage = new Map<string, Array<{ data: unknown; timeCreatedAt: number }>>()
+    for (const row of partRows) {
+      const list = byMessage.get(row.message_id) ?? []
+      list.push({ data: parseJson(row.data), timeCreatedAt: row.time_created })
+      byMessage.set(row.message_id, list)
+    }
+
+    const events: TailEvent[] = []
+    let messageCount = 0
+    for (const row of messages) {
+      const message = parseJson(row.data)
+      const converted = openCodePartsToTailEvents(
+        message?.role,
+        row.time_created,
+        byMessage.get(row.id) ?? [],
+      )
+      if (converted.some((event) => event.kind === 'text')) messageCount++
+      events.push(...converted)
+    }
+    return { events, messageCount }
+  } catch {
+    return null
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * One session's tool parts, parsed, in the order they ran. The command-corrections miner reads its
+ * shell calls and their outcome from these; the display reader above flattens away the status and
+ * exit code it needs, so it gets the raw part instead. Filtered in SQLite so a long session's text
+ * parts are never parsed.
+ */
+export function readOpenCodeToolParts(
+  sessionId: string,
+  path = OPENCODE_DB_PATH,
+): Array<Record<string, any>> {
+  const db = openDb(path)
+  if (!db) return []
+  try {
+    return db
+      .query<{ data: string }, [string]>(
+        `select data from part where session_id = ? and data like '%"type":"tool"%' ` +
+          'order by time_created, id',
+      )
+      .all(sessionId)
+      .map((row) => parseJson(row.data))
+      .filter((p): p is Record<string, any> => !!p && typeof p === 'object' && p.type === 'tool')
+  } catch {
+    return []
+  } finally {
+    db.close()
+  }
+}
+
+export interface OpenCodeSearchEvent {
+  session_id: string
+  cwd: string
+  project: string
+  text: string
+}
+
+interface OpenCodeSearchRow {
+  session_id: string
+  cwd: string | null
+  project: string | null
+  text: string | null
+}
+
+/**
+ * Search input for OpenCode. Only text parts are returned: the UI hides reasoning, and raw tool
+ * payloads contain far more noise than useful conversation text. Filter/extract in SQLite so a
+ * search does not first materialize every tool payload in the (potentially hundreds-of-MiB) DB.
+ */
+const SEARCH_EVENTS_SQL = `select p.session_id, s.directory as cwd, s.project_id as project,
+          case when json_valid(p.data) then json_extract(p.data, '$.text') end as text
+   from part p join session s on s.id = p.session_id
+   where case when json_valid(p.data) then json_extract(p.data, '$.type') end = 'text'
+   order by s.time_updated desc, p.time_created`
+
+function searchEventOf(row: OpenCodeSearchRow): OpenCodeSearchEvent | null {
+  if (typeof row.text !== 'string' || !row.text.trim()) return null
+  return {
+    session_id: row.session_id,
+    cwd: row.cwd || '',
+    project: row.project || 'opencode',
+    text: row.text,
+  }
+}
+
+export function listOpenCodeSearchEvents(path = OPENCODE_DB_PATH): OpenCodeSearchEvent[] {
+  const db = openDb(path)
+  if (!db) return []
+  try {
+    const out: OpenCodeSearchEvent[] = []
+    for (const row of db.query<OpenCodeSearchRow, []>(SEARCH_EVENTS_SQL).all()) {
+      const ev = searchEventOf(row)
+      if (ev) out.push(ev)
+    }
+    return out
+  } catch {
+    return []
+  } finally {
+    db.close()
+  }
+}
+
+/** Same events, but the query (json_extract over every part of a store that can be gigabytes) runs
+ *  on the sqlite worker, never the daemon's thread. The daemon's search path uses this one. */
+export async function listOpenCodeSearchEventsAsync(
+  path = OPENCODE_DB_PATH,
+): Promise<OpenCodeSearchEvent[]> {
+  if (!existsSync(path)) return []
+  try {
+    const rows = await queryInWorker<OpenCodeSearchRow>(path, SEARCH_EVENTS_SQL)
+    const out: OpenCodeSearchEvent[] = []
+    for (const row of rows) {
+      const ev = searchEventOf(row)
+      if (ev) out.push(ev)
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/**
+ * One session's stored token totals.
+ *
+ * OpenCode keeps these as columns on the session row, already summed, so this is a read rather than
+ * a parse — which is why the analytics tier reporting zero for OpenCode was the least excusable of
+ * the three providers. Returns null when the row or the database is missing; a session that simply
+ * has no usage yet comes back with zeros, which is a different and true answer.
+ */
+export async function readOpenCodeUsage(
+  sessionId: string,
+  path = OPENCODE_DB_PATH,
+): Promise<OpenCodeUsageRow | null> {
+  const db = openDb(path)
+  if (!db) return null
+  let row: Omit<OpenCodeUsageRow, 'turns'> | null
+  try {
+    row = db
+      .query<Omit<OpenCodeUsageRow, 'turns'>, [string]>(
+        'select model, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, ' +
+          'tokens_cache_write, cost, time_updated from session where id = ?',
+      )
+      .get(sessionId)
+  } catch {
+    // An older OpenCode without these columns: no usage rather than a broken list.
+    return null
+  } finally {
+    db.close()
+  }
+  if (!row) return null
+  // Assistant replies, so the model breakdown can say "N replies" for OpenCode as it does for the
+  // others. OpenCode keeps the role inside each message's JSON blob rather than in a column, so
+  // this matches on the blob - and SQLite loads a whole value to match it, so a session whose user
+  // messages carry 160 MB of diffs costs 0.4-2.6 s however the pattern is written (measured
+  // 2026-09-27). On a worker thread (core/sqlite-worker.ts), never on the daemon's.
+  let turns = 0
+  try {
+    const [counted] = await queryInWorker<{ n: number }>(
+      path,
+      `select count(*) as n from message where session_id = ? and data like '%"role":"assistant"%'`,
+      [sessionId],
+    )
+    turns = counted?.n ?? 0
+  } catch {
+    // A schema this query does not fit: the totals still stand, the reply count is simply 0.
+  }
+  return { ...row, turns }
+}

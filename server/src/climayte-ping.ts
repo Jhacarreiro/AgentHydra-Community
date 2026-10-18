@@ -1,0 +1,1075 @@
+// server/src/climayte-ping.ts — pings to the chat that dispatched CliMayte work (docs/CLIMAYTE.md
+// "Pings to the dispatching chat").
+//
+// WHY (owner, 2026-10-03): "when a CliMayte worker finishes, stops, or is five-hour/weekly limited
+// and moved, the orchestrator chat that started it is pinged, so that chat knows without polling."
+// Until now the chat learned only by polling (climayte_status, or a background climayte_wait it had
+// to remember to start, and restart after every wake).
+//
+// HOW: every worker change is diffed against the last snapshot of that worker (pingEvents). What the
+// chat must act on (finished, needs-verdict, check-failed, failed, cancelled, group-done) and what it
+// only needs to know (limited-moved, stuck) goes into a per-origin outbox, batched so a burst of
+// finishes costs the chat one turn, not fifteen. A ping is a real turn of a large chat now, so while
+// the origin still has live workers a finished or needs-verdict line is held, not waking: it goes out
+// with the next waking line (failed, check-failed, cancelled, asking), when its group settles, when
+// the origin has no live work left, or HOLD_FINISHED_MS after the oldest held one. The outbox lives in `<dir>/pings.json`: an event is
+// written there as pending before the send and marked delivered only once the send is confirmed, so
+// a daemon restart replays what was not delivered and never what was.
+//
+// DELIVERY, in order: a chat Hydra Desk 2 runs gets it from Desk 2 (POST /api/sessions/:id/ping),
+// which resumes a closed chat and starts a turn, or queues behind a running one; the peer pipe only
+// queues a note in an idle chat, so it never woke one (owner, 2026-10-06). Any other chat, or Desk 2
+// unreachable: the app's native send (claude-native-send.ts, the peer_only path; it starts a turn in
+// an idle chat too, 2026-10-12). A busy chat answers busy: its pings wait in this outbox and go out as
+// one batch once it is idle, never journalled in the app's hold queue (2026-10-13). Only a refusal
+// before dispatch (no native control, no live app) goes on to the chat's own peer pipe (peer-message.ts;
+// it queues behind a running turn); a send the app took is never sent again another way.
+// A write the pipe accepted is delivered, once, even when the transcript has not grown yet (a busy
+// chat shows it when its turn ends); only a chat with no pipe, or a refused write, is retried every
+// 2 minutes for 2 hours; then, only for a failed or settled group on a desktop chat whose instance
+// runs, the composer (POST /api/sessions/:id/message); last, one OS toast and the batch kept as
+// `unreadPings` for the caller's next climayte_status. A manager worker (origin kind 'worker') gets
+// the text as a non-urgent climayteSend instead.
+//
+// WHAT A PING CARRIES: ids, titles, groups, statuses, accounts by instance number and reasons in
+// CliMayte's own words (failedReason). Never a prompt, a report, a follow-up, a verdict note, an
+// error a worker wrote or its stderr, so worker text never enters the chat. The one exception is an
+// 'asking' ping, which carries the worker's question (cut), because the question is what the chat
+// has to answer (climayte_ask; owner, 2026-10-04).
+//
+// Kill switch: the file `<dir>/ping-off`. While it exists nothing is recorded or sent.
+//
+// Every dependency (the worker list and its change feed, the transports, the clock, the folder) is
+// passed to startCliMaytePing, so the batching and the delivery chain are tested with a fake clock
+// and fake transports (server/tests/climayte-ping.test.ts).
+
+import { existsSync, readFileSync, renameSync } from 'node:fs'
+import { join } from 'node:path'
+import { type CliMayteStatus, tooBigOf } from './climayte-lib'
+import { appendInOrder } from './core/append-in-order'
+import { writeJsonStoreAtomic } from './core/json-store'
+import { deliverPeerMessage } from './peer-message'
+
+/** A worker waiting longer than this is reported stuck: the five-minute rule (RESUME_WAIT_MS in
+ *  climayte-placement.ts) says no task waits longer while an account admits it. */
+export const STUCK_AFTER_MS = 5 * 60_000
+/** A settled group, or an origin with no live work left, is reported this soon. */
+export const SETTLED_FLUSH_MS = 10_000
+/** Otherwise the first waking event opens a window that closes after this much quiet... */
+export const QUIET_FLUSH_MS = 90_000
+/** ...or this long after its oldest waking event, whichever is first. */
+export const MAX_BATCH_MS = 5 * 60_000
+/** Information-only events go alone after this, when nothing waking comes to carry them. */
+export const INFO_ALONE_MS = 30 * 60_000
+/** A finished or needs-verdict line is held this long at most while the origin has other work live. */
+export const HOLD_FINISHED_MS = 30 * 60_000
+/** The timer that catches stuck workers and due batches. */
+export const HEARTBEAT_MS = 15_000
+/** A chat that is not live is tried again this often... */
+export const RETRY_EVERY_MS = 2 * 60_000
+/** ...for this long, before the composer or the toast. */
+export const RETRY_FOR_MS = 2 * 3_600_000
+/** A busy chat is asked again this soon; a busy answer is not a failure and never counts toward RETRY_FOR_MS. */
+export const BUSY_RETRY_MS = 60_000
+/** How long the peer pipe has to show the message in the chat's transcript. */
+export const PEER_CONFIRM_MS = 45_000
+
+const MAX_BULLETS = 15
+const TITLE_MAX = 80
+const REASON_MAX = 160
+const QUESTION_MAX = 600
+const DELIVERED_KEYS_MAX = 5000
+const UNREAD_MAX = 20
+const FORGET_ORIGIN_MS = 7 * 24 * 3_600_000
+
+/** Who dispatched a worker, so its news goes back there. A chat is reached through its Claude home's
+ *  live registry (`home`/sessions); a manager worker through climayteSend. */
+export type CliMayteOrigin =
+  | { kind: 'chat'; sessionId: string; home: string; transcript: string | null; how: string }
+  | { kind: 'worker'; workerId: string }
+
+type ChatOrigin = Extract<CliMayteOrigin, { kind: 'chat' }>
+
+/** The part of an attempt a ping reads. A CliMayteAttempt is one. */
+export interface PingAttempt {
+  account: { id: string; num: number | null; name?: string }
+  startedAt: number
+  endedAt: number | null
+  outcome: string
+  notice?: string | null
+  ceiling?: { pct: number; week: boolean } | null
+  windDown?: { pct: number | null; reason?: string } | null
+}
+
+/** The part of a worker a ping reads. A CliMayteWorker is one (with `origin` once it carries it). */
+export interface PingWorker {
+  id: string
+  group: string
+  title: string
+  status: CliMayteStatus
+  accountId: string | null
+  attempts: PingAttempt[]
+  check?: string | null
+  checkRunner?: unknown
+  verdicts?: Array<{ verdict: 'pass' | 'fail'; by?: string; at?: number }>
+  error: string | null
+  origin?: CliMayteOrigin
+  /** The wave it belongs to and its kind: a wave task has no origin, its question goes to its manager's. */
+  wave?: string | null
+  kind?: string | null
+  /** The question it waits on (climayteAsk): while set, its ended turn is no finish. */
+  question?: { text: string; options?: string[]; at: number }
+  /** When its origin chat last read it or cancelled it itself (climayte.ts climayteSeen). */
+  seenAt?: number
+  /** Its report, each turn's (the last one is read for a TOO BIG: line). */
+  results?: string[]
+  result?: string | null
+}
+
+export type PingKind =
+  | 'finished' // its check passed
+  | 'needs-verdict' // done, with no check to judge it
+  | 'too-big' // done, its report says TOO BIG: the summoner takes the job back and re-splits it (ROLES.md)
+  | 'check-failed' // its check failed; sent back one rung
+  | 'failed' // includes a notConverging stop
+  | 'cancelled'
+  | 'asking' // the worker asked a question (climayte_ask) and waits for the answer (climayte_send)
+  | 'group-done' // every worker of this origin in that group has ended
+  | 'limited-moved' // information only: hit a 5-hour or weekly limit, resumed on another account
+  | 'stuck' // information only: waiting longer than STUCK_AFTER_MS
+  | 'swarm-job' // an HSwarm job that outlived the call that started it has finished (swarm-job-ping.ts)
+  | 'finished-later' // registered work a chat waited on has finished (completions.ts); the line is AgentHydra's
+
+const INFO_KINDS: ReadonlySet<PingKind> = new Set(['limited-moved', 'stuck'])
+/** Results the chat can read on its next look: held while the same origin still has live workers. */
+const HELD_KINDS: ReadonlySet<PingKind> = new Set(['finished', 'needs-verdict'])
+/** Where a worker stands after a round: a newer one of these supersedes a queued sent-back line of the same worker.
+ *  Never a question: answered, it is dropped too, and the round would be lost. */
+const OUTCOME_KINDS: ReadonlySet<PingKind> = new Set([
+  'check-failed',
+  'finished',
+  'needs-verdict',
+  'too-big',
+  'failed',
+  'cancelled',
+])
+/** An HSwarm job's event key is this and its job id (swarm-job-ping.ts). */
+export const SWARM_KEY = 'swarm:'
+const TERMINAL: ReadonlySet<CliMayteStatus> = new Set(['done', 'failed', 'cancelled'])
+
+export interface PingEvent {
+  /** `${workerId}:${kind}:${attemptIndex}` (a group's: `${group}:group-done:${attempts}`). */
+  key: string
+  kind: PingKind
+  workerId: string | null
+  group: string
+  at: number
+  /** The bullet, without its "• ". */
+  line: string
+}
+
+export interface QueuedPing extends PingEvent {
+  seq: number
+}
+
+/** What pingEvents compares: one worker as it was at the last look. */
+export interface PingSnapshot {
+  status: CliMayteStatus
+  accountId: string | null
+  attempts: number
+  checkRunner: boolean
+  verdicts: number
+  /** When it started waiting, while it waits (for `stuck`). */
+  waitingSince: number | null
+  /** `at` of the question it waits on, null when none (for `asking`). */
+  question: number | null
+}
+
+const NEW_WORKER: PingSnapshot = {
+  status: 'queued',
+  accountId: null,
+  attempts: 0,
+  checkRunner: false,
+  verdicts: 0,
+  waitingSince: null,
+  question: null,
+}
+
+export function snapshotOf(w: PingWorker, prev: PingSnapshot | null, now: number): PingSnapshot {
+  return {
+    status: w.status,
+    accountId: w.accountId,
+    attempts: w.attempts.length,
+    checkRunner: !!w.checkRunner,
+    verdicts: w.verdicts?.length ?? 0,
+    question: w.question?.at ?? null,
+    waitingSince:
+      w.status !== 'waiting'
+        ? null
+        : prev?.status === 'waiting' && prev.waitingSince != null
+          ? prev.waitingSince
+          : now,
+  }
+}
+
+/** A verdict covers the worker's newest work: the last verdict is stamped and no attempt started
+ *  after it. A follow-up or a sent-back fail makes the worker unjudged again. climayte_status's
+ *  `judged` is this and "not live". */
+export function verdictCoversNewestWork(w: {
+  verdicts?: Array<{ at?: number }>
+  attempts: Array<{ startedAt: number }>
+}): boolean {
+  const at = w.verdicts?.at(-1)?.at
+  return at !== undefined && !w.attempts.some((a) => a.startedAt >= at)
+}
+
+/** A sent-back line is history once the same worker has a newer outcome waiting behind it. */
+function sentBackSuperseded(e: QueuedPing, queued: QueuedPing[]): boolean {
+  return (
+    e.kind === 'check-failed' &&
+    queued.some((p) => p.workerId === e.workerId && p.seq > e.seq && OUTCOME_KINDS.has(p.kind))
+  )
+}
+
+/** Every member of the line's group has reported: judged when done, or ended with its own line no
+ *  longer waiting here (a failed or cancelled worker). */
+function groupReported(e: QueuedPing, queued: QueuedPing[], group: PingWorker[]): boolean {
+  const members = group.filter((x) => x.group === e.group)
+  const waiting = (x: PingWorker) => queued.some((p) => p.workerId === x.id && p.kind === x.status)
+  const reported = (x: PingWorker) =>
+    x.status === 'done'
+      ? verdictCoversNewestWork(x)
+      : (x.status === 'failed' || x.status === 'cancelled') && !waiting(x)
+  return members.length > 0 && members.every(reported)
+}
+
+/** A worker line the worker's own state has answered since it was queued. */
+const WORKER_ANSWERED: Partial<Record<PingKind, (w: PingWorker) => boolean>> = {
+  'needs-verdict': (w) => w.status === 'done' && verdictCoversNewestWork(w),
+  'too-big': (w) => w.status === 'done' && verdictCoversNewestWork(w),
+  // Its own check's verdict is why it was sent: only a later one counts.
+  finished: (w) =>
+    w.status === 'done' &&
+    verdictCoversNewestWork({
+      attempts: w.attempts,
+      verdicts: (w.verdicts ?? []).filter((v) => v.by !== 'check'),
+    }),
+  failed: (w) => w.status !== 'failed',
+  asking: (w) => !w.question,
+  stuck: (w) => w.status !== 'waiting',
+}
+
+/** Lines a look by the origin chat answers: a scoped climayte_status read, or its own climayte_cancel (climayte.ts
+ *  climayteSeen). 2026-10-13: a chat busy for six hours was sent 104 lines in one ping, 16 of them workers it had
+ *  cancelled itself and the rest groups it had read and landed hours before; only a verdict answered a finished
+ *  line, never a read. A question is not here: it needs an answer, not a look. */
+const SEEN_ANSWERS: ReadonlySet<PingKind> = new Set([...OUTCOME_KINDS, 'limited-moved', 'stuck'])
+
+/** The origin chat looked at the worker at or after the moment the line was queued. */
+const seenSince = (w: PingWorker | undefined, e: QueuedPing): boolean =>
+  w?.seenAt != null && w.seenAt >= e.at
+
+const cut = (s: string, max: number): string => (s.length > max ? s.slice(0, max) : s)
+
+/** An error's first line, cut, without a closing full stop (the bullet adds its own). */
+const reason = (s: string | null | undefined, fallback: string): string => {
+  const line = (s ?? '').split('\n')[0].trim()
+  return cut(line || fallback, REASON_MAX).replace(/[.!]+$/, '')
+}
+
+/** Why a worker failed, in CliMayte's own words only. A failed attempt's `error` can be the
+ *  worker's final report or its stderr (climayte.ts settleWorker), and a ping never carries worker
+ *  text, so the reason is one of CliMayte's own messages, recognised by how it starts, or else the
+ *  way the last attempt ended. climayte_status has the full error. */
+const FAILED_REASONS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
+  [/^Not converging: ([\w%(). ,]+?) in this turn/, (m) => `not converging (${m[1]})`],
+  [/^Anthropic stayed overloaded/, () => 'Anthropic stayed overloaded through 3 retries'],
+  [/^The CLI was stopped before it finished/, () => 'the CLI was stopped three times in one turn'],
+  [/^The check itself is broken/, () => 'its check command is broken'],
+  [/^The check still failed/, () => 'its check still failed after every round'],
+  [/^The wave's proof still failed/, () => "the wave's proof still failed after every round"],
+]
+const OUTCOME_REASONS: Partial<Record<string, string>> = {
+  error: 'its CLI run ended in an error',
+  done: 'it ended without passing',
+  transient: 'Anthropic stayed overloaded',
+  interrupted: 'its CLI run was stopped',
+}
+export function failedReason(w: Pick<PingWorker, 'error' | 'attempts'>): string {
+  const error = w.error ?? ''
+  for (const [re, say] of FAILED_REASONS) {
+    const m = error.match(re)
+    if (m) return say(m)
+  }
+  return OUTCOME_REASONS[w.attempts.at(-1)?.outcome ?? ''] ?? 'no reason recorded'
+}
+
+/** An account by its instance number, never its name (which can be a login). */
+const accountLabel = (a: PingAttempt | undefined): string =>
+  a?.account.num != null ? `#${a.account.num}` : 'an unnumbered account'
+
+/** How an attempt ending this way stopped at a usage limit, or null when it did not (a context
+ *  handoff, a transient retry, an error). */
+function limitStop(a: PingAttempt): string | null {
+  const window = (week: boolean) => (week ? 'weekly' : '5-hour')
+  if (a.ceiling)
+    return `reached ${Math.round(a.ceiling.pct)}% of its ${window(a.ceiling.week)} limit`
+  if (a.outcome === 'quota') return `hit its ${window(/week/i.test(a.notice ?? ''))} limit`
+  if (a.outcome === 'handoff' && a.windDown?.pct != null && a.windDown.reason !== 'context')
+    return `reached ${Math.round(a.windDown.pct)}% of its usage limit`
+  return null
+}
+
+/** What changed for the dispatching chat between `prev` (null: a worker not seen before) and `w`.
+ *  Pure: the outbox drops a key it already holds or delivered, so calling this again is safe. */
+export function pingEvents(prev: PingSnapshot | null, w: PingWorker, now: number): PingEvent[] {
+  const p = prev ?? NEW_WORKER
+  const n = w.attempts.length
+  const who = `${w.id} "${cut(w.title, TITLE_MAX)}"`
+  const out: PingEvent[] = []
+  const add = (kind: PingKind, line: string, index = n) =>
+    out.push({
+      key: `${w.id}:${kind}:${index}`,
+      kind,
+      workerId: w.id,
+      group: w.group,
+      at: now,
+      line,
+    })
+
+  for (let i = Math.max(1, p.attempts); i < n; i++) {
+    const before = w.attempts[i - 1]
+    const after = w.attempts[i]
+    if (before.account.id === after.account.id) continue
+    const stop = limitStop(before)
+    if (!stop) continue
+    const gap = Math.max(
+      0,
+      Math.round((after.startedAt - (before.endedAt ?? after.startedAt)) / 1000),
+    )
+    add(
+      'limited-moved',
+      `${who}: ${accountLabel(before)} ${stop}; resumed on ${accountLabel(after)} after ${gap}s.`,
+      i + 1,
+    )
+  }
+
+  const judged = (w.verdicts ?? []).slice(p.verdicts).filter((v) => v.by === 'check')
+  const check = judged.at(-1)?.verdict ?? null
+  const last = w.attempts.at(-1)
+  const entered = w.status !== p.status
+  if (check === 'fail') {
+    const back = w.status === 'queued' || w.status === 'running' || w.status === 'waiting'
+    add('check-failed', `${who}: check failed, ${back ? 'sent back' : 'not sent back'}.`)
+  }
+  if (w.question && w.question.at !== p.question) {
+    const opts = w.question.options?.length ? ` Options: ${w.question.options.join(' | ')}.` : ''
+    add(
+      'asking',
+      `${who}: asks: ${cut(w.question.text.replace(/\s+/g, ' '), QUESTION_MAX)}${opts}`,
+      w.question.at,
+    )
+  }
+  // A worker that asked ended its turn on purpose: that is no finish until it is answered.
+  const asking = !!w.question
+  const tooBig =
+    w.status === 'done' && entered && !asking ? tooBigOf(w.results?.at(-1) ?? w.result) : null
+  if (tooBig)
+    add(
+      'too-big',
+      `${tooBig} (${who}, done on ${accountLabel(last)}: take the job back and re-split it.)`,
+    )
+  else if (w.status === 'done' && check === 'pass' && !asking)
+    add('finished', `${who}: done on ${accountLabel(last)}, check passed.`)
+  else if (w.status === 'done' && entered && !asking)
+    add('needs-verdict', `${who}: done on ${accountLabel(last)}, needs your verdict.`)
+  if (w.status === 'failed' && entered)
+    add('failed', `${who}: failed: ${failedReason(w)}; details in climayte_status.`)
+  if (w.status === 'cancelled' && entered) add('cancelled', `${who}: cancelled.`)
+  if (
+    w.status === 'waiting' &&
+    p.status === 'waiting' &&
+    p.waitingSince != null &&
+    now - p.waitingSince > STUCK_AFTER_MS
+  ) {
+    const mins = Math.round((now - p.waitingSince) / 60_000)
+    add('stuck', `${who}: waiting ${mins} min: ${reason(w.error, 'no account is free')}.`)
+  }
+  return out
+}
+
+/** Local wall-clock time, HH:MM. */
+export function hhmm(ms: number): string {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** The first words of every ping, and nothing more (owner, 2026-10-06: no "automatic status note,
+ *  nobody typed this"). They are what desk2's note-card detector reads
+ *  (desk2/server/src/engine/system-text.ts NOTE: `[from] Not from the user.`): keep them first. */
+export const PING_HEADER = '[AgentHydra · CliMayte] Not from the user.'
+
+/** The text of one ping. `workers`: the origin's workers now, for the group tally. */
+export function pingMessage(
+  events: ReadonlyArray<
+    Pick<QueuedPing, 'seq' | 'at' | 'group' | 'line'> &
+      Partial<Pick<QueuedPing, 'kind' | 'workerId'>>
+  >,
+  workers: readonly PingWorker[],
+): string {
+  const seqs = events.map((e) => e.seq)
+  const lo = Math.min(...seqs)
+  const hi = Math.max(...seqs)
+  const n = events.length
+  const lines = [
+    `${PING_HEADER} Ping ${lo === hi ? lo : `${lo}-${hi}`}, ${n} update${n === 1 ? '' : 's'} since ${hhmm(Math.min(...events.map((e) => e.at)))}:`,
+    // A TOO BIG line leads: its job is not done, and the summoner must re-split it.
+    ...[
+      ...events.filter((e) => e.kind === 'too-big'),
+      ...events.filter((e) => e.kind !== 'too-big'),
+    ]
+      .slice(0, MAX_BULLETS)
+      .map((e) => `• ${e.line}`),
+  ]
+  if (n > MAX_BULLETS) lines.push(`+${n - MAX_BULLETS} more`)
+  // An HSwarm job's or a registered wait's line stands alone: it has no group, no verdict to give.
+  const standalone = (k: PingKind | undefined) => k === 'swarm-job' || k === 'finished-later'
+  const jobsOnly = events.every((e) => standalone(e.kind))
+  if (jobsOnly) return lines.join('\n')
+  const groups = [...new Set(events.filter((e) => !standalone(e.kind)).map((e) => e.group))]
+  for (const g of groups) {
+    const ws = workers.filter((w) => w.group === g)
+    const count = (...s: CliMayteStatus[]) => ws.filter((w) => s.includes(w.status)).length
+    const cancelled = count('cancelled')
+    lines.push(
+      `Group ${g}: ${count('done')} done, ${count('failed')} failed${cancelled ? `, ${cancelled} cancelled` : ''}, ${count('running', 'checking')} running, ${count('queued', 'waiting')} waiting.`,
+    )
+  }
+  const also =
+    groups.length > 1
+      ? ` (also ${groups
+          .slice(1)
+          .map((g) => `"${g}"`)
+          .join(', ')})`
+      : ''
+  const asking = events.filter((e) => e.kind === 'asking' && e.workerId)
+  if (asking.length) {
+    // The question is the worker's; the answer is yours to give from the task context.
+    const to = asking.map((e) => e.workerId).join(', ')
+    lines.push(
+      `Answer ${asking.length === 1 ? 'it' : 'each'} yourself from the task context with climayte_send {id, text} (${to}): the worker resumes its same session with your text. Ask the owner only when it needs a decision only they can make.`,
+    )
+    if (asking.length === n) return lines.join('\n')
+  }
+  lines.push(
+    `Next: climayte_status {group:"${groups[0] ?? ''}", report:true}${also}, then climayte_verdict.`,
+  )
+  // Every group here has ended: the chat that dispatched it carries the job on, as Claude Code's main
+  // chat does when its subagents finish (owner, 2026-10-06: a worker that says done may not be).
+  const live: ReadonlySet<CliMayteStatus> = new Set(['queued', 'waiting', 'running', 'checking'])
+  if (!workers.some((w) => groups.includes(w.group) && (live.has(w.status) || w.question)))
+    lines.push(
+      'Their work can be unfinished or broken: check each proof, fix or re-dispatch what is left, and tell the owner it is done only when the whole ask is.',
+    )
+  return lines.join('\n')
+}
+
+// ---- the outbox -----------------------------------------------------------------------------
+
+interface OriginBox {
+  origin: CliMayteOrigin
+  /** The last seq handed out to this origin. */
+  seq: number
+  pending: QueuedPing[]
+  /** Keys sent (or given up on into `unread`), newest last, capped. */
+  deliveredKeys: string[]
+  lastFlush: number | null
+  /** A group settled, or the origin has no live work: flush SETTLED_FLUSH_MS after this. */
+  urgentAt: number | null
+  /** Set by a send that did not reach the chat (no pipe, or the pipe refused it): the next try. */
+  retry: { firstAt: number; nextAt: number; tries: number } | null
+  /** The app said the chat is busy: the next ask, BUSY_RETRY_MS later. Absent in a ledger the old code wrote. */
+  busyUntil?: number | null
+  /** Pings no channel delivered, for the caller's next climayte_status. */
+  unread: Array<{ at: number; seqs: string; text: string }>
+}
+
+interface PingLedger {
+  version: 1
+  origins: Record<string, OriginBox>
+}
+
+export interface PingClock {
+  now(): number
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
+const realClock: PingClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => {
+    const t = setTimeout(fn, ms)
+    ;(t as { unref?: () => void }).unref?.()
+    return t
+  },
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+}
+
+export interface CliMaytePingDeps {
+  /** Holds pings.json, the ping-off switch and pings-journal.jsonl (~/.agenthydra/climayte). */
+  dir: string
+  /** Every worker now. */
+  workers(): PingWorker[]
+  /** Calls `cb` on every worker change (onCliMayteChange); returns the unsubscribe. */
+  subscribe(cb: (w: PingWorker) => void): () => void
+  /** A non-urgent message to a manager worker (climayteSend). */
+  climayteSend(
+    workerId: string,
+    text: string,
+    opts?: { ping: true },
+  ): { ok: boolean; message: string }
+  clock?: PingClock
+  /** deliverPeerMessage by default. */
+  deliverPeer?(
+    sessionId: string,
+    transcript: string | null,
+    text: string,
+    confirmMs: number,
+    claudeHome: string,
+  ): Promise<{ ok: boolean; reason: string }>
+  /** The composer route. `eligible`: the chat is a desktop chat and its instance runs. Absent: the
+   *  chain skips the composer. */
+  composer?: {
+    eligible(origin: ChatOrigin): Promise<boolean>
+    send(sessionId: string, text: string): Promise<{ ok: boolean; reason: string }>
+  }
+  /** Hydra Desk 2's ping route, tried first for a chat: where Desk 2 runs the chat it starts a real turn
+   *  (resuming a closed chat). `notDesk`: no Desk 2 chat owns the session (404) or Desk 2 is not up. */
+  desk?: {
+    send(
+      sessionId: string,
+      text: string,
+    ): Promise<{ ok: boolean; reason: string; notDesk?: boolean }>
+  }
+  /** The app's native send (tryNativeSend), tried for a chat Desk 2 does not run, before the peer pipe.
+   *  `unavailable`: nothing reached the app, so the pipe may go; false: the app was sent it and refused or
+   *  never answered, so it is never sent again. */
+  native?(
+    origin: ChatOrigin,
+    text: string,
+  ): Promise<{ ok: boolean; unavailable: boolean; reason?: string; busy?: boolean }>
+  /** One OS notification (notify-os sendOsNotification by default). */
+  toast?(n: { title: string; body: string }): Promise<unknown>
+  /** One line per failed delivery; appended to `<dir>/pings-journal.jsonl` by default. */
+  journal?(line: Record<string, unknown>): void
+  /** Whether the chat has seen how an HSwarm job ended (swarm-job-ping.ts seenByChat): its line is no news then. */
+  swarmJobSeen?(jobId: string, sessionId: string): boolean
+}
+
+export interface CliMaytePing {
+  /** Diff one worker now (what the change feed calls). */
+  observe(w: PingWorker): void
+  /** Queue events that are not a worker's (an HSwarm job's) for a chat; true when one was new. A key
+   *  sent before, or pending, is not queued again; nothing is queued while `ping-off` exists. */
+  emit(origin: CliMayteOrigin, events: PingEvent[]): boolean
+  /** Send every pending batch now, ignoring the windows; resolves when the sends settle. */
+  flushNow(): Promise<void>
+  /** Resolves once no send is in flight. */
+  idle(): Promise<void>
+  /** Pings for this chat that no channel delivered; `clear` marks them read. */
+  unreadPings(sessionId: string, opts?: { clear?: boolean }): { count: number; texts: string[] }
+  /** The chats holding unread pings: climayte_status traces its caller only when there are any. */
+  unreadSessions(): string[]
+  stop(): void
+}
+
+const originKey = (o: CliMayteOrigin): string =>
+  o.kind === 'chat' ? `chat:${o.sessionId}` : `worker:${o.workerId}`
+
+const sameOrigin = (a: CliMayteOrigin | undefined, b: CliMayteOrigin): boolean =>
+  !!a && originKey(a) === originKey(b)
+
+const seqRange = (batch: QueuedPing[]): string => {
+  const s = batch.map((e) => e.seq)
+  const lo = Math.min(...s)
+  const hi = Math.max(...s)
+  return lo === hi ? `${lo}` : `${lo}-${hi}`
+}
+
+const originLabel = (o: CliMayteOrigin): string =>
+  o.kind === 'chat' ? o.sessionId.slice(0, 8) : o.workerId
+
+/** Start pinging. Seeds a snapshot of every worker (emitting nothing for what happened before),
+ *  replays the ledger's undelivered pings, subscribes to changes and arms the timer. */
+export function startCliMaytePing(deps: CliMaytePingDeps): CliMaytePing {
+  const clock = deps.clock ?? realClock
+  const file = join(deps.dir, 'pings.json')
+  const offFile = join(deps.dir, 'ping-off')
+  const deliverPeer = deps.deliverPeer ?? deliverPeerMessage
+  const toast =
+    deps.toast ??
+    (async (n: { title: string; body: string }) =>
+      (await import('./notify-os')).sendOsNotification(n))
+  // Off the daemon's thread; a line that cannot be written is lost, and never stops a ping.
+  const journal =
+    deps.journal ??
+    ((line: Record<string, unknown>) =>
+      void appendInOrder(join(deps.dir, 'pings-journal.jsonl'), `${JSON.stringify(line)}\n`))
+
+  const ledger = loadLedger(file, journal, clock.now())
+  // An origin with nothing owed and no news for a week is forgotten. Its delivered keys only guard
+  // against a re-send in this daemon's life (the first pass emits nothing), so dropping them is safe.
+  for (const [k, box] of Object.entries(ledger.origins))
+    if (
+      !box.pending.length &&
+      !box.unread.length &&
+      clock.now() - (box.lastFlush ?? 0) > FORGET_ORIGIN_MS
+    )
+      delete ledger.origins[k]
+  const snaps = new Map<string, PingSnapshot>()
+  const inflight = new Map<string, Promise<void>>()
+  let timer: unknown = null
+  let stopped = false
+
+  const pingOff = () => existsSync(offFile)
+  const save = () => {
+    try {
+      writeJsonStoreAtomic(file, ledger)
+    } catch (err) {
+      journal({
+        ts: new Date(clock.now()).toISOString(),
+        event: 'ping-ledger-unwritten',
+        reason: String(err),
+      })
+    }
+  }
+  const fail = (box: OriginBox, batch: QueuedPing[], step: string, why: string) =>
+    journal({
+      ts: new Date(clock.now()).toISOString(),
+      event: 'ping-failed',
+      origin: originLabel(box.origin),
+      seq: seqRange(batch),
+      step,
+      reason: why,
+    })
+
+  const workersOf = (o: CliMayteOrigin, latest?: PingWorker): PingWorker[] => {
+    const all = deps.workers().map((x) => (latest && x.id === latest.id ? latest : x))
+    if (latest && !all.some((x) => x.id === latest.id)) all.push(latest)
+    return all.filter((x) => sameOrigin(x.origin, o))
+  }
+
+  const boxFor = (o: CliMayteOrigin): OriginBox => {
+    const k = originKey(o)
+    let box = ledger.origins[k]
+    if (!box) {
+      box = {
+        origin: o,
+        seq: 0,
+        pending: [],
+        deliveredKeys: [],
+        lastFlush: null,
+        urgentAt: null,
+        retry: null,
+        unread: [],
+      }
+      ledger.origins[k] = box
+    }
+    box.origin = o // a resumed chat may come back with another transcript path
+    return box
+  }
+
+  const enqueue = (box: OriginBox, events: PingEvent[]): boolean => {
+    let added = false
+    for (const e of events) {
+      if (box.deliveredKeys.includes(e.key) || box.pending.some((p) => p.key === e.key)) continue
+      box.pending.push({ ...e, seq: ++box.seq })
+      added = true
+    }
+    return added
+  }
+
+  const noLive = (o: CliMayteOrigin, latest?: PingWorker) =>
+    workersOf(o, latest).every((x) => TERMINAL.has(x.status) && !x.question)
+
+  const observe = (w: PingWorker) => {
+    if (stopped) return
+    const now = clock.now()
+    const prev = snaps.get(w.id) ?? null
+    const events = pingEvents(prev, w, now)
+    snaps.set(w.id, snapshotOf(w, prev, now))
+    const origin =
+      w.origin ??
+      (w.wave && w.kind !== 'manage' && events.some((e) => e.kind === 'asking')
+        ? deps.workers().find((m) => m.kind === 'manage' && m.wave === w.wave)?.origin
+        : undefined)
+    if (!origin || !events.length || pingOff()) return
+    const box = boxFor(origin)
+    if (TERMINAL.has(w.status)) {
+      const group = workersOf(origin, w).filter((x) => x.group === w.group)
+      if (group.every((x) => TERMINAL.has(x.status) && !x.question)) {
+        const attempts = group.reduce((s, x) => s + x.attempts.length, 0)
+        events.push({
+          key: `${w.group}:group-done:${attempts}`,
+          kind: 'group-done',
+          workerId: null,
+          group: w.group,
+          at: now,
+          line: `Group ${w.group} settled: every task (${group.length}) has ended.`,
+        })
+      }
+    }
+    if (!enqueue(box, events)) return
+    const waking = events.some((e) => !INFO_KINDS.has(e.kind))
+    // A question is waited on by the worker: it goes out at once, not after a quiet window.
+    if (
+      events.some((e) => e.kind === 'group-done' || e.kind === 'asking') ||
+      (waking && noLive(origin, w))
+    )
+      box.urgentAt ??= now
+    save()
+    arm()
+  }
+
+  const emit = (origin: CliMayteOrigin, events: PingEvent[]): boolean => {
+    if (stopped || pingOff() || !events.length) return false
+    const box = boxFor(origin)
+    if (!enqueue(box, events)) return false
+    if (noLive(origin)) box.urgentAt ??= clock.now()
+    save()
+    arm()
+    return true
+  }
+
+  /** The pending lines this box may hand over now. A worker origin mid-turn takes none: its follow-up queue
+   *  delivers a line without checking it again (2026-10-13), so each waits for the turn's end. */
+  const sendable = (box: OriginBox): QueuedPing[] => {
+    const o = box.origin
+    const busy =
+      o.kind === 'worker' &&
+      deps.workers().some((x) => x.id === o.workerId && x.status === 'running')
+    return busy ? [] : box.pending
+  }
+
+  /** When this box's batch is due, or null when it has none. */
+  const dueAt = (box: OriginBox): number | null => {
+    if (!box.pending.length) return null
+    if (box.busyUntil != null && box.busyUntil > clock.now()) return box.busyUntil
+    if (box.retry) return box.retry.nextAt
+    const pending = sendable(box)
+    if (!pending.length) return null
+    const waking = pending.filter((p) => !INFO_KINDS.has(p.kind))
+    if (waking.length) {
+      if (box.urgentAt != null) return box.urgentAt + SETTLED_FLUSH_MS
+      // A finish is held while the origin has other work live: it goes with the next line that wakes
+      // for its own sake, or HOLD_FINISHED_MS after the oldest held one.
+      const holding = !noLive(box.origin)
+      const waker = holding ? waking.filter((p) => !HELD_KINDS.has(p.kind)) : waking
+      if (!waker.length) return Math.min(...waking.map((p) => p.at)) + HOLD_FINISHED_MS
+      const ats = waker.map((p) => p.at)
+      return Math.min(Math.max(...ats) + QUIET_FLUSH_MS, Math.min(...ats) + MAX_BATCH_MS)
+    }
+    return Math.min(...pending.map((p) => p.at)) + INFO_ALONE_MS
+  }
+
+  const settle = (box: OriginBox, batch: QueuedPing[]) => {
+    const sent = new Set(batch.map((e) => e.key))
+    box.pending = box.pending.filter((p) => !sent.has(p.key))
+    box.deliveredKeys = [...box.deliveredKeys, ...sent].slice(-DELIVERED_KEYS_MAX)
+    box.lastFlush = clock.now()
+    box.retry = null
+    box.busyUntil = null
+    box.urgentAt = null
+    const waking = box.pending.some((p) => !INFO_KINDS.has(p.kind))
+    if (
+      box.pending.some((p) => p.kind === 'group-done' || p.kind === 'asking') ||
+      (waking && noLive(box.origin))
+    )
+      box.urgentAt = clock.now()
+  }
+
+  /** A send failed: try again in RETRY_EVERY_MS, or report true once RETRY_FOR_MS has passed. */
+  const retryOrGiveUp = (box: OriginBox): boolean => {
+    const now = clock.now()
+    box.retry = box.retry
+      ? { ...box.retry, tries: box.retry.tries + 1 }
+      : { firstAt: now, nextAt: now, tries: 1 }
+    box.retry.nextAt = now + RETRY_EVERY_MS
+    return now - box.retry.firstAt >= RETRY_FOR_MS
+  }
+
+  // Last resort: the human hears of it, and the caller's next climayte_status shows it.
+  const giveUp = async (
+    box: OriginBox,
+    batch: QueuedPing[],
+    text: string,
+    why = 'was not reachable for 2 hours',
+  ) => {
+    const groups = [...new Set(batch.map((e) => e.group))].join(', ')
+    await toast({
+      title: 'CliMayte: a chat missed its ping',
+      body: `Chat ${originLabel(box.origin)} ${why}. Ping ${seqRange(batch)}: ${batch.length} update${batch.length === 1 ? '' : 's'} (${groups}). It shows in that chat's next climayte_status.`,
+    }).catch(() => undefined)
+    box.unread = [...box.unread, { at: clock.now(), seqs: seqRange(batch), text }].slice(
+      -UNREAD_MAX,
+    )
+    settle(box, batch)
+  }
+
+  const sendChat = async (box: OriginBox, o: ChatOrigin, batch: QueuedPing[], text: string) => {
+    // A Desk 2 chat first: its route starts a turn (the peer pipe only queues the note in an idle chat).
+    if (deps.desk) {
+      const d = await deps.desk
+        .send(o.sessionId, text)
+        .catch((err) => ({ ok: false, reason: String(err), notDesk: false }))
+      if (d.ok) return settle(box, batch)
+      if (!d.notDesk) fail(box, batch, 'desk', d.reason)
+    }
+    // Any other chat: the app's native send starts its turn. Only a refusal before dispatch goes on to
+    // the pipe; a send the app took is never sent again another way (the runbook's rule).
+    if (deps.native) {
+      const n = await deps.native(o, text).catch((err) => ({
+        ok: false,
+        unavailable: true,
+        reason: String(err),
+        busy: false,
+      }))
+      if (n.ok) return settle(box, batch)
+      // Busy is not a failure: the batch stays pending and is built again, from every pending ping, at the
+      // next ask. Nothing is sent to the pipe or the composer, and no toast.
+      if (n.busy) {
+        box.busyUntil = clock.now() + BUSY_RETRY_MS
+        return
+      }
+      if (!n.unavailable) {
+        fail(box, batch, 'native', n.reason ?? 'the app did not confirm the message')
+        return giveUp(
+          box,
+          batch,
+          text,
+          "did not confirm the app's native send, which is never repeated",
+        )
+      }
+    }
+    // Without a transcript nothing can grow, so there is nothing to wait 45 s for.
+    const confirmMs = o.transcript ? PEER_CONFIRM_MS : 0
+    const r = await deliverPeer(o.sessionId, o.transcript, text, confirmMs, o.home).catch(
+      (err) => ({ ok: false, reason: `error: ${String(err)}` }),
+    )
+    if (r.ok) return settle(box, batch)
+    // The pipe took the bytes: the chat has the ping, queued behind its turn when it is busy (a
+    // long climayte_status wait, say), which is why its transcript has not grown yet. That is
+    // delivered, once. Sending it again queued a copy every 2 minutes, up to 60 of them.
+    if (r.reason === 'wrote-but-no-transcript-growth') {
+      if (o.transcript)
+        journal({
+          ts: new Date(clock.now()).toISOString(),
+          event: 'ping-unconfirmed',
+          origin: originLabel(o),
+          seq: seqRange(batch),
+        })
+      return settle(box, batch)
+    }
+    fail(box, batch, 'peer', r.reason)
+    if (!retryOrGiveUp(box)) return
+    const settles = batch.some(
+      (e) => e.kind === 'group-done' || e.kind === 'failed' || e.kind === 'asking',
+    )
+    if (settles && deps.composer) {
+      const ok = await deps.composer.eligible(o).catch(() => false)
+      if (ok) {
+        const c = await deps.composer
+          .send(o.sessionId, text)
+          .catch((err) => ({ ok: false, reason: String(err) }))
+        if (c.ok) return settle(box, batch)
+        fail(box, batch, 'composer', c.reason)
+      }
+    }
+    return giveUp(box, batch, text)
+  }
+
+  const sendWorker = (box: OriginBox, workerId: string, batch: QueuedPing[], text: string) => {
+    let r: { ok: boolean; message: string }
+    try {
+      r = deps.climayteSend(workerId, text, { ping: true })
+    } catch (err) {
+      r = { ok: false, message: String(err) }
+    }
+    if (r.ok) return settle(box, batch)
+    fail(box, batch, 'climayte_send', r.message)
+    if (retryOrGiveUp(box)) {
+      fail(box, batch, 'dropped', 'not delivered for 2 hours')
+      settle(box, batch)
+    }
+  }
+
+  /** Is this queued line still news? Read against the workers as they are now: a result the chat
+   *  judged while the ping waited, a failure that was sent back, a question that was answered, an
+   *  HSwarm job the chat has read, a worker the chat read or cancelled itself since (SEEN_ANSWERS). A
+   *  sent-back line is history once the same worker has a newer outcome waiting: a chat busy for hours
+   *  got one line per round (2026-10-13). A move to another account stays unless the chat looked since. */
+  const stale = (
+    e: QueuedPing,
+    queued: QueuedPing[],
+    group: PingWorker[],
+    origin: CliMayteOrigin,
+  ): boolean => {
+    if (sentBackSuperseded(e, queued)) return true
+    if (e.kind === 'swarm-job')
+      return (
+        origin.kind === 'chat' &&
+        (deps.swarmJobSeen?.(e.key.slice(SWARM_KEY.length), origin.sessionId) ?? false)
+      )
+    if (e.kind === 'group-done') {
+      const members = group.filter((x) => x.group === e.group)
+      return (
+        groupReported(e, queued, group) ||
+        (members.length > 0 && members.every((x) => seenSince(x, e)))
+      )
+    }
+    const w = e.workerId ? deps.workers().find((x) => x.id === e.workerId) : undefined
+    if (SEEN_ANSWERS.has(e.kind) && seenSince(w, e)) return true
+    const answered = WORKER_ANSWERED[e.kind]
+    return !!answered && !!w && answered(w)
+  }
+
+  const flush = (box: OriginBox) => {
+    const k = originKey(box.origin)
+    if (inflight.has(k) || !box.pending.length) return
+    const group = workersOf(box.origin)
+    const gone = box.pending.filter((e) => stale(e, box.pending, group, box.origin))
+    if (gone.length) {
+      // Settled while it waited: never sent, never queued again.
+      const keys = new Set(gone.map((e) => e.key))
+      box.pending = box.pending.filter((p) => !keys.has(p.key))
+      box.deliveredKeys = [...box.deliveredKeys, ...keys].slice(-DELIVERED_KEYS_MAX)
+    }
+    if (!box.pending.length) {
+      box.retry = null
+      box.urgentAt = null
+      save()
+      arm()
+      return
+    }
+    const batch = [...sendable(box)]
+    if (!batch.length) {
+      if (gone.length) save()
+      return
+    }
+    const text = pingMessage(batch, group)
+    const o = box.origin
+    // Deferred one microtask, so the entry is in `inflight` before a synchronous send's
+    // `finally` takes it out again.
+    const run = Promise.resolve().then(async () => {
+      try {
+        if (o.kind === 'worker') sendWorker(box, o.workerId, batch, text)
+        else await sendChat(box, o, batch, text)
+      } finally {
+        inflight.delete(k)
+        save()
+        arm()
+      }
+    })
+    inflight.set(k, run)
+  }
+
+  const flushDue = () => {
+    if (pingOff()) return
+    const now = clock.now()
+    for (const box of Object.values(ledger.origins)) {
+      const due = dueAt(box)
+      if (due != null && due <= now) flush(box)
+    }
+  }
+
+  const arm = () => {
+    if (stopped) return
+    if (timer != null) clock.clearTimeout(timer)
+    const now = clock.now()
+    let next = now + HEARTBEAT_MS
+    if (!pingOff())
+      for (const [k, box] of Object.entries(ledger.origins)) {
+        if (inflight.has(k)) continue
+        const due = dueAt(box)
+        if (due != null) next = Math.min(next, Math.max(due, now))
+      }
+    timer = clock.setTimeout(tick, next - now)
+  }
+
+  function tick() {
+    timer = null
+    if (stopped) return
+    for (const w of deps.workers()) observe(w) // catches stuck workers and any missed change
+    flushDue()
+    arm()
+  }
+
+  const idle = async () => {
+    while (inflight.size) await Promise.all([...inflight.values()])
+  }
+
+  // The first pass seeds: what happened before this daemon started is not news.
+  const now = clock.now()
+  for (const w of deps.workers()) snaps.set(w.id, snapshotOf(w, null, now))
+  const unsubscribe = deps.subscribe(observe)
+  arm()
+
+  return {
+    observe,
+    emit,
+    idle,
+    async flushNow() {
+      if (!pingOff()) for (const box of Object.values(ledger.origins)) flush(box)
+      await idle()
+    },
+    unreadPings(sessionId, opts = {}) {
+      const box = ledger.origins[`chat:${sessionId}`]
+      const texts = box?.unread.map((u) => u.text) ?? []
+      if (box && opts.clear && texts.length) {
+        box.unread = []
+        save()
+      }
+      return { count: texts.length, texts }
+    },
+    unreadSessions() {
+      return Object.values(ledger.origins).flatMap((b) =>
+        b.origin.kind === 'chat' && b.unread.length ? [b.origin.sessionId] : [],
+      )
+    },
+    stop() {
+      stopped = true
+      unsubscribe()
+      if (timer != null) clock.clearTimeout(timer)
+      timer = null
+    },
+  }
+}
+
+/** The ledger, or an empty one when there is none. A file that does not parse is moved aside (kept
+ *  for a look) rather than overwritten. */
+function loadLedger(
+  file: string,
+  journal: (line: Record<string, unknown>) => void,
+  now: number,
+): PingLedger {
+  let raw: string
+  try {
+    raw = readFileSync(file, 'utf8')
+  } catch {
+    return { version: 1, origins: {} }
+  }
+  try {
+    const v = JSON.parse(raw) as PingLedger
+    if (v && v.version === 1 && v.origins && typeof v.origins === 'object') return v
+  } catch {
+    // fall through
+  }
+  const aside = `${file}.corrupt-${now}`
+  try {
+    renameSync(file, aside)
+  } catch {
+    // the next save replaces it
+  }
+  journal({ ts: new Date(now).toISOString(), event: 'ping-ledger-corrupt', path: aside })
+  return { version: 1, origins: {} }
+}

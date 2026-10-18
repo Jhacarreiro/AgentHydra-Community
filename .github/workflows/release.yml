@@ -1,0 +1,337 @@
+# Release: package the launcher-only bundle for every OS and publish it with versioned changelog notes.
+#
+# Trigger: pushing a version tag (v0.2.1). The release is published automatically only after every
+# build and smoke job succeeds.
+#
+# workflow_dispatch is gated the same way, on `github.ref_type == 'tag'` rather than on the event:
+# dispatching against a BRANCH runs build + smoke and publishes nothing (validating the pipeline
+# without a tag), while dispatching against a TAG ref is a real, publishing release. That second
+# case is not a curiosity — on 2026-08-06 a GitHub Actions incident throttled webhook triggers, so
+# `git push origin v0.16.0` created the tag and fired no run at all. `gh workflow run release.yml
+# --ref v0.16.0` was what actually shipped it. See docs/RELEASING.md.
+#
+# Design notes:
+# - AgentHydra 2.0 ships Desk 2 as the primary window (owner, 2026-10-06). Every bundle carries
+#   desk2/ (git-tracked files only, production node_modules installed with --linker hoisted, no
+#   Claude Code binary: Desk 2 downloads it itself), the daemon as plain JS in app/, and a small
+#   launcher. No Bun ships either (owner, 2026-10-06: "why do you pack any copies of Bun when you
+#   could just download the new Bun executable?"): the launcher downloads the Bun that app/bun-version
+#   pins on first run. The daemon stays the engine on port 7787, and Desk 2 runs on 7798.
+# - The pin is the newest Bun release, resolved once by the `bun` job and used on every runner to
+#   build, package and smoke, so what ships was tested on the Bun it will download.
+# - The launcher is AgentHydra.exe on Windows (C#, built with the .NET Framework csc.exe every
+#   Windows ships, so that leg runs on windows-latest) and a sh script, agenthydra, elsewhere (built on
+#   a Linux runner). The lone Windows .exe is the same launcher: run on its own it installs the rest
+#   from its own version's zip. The zip also holds misc/ (the tray toolkit) and orchestrator/. The
+#   packager fails a Windows zip over 30 MB.
+# - What building does NOT prove is that the bundle RUNS: the smoke job boots each bundle on real
+#   hardware for its OS, through the launcher, with the downloads refused and a seeded Bun, and
+#   asserts /api/health.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      # A tentative release (owner, 2026-10-08: "release a tentative 2.0"): published as a GitHub
+      # pre-release, so it is never `releases/latest`, which is all an installed copy's updater asks
+      # for. Installed copies stay where they are until it is promoted (docs/RELEASING.md). A tag
+      # push has no inputs: there, a draft pre-release made before the tag is what keeps it one.
+      prerelease:
+        description: 'Publish as a pre-release (installed copies do not update to it)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The newest Bun release, resolved once so every runner builds and smokes on the same Bun that the
+  # bundles pin and download.
+  bun:
+    timeout-minutes: 5
+    name: resolve the newest Bun
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.latest.outputs.version }}
+    steps:
+      - id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/oven-sh/bun/releases/latest --jq .tag_name)
+          version="${tag#bun-v}"
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::oven-sh/bun's latest release tag is '$tag', not bun-vX.Y.Z"
+            exit 1
+          fi
+          echo "Bun $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: bun
+    timeout-minutes: 60
+    name: package (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows-x64 builds ON Windows (the launcher is compiled with csc.exe); the rest are plain
+          # JS plus a sh launcher and package on one Linux runner.
+          - target: windows-x64
+            os: windows-latest
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-latest
+          - target: darwin-x64
+            os: ubuntu-latest
+          - target: darwin-arm64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ needs.bun.outputs.version }}
+
+      - name: Verify tag matches package.json version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          PKG_V=$(bun -e 'console.log(require("./package.json").version)')
+          TAG_V="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_V" != "$TAG_V" ]; then
+            echo "tag v$TAG_V does not match package.json version $PKG_V — bump package.json (and CHANGELOG) first"
+            exit 1
+          fi
+          # Nothing below 2.0.0, and a long CHANGELOG section opens with a TL;DR (owner, 2026-10-06:
+          # 1.11.0-1.13.0 shipped on the closed 1.x line, and "do it like Sage does"). Checked before
+          # anything compiles; the pre-push hook runs the same check before the tag leaves a PC.
+          bun scripts/release-notes.mjs --check "$TAG_V"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build desk2
+        run: |
+          cd desk2
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Package release
+        shell: bash
+        run: |
+          mkdir -p out
+          bun scripts/package-release.ts --target ${{ matrix.target }} --out out --bun-version ${{ needs.bun.outputs.version }}
+
+          # Assert desk2/launcher/start.vbs is in Windows bundle before archiving
+          if [ "${{ matrix.target }}" = "windows-x64" ]; then
+            name="AgentHydra-$(bun -e 'console.log(require("./package.json").version)')-${{ matrix.target }}"
+            if [ ! -f "out/${name}/desk2/launcher/start.vbs" ]; then
+              if [ "${{ github.ref_type }}" = "tag" ]; then
+                echo "::error::the Windows bundle has no desk2/launcher/start.vbs: AgentHydra 2.0 ships Desk 2 as its window"
+                exit 1
+              fi
+              echo "::warning::the Windows bundle has no desk2/launcher/start.vbs (fine for a branch run, refused for a tag)"
+            fi
+          fi
+
+          ls -la out
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            out/*.zip
+            out/*.tar.gz
+            out/*.exe
+          if-no-files-found: error
+          # These are large binaries only consumed by the smoke + release jobs in THIS run
+          # (or nobody, on a workflow_dispatch validation run). No reason to keep them 90 days.
+          retention-days: 3
+
+  # Boot each bundle through its launcher and assert daemon + desk2 working. This catches bundle-only
+  # runtime bugs (a missing asset, a path that only exists in a checkout) and desk2 server startup.
+  # Native runners for x64 Linux / Windows / arm64 macOS; linux-arm64 runs under QEMU on the x64
+  # runner (no free native ARM-Linux runner). darwin-x64 (Intel mac) is the ONE target that stays
+  # build-only-verified: GitHub retired its Intel macOS runners, so there is no honest way to boot
+  # it in CI — a documented, deliberate gap, not a silent one.
+  smoke:
+    timeout-minutes: 60
+    name: smoke (${{ matrix.target }})
+    needs: [bun, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            bin: agenthydra
+          - os: ubuntu-latest
+            target: linux-arm64
+            bin: agenthydra
+            qemu: true
+          - os: windows-latest
+            target: windows-x64
+            bin: AgentHydra.exe
+          - os: macos-latest # arm64 runner
+            target: darwin-arm64
+            bin: agenthydra
+    runs-on: ${{ matrix.os }}
+    steps:
+      # The bundle comes from the build job; the smoke script comes from the repo. With no checkout
+      # scripts/smoke-release.ts is missing and every native leg fails, as v2.0.0's tag build did.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-${{ matrix.target }}
+          path: out
+
+      - name: Setup Bun (smoke job)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ needs.bun.outputs.version }}
+
+      # linux-arm64 runs inside an arm64 container via binfmt/QEMU emulation on the x64 runner.
+      - name: Set up QEMU (arm64 emulation)
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        with:
+          platforms: arm64
+
+      - name: Unpack the bundle
+        shell: bash
+        run: |
+          cd out
+          case "${{ matrix.target }}" in
+            windows-*) bundle=$(ls AgentHydra-*-${{ matrix.target }}.zip | head -1) ;;
+            *) bundle=$(ls AgentHydra-*-${{ matrix.target }}.tar.gz | head -1) ;;
+          esac
+          echo "smoking $bundle"
+          mkdir smoke
+          case "$bundle" in
+            *.zip) unzip -q "$bundle" -d smoke ;;
+            *) tar -xzf "$bundle" -C smoke ;;
+          esac
+          test "$(find smoke -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+          bundle_dir=$(find smoke -mindepth 1 -maxdepth 1 -type d | head -1)
+          test -n "$bundle_dir"
+          echo "BUNDLE_DIR=out/$bundle_dir" >> "$GITHUB_ENV"
+
+      - name: Assert tray toolkit (Windows)
+        if: matrix.target == 'windows-x64'
+        shell: bash
+        run: |
+          cd "$BUNDLE_DIR"
+          for f in AgentHydra-Tray.exe AgentHydra-Tray.json AgentHydra.ico \
+                   Create-Shortcut.ps1 New-TrayShortcut.ps1 Tray-Host.ps1 \
+                   AgentHydra-Tray.ps1 Tray-Launch.vbs Instance-Launch.vbs; do
+            test -f "misc/$f" || { echo "bundle is missing misc/$f"; exit 1; }
+          done
+          echo "tray toolkit present"
+
+      - name: Assert orchestrator payload
+        shell: bash
+        run: |
+          cd "$BUNDLE_DIR"
+          missing() { echo "orchestrator payload is missing $1"; exit 1; }
+          unexpected() { echo "orchestrator payload unexpectedly contains $1"; exit 1; }
+          test -f orchestrator/orch.py || missing "orchestrator/orch.py"
+          test -f orchestrator/scripts/lib/hydralib.py || missing "orchestrator/scripts/lib/hydralib.py"
+          test -n "$(find orchestrator/scripts -maxdepth 1 -name '*.py' -print -quit)" \
+            || missing "any orchestrator/scripts/*.py tool"
+          if [ -d orchestrator/scripts/tests ]; then unexpected "orchestrator/scripts/tests/"; fi
+          pycache=$(find orchestrator -name __pycache__ -print -quit)
+          [ -n "$pycache" ] && unexpected "$pycache (compiled bytecode must never ship)"
+          if [ -d orchestrator/state ] && [ -n "$(find orchestrator/state -mindepth 1 -print -quit)" ]; then
+            unexpected "orchestrator/state/ (runtime state must never ship)"
+          fi
+          echo "orchestrator payload present, no runtime/test cruft"
+
+      - name: Boot + assert (native)
+        if: '!matrix.qemu'
+        shell: bash
+        run: |
+          # smoke-release.ts tests daemon + desk2 in complete isolation with temp homes
+          bun scripts/smoke-release.ts --bundle-dir "$BUNDLE_DIR" --port 7797 --desk-port 7799
+
+      - name: Boot + assert (arm64 under QEMU)
+        if: matrix.qemu
+        shell: bash
+        run: |
+          # arm64 Debian container (binfmt routes it through QEMU). --version proves the emulated
+          # binary at least loads + runs; a full daemon boot under QEMU is slow/flaky, so the arm64
+          # leg asserts the launch, and the native x64 leg covers the serving behavior.
+          docker run --rm --platform linux/arm64 -v "$PWD/$BUNDLE_DIR:/app" -w /app \
+            arm64v8/debian:stable-slim ./agenthydra --version
+
+  release:
+    timeout-minutes: 60
+    name: publish the GitHub release
+    if: github.ref_type == 'tag'
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Release notes from CHANGELOG
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The release page: the icon, the section's TL;DR, every line of it under "Read more", then
+          # the downloads (scripts/release-notes.mjs; owner, 2026-10-06: "do it like Sage does").
+          # It refuses a version with no section, below 2.0.0, or long with no TL;DR.
+          node scripts/release-notes.mjs "${GITHUB_REF_NAME#v}" > RELEASE_NOTES.md
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: out
+      - name: Build checksums
+        shell: bash
+        run: sha256sum out/* > out/SHA256SUMS.txt
+
+      # Idempotent: a retry updates the existing release in place and replaces its platform assets
+      # instead of deleting the release or creating an orphaned draft.
+      - name: Publish release with binaries attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease && 'true' || 'false' }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A release made ahead of its tag as a draft pre-release stays a pre-release: the tag push
+            # that builds it carries no input, and publishing it as a full release would hand it to
+            # every installed copy (docs/RELEASING.md, "A tentative release").
+            if [ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = "true" ]; then
+              PRERELEASE=true
+            fi
+            # Archives go first so pre-transition updaters, which selected the first matching
+            # target asset, receive a bundle rather than the new human-facing direct executable.
+            gh release upload "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+            gh release edit "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "AgentHydra ${GITHUB_REF_NAME#v}" \
+              --notes-file RELEASE_NOTES.md \
+              --prerelease="$PRERELEASE" \
+              --draft=false
+          else
+            gh release create "$GITHUB_REF_NAME" out/*.zip out/*.tar.gz out/*.exe out/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "AgentHydra ${GITHUB_REF_NAME#v}" \
+              --notes-file RELEASE_NOTES.md \
+              --prerelease="$PRERELEASE"
+          fi

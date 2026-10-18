@@ -1,0 +1,1696 @@
+// One live chat (SPEC "The engine"): runs the SDK query with streaming input, feeds every message
+// through the normalizer and the status reducer, writes finished items to the store, emits
+// ServerEvents, and owns the canUseTool round trips (permission, AskUserQuestion, ExitPlanMode) and the
+// MCP elicitation ones (onElicitation).
+
+import { randomUUID } from 'node:crypto'
+import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import type {
+  CanUseTool,
+  ElicitationResult,
+  McpServerConfig,
+  OnElicitation,
+  Options,
+  PermissionResult,
+  PermissionUpdate,
+  Query,
+  SDKMessage,
+  SDKUserMessage,
+  Settings,
+} from '@anthropic-ai/claude-agent-sdk'
+import { sdkQuery } from '../host/sdk'
+import { claudeCodeBinaryFor, describeProgress, type ClaudeCodeBinary } from './claude-code-binary'
+import type {
+  AccountRef,
+  AskQuestion,
+  ChatStatus,
+  ChatSummary,
+  DeskSettings,
+  Effort,
+  ElicitationAnswer,
+  ImageRef,
+  PermissionDecision,
+  PermissionMode,
+  PlanDecision,
+  QuestionAnswer,
+  ServerEvent,
+  TranscriptItem,
+} from '@shared/protocol'
+import { contextPct } from './describe'
+import { connectorsPending } from '../connectors/registry'
+import { coreSlot, coreSlotDue } from './core-slot'
+import { chatAddOns } from './desk-prompt'
+import { coreChatExcludes } from './hydra-core-mode'
+import { pinHaikuModel, withoutOldHaiku } from './haiku-pin'
+import { mainMcpOption } from './mcp-servers'
+import { InputQueue, type QueuedInput } from './input-queue'
+import { createNormalizer, LIMIT_LABEL, type Emission, type Normalizer } from './normalize'
+import { answersWithPictures, checkAnswer, elicitationItem, ruleLine, type ElicitationItem } from './requests'
+import { nextStatus, SESSION_STATE_ENV, statusEventsFor, type StatusEvent, type StatusState } from './status'
+import type { ChatStore } from './store'
+import { userTurns } from './system-text'
+import { isUsageLimitText } from './usage-limit'
+import { hostedOf, type HostConnection, type HostedParams, type HostedQuery } from '../host/client'
+import { mediaCache, toStoredImage } from '../media/cache'
+
+/** query()'s own parameters, plus what a chat host needs (SPEC "Chat hosts"); the SDK's query() reads prompt and options. */
+export type QueryImpl = (params: HostedParams) => Query
+
+export interface ChatRuntimeDeps {
+  chat: ChatSummary
+  store: ChatStore
+  emit(event: ServerEvent): void
+  /** Defaults to the SDK's query(); tests feed recorded fixtures through a fake. */
+  queryImpl?: QueryImpl
+  /** Where Claude Code's binary comes from (default: the one for this Desk home); tests give one served from a local registry. */
+  claudeCode?: ClaudeCodeBinary
+  /** The base environment (default process.env); CLAUDE_CONFIG_DIR is set from chat.account. */
+  env?: Record<string, string | undefined>
+  settings: DeskSettings | (() => DeskSettings)
+  /**
+   * `mcpServers.agenthydra` from ~/.claude.json. undefined = read it at start; null = none.
+   * Passed to the SDK verbatim and never logged.
+   */
+  agentHydraMcp?: McpServerConfig | null
+  /** The owner's main .claude.json whose user-level and folder-local MCP servers every chat gets. undefined = ~/.claude.json, unless agentHydraMcp was injected (then none); null = none. */
+  mainClaudeJson?: string | null
+  now?: () => number
+  /** Called once the runtime has closed (idle timer or close()). */
+  onClosed?(): void
+  /**
+   * The turn hit a usage limit (`window`: '5-hour', 'weekly'... when the SDK named it). True when the
+   * manager carries the turn to another account: the limit is then not notified as a stop. `signIn`:
+   * the account's login failed (expired, revoked) rather than its usage running out.
+   */
+  onLimited?(window: string | null, signIn?: boolean): boolean
+  /** A failure for the ledger: a turn's error result, a crash, a hook that failed. `durationMs` is the turn's age, when one was running. */
+  onFailure?(f: { message: string; durationMs: number | null }): void
+  /**
+   * A fork's cut: the uuid of the source session's last entry when the fork was made. Its first start
+   * resumes the source only up to there, not as the source stands at that start.
+   */
+  forkAt?(): string | null
+  /** A turn ended and the chat is idle: the manager looks where the session's folder is now (a cd moves the chat). */
+  onTurnEnd?(): void
+  /** Every live SDK message, before it is handled (speed tracking); never one replayed from a host's journal. */
+  onMessage?(msg: SDKMessage): void
+  /** The Desk base URL this chat's move line names; without it the line is left out. */
+  deskUrl?(): string
+  /** The sus level's setting for the next turn (SPEC "Sus meter"): null on a chat that is not on 'sus'. */
+  susTurn?(): SusTurn | null
+  /** A Claude turn ended: what ran it and what it ended with, for the pushback count. Never for a replayed turn. */
+  onTurnClassified?(t: { model: string; effort: string; stopReason: string | null; text: string }): void
+}
+
+/** What a 'sus' chat's next turn runs on: the setting that pushes back least, or the chat's own. */
+export interface SusTurn {
+  model: string | null
+  effort: Effort | null
+}
+
+type PermissionItem = Extract<TranscriptItem, { kind: 'permission' }>
+type QuestionItem = Extract<TranscriptItem, { kind: 'question' }>
+type PlanItem = Extract<TranscriptItem, { kind: 'plan' }>
+type ToolRequestItem = PermissionItem | QuestionItem | PlanItem
+type RequestItem = ToolRequestItem | ElicitationItem
+type UserItem = Extract<TranscriptItem, { kind: 'user' }>
+/** A send no finished turn has answered yet; `uuid` names it to a chat host, which keeps it while a later turn may need it.
+ *  `replayed`: sent again by a move to another account (replay), so the same text sent by hand meanwhile is not sent twice. */
+type Sent = QueuedInput & { uuid?: string; replayed?: boolean }
+
+/**
+ * What a hosted chat's runtime leaves with its host at each ack (SPEC "Chat hosts"), for the server that
+ * adopts the chat after a restart: the query's cost so far and turns run (its total is cumulative), and the
+ * status the chat had (null before the first ack).
+ */
+interface Carry {
+  v: 1
+  baseCostUsd: number
+  totalCostUsd: number
+  turns: number
+  status: ChatStatus | null
+}
+
+function readCarry(x: unknown): Carry | null {
+  const c = x as Partial<Carry> | null
+  if (!c || c.v !== 1 || typeof c.baseCostUsd !== 'number' || typeof c.totalCostUsd !== 'number' || typeof c.turns !== 'number') return null
+  return { v: 1, baseCostUsd: c.baseCostUsd, totalCostUsd: c.totalCostUsd, turns: c.turns, status: typeof c.status === 'string' ? c.status : null }
+}
+
+/** What one message's status events said: a turn error that is a usage limit (or a failed sign-in), and the CLI's queued count. */
+interface TurnNews {
+  limitFromResult: boolean
+  signIn: boolean
+  reportedQueued: number | undefined
+}
+
+/** A canUseTool call waiting for its answer. */
+interface Pending {
+  item: ToolRequestItem
+  input: Record<string, unknown>
+  /** What "Always allow" saves; absent when the card does not offer it. */
+  suggestions?: PermissionUpdate[]
+  resolve(result: PermissionResult): void
+}
+
+/** An MCP server's elicitation waiting for its answer: it resolves an ElicitationResult, not a PermissionResult. */
+interface PendingElicitation {
+  item: ElicitationItem
+  resolve(result: ElicitationResult): void
+}
+
+const STDERR_TAIL_CHARS = 4000
+/** Stderr chunks that arrive within this many ms of a write are gathered into the next one. */
+const STDERR_FLUSH_MS = 200
+/** How long a Stop waits for the CLI to answer its interrupt before the process is closed. */
+export const INTERRUPT_GRACE_MS = 1500
+const STDERR_TAIL_LINES = 20
+/** Images larger than this (base64 chars) are kept out of the stored transcript. */
+const MAX_STORED_IMAGE_CHARS = 200_000
+
+/** The account's login is broken (AgentHydra climayte-lib.ts AUTH_RE): no turn on it can work until it is signed in again. */
+const SIGN_IN_TEXT =
+  /please run \/login|not logged in|invalid api key|failed to authenticate|oauth (?:token|session) (?:has )?(?:expired|been revoked)|authentication_error|disabled claude subscription access|invalid authentication credentials|\b40[13]\b[^\n]{0,40}(unauthori[sz]ed|forbidden|authenticat)|oauth authentication is currently not allowed|identity verification is required|(organization|org)[^\n]{0,40}(disabled|not allowed|mismatch)/i
+
+/** True for a turn refused because the account cannot sign in: the chat moves to another account, as on a usage limit. */
+export function isSignInFailureText(text: string): boolean {
+  return SIGN_IN_TEXT.test(text)
+}
+
+/** The agenthydra MCP config for one chat: it carries the chat's Desk id, so the server's desk_chat moves and renames
+ *  THIS chat without being told which (a header over HTTP, an env var for a stdio server). */
+export function withDeskChatId(mcp: McpServerConfig, chatId: string): McpServerConfig {
+  const m = mcp as McpServerConfig & { type?: string; headers?: Record<string, string>; env?: Record<string, string> }
+  if (m.type === 'http' || m.type === 'sse') return { ...m, headers: { ...(m.headers ?? {}), 'x-hydra-desk-chat': chatId } } as McpServerConfig
+  return { ...m, env: { ...(m.env ?? {}), HYDRA_DESK_CHAT_ID: chatId } } as McpServerConfig
+}
+
+/** What was read from each config file last, by its size and mtime: the file grows to megabytes, and every chat start and MCP list asks for the same entry. */
+const agentHydraMcpMemo = new Map<string, { sig: string; mcp: McpServerConfig | null }>()
+
+/** `mcpServers.agenthydra` from ~/.claude.json, or null. Never logs what it read. Read again only when the file changed. */
+export function readAgentHydraMcp(file = join(homedir(), '.claude.json')): McpServerConfig | null {
+  try {
+    const st = statSync(file)
+    const sig = `${st.size}:${st.mtimeMs}`
+    const hit = agentHydraMcpMemo.get(file)
+    if (hit && hit.sig === sig) return hit.mcp
+    const json = JSON.parse(readFileSync(file, 'utf8')) as { mcpServers?: Record<string, McpServerConfig> }
+    const mcp = json.mcpServers?.agenthydra ?? null
+    agentHydraMcpMemo.set(file, { sig, mcp })
+    return mcp
+  } catch {
+    agentHydraMcpMemo.delete(file)
+    return null
+  }
+}
+
+/** Whether two chat summaries differ (a shallow comparison: their object fields, account and workerIds, are replaced when they change, never edited in place). */
+export function chatDiffers(a: ChatSummary, b: ChatSummary): boolean {
+  const x = a as unknown as Record<string, unknown>
+  const y = b as unknown as Record<string, unknown>
+  for (const k of new Set([...Object.keys(x), ...Object.keys(y)])) if (!Object.is(x[k], y[k])) return true
+  return false
+}
+
+/** The main .claude.json to read: the one given, else ~/.claude.json unless a test injected agentHydraMcp (then none). */
+export function mainConfigFile(given: string | null | undefined, agentHydraMcp: unknown): string | null {
+  if (given !== undefined) return given
+  return agentHydraMcp === undefined ? join(homedir(), '.claude.json') : null
+}
+
+/**
+ * AgentHydra copies its worker-only 'Rules for a CliMayte worker' CLAUDE.md into every CLI instance dir, where an
+ * interactive chat would load it as user memory. When the instance's CLAUDE.md is that copy, returns the flag
+ * setting that skips it and the owner's real ~/.claude/CLAUDE.md text to put in the system prompt instead.
+ */
+/** The owner's rules as the appended prompt carries them when the account's own CLAUDE.md is swapped out. */
+function rulesText(swap: { real: string } | null): string {
+  return swap ? `
+
+# User instructions (~/.claude/CLAUDE.md)
+
+${swap.real}` : ''
+}
+
+export function workerRulesSwap(configDir: string | null, mainFile: string | null): { excludes: string[]; real: string } | null {
+  if (!configDir || !mainFile) return null
+  const copy = join(configDir, 'CLAUDE.md')
+  try {
+    if (!readFileSync(copy, 'utf8').slice(0, 400).includes('Rules for a CliMayte worker')) return null
+    const real = readFileSync(join(dirname(mainFile), '.claude', 'CLAUDE.md'), 'utf8').trim()
+    return { excludes: [copy.replace(/\\/g, '/')], real }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The owner's own hooks (the ~/.claude/settings.json beside the main config) for a chat on an extra account. That
+ * folder is the chat's user settings, and AgentHydra carries no hooks into it (climayte-owner-sync.ts: they can
+ * block a headless worker), so an interactive chat there ran none of them, the CreAitor's pop-up gate and its
+ * NEED-line answers among them (found 2026-10-08). A default-account chat already loads them as user settings and,
+ * given them again, would run each twice: null there, and when the owner has none.
+ */
+export function ownerHooks(configDir: string | null, mainFile: string | null): Settings['hooks'] | null {
+  if (!configDir || !mainFile) return null
+  try {
+    const { hooks } = JSON.parse(readFileSync(join(dirname(mainFile), '.claude', 'settings.json'), 'utf8')) as Settings
+    return hooks && typeof hooks === 'object' && !Array.isArray(hooks) && Object.keys(hooks).length ? hooks : null
+  } catch {
+    return null
+  }
+}
+
+export class ChatRuntime {
+  readonly chat: ChatSummary
+  private readonly store: ChatStore
+  private readonly emitEvent: (event: ServerEvent) => void
+  private readonly queryImpl: QueryImpl
+  private readonly baseEnv: Record<string, string | undefined>
+  private readonly settingsOf: () => DeskSettings
+  private readonly agentHydraMcp: McpServerConfig | null | undefined
+  private readonly mainClaudeJson: string | null
+  private readonly now: () => number
+  private readonly onClosed?: () => void
+  private readonly onLimited?: (window: string | null, signIn?: boolean) => boolean
+  private readonly onFailure?: (f: { message: string; durationMs: number | null }) => void
+  private readonly forkAt?: () => string | null
+  private readonly onTurnEnd?: () => void
+  private readonly susTurn?: () => SusTurn | null
+  private readonly onTurnClassified?: ChatRuntimeDeps['onTurnClassified']
+  /** The model and effort the live process runs its next turn on; the last assistant text and model of the turn running. */
+  private applied: SusTurn = { model: null, effort: null }
+  private turnText = ''
+  private turnModel = ''
+  private readonly onMessage?: (msg: SDKMessage) => void
+  private readonly deskUrl?: () => string
+
+  private q: Query | null = null
+  /** The account the process was started under; kept after it ends (the account the chat last ran on). */
+  private ranAs: AccountRef | null = null
+  /** The folder the process was started in: a chat whose cwd changed ends it at the next quiet point, and the next start runs in the new folder. */
+  private ranCwd: string | null = null
+  /** The message a start was made for: a chat's first one is what Hydra Core's slot picks its lead from (core-slot.ts). */
+  private launchText: string | null = null
+  /** Hydra Core's slot for this start, placed before the launch by placeSlot, and the session it was placed for. */
+  private slotPlaced: { session: string; text: string | null } | null = null
+  /** A turn ended and the folder the session says it is in has not been looked at since. */
+  private cwdCheckDue = false
+  /** The chat's account changed under a running turn: the runtime ends once the turn is over. */
+  private closeOnIdle = false
+  /** What this runtime was sent that no finished turn has answered yet, oldest first (images with their bytes). */
+  private unanswered: Sent[] = []
+  /** The turn under way has replied (an assistant message that is no API error): cut short, it continues rather than being asked again. */
+  private replied = false
+  /** What a usage limit cut short: whether that turn had replied, and the sends (uuids) the CLI had not taken up yet. */
+  private cut: { replied: boolean; waiting: Set<string> } | null = null
+  private input: InputQueue | null = null
+  private normalizer: Normalizer | null = null
+  private loop: Promise<void> | null = null
+  private closing = false
+  /** A Stop was sent into a turn whose result has not come: that result's error is the stop, whatever the CLI said meanwhile. */
+  private stopping = false
+  private sawSessionState = false
+  /** The background tasks the process says are alive (its last background_tasks_changed); null until it says. */
+  private liveTasks: Set<string> | null = null
+  private limitAnnounced = false
+  private idleTimer: ReturnType<typeof setTimeout> | null = null
+  private stderrTail = ''
+  private logBuffer = ''
+  private logTimer: ReturnType<typeof setTimeout> | null = null
+  /** The chat as last published, so a message that changed nothing in it publishes nothing. */
+  private published: ChatSummary | null = null
+  /** The mode the chat had when it went into plan mode: approving the plan goes back to it. */
+  private beforePlan: PermissionMode | null = null
+  private readonly pending = new Map<string, Pending | PendingElicitation>()
+  /** User items sent while a turn ran, oldest first, not yet taken up by a turn. */
+  private readonly queued = new Map<string, UserItem>()
+  /** tool_use ids already written while running (a running tool is written once, then when it ends). */
+  private readonly storedRunning = new Set<string>()
+  /** The running query's cost and turns, kept with its host for the next server (Carry). */
+  private baseCost = 0
+  private totalCost = 0
+  private turns = 0
+  /** A turn ended since the host's last ack: the next quiet point acks it. */
+  private resultSinceAck = false
+  /** adopt() replays a host's journal: what the last server already did (notify, carry a limit, read the context) is not done again. */
+  private replaying = false
+  /** The entry replayed reached the last server (it told the person then); after it, nothing reached anyone. */
+  private replaySeen = false
+  /** What the replay found that no one was told: notified, and a limit carried, once adopt is done. */
+  private missed: { reason: Extract<ServerEvent, { type: 'notify' }>['reason']; body: string }[] = []
+  private missedLimit: { window: string | null; signIn: boolean } | null = null
+  /** The time of the journal entry being replayed: the time of what it brings. */
+  private replayAt: number | null = null
+  /** Upserts held while replaying, by id: only what differs from the stored transcript is written. */
+  private replayed: Map<string, TranscriptItem> | null = null
+  /** Set while adopt() re-opens the host's open requests: their cards keep their time; `shown` ones were notified before. */
+  private reopened: { stored: Map<string, TranscriptItem>; shown: Set<string> } | null = null
+  private readonly claudeCode: ClaudeCodeBinary
+  /** The Claude Code binary this runtime starts with; null until start() has resolved it. */
+  private binaryPath: string | null = null
+  /**
+   * Set while the process cannot start: its binary is being downloaded or the connectors' first probe pass is out
+   * ('waiting', the sends held in the input), or the download failed ('failed', waiting for Retry or the next send).
+   */
+  private binary: { phase: 'waiting' | 'failed' } | null = null
+
+  constructor(deps: ChatRuntimeDeps) {
+    this.chat = deps.chat
+    this.store = deps.store
+    this.emitEvent = deps.emit
+    this.queryImpl = deps.queryImpl ?? (sdkQuery as QueryImpl)
+    this.claudeCode = deps.claudeCode ?? claudeCodeBinaryFor(deps.store.home)
+    this.baseEnv = deps.env ?? process.env
+    const s = deps.settings
+    this.settingsOf = typeof s === 'function' ? s : () => s
+    this.agentHydraMcp = deps.agentHydraMcp
+    this.mainClaudeJson = mainConfigFile(deps.mainClaudeJson, deps.agentHydraMcp)
+    this.now = deps.now ?? Date.now
+    this.onClosed = deps.onClosed
+    this.onLimited = deps.onLimited
+    this.onFailure = deps.onFailure
+    this.forkAt = deps.forkAt
+    this.onTurnEnd = deps.onTurnEnd
+    this.susTurn = deps.susTurn
+    this.onTurnClassified = deps.onTurnClassified
+    this.onMessage = deps.onMessage
+    this.deskUrl = deps.deskUrl
+  }
+
+  get running(): boolean {
+    return this.q !== null
+  }
+
+  /** This runtime still waits on the request: anything else stored 'pending' can no longer be answered. */
+  isPending(requestId: string): boolean {
+    return this.pending.has(requestId)
+  }
+
+  /** The account the running (or last) process used, which chat.account no longer is after a switch; null before the first start. */
+  get startedAs(): AccountRef | null {
+    return this.ranAs
+  }
+
+  get logFile(): string {
+    return join(this.store.home, 'logs', `${this.chat.id}.log`)
+  }
+
+  /** The options query() gets (SPEC "Start"). Public so tests can check them without a run. */
+  buildOptions(): Options {
+    const chat = this.chat
+    const env: Record<string, string | undefined> = { ...this.baseEnv, ...SESSION_STATE_ENV }
+    if (chat.account.configDir) env.CLAUDE_CONFIG_DIR = chat.account.configDir
+    else delete env.CLAUDE_CONFIG_DIR
+    if (chat.managerSlug) env.AGENTHYDRA_MANAGER = chat.managerSlug
+    else delete env.AGENTHYDRA_MANAGER
+    // The hook keys this chat's messages by it (hydra-core/hook.mjs), as it does a CliMayte chat's.
+    env.HYDRA_DESK_CHAT_ID = chat.id
+    pinHaikuModel(env)
+    const addOns = chatAddOns(chat.cwd, chat.delegateToCliMayte, this.deskUrl ? { id: chat.id, base: this.deskUrl() } : undefined)
+    const sus = this.susTurn?.() ?? null
+    this.applied = sus ? { ...sus } : { model: withoutOldHaiku(chat.model), effort: chat.effort }
+    const options: Options = {
+      cwd: chat.cwd,
+      env,
+      permissionMode: chat.permissionMode,
+      includePartialMessages: true,
+      settingSources: ['user', 'project', 'local'],
+      // Files dropped in the composer are kept there (plugins/36-attachments.ts): Read opens them without asking.
+      additionalDirectories: [join(this.store.home, 'attachments')],
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: addOns.append },
+      canUseTool: this.canUseTool,
+      // Without it the SDK declines every MCP form, sign-in link or other request for input unseen.
+      onElicitation: this.onElicitation,
+      stderr: (data: string) => this.onStderr(data),
+    }
+    // Always the binary Desk resolved: the SDK would look for its own platform package, which a release does not ship.
+    const binary = this.binaryPath ?? this.claudeCode.path()
+    if (binary) options.pathToClaudeCodeExecutable = binary
+    // A Bypass chat in plan mode goes back to Bypass when the plan is approved, and the CLI refuses Bypass
+    // to a process not launched for it (a process restarted mid-plan included).
+    if (chat.permissionMode === 'bypassPermissions' || this.beforePlan === 'bypassPermissions') options.allowDangerouslySkipPermissions = true
+    if (this.applied.model) options.model = withoutOldHaiku(this.applied.model) ?? undefined
+    if (this.applied.effort) options.effort = this.applied.effort
+    if (chat.delegateToCliMayte) options.disallowedTools = ['Agent', 'Task']
+    // A fresh session under Hydra Core's slot starts with an id Desk picks, so placement.json names it as launched with its pack.
+    const session = chat.sessionId ?? this.slotPlaced?.session ?? (coreSlotDue(chat.id, chat.parentId) ? randomUUID() : null)
+    if (chat.sessionId) options.resume = chat.sessionId
+    else if (session) options.sessionId = session
+    if (!chat.sessionId && chat.forkedFrom) {
+      // A fork's first start: the SDK copies the session under a new id (system/init brings it).
+      options.resume = chat.forkedFrom
+      options.forkSession = true
+      // The SDK reads the source now; the cut keeps out the turns it ran after the fork was made.
+      const at = this.forkAt?.()
+      if (at) options.resumeSessionAt = at
+    }
+    const swap = workerRulesSwap(chat.account.configDir, this.mainClaudeJson)
+    const hooks = ownerHooks(chat.account.configDir, this.mainClaudeJson)
+    const claudeMdExcludes = [...(swap?.excludes ?? []), ...coreChatExcludes()]
+    if (claudeMdExcludes.length || hooks) options.settings = { ...(claudeMdExcludes.length ? { claudeMdExcludes } : {}), ...(hooks ? { hooks } : {}) }
+    const rules = rulesText(swap)
+    // Built before the launch (placeSlot), so this synchronous build never waits on Hydra Core's placement.
+    const slot = session && this.slotPlaced?.session === session ? this.slotPlaced.text : null
+    if (slot || swap) options.systemPrompt = { type: 'preset', preset: 'claude_code', append: `${addOns.append}${slot ? `
+
+${slot}` : ''}${rules}` }
+    const mcp = this.agentHydraMcp === undefined ? readAgentHydraMcp() : this.agentHydraMcp
+    // What plain `claude` gets in this folder under the main config, on whatever account the chat runs; Hydra Desk's own agenthydra wins.
+    // A running connector's servers sit under the person's own config of the same name.
+    const servers = { ...addOns.mcpServers, ...(this.mainClaudeJson ? mainMcpOption(chat.cwd, this.mainClaudeJson) : {}), ...(mcp ? { agenthydra: withDeskChatId(mcp, chat.id) } : {}) }
+    if (Object.keys(servers).length) options.mcpServers = servers
+    return options
+  }
+
+  /**
+   * Spawns the SDK query (resuming the chat's session when it has one). No-op when already running. `attach`: a
+   * chat host that kept the chat running through a server restart, which this runtime takes over (adopt).
+   */
+  start(attach?: HostConnection): void {
+    if (this.q || this.binary?.phase === 'waiting') return
+    if (this.binary?.phase === 'failed') {
+      this.retryBinary()
+      return
+    }
+    this.closing = false
+    this.closeOnIdle = false
+    this.ranAs = attach ? { ...attach.hello.account } : { ...this.chat.account }
+    this.ranCwd = this.chat.cwd
+    this.slotPlaced = null
+    this.sawSessionState = false
+    this.liveTasks = null
+    this.stopping = false
+    this.stderrTail = ''
+    this.unanswered = []
+    this.replied = false
+    this.cut = null
+    mkdirSync(join(this.store.home, 'logs'), { recursive: true })
+    const carry = attach ? readCarry(attach.hello.carry) : null
+    this.baseCost = carry?.baseCostUsd ?? this.chat.costUsd
+    this.totalCost = carry?.totalCostUsd ?? 0
+    this.turns = carry?.turns ?? 0
+    this.resultSinceAck = false
+    this.normalizer = createNormalizer({
+      now: () => this.clock(),
+      cwd: this.chat.cwd,
+      baseCostUsd: this.baseCost,
+      priorTotalCostUsd: this.totalCost,
+      firstTurn: this.turns,
+      title: () => this.chat.title,
+      accountLabel: () => (this.ranAs ?? this.chat.account).label,
+    })
+    this.input = new InputQueue()
+    this.dispatch({ type: 'runtimeStarting' })
+    if (!attach) this.publishChat()
+    // A host that kept the chat running already has its process: nothing to fetch.
+    if (attach) this.launch(attach, carry)
+    else this.obtainBinary()
+  }
+
+  private launch(attach?: HostConnection, carry: Carry | null = null): void {
+    const q = this.queryImpl({ prompt: this.input!, options: this.buildOptions(), chatId: this.chat.id, account: this.ranAs, attach, carry: this.carry(null) })
+    this.q = q
+    if (attach) this.adopt(q, attach, carry)
+    this.loop = this.consume(q)
+  }
+
+  /**
+   * Places Hydra Core's slot for this start (core-slot.ts runs placeChat in a child, awaited, and its lead pick may
+   * wait seconds on a model), so the Desk server keeps serving meanwhile. Null when the chat gets no slot.
+   */
+  private placeSlot(): Promise<void> | null {
+    this.slotPlaced = null
+    const chat = this.chat
+    if (!coreSlotDue(chat.id, chat.parentId)) return null
+    const session = chat.sessionId ?? randomUUID()
+    const addOns = chatAddOns(chat.cwd, chat.delegateToCliMayte, this.deskUrl ? { id: chat.id, base: this.deskUrl() } : undefined)
+    const rest = addOns.append.length + rulesText(workerRulesSwap(chat.account.configDir, this.mainClaudeJson)).length
+    return coreSlot({ chat: chat.id, parentId: chat.parentId, session, fresh: !chat.sessionId, cwd: chat.cwd, prompt: this.launchText ?? chat.title ?? '', rest })
+      .then((text) => {
+        this.slotPlaced = { session, text }
+      })
+  }
+
+  /**
+   * Launches now, or once the connectors' first probe pass has landed (a process started before it would run without
+   * their MCP servers); meanwhile the chat stays 'starting' with its sends held, as while the binary downloads.
+   */
+  private launchSoon(): void {
+    const pending = connectorsPending()
+    const slot = this.placeSlot()
+    if (!pending && !slot) return this.launch()
+    const wait: { phase: 'waiting' } = { phase: 'waiting' }
+    this.binary = wait
+    void Promise.all([pending, slot]).then(() => {
+      if (this.binary !== wait) return
+      this.binary = null
+      this.launch()
+    })
+  }
+
+  /**
+   * The process starts once Claude Code's binary is on disk. Normally it is (the installed package or the cache) and
+   * this starts it at once; else the chat stays 'starting', its sends held in the input, and shows the download until
+   * the process can start. query() is never called without the path: the SDK would throw "Native CLI binary not found".
+   */
+  private obtainBinary(): void {
+    const have = this.claudeCode.path()
+    if (have) {
+      this.binary = null
+      this.binaryPath = have
+      this.launchSoon()
+      return
+    }
+    const wait: { phase: 'waiting' | 'failed' } = { phase: 'waiting' }
+    this.binary = wait
+    const stop = this.claudeCode.onProgress(() => this.showDownload())
+    this.showDownload()
+    this.claudeCode.resolve().then(
+      (path) => {
+        stop()
+        if (this.binary !== wait) return
+        this.binary = null
+        this.binaryPath = path
+        this.launchSoon()
+      },
+      (err: unknown) => {
+        stop()
+        if (this.binary === wait) this.downloadFailed(err)
+      },
+    )
+  }
+
+  /** The download's progress is the chat's activity, which the starting row reads ("Getting Claude Code 2.1.288 (104 MB): 37%"). */
+  private showDownload(): void {
+    const status = this.claudeCode.status()
+    const text = describeProgress(this.claudeCode.version, status.progress ?? null)
+    if (this.chat.activity === text) return
+    this.dispatch({ type: 'activity', activity: text })
+    this.publishChat()
+  }
+
+  /** The download failed: the chat says why, with a Retry that goes on with what was sent (the input still holds it). */
+  private downloadFailed(err: unknown): void {
+    const now = this.now()
+    const reason = err instanceof Error ? err.message : String(err)
+    const message = `Could not get Claude Code ${this.claudeCode.version}: ${reason}`
+    this.binary = { phase: 'failed' }
+    this.dispatch({ type: 'turnError', message })
+    this.unqueueAll()
+    this.upsert({ kind: 'system', id: `claude-code:${now}`, ts: now, level: 'error', text: message, retry: true })
+    this.notify('error', message)
+    this.publishChat()
+  }
+
+  /** Retry after a failed download (the button, or the next send): the download starts again and the held sends go with the process. */
+  retryBinary(): boolean {
+    if (this.binary?.phase !== 'failed') return false
+    this.dispatch({ type: 'runtimeStarting' })
+    if (this.unanswered.length) this.dispatch({ type: 'userSent', now: this.now() })
+    this.publishChat()
+    this.obtainBinary()
+    return true
+  }
+
+  /**
+   * The warm start (SPEC "Speed (timings)"): the process is started ahead of the message, so its start, its
+   * SessionStart hooks and its MCP servers run while the owner still types. The chat reads idle, so the send
+   * that follows is a turn of a running chat, not one queued behind a start. True when it started one.
+   */
+  warm(): boolean {
+    if (this.q || this.binary) return false
+    this.start()
+    this.dispatch({ type: 'init', now: this.now() })
+    this.publishChat()
+    this.armIdleTimer()
+    return true
+  }
+
+  /**
+   * A host kept this chat running through a server restart (SPEC "Chat hosts"): its journal goes through the
+   * path live messages take, from the status the chat had at the last ack, so the transcript, the status and
+   * the queue end where the chat is now, and only items that differ from the stored ones are written. What the
+   * last server already told the person is not told again; what happened while no server was there is (a turn
+   * that finished, a request that opened), and a usage limit hit then is carried now. Then the requests the
+   * host still waits on open again, under the ids their cards already have.
+   */
+  private adopt(q: Query, attach: HostConnection, carry: Carry | null): void {
+    const hosted = hostedOf(q)
+    if (!hosted) return
+    const hello = attach.hello
+    const stored = new Map(this.store.loadItems(this.chat.id).map((i) => [i.id, i]))
+    this.normalizer?.seed([...stored.values()])
+    if (carry?.status && carry.status !== 'closed' && carry.status !== 'starting') this.chat.status = carry.status
+    this.replayed = new Map()
+    const last = this.replayJournal(hosted, hello, stored)
+    const replayed = this.replayed
+    this.replayed = null
+    this.writeReplayed(replayed, stored)
+    const unshown = new Set(hello.unshown)
+    this.reopened = { stored, shown: new Set(hello.requests.flatMap((r) => (unshown.has(r.callId) ? [] : [r.callId]))) }
+    try {
+      hosted.reopenRequests()
+    } finally {
+      this.reopened = null
+    }
+    // Nothing in the journal moved it on: idle, or working on a send whose turn has not said so yet.
+    if (this.chat.status === 'starting') this.dispatch({ type: 'init', now: this.now() })
+    if (last) this.ackHost(last)
+    if (this.chat.status === 'working' || this.chat.status === 'needs_you') this.clearIdleTimer()
+    else this.armIdleTimer()
+    this.publishChat()
+    void this.refreshContext()
+    const missed = this.missed.splice(0)
+    const limit = this.missedLimit
+    this.missedLimit = null
+    const carried = limit ? (this.onLimited?.(limit.window, limit.signIn) ?? false) : false
+    for (const n of missed) if (!(carried && n.reason === 'limited')) this.notify(n.reason, n.body)
+    // The chat was switched to another account during the restart's turn: it moves once that turn is over.
+    if (this.switchedAway) void this.closeWhenIdle()
+  }
+
+  /** The host's journal through the live path (adopt); the last SDK message replayed, or null. */
+  private replayJournal(hosted: HostedQuery, hello: HostConnection['hello'], stored: Map<string, TranscriptItem>): SDKMessage | null {
+    let last: SDKMessage | null = null
+    this.replaying = true
+    try {
+      for (const e of hosted.takeJournal()) {
+        this.replayAt = e.at
+        this.replaySeen = e.seq <= hello.delivered
+        if (e.kind === 'input') this.replayInput(e.msg, e.seq <= hello.acked, stored)
+        else if (e.kind === 'interrupt') {
+          this.stopping = this.midTurn
+          this.normalizer?.noteInterrupt()
+          this.dispatch({ type: 'interrupted' })
+        } else {
+          this.handle(e.msg)
+          last = e.msg
+        }
+      }
+    } finally {
+      this.replaying = false
+      this.replaySeen = false
+      this.replayAt = null
+    }
+    return last
+  }
+
+  /** Only the replayed items that differ from the stored ones are written. */
+  private writeReplayed(replayed: Map<string, TranscriptItem>, stored: Map<string, TranscriptItem>): void {
+    for (const item of replayed.values()) {
+      const prev = stored.get(item.id)
+      if (prev && sameItem(prev, item)) {
+        if (item.kind === 'tool_use' && item.status === 'running') this.storedRunning.add(item.id)
+      } else this.upsert(item)
+    }
+  }
+
+  /** A send the host journaled. `beforeAck`: one a limited turn left (kept to be sent again), only remembered. */
+  private replayInput(msg: SDKUserMessage, beforeAck: boolean, stored: Map<string, TranscriptItem>): void {
+    this.unanswered.push(sentOf(msg))
+    if (beforeAck) return
+    const c = this.chat
+    const busy = c.status === 'working' || c.status === 'needs_you' || (c.status === 'starting' && c.turnStartedAt !== null)
+    this.limitAnnounced = false
+    if (!busy) this.replied = false
+    this.dispatch({ type: 'userSent', now: this.clock() })
+    // The transcript has the send already (written when it was sent): only the queue is rebuilt.
+    const item = msg.uuid ? stored.get(msg.uuid) : undefined
+    if (busy && item?.kind === 'user') {
+      this.queued.set(item.id, { ...item, queued: true })
+      this.syncQueuedCount()
+    }
+  }
+
+  /**
+   * The server is stopping. A hosted chat is let go: it runs on in its host, open requests and all, and the next
+   * server adopts it. An in-process one closes.
+   */
+  async shutdown(): Promise<void> {
+    const hosted = hostedOf(this.q)
+    if (!hosted) return this.close()
+    this.clearIdleTimer()
+    this.closing = true
+    this.q = null
+    const loop = this.loop
+    this.loop = null
+    await hosted.detach()
+    // Stderr held for the next batched write goes to the log now: the server may be gone before its timer.
+    this.endLog()
+    await loop?.catch(() => {})
+  }
+
+  /** A hosted chat at a quiet point after a turn: its host drops its journal up to here and keeps the carry. */
+  private ackHost(msg: SDKMessage): void {
+    if (this.replaying || !this.resultSinceAck || this.midTurn || this.pending.size > 0) return
+    const hosted = hostedOf(this.q)
+    if (!hosted) return
+    this.resultSinceAck = false
+    hosted.ack(
+      msg,
+      this.unanswered.flatMap((s) => (s.uuid ? [s.uuid] : [])),
+      this.carry(this.chat.status),
+    )
+  }
+
+  private carry(status: ChatStatus | null): Carry {
+    return { v: 1, baseCostUsd: this.baseCost, totalCostUsd: this.totalCost, turns: this.turns, status }
+  }
+
+  /** Now, or while replaying, the time of the entry replayed. */
+  private clock(): number {
+    return this.replayAt ?? this.now()
+  }
+
+  /**
+   * Sends a message: starts the runtime when needed; queued behind a running turn. Returns whether it was queued.
+   * `messageId` becomes the SDK message uuid and the user item's id (the send queue finds a delivered send by it).
+   * `shown` is what the transcript shows when the SDK is sent more than the owner typed (a takeover's handoff).
+   */
+  send(text: string, images?: ImageRef[], messageId?: string, shown?: string): { queued: boolean } {
+    this.clearIdleTimer()
+    if (!this.q) {
+      this.launchText = text
+      this.start()
+    }
+    const before = this.chat
+    const busy = before.status === 'working' || before.status === 'needs_you' || (before.status === 'starting' && before.turnStartedAt !== null)
+    if (!busy) void this.applySetting()
+    this.limitAnnounced = false
+    if (!busy) this.replied = false
+    const msg = this.input!.push({ text, images }, messageId)
+    this.unanswered.push({ text, images, uuid: msg.uuid })
+    this.dispatch({ type: 'userSent', now: this.now() })
+    const item: UserItem = { kind: 'user', id: msg.uuid ?? randomUUID(), ts: this.now(), text: shown ?? text }
+    // The SDK gets the bytes; the transcript (and so /ws and the history file) gets the cached url.
+    if (images?.length) item.images = images.map((i) => toStoredImage(i))
+    if (busy) {
+      item.queued = true
+      this.queued.set(item.id, item)
+      this.syncQueuedCount()
+    }
+    this.upsert(item)
+    this.publishChat()
+    return { queued: busy }
+  }
+
+  /**
+   * What a move to another account carries (SPEC "Account failover"). A turn cut before it replied sends
+   * its messages again; one cut after it replied, or one the CLI started itself (a background task's end,
+   * no message of ours), is `cut`: it continues, and only the sends the CLI had not taken up go along.
+   */
+  carrySends(): { cut: boolean; sends: QueuedInput[] } {
+    const strip = ({ uuid: _u, replayed: _r, ...s }: Sent): QueuedInput => s
+    if (!this.cut?.replied && this.unanswered.length) return { cut: false, sends: this.unanswered.map(strip) }
+    const waiting = this.cut?.waiting ?? new Set<string>()
+    return { cut: true, sends: this.unanswered.filter((s) => s.uuid !== undefined && waiting.has(s.uuid)).map(strip) }
+  }
+
+  /** Sends them again on a fresh start (the chat moved to another account); the transcript already has them. */
+  replay(sends: QueuedInput[]): void {
+    this.clearIdleTimer()
+    if (!this.q) {
+      this.launchText = sends[0]?.text ?? null
+      this.start()
+    }
+    this.limitAnnounced = false
+    for (const s of sends) {
+      const msg = this.input!.push(s)
+      this.unanswered.push({ ...s, uuid: msg.uuid, replayed: true })
+      this.dispatch({ type: 'userSent', now: this.now() })
+    }
+    this.publishChat()
+  }
+
+  /**
+   * True when a move already sends this message again (replay) and no turn has answered it: the owner sent
+   * it a second time by hand, so it is not sent twice. Each replayed send matches one such message only.
+   */
+  takeReplayed(text: string, images?: ImageRef[]): boolean {
+    const s = this.unanswered.find((u) => u.replayed && u.text.trim() === text.trim() && (u.images?.length ?? 0) === (images?.length ?? 0))
+    if (!s) return false
+    s.replayed = false
+    return true
+  }
+
+  /** Takes a queued send back before the CLI runs it; false when it already went into the turn. */
+  async cancelQueued(itemId: string): Promise<boolean> {
+    const sent = this.unanswered.find((s) => s.uuid === itemId)
+    if (!this.queued.has(itemId) || !sent || !this.q) return false
+    // The SDK's typings omit cancelAsyncMessage; the runtime Query and the host proxy both have it.
+    const cancels = this.q as unknown as { cancelAsyncMessage(uuid: string): Promise<boolean> }
+    if (!(await cancels.cancelAsyncMessage(itemId))) return false
+    this.queued.delete(itemId)
+    this.unanswered = this.unanswered.filter((s) => s !== sent)
+    this.syncQueuedCount()
+    return true
+  }
+
+  /** The manager could not carry a limit it took over: the next limit is announced again. */
+  rearmLimit(): void {
+    this.limitAnnounced = false
+  }
+
+  /**
+   * The chat's account changed: the process keeps the login it started under, so it ends once its turn
+   * is over (now when no turn runs) and the next send starts, resuming the session, under the new one.
+   */
+  closeWhenIdle(): Promise<void> {
+    if (!this.q) return Promise.resolve()
+    if (!this.midTurn) return this.close()
+    this.closeOnIdle = true
+    return Promise.resolve()
+  }
+
+  /** The chat is set to another account than the one this process runs under (switched back, it is not). */
+  private get switchedAway(): boolean {
+    return (this.ranAs !== null && this.ranAs.id !== this.chat.account.id) || (this.ranCwd !== null && this.ranCwd !== this.chat.cwd)
+  }
+
+  /** A turn runs or one queued send still waits for its turn; idle, stopped, error and limited do not count. */
+  private get midTurn(): boolean {
+    const c = this.chat
+    return c.status === 'working' || c.status === 'needs_you' || (c.status === 'starting' && c.turnStartedAt !== null) || c.queuedCount > 0
+  }
+
+  /**
+   * Stops the turn at once: the chat reads stopped now, and the CLI's answer is not waited for. A CLI that does not
+   * answer within the grace (a hosted query's call can stall) is closed, unless sends wait in its queue: closing
+   * would take them with it. The transcript stays on disk and the next send resumes the chat.
+   */
+  interrupt(): void {
+    const q = this.q
+    if (!q) return
+    this.stopTurn()
+    const escalate = setTimeout(() => {
+      if (this.q === q && this.chat.queuedCount === 0) void this.close()
+    }, INTERRUPT_GRACE_MS)
+    const answered = () => clearTimeout(escalate)
+    q.interrupt().then(answered, answered)
+  }
+
+  /**
+   * Asks the process to stop one background task; its task_notification settles the item. False when no process
+   * runs or the process said the task is not alive (an unknown id is ignored by the CLI without a word).
+   */
+  async stopTask(taskId: string): Promise<boolean> {
+    const q = this.q
+    if (!q || (this.liveTasks && !this.liveTasks.has(taskId))) return false
+    try {
+      await q.stopTask(taskId)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** The turn is being stopped (Stop, or a bare No to a permission): stopped, every open request expired. */
+  private stopTurn(): void {
+    this.stopping = this.midTurn
+    this.normalizer?.noteInterrupt()
+    this.dispatch({ type: 'interrupted' })
+    this.expirePending(false)
+    this.publishChat()
+    this.armIdleTimer()
+  }
+
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    const was = { mode: this.chat.permissionMode, beforePlan: this.beforePlan }
+    this.notePlanEntry(mode)
+    this.chat.permissionMode = mode
+    this.touch()
+    this.publishChat()
+    const q = this.q
+    if (!q) return
+    try {
+      await q.setPermissionMode(mode)
+    } catch (err) {
+      // A process that went away takes the mode at its next start. One that refused it (Bypass on a process
+      // not launched for it) still runs in the old mode, so the chat says that one, and why.
+      if (this.q !== q) return
+      // A later call that changed the mode meanwhile owns it now; only this call's own value is put back.
+      if (this.chat.permissionMode === mode) {
+        this.chat.permissionMode = was.mode
+        this.beforePlan = was.beforePlan
+      }
+      this.touch()
+      this.publishChat()
+      const now = this.now()
+      const why = err instanceof Error ? err.message : String(err)
+      this.upsert({ kind: 'system', id: `mode:${now}`, ts: now, level: 'warn', text: `The permission mode did not change: ${why}` })
+    }
+  }
+
+  /** Before a turn: a live process takes the setting the sus level (or the chat itself) now asks for. The chat's own fields stay. */
+  private async applySetting(): Promise<void> {
+    const q = this.q
+    if (!q || this.susTurn === undefined) return
+    const sus = this.susTurn()
+    const want: SusTurn = sus ?? { model: withoutOldHaiku(this.chat.model), effort: this.chat.effort }
+    const had = this.applied
+    if (want.model === had.model && want.effort === had.effort) return
+    this.applied = { ...want }
+    try {
+      if (want.model !== had.model) await q.setModel(want.model ?? undefined)
+      if (want.effort !== had.effort) await q.applyFlagSettings({ effortLevel: want.effort })
+    } catch {
+      this.applied = had
+    }
+  }
+
+  async setModel(picked: string | null): Promise<void> {
+    const model = withoutOldHaiku(picked)
+    const was = this.chat.model
+    this.chat.model = model
+    this.applied = { ...this.applied, model }
+    this.touch()
+    this.publishChat()
+    const q = this.q
+    if (!q) return
+    try {
+      await q.setModel(model ?? undefined)
+    } catch (err) {
+      this.revertRefused('model', err, q, () => {
+        if (this.chat.model === model) this.chat.model = was
+      })
+    }
+  }
+
+  async setEffort(effort: Effort | null): Promise<void> {
+    const was = this.chat.effort
+    this.chat.effort = effort
+    this.applied = { ...this.applied, effort }
+    this.touch()
+    this.publishChat()
+    const q = this.q
+    if (!q) return
+    try {
+      await q.applyFlagSettings({ effortLevel: effort })
+    } catch (err) {
+      this.revertRefused('effort', err, q, () => {
+        if (this.chat.effort === effort) this.chat.effort = was
+      })
+    }
+  }
+
+  /** A process that went away takes the value at its next start; one that refused it still runs the old one, so the chat goes back to that and says why. */
+  private revertRefused(what: string, err: unknown, q: unknown, restore: () => void): void {
+    if (this.q !== q) return
+    restore()
+    this.touch()
+    this.publishChat()
+    const now = this.now()
+    const why = err instanceof Error ? err.message : String(err)
+    this.upsert({ kind: 'system', id: `${what}:${now}`, ts: now, level: 'warn', text: `The ${what} did not change: ${why}` })
+  }
+
+  respondPermission(requestId: string, decision: PermissionDecision): void {
+    const p = this.takePending(requestId, 'permission')
+    const item = p.item as PermissionItem
+    if (decision.decision === 'deny') {
+      if (item.toolUseId) this.apply(this.normalizer?.markDenied(item.toolUseId) ?? [])
+      const reason = decision.message?.trim()
+      // A bare No stops the turn, as Esc does in the terminal; with a reason Claude carries on and reads it.
+      const result: PermissionResult = reason ? { behavior: 'deny', message: reason } : { behavior: 'deny', message: 'The user denied this.', interrupt: true }
+      this.finishRequest({ ...item, state: 'denied' }, () => p.resolve(result))
+      if (!reason) this.stopTurn()
+      return
+    }
+    const suggestions = p.suggestions ?? []
+    const result: PermissionResult = { behavior: 'allow', updatedInput: p.input }
+    // 'session' saves the same rules as "Always allow", kept for this session only.
+    if (decision.decision === 'always') result.updatedPermissions = suggestions
+    else if (decision.decision === 'session') result.updatedPermissions = suggestions.map((s): PermissionUpdate => ({ ...s, destination: 'session' }))
+    const state = decision.decision === 'allow' ? 'allowed' : decision.decision
+    this.finishRequest({ ...item, state }, () => p.resolve(result))
+  }
+
+  answerQuestion(requestId: string, answer: QuestionAnswer): void {
+    // Pictures are saved before the request is taken: one that cannot be kept refuses the answer and leaves the question open.
+    if (answer.answers && answer.images) answer = { answers: answersWithPictures(answer.answers, answer.images, mediaCache(this.store.home)) }
+    const p = this.takePending(requestId, 'question')
+    const item = p.item as QuestionItem
+    if (answer.skip || !answer.answers) {
+      this.finishRequest({ ...item, state: 'skipped' }, () => p.resolve({ behavior: 'deny', message: 'The user skipped the question.' }))
+      return
+    }
+    // AskUserQuestionInput.answers: question text -> answer (multi-select comma-separated; a picture adds an [Image: source: path] line)
+    const answers = answer.answers
+    this.finishRequest({ ...item, state: 'answered', answers }, () => p.resolve({ behavior: 'allow', updatedInput: { ...p.input, answers } }))
+  }
+
+  respondPlan(requestId: string, decision: PlanDecision): void {
+    const p = this.takePending(requestId, 'plan')
+    const item = p.item as PlanItem
+    if (!decision.approve) {
+      const message = decision.feedback?.trim() || 'The user wants to keep planning.'
+      this.finishRequest({ ...item, state: 'rejected' }, () => p.resolve({ behavior: 'deny', message }))
+      return
+    }
+    // Back to the mode the chat had before plan mode (a Bypass chat stays Bypass); acceptEdits when unknown.
+    // The approval carries the mode, so the CLI leaves plan mode before it runs ExitPlanMode (which would
+    // otherwise put back its own idea of the earlier mode) or any tool after it.
+    const mode = decision.mode ?? this.beforePlan ?? 'acceptEdits'
+    const updatedPermissions: PermissionUpdate[] = [{ type: 'setMode', mode, destination: 'session' }]
+    this.finishRequest({ ...item, state: 'approved' }, () => p.resolve({ behavior: 'allow', updatedInput: p.input, updatedPermissions }))
+    // The CLI ignores a setMode it cannot take without a word; the control call refuses out loud, and the chat then keeps the mode it runs in.
+    void this.setPermissionMode(mode).catch(() => {}) // floor-ok: setPermissionMode reports a refusal itself; a process that went away takes the mode at its next start
+  }
+
+  /** The answer to an MCP elicitation. A form answer is checked first: a refused one leaves the request open. */
+  answerElicitation(requestId: string, answer: ElicitationAnswer): void {
+    const p = this.pending.get(requestId)
+    if (!p || 'input' in p) throw new Error(`no pending elicitation request ${requestId}`)
+    const item = p.item
+    if (answer.action === 'decline') {
+      this.pending.delete(requestId)
+      this.finishRequest({ ...item, state: 'declined' }, () => p.resolve({ action: 'decline' }))
+      return
+    }
+    const values = item.mode === 'form' ? checkAnswer(item.fields ?? [], answer.values) : null
+    this.pending.delete(requestId)
+    if (!values) {
+      this.finishRequest({ ...item, state: 'accepted' }, () => p.resolve({ action: 'accept' }))
+      return
+    }
+    this.finishRequest({ ...item, state: 'accepted', values }, () => p.resolve({ action: 'accept', content: values }))
+  }
+
+  /** The chat goes into plan mode (the owner's switch, or Claude's own EnterPlanMode): remember the mode it leaves. Leaving plan mode forgets it. */
+  private notePlanEntry(mode: PermissionMode): void {
+    if (mode !== 'plan') this.beforePlan = null
+    else if (this.chat.permissionMode !== 'plan') this.beforePlan = this.chat.permissionMode
+  }
+
+  /** The owner looked at the chat. */
+  markViewed(): void {
+    this.dispatch({ type: 'viewed' })
+    this.publishChat()
+  }
+
+  /** The chat is closed while its binary downloads or after the download failed: no process was started, nothing is sent. */
+  private cancelBinary(): void {
+    this.binary = null
+    this.input?.close()
+    this.expirePending(false)
+    this.dispatch({ type: 'closed' })
+    this.unqueueAll()
+    this.publishChat()
+    this.onClosed?.()
+  }
+
+  /** Ends the runtime: the chat goes 'closed' and the next send resumes it. */
+  async close(): Promise<void> {
+    this.clearIdleTimer()
+    const q = this.q
+    if (!q) {
+      if (this.binary) this.cancelBinary()
+      return
+    }
+    this.closing = true
+    this.expirePending(false)
+    this.input?.close()
+    try {
+      q.close()
+    } catch {
+      // already gone
+    }
+    this.q = null
+    this.endLog()
+    this.dispatch({ type: 'closed' })
+    this.unqueueAll()
+    this.publishChat()
+    const loop = this.loop
+    this.loop = null
+    await loop?.catch(() => {})
+    // A chat host ends its process once it has the close: a server stopping right after still ends it.
+    await hostedOf(q)?.whenClosed()
+    this.onClosed?.()
+  }
+
+  // canUseTool (SPEC): AskUserQuestion -> question, ExitPlanMode -> plan, anything else -> permission.
+  // The SDK's requestId names the card: a chat host re-opens a request after a server restart under it.
+  private readonly canUseTool: CanUseTool = (toolName, input, opts) =>
+    new Promise<PermissionResult>((resolve) => {
+      const id = opts.requestId || randomUUID()
+      const ts = this.reopened?.stored.get(id)?.ts ?? this.now()
+      const toolUseId = opts.toolUseID
+      let item: ToolRequestItem
+      let suggestions: PermissionUpdate[] | undefined
+      if (toolName === 'AskUserQuestion') {
+        item = { kind: 'question', id, ts, toolUseId, questions: questionsFrom(input), state: 'pending' }
+      } else if (toolName === 'ExitPlanMode') {
+        item = { kind: 'plan', id, ts, toolUseId, plan: typeof input.plan === 'string' ? input.plan : '', state: 'pending' }
+      } else {
+        // The SDK may forbid saving a rule (it would grant more than this one call): then no "always" and no "session".
+        const offered = opts.suggestions?.length && !opts.suppressAlwaysAllowRule ? opts.suggestions : undefined
+        const permission: PermissionItem = { kind: 'permission', id, ts, toolName, toolUseId, input, canAlwaysAllow: !!offered, state: 'pending' }
+        if (opts.blockedPath) permission.blockedPath = opts.blockedPath
+        if (opts.title) permission.title = opts.title
+        if (opts.description) permission.description = opts.description
+        if (opts.decisionReason) permission.reason = opts.decisionReason
+        if (opts.defaultToNo) permission.defaultToNo = true
+        if (offered) permission.alwaysRules = offered.map(ruleLine)
+        item = permission
+        suggestions = offered
+      }
+      this.pending.set(id, { item, input, suggestions, resolve })
+      opts.signal.addEventListener('abort', () => this.expire(id, true), { once: true })
+      this.openRequest(item)
+    })
+
+  // onElicitation (SPEC): an MCP server asks for a form or for a link to be opened -> elicitation.
+  private readonly onElicitation: OnElicitation = (request, opts) =>
+    new Promise<ElicitationResult>((resolve) => {
+      const id = opts.requestId || randomUUID()
+      const item = elicitationItem(id, this.reopened?.stored.get(id)?.ts ?? this.now(), request)
+      this.pending.set(item.id, { item, resolve })
+      opts.signal.addEventListener('abort', () => this.expire(item.id, true), { once: true })
+      this.openRequest(item)
+    })
+
+  /**
+   * A request is shown and counted; the first one waiting notifies (later ones join a chat already asking, and
+   * one re-opened after a server restart was notified before it).
+   */
+  private openRequest(item: RequestItem): void {
+    this.upsert(item)
+    this.dispatch({ type: 'requestOpened' })
+    this.publishChat()
+    if (this.pending.size === 1 && !this.reopened?.shown.has(item.id)) this.notify('needs_you', describeRequest(item))
+  }
+
+  private async consume(q: Query): Promise<void> {
+    try {
+      for await (const msg of q) {
+        if (this.q !== q) return
+        this.handle(msg)
+      }
+      if (this.q === q && !this.closing) this.crash(new Error('Claude Code exited unexpectedly'))
+    } catch (err) {
+      if (this.q === q && !this.closing) this.crash(err)
+    }
+  }
+
+  /** One SDK message: status first, then the transcript, then the after-turn work. */
+  handle(msg: SDKMessage): void {
+    if (!this.replaying) this.onMessage?.(msg)
+    const now = this.clock()
+    const m = msg as { type: string; subtype?: string }
+    this.noteSystem(msg, m)
+    this.takeUp(msg)
+    if (m.type === 'assistant' && !(msg as { error?: unknown }).error && !(msg as { parent_tool_use_id?: unknown }).parent_tool_use_id) {
+      const said = assistantText(msg)
+      if (said.trim()) this.turnText = said
+      const ranOn = (msg as { message?: { model?: unknown } }).message?.model
+      if (typeof ranOn === 'string' && ranOn) this.turnModel = ranOn
+      if (!isUsageLimitText(said) && !isSignInFailureText(said)) this.replied = true
+    }
+
+    const before = this.chat.status
+    const turnStartedAt = this.chat.turnStartedAt
+    if (m.type === 'system' && m.subtype === 'hook_response' && (msg as { outcome?: string }).outcome === 'error') this.hookFailed(msg)
+    const turn = this.dispatchStatus(msg, m.type === 'assistant', now, turnStartedAt)
+    this.applyMessage(msg, before, turn, now)
+    if (m.type === 'result') this.onResult(msg, turn.reportedQueued, now)
+    this.afterMessage(msg)
+  }
+
+  /** What a system message says of the process: that it reports its session state, and its live background tasks. */
+  private noteSystem(msg: SDKMessage, m: { type: string; subtype?: string }): void {
+    if (m.type !== 'system') return
+    if (m.subtype === 'session_state_changed') this.sawSessionState = true
+    if (m.subtype === 'background_tasks_changed') {
+      const tasks = (msg as { tasks?: { task_id?: unknown }[] }).tasks
+      this.liveTasks = new Set((Array.isArray(tasks) ? tasks : []).map((t) => String(t.task_id)))
+    }
+  }
+
+  private hookFailed(msg: SDKMessage): void {
+    const h = msg as { hook_name?: unknown; hook_event?: unknown; exit_code?: unknown; stderr?: unknown; output?: unknown; stdout?: unknown }
+    const why = String(h.stderr || h.output || h.stdout || '').split(/\r?\n/).find((l) => l.trim()) ?? ''
+    this.failed(`Hook ${String(h.hook_name ?? '')} (${String(h.hook_event ?? '')}) failed${typeof h.exit_code === 'number' ? ` (exit ${h.exit_code})` : ''}${why ? `: ${why}` : ''}`, null)
+  }
+
+  /** The message's status events, dispatched; what they said of a limit and of the queue comes back. */
+  private dispatchStatus(msg: SDKMessage, assistant: boolean, now: number, turnStartedAt: number | null): TurnNews {
+    const news: TurnNews = { limitFromResult: false, signIn: false, reportedQueued: undefined }
+    for (const raw of statusEventsFor(msg, now)) {
+      if (raw.type === 'turnError' && !this.replaying) this.failed(raw.message, turnStartedAt)
+      const e = this.statusEvent(raw, msg, assistant, news)
+      if (e) this.dispatch(e)
+    }
+    return news
+  }
+
+  /** A status event as this chat reads it; null to drop it. */
+  private statusEvent(e: StatusEvent, msg: SDKMessage, assistant: boolean, news: TurnNews): StatusEvent | null {
+    // An assistant 'rate_limit' error is a usage limit only when it says so; a 429 that passes in a
+    // minute ends as a plain error (its result follows).
+    if (e.type === 'usageLimit' && assistant && !isUsageLimitText(assistantText(msg))) return null
+    // A Stop sent while the process was still starting is taken by the CLI after it began the turn: its
+    // 'running' put the chat back to working, and the aborted result is still the stop, not a failure.
+    if (e.type === 'turnError' && this.stopping) e = { type: 'interrupted' }
+    if (e.type === 'turnError' && isUsageLimitText(e.message) && this.chat.status !== 'stopped') {
+      e = { type: 'usageLimit', resetsAt: null }
+      news.limitFromResult = true
+    }
+    // A login that failed holds the account out like a limit, so the turn moves on (the owner, 2026-10-04:
+    // sending again into an account whose OAuth expired is the failure).
+    if (e.type === 'turnError' && isSignInFailureText(e.message) && this.chat.status !== 'stopped') {
+      e = { type: 'usageLimit', resetsAt: null }
+      news.limitFromResult = true
+      news.signIn = true
+    }
+    if (e.type === 'turnEnded') {
+      news.reportedQueued = e.queued
+      // Older CLIs leave queued_turn_count out: our own queued sends say whether a turn follows.
+      if (e.queued === undefined) e = { ...e, queued: this.queued.size }
+    }
+    return e
+  }
+
+  /** The message into the transcript, and a usage limit it brought cut, carried or announced. */
+  private applyMessage(msg: SDKMessage, before: ChatStatus, news: TurnNews, now: number): void {
+    let emissions = this.normalizer?.handle(msg) ?? []
+    if (news.limitFromResult) emissions = emissions.filter((x) => !(x.type === 'notify' && x.reason === 'error'))
+    const limitedNow = this.chat.status === 'limited' && before !== 'limited' && !this.limitAnnounced
+    if (limitedNow) this.cut = { replied: this.replied, waiting: new Set(this.queued.keys()) }
+    const announced = emissions.some((x) => x.type === 'notify' && x.reason === 'limited')
+    // A replayed limit was carried (or not) by the server that saw it; one no server saw is carried once adopt is done.
+    if (limitedNow && this.replaying && !this.replaySeen) this.missedLimit = { window: limitWindow(msg), signIn: news.signIn }
+    const carried = limitedNow && !this.replaying && (this.onLimited?.(limitWindow(msg), news.signIn) ?? false)
+    if (carried) emissions = emissions.filter((x) => !(x.type === 'notify' && x.reason === 'limited')).map(movingOn)
+    this.apply(emissions)
+
+    if (limitedNow && !announced) this.announceLimit(msg, news.signIn, carried, now)
+    if (limitedNow || this.chat.status === 'limited') this.limitAnnounced = true
+  }
+
+  private announceLimit(msg: SDKMessage, signIn: boolean, carried: boolean, now: number): void {
+    const on = (this.ranAs ?? this.chat.account).label
+    const failed = signIn ? `Sign-in failed on ${on}` : `Usage limit reached on ${on}`
+    // Carried: the chat moves and the message goes again by itself, so the owner need not send it.
+    const text = carried ? `${failed}: ${MOVING}` : signIn ? `${failed}: its login needs renewing.` : `${failed}.`
+    // Keyed by the message, so a replay after a server restart writes the same line, not a second one.
+    this.upsert({ kind: 'system', id: `limit:${(msg as { uuid?: string }).uuid || now}`, ts: now, level: carried ? 'warn' : 'error', text })
+    if (!carried) this.notify('limited', text)
+  }
+
+  /** A finished turn into the pushback count: a result that is an error with no refusal answered nothing and counts nowhere. */
+  private classifyTurn(msg: SDKMessage): void {
+    const r = msg as { is_error?: unknown; stop_reason?: unknown }
+    const stopReason = typeof r.stop_reason === 'string' ? r.stop_reason : null
+    if (this.chat.status === 'limited' || (r.is_error === true && stopReason !== 'refusal')) return
+    this.onTurnClassified?.({ model: this.turnModel || this.applied.model || 'default', effort: this.applied.effort ?? 'default', stopReason, text: this.turnText })
+  }
+
+  private onResult(msg: SDKMessage, reportedQueued: number | undefined, now: number): void {
+    const total = (msg as { total_cost_usd?: unknown }).total_cost_usd
+    if (typeof total === 'number') this.totalCost = total
+    this.turns++
+    if (!this.replaying) this.classifyTurn(msg)
+    this.turnText = ''
+    this.turnModel = ''
+    this.stopping = false
+    this.resultSinceAck = true
+    if (!this.replaying) this.cwdCheckDue = true
+    const stillQueued = this.queued.size
+    // The CLI's count says how many sends still wait; without it the oldest one starts the next turn now.
+    this.syncQueued(reportedQueued ?? Math.max(0, stillQueued - 1))
+    // A limited turn answered nothing: its sends stay for the manager to carry to another account.
+    if (this.chat.status !== 'limited') {
+      this.unanswered.splice(0, Math.max(0, this.unanswered.length - this.queued.size))
+      this.replied = false
+    }
+    // Without session_state_changed events (older CLIs, recordings) the result is the turn's end.
+    if (!this.sawSessionState && stillQueued === 0) this.dispatch({ type: 'stateChanged', state: 'idle', now })
+    if (!this.replaying) void this.refreshContext()
+  }
+
+  /** After the message: the queue, a close the account switch waits for, the idle timer, the host's ack, the published chat. */
+  private afterMessage(msg: SDKMessage): void {
+    if (this.chat.status === 'idle' && this.queued.size > 0 && this.chat.queuedCount === 0) this.unqueueAll()
+
+    if (this.closeOnIdle && this.switchedAway && !this.midTurn) {
+      // close() publishes the chat 'closed'; this loop ends at the next message.
+      void this.close()
+      return
+    }
+    if (this.chat.status === 'working' || this.chat.status === 'needs_you') this.clearIdleTimer()
+    else this.armIdleTimer()
+    this.ackHost(msg)
+    // Streamed text and tool progress change no field of the chat: only a changed summary goes out.
+    if (!this.published || chatDiffers(this.published, this.chat)) this.publishChat()
+    // At the quiet point after a turn the session's own transcript says where it is now.
+    if (this.cwdCheckDue && !this.replaying && !this.midTurn && this.chat.status === 'idle') {
+      this.cwdCheckDue = false
+      this.onTurnEnd?.()
+    }
+  }
+
+  private apply(emissions: Emission[]): void {
+    for (const e of emissions) {
+      switch (e.type) {
+        case 'upsert':
+          this.upsert(e.item)
+          break
+        case 'delta': {
+          const held = this.replayed?.get(e.itemId)
+          if (held && (held.kind === 'assistant_text' || held.kind === 'thinking')) {
+            this.replayed!.set(e.itemId, { ...held, text: held.text + e.text })
+            break
+          }
+          if (this.replayed) break
+          this.emitEvent({ type: 'item.delta', chatId: this.chat.id, itemId: e.itemId, text: e.text })
+          break
+        }
+        case 'chat': {
+          const { activity, ...rest } = e.patch
+          if ('activity' in e.patch) this.dispatch({ type: 'activity', activity: activity ?? null })
+          if (rest.permissionMode) this.notePlanEntry(rest.permissionMode)
+          Object.assign(this.chat, rest)
+          this.touch()
+          break
+        }
+        case 'notify':
+          this.notify(e.reason, e.body)
+          break
+      }
+    }
+  }
+
+  private dispatch(e: StatusEvent): void {
+    const s: StatusState = nextStatus(this.chat, e)
+    Object.assign(this.chat, s)
+    this.touch()
+  }
+
+  private upsert(item: TranscriptItem): void {
+    if (this.replayed) {
+      this.replayed.set(item.id, item)
+      return
+    }
+    // A user turn goes out as the transcript reads it back (store.ts): a program's ping is its note from the first
+    // moment, never the person's bubble until a reload. 2026-10-08, owner: "Did you not apply any of these fixes here?"
+    for (const shown of item.kind === 'user' ? userTurns(item, mediaCache(this.store.home)) : [item]) this.emitEvent({ type: 'item.upsert', chatId: this.chat.id, item: shown })
+    if ((item.kind === 'assistant_text' || item.kind === 'thinking') && item.streaming) return
+    if (item.kind === 'tool_use' && item.status === 'running') {
+      if (this.storedRunning.has(item.id)) return
+      this.storedRunning.add(item.id)
+    }
+    // A request re-opened after a restart is on disk as it was.
+    const prev = this.reopened?.stored.get(item.id)
+    if (prev && sameItem(prev, item)) return
+    this.store.appendItem(this.chat.id, forStore(item))
+  }
+
+  private notify(reason: Extract<ServerEvent, { type: 'notify' }>['reason'], body: string): void {
+    if (this.replaying) {
+      if (!this.replaySeen) this.missed.push({ reason, body })
+      return
+    }
+    this.emitEvent({ type: 'notify', chatId: this.chat.id, reason, title: this.chat.title, body })
+  }
+
+  private publishChat(): void {
+    if (this.replaying) return
+    this.published = { ...this.chat }
+    this.emitEvent({ type: 'chat.upsert', chat: { ...this.chat } })
+  }
+
+  private touch(): void {
+    this.chat.updatedAt = this.clock()
+  }
+
+  // Queued sends: taken up when a turn names their uuid, or when a result reports fewer queued.
+  private takeUp(msg: SDKMessage): void {
+    if (this.queued.size === 0) return
+    const m = msg as { user_message_uuid?: string; user_message_uuids?: string[] }
+    const ids = m.user_message_uuids ?? (m.user_message_uuid ? [m.user_message_uuid] : [])
+    let changed = false
+    for (const id of ids) changed = this.unqueue(id) || changed
+    if (changed) this.syncQueuedCount()
+  }
+
+  /** After a result: keep only as many queued items as still wait (oldest taken up first). */
+  private syncQueued(waiting: number): void {
+    while (this.queued.size > waiting) {
+      const oldest = this.queued.keys().next().value as string
+      this.unqueue(oldest)
+    }
+    this.syncQueuedCount()
+  }
+
+  private syncQueuedCount(): void {
+    this.chat.queuedCount = this.queued.size
+  }
+
+  private unqueue(id: string): boolean {
+    const item = this.queued.get(id)
+    if (!item) return false
+    this.queued.delete(id)
+    const { queued: _q, ...rest } = item
+    this.upsert({ ...rest, ts: item.ts })
+    return true
+  }
+
+  private unqueueAll(): void {
+    for (const id of [...this.queued.keys()]) this.unqueue(id)
+    this.chat.queuedCount = 0
+  }
+
+  private takePending(requestId: string, kind: ToolRequestItem['kind']): Pending {
+    const p = this.pending.get(requestId)
+    if (!p || !('input' in p) || p.item.kind !== kind) throw new Error(`no pending ${kind} request ${requestId}`)
+    this.pending.delete(requestId)
+    return p
+  }
+
+  /** Records the answered item and closes the request, then answers the SDK. */
+  private finishRequest(item: RequestItem, answer: () => void): void {
+    this.upsert(item)
+    this.dispatch({ type: 'requestClosed' })
+    this.publishChat()
+    answer()
+  }
+
+  /** A pending request the SDK aborted, or every one at interrupt / close / crash. */
+  private expire(id: string, closeRequest: boolean): void {
+    const p = this.pending.get(id)
+    if (!p) return
+    this.pending.delete(id)
+    this.upsert({ ...p.item, state: 'expired' } as RequestItem)
+    if (closeRequest) {
+      this.dispatch({ type: 'requestClosed' })
+      this.publishChat()
+    }
+    if ('input' in p) p.resolve({ behavior: 'deny', message: 'The request expired.', interrupt: true })
+    else p.resolve({ action: 'cancel' })
+  }
+
+  private expirePending(closeRequest: boolean): void {
+    for (const id of [...this.pending.keys()]) this.expire(id, closeRequest)
+  }
+
+  private async refreshContext(): Promise<void> {
+    const q = this.q
+    if (!q) return
+    try {
+      const pct = contextPct(await q.getContextUsage({ detail: 'summary' }))
+      if (pct === null || this.q !== q) return
+      this.chat.contextPct = pct
+      this.publishChat()
+    } catch {
+      // older CLIs, or the process went away: keep the last reading
+    }
+  }
+
+  private onStderr(data: string): void {
+    this.stderrTail = (this.stderrTail + data).slice(-STDERR_TAIL_CHARS)
+    // The first chunk after a quiet spell is written at once; chunks that follow within the window go out as one write.
+    if (this.logTimer) {
+      this.logBuffer += data
+      return
+    }
+    this.appendLog(data)
+    this.logTimer = setTimeout(() => this.flushLog(), STDERR_FLUSH_MS)
+    ;(this.logTimer as { unref?: () => void }).unref?.()
+  }
+
+  /** Writes what the window gathered; a window that gathered nothing ends. */
+  private flushLog(): void {
+    const data = this.logBuffer
+    this.logBuffer = ''
+    if (!data) {
+      this.logTimer = null
+      return
+    }
+    this.appendLog(data)
+    this.logTimer = setTimeout(() => this.flushLog(), STDERR_FLUSH_MS)
+    ;(this.logTimer as { unref?: () => void }).unref?.()
+  }
+
+  private appendLog(data: string): void {
+    try {
+      appendFileSync(this.logFile, data)
+    } catch {
+      // the log is best effort
+    }
+  }
+
+  /** Writes the gathered stderr now and ends the window (the process ended). */
+  private endLog(): void {
+    if (this.logTimer) clearTimeout(this.logTimer)
+    this.logTimer = null
+    const data = this.logBuffer
+    this.logBuffer = ''
+    if (data) this.appendLog(data)
+  }
+
+  private failed(message: string, startedAt: number | null): void {
+    if (!this.onFailure || this.replaying) return
+    try {
+      this.onFailure({ message, durationMs: startedAt === null ? null : Math.max(0, this.now() - startedAt) })
+    } catch {
+      // the ledger never breaks a chat
+    }
+  }
+
+  /** The SDK process died: status error with the real message, the stderr tail as a system item. */
+  private crash(err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err)
+    const now = this.now()
+    this.failed(message, this.chat.turnStartedAt)
+    this.q = null
+    this.endLog()
+    this.input?.close()
+    this.expirePending(false)
+    this.unqueueAll()
+    Object.assign(this.chat, {
+      status: 'error',
+      activity: null,
+      turnStartedAt: null,
+      pendingCount: 0,
+      queuedCount: 0,
+      lastError: message,
+      unread: true,
+    } satisfies Partial<ChatSummary>)
+    this.touch()
+    const tail = this.stderrTail.trim().split(/\r?\n/).slice(-STDERR_TAIL_LINES).join('\n')
+    this.upsert({ kind: 'system', id: `crash:${now}`, ts: now, level: 'error', text: tail ? `${message}\n${tail}` : message })
+    this.notify('error', message)
+    this.publishChat()
+    this.armIdleTimer()
+  }
+
+  private armIdleTimer(): void {
+    this.clearIdleTimer()
+    if (!this.q && this.chat.status !== 'error') return
+    const minutes = this.settingsOf().idleCloseMinutes
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null
+      if (this.q) void this.close()
+      else if (this.chat.status !== 'closed') {
+        this.dispatch({ type: 'closed' })
+        this.publishChat()
+        this.onClosed?.()
+      }
+    }, minutes * 60_000)
+    ;(this.idleTimer as { unref?: () => void }).unref?.()
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = null
+  }
+}
+
+function questionsFrom(input: Record<string, unknown>): AskQuestion[] {
+  // AskUserQuestionInput.questions: { question, header, options: { label, description }[], multiSelect }[]
+  if (!Array.isArray(input.questions)) return []
+  return (input.questions as Record<string, unknown>[]).map((q) => ({
+    question: typeof q.question === 'string' ? q.question : '',
+    header: typeof q.header === 'string' ? q.header : '',
+    multiSelect: q.multiSelect === true,
+    options: Array.isArray(q.options)
+      ? (q.options as Record<string, unknown>[]).map((o) => {
+          const opt: AskQuestion['options'][number] = { label: typeof o.label === 'string' ? o.label : '' }
+          if (typeof o.description === 'string') opt.description = o.description
+          return opt
+        })
+      : [],
+  }))
+}
+
+/** An assistant message's text blocks, joined. */
+function assistantText(msg: SDKMessage): string {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.flatMap((b: { type?: string; text?: unknown }) => (b?.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
+}
+
+const MOVING = 'moving this chat to another account and sending your message again.'
+
+/** A limit line of the normalizer's, for a limit the manager carries: it says the chat moves on, as a warning. */
+function movingOn(x: Emission): Emission {
+  if (x.type !== 'upsert' || x.item.kind !== 'system' || !x.item.id.startsWith('rate_limit:')) return x
+  return { ...x, item: { ...x.item, level: 'warn', text: `${x.item.text.replace(/(\. Resets .*)?\.$/, '')}: ${MOVING}` } }
+}
+
+/** The window a rate_limit_event names ('5-hour', 'weekly'...), else null. */
+function limitWindow(msg: SDKMessage): string | null {
+  const type = (msg as { rate_limit_info?: { rateLimitType?: string } }).rate_limit_info?.rateLimitType
+  return (type && LIMIT_LABEL[type]) || null
+}
+
+function describeRequest(item: RequestItem): string {
+  if (item.kind === 'question') return item.questions[0]?.question || 'Claude has a question'
+  if (item.kind === 'plan') return 'A plan is ready for your approval'
+  if (item.kind === 'elicitation') return item.message || `${item.serverName} asks for your input`
+  return item.title || `Allow ${item.toolName}?`
+}
+
+/** A send a chat host journaled, as the runtime keeps it: its text, its pictures with their bytes, its uuid. */
+function sentOf(msg: SDKUserMessage): Sent {
+  const content = msg.message.content
+  type Block = { type: string; text?: unknown; source?: { type?: string; media_type?: string; data?: string } }
+  const blocks: Block[] = typeof content === 'string' ? [{ type: 'text', text: content }] : (content as Block[])
+  const text = blocks.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n\n')
+  const images: ImageRef[] = blocks.flatMap((b) =>
+    b.type === 'image' && b.source?.type === 'base64' && b.source.data ? [{ mediaType: b.source.media_type ?? 'image/png', dataBase64: b.source.data }] : [],
+  )
+  const sent: Sent = { text }
+  if (images.length) sent.images = images
+  if (msg.uuid) sent.uuid = msg.uuid
+  return sent
+}
+
+/** The same item but for when it was made: a replay's clock is not the one the stored copy was written by. */
+function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
+  if (a.kind !== b.kind || a.id !== b.id) return false
+  return JSON.stringify(timeless(a)) === JSON.stringify(timeless(b))
+}
+
+function timeless(item: TranscriptItem): Record<string, unknown> {
+  const { ts: _ts, startedAt: _s, endedAt: _e, ...rest } = item as TranscriptItem & { startedAt?: number; endedAt?: number }
+  return rest
+}
+
+/** Large pasted images stay out of the history file. */
+function forStore(item: TranscriptItem): TranscriptItem {
+  if (item.kind !== 'user' || !item.images?.some((i) => (i.dataBase64?.length ?? 0) > MAX_STORED_IMAGE_CHARS)) return item
+  return {
+    ...item,
+    images: item.images.map((i) => {
+      if ((i.dataBase64?.length ?? 0) <= MAX_STORED_IMAGE_CHARS) return i
+      const { dataBase64: _d, ...rest } = i
+      return rest
+    }),
+  }
+}

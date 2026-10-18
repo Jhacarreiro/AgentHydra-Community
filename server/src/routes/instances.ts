@@ -1,0 +1,344 @@
+import { resolveAccount } from '../core/accounts'
+import { noteLoggedOutHere, setLoginSyncExcluded } from '../core/cli-login-sync'
+import { detectDesktopInstall } from '../core/desktop-install'
+import {
+  createDshInstance,
+  deleteDshInstance,
+  freeDshName,
+  launchDshInstance,
+  listDshInstances,
+  quitDshInstance,
+  renameDshInstance,
+} from '../core/dsh-instances'
+import { logoutInstance } from '../core/instance-logout'
+import { setInstanceMeta } from '../core/instance-meta'
+import { createInstanceModeShortcut } from '../core/instance-mode-shortcut'
+import {
+  instanceForConfigDir,
+  listAllInstances,
+  resolveInstance,
+  resolveInstanceError,
+} from '../core/instance-ref'
+import {
+  focusInstance,
+  listInstanceLogins,
+  listInstances,
+  openInstance,
+  quitInstance,
+  readLoginUuid,
+  revealInstanceFolder,
+} from '../core/instances'
+import { createInstance, freeInstanceName, removeInstance } from '../core/lifecycle'
+import { readLoginHistory } from '../core/login-history'
+import { INSTANCE_COLOR_KEYS, INSTANCE_ICON_KEYS } from '../core/shared'
+import { createInstanceShortcut } from '../core/shortcut'
+import { app } from '../http-app'
+import { instanceDirParam } from '../instance-dir-param'
+import {
+  cancelOrchestratorOperation,
+  getOrchestratorOperation,
+  listOrchestratorOperations,
+  operationMissReason,
+  orchestratorStatus,
+  runOriginAllowed,
+  startOrchestratorOperation,
+  wouldRefuseBusy,
+} from '../orchestrator'
+import { jsonBody } from '../route-helpers'
+import { dropCachedUsage } from '../usage'
+import { desktopKey, readAppAfterOpen } from '../usage-service'
+
+/** Multi-instance (isolated Claude Desktop instances), instance-number lookups, and the
+ *  orchestrator control routes. See index.ts for the app-wide middleware these routes run
+ *  behind. */
+// --- multi-instance (isolated Claude Desktop instances) --------------------
+// "instance account" = which Anthropic account a Desktop *instance* is logged into (resolved
+// by decrypting its local safeStorage token cache); distinct from the sqlite `accounts` table
+// above (Anthropic auth secrets for queue dispatch). Never touches that table.
+app.get('/api/instances', async (c) => {
+  return c.json(await listInstances())
+})
+// Each profile's signed-in login, read off disk without the process scan: the Instances tab asks every few seconds,
+// so a profile signed into another account shows that account at once (2026-10-14: a row kept the old account's
+// name and plan for two minutes, until the next list poll). Registered before the `:dir` routes.
+app.get('/api/instances/logins', (c) => c.json(listInstanceLogins()))
+
+// --- instance numbers -------------------------------------------------------
+// The whole fleet under ONE numbering, flattened across desktop / CLI / Codex. This is what makes
+// "check instance 7" a sentence a human can say and a tool can act on: every other identifier an
+// instance has is either a file path or a uuid. Kept at its own top-level path rather than under
+// /api/instances/* so it can never be mistaken for (or shadowed by) a `:dir` route.
+app.get('/api/instance-numbers', async (c) => c.json(await listAllInstances()))
+
+// Resolve one reference — a number, a `#N`, a dir/id, an explicit `kind:id` ref, or an unambiguous
+// name. 404 carries a reason, because "no such number" and "that number's instance was deleted"
+// call for different fixes.
+app.get('/api/instance-numbers/resolve', async (c) => {
+  const ref = c.req.query('ref') ?? ''
+  const hit = await resolveInstance(ref)
+  if (hit) return c.json(hit)
+  return c.json({ error: await resolveInstanceError(ref) }, 404)
+})
+
+// Reverse lookup: which instance owns this credential dir. Answers "which one am I?" for an agent
+// that knows only its own CLAUDE_CONFIG_DIR / CODEX_HOME. Null (200) for the plain ~/.claude login,
+// which is a real answer — it belongs to no managed instance — not an error.
+app.get('/api/instance-numbers/whoami', async (c) => {
+  const configDir = c.req.query('configDir') ?? ''
+  return c.json(await instanceForConfigDir(configDir))
+})
+// Which Claude Desktop build is installed; the Instances tab warns when only the MSIX
+// package is present (not launchable with --user-data-dir; see core/desktop-install.ts).
+app.get('/api/desktop-install', async (c) => {
+  const fresh = c.req.query('fresh')
+  return c.json(await detectDesktopInstall({ fresh: fresh === '1' || fresh === 'true' }))
+})
+// Every `/api/instances/:dir/...` route takes `:dir` through instanceDirParam: it must name an
+// instance listInstances() returns - the full dir in any spelling, or a bare folder name that names
+// exactly one - and anything else is 404 before the action runs. Used as a path as given,
+// `POST /api/instances/thomas/open` launched claude.exe with a --user-data-dir under System32
+// (2026-09-03; see core/instance-dir.ts). routes/usage.ts and the lightweight instance-mode.ts
+// daemon gate theirs the same way, and scripts/checks/instance-dir-route-gate.mjs holds all three.
+// A live answer is kept per profile and signed-in login for LIVE_ACCOUNT_MS: the AgentHydra pane
+// resolves every row live each time it opens, a token decrypt and a profile call apiece (16
+// profiles at 200-820 ms each, 2026-10-08). A new login is a new key, so a switched account never
+// shows the old one; an answer that did not come back live is not kept; concurrent calls for one
+// key share one resolve.
+const LIVE_ACCOUNT_MS = 5 * 60_000
+const liveAccounts = new Map<string, { at: number; account: ReturnType<typeof resolveAccount> }>()
+app.get('/api/instances/:dir/account', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  const noNetwork = c.req.query('noNetwork')
+  if (noNetwork === '1' || noNetwork === 'true')
+    return c.json(await resolveAccount(dir, { noNetwork: true }))
+  const key = `${dir}|${readLoginUuid(dir) ?? ''}`
+  const held = liveAccounts.get(key)
+  if (held && Date.now() - held.at < LIVE_ACCOUNT_MS) return c.json(await held.account)
+  const account = resolveAccount(dir)
+  liveAccounts.set(key, { at: Date.now(), account })
+  try {
+    const answer = await account
+    if (answer.status !== 'live') liveAccounts.delete(key)
+    return c.json(answer)
+  } catch (err) {
+    liveAccounts.delete(key)
+    throw err
+  }
+})
+// Every account this profile has been signed into, newest first (core/login-history.ts): what the
+// row shows when its current account is signed out or unknown and you need to know where it went.
+app.get('/api/instances/:dir/login-history', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  return c.json(readLoginHistory(dir))
+})
+app.post('/api/instances/:dir/open', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  // `raise: true` is the person's own Open (AgentHydra's Open button sends it) and brings the new window
+  // forward; a script or MCP call leaves focus where it is. Not the Origin header: Desk 2's proxy strips it.
+  const body = await jsonBody(c)
+  const result = await openInstance(dir, { raise: body.raise === true })
+  // A banked reset or credit shows on the row now instead of at the next usage sweep.
+  if (result.ok)
+    void readAppAfterOpen(dir).catch((err) =>
+      console.error('[instances] app reading after open failed:', err),
+    )
+  return c.json(result)
+})
+app.post('/api/instances/:dir/quit', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  const body = await jsonBody(c)
+  // Quitting the DEFAULT (non-isolated) Claude Desktop — the user's real chats — needs an explicit
+  // opt-in from the caller (the UI shows a confirmation first); quitInstance refuses it otherwise.
+  // Mirrors the delete route's confirmName pattern one section below.
+  return c.json(await quitInstance(dir, { confirmExternal: body.confirmExternal === true }))
+})
+// Remove the stored login from a profile. Confirmed in the UI first, and refused outright while
+// the instance is running (see core/instance-logout.ts for why writing config.json under a live
+// Electron app is worse than not doing it at all).
+app.post('/api/instances/:dir/logout', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  // The account it was signed in to, read before the logout removes it: login sync signs the other
+  // PCs out of it too (core/desktop-login-sync.ts).
+  const account = readLoginUuid(dir)
+  const result = await logoutInstance(dir)
+  if (result.ok && account) noteLoggedOutHere(account)
+  // OWNER RULE (2026-09-07): signing out clears the usage numbers - session, weekly,
+  // five-hour. logoutInstance already drops our cached IDENTITY for the dir; the cached USAGE
+  // outlived it, and since the usage routes serve the cache before checking anything, the row
+  // went on showing the signed-out account's percentages. Dropped here so it clears the moment
+  // the button is pressed rather than whenever a check next happens to run.
+  // Kept as the row's last-known reading, dimmed (owner, 2026-10-01), never as a live one.
+  if (result.ok) dropCachedUsage(desktopKey(dir), { keepLastKnown: true })
+  return c.json(result)
+})
+app.post('/api/instances/:dir/focus', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  return c.json(await focusInstance(dir))
+})
+app.post('/api/instances/:dir/reveal', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  return c.json(await revealInstanceFolder(dir))
+})
+// Create a desktop launcher (.lnk on Windows) that opens THIS instance directly with its
+// isolated --user-data-dir; see core/shortcut.ts. Runs on the daemon's machine, matching the
+// loopback posture of /open and /reveal.
+app.post('/api/instances/:dir/shortcut', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  return c.json(await createInstanceShortcut(dir))
+})
+// One-click shortcut for the lightweight instance-only launcher. Unlike the per-instance shortcut
+// above, this opens the chooser and does not launch Claude until the user selects an account.
+app.post('/api/instance-mode/shortcut', async (c) => {
+  return c.json(await createInstanceModeShortcut())
+})
+
+// --- the orchestrator ----------------------------------------------------------------
+// The Python toolbox under orchestrator/ (see server/src/orchestrator.ts). GET is the menu and a
+// health read; POST runs one script by its menu name. The scripts keep their own rails - nothing
+// acts without the tray icon, a live chat is never moved - so this is a hand on the same keyboard,
+// not a way around them. Loopback-only like every other route here.
+app.get('/api/orchestrator', async (c) => c.json(await orchestratorStatus()))
+app.post('/api/orchestrator/run', async (c) => {
+  // Exact-origin only (or no Origin at all): the shared guard above lets a page on another
+  // LOOPBACK PORT through as "same-site", and this route runs any script with any argv.
+  if (!runOriginAllowed(c.req.header('origin'), c.req.url))
+    return c.json(
+      { ok: false, error: 'orchestrator/run accepts only same-origin or non-browser requests' },
+      403,
+    )
+  const body = await jsonBody(c)
+  // Durable operations (audit AH-09). An `X-Idempotency-Key` header (or body.idempotencyKey)
+  // makes a retry of the same request - after a dropped connection, say - return the ORIGINAL
+  // operation rather than start a second act. `async: true` answers at once with the id, for a
+  // caller that would rather poll than hold a 30-minute connection open.
+  const headerKey = c.req.header('x-idempotency-key')
+  const idempotencyKey =
+    (typeof headerKey === 'string' && headerKey.trim()) ||
+    (typeof body.idempotencyKey === 'string' && body.idempotencyKey.trim()) ||
+    null
+  const invocation = { script: body.script, args: body.args, timeoutMs: body.timeoutMs }
+  // A detached call that would be refused busy is answered like a blocking one (409 now), never
+  // 202-then-refused-inside-the-operation - see wouldRefuseBusy.
+  const refusedNow = body.async === true && wouldRefuseBusy(invocation)
+  const started = startOrchestratorOperation(invocation, { idempotencyKey })
+  if (body.async === true && !refusedNow)
+    return c.json(
+      { ok: true, operationId: started.op.id, status: started.op.status, reused: started.reused },
+      202,
+    )
+  const op = await started.promise
+  const result = op.result ?? { ok: false, error: 'operation finished without a result' }
+  // 409 = that script is already running through this route; 400 = the request itself is wrong.
+  return c.json(
+    { ...result, operationId: op.id, operationStatus: op.status, reused: started.reused },
+    'error' in result ? (result.busy ? 409 : 400) : 200,
+  )
+})
+// The operations behind that route: poll one, list recent ones, cancel a running one. Same
+// origin rule as run: this is control over acts, not a read of the fleet.
+app.get('/api/orchestrator/operations', (c) => c.json({ operations: listOrchestratorOperations() }))
+app.get('/api/orchestrator/operations/:id', (c) => {
+  const op = getOrchestratorOperation(c.req.param('id'))
+  return op ? c.json(op) : c.json(operationMissReason(), 404)
+})
+app.post('/api/orchestrator/operations/:id/cancel', (c) => {
+  if (!runOriginAllowed(c.req.header('origin'), c.req.url))
+    return c.json(
+      {
+        ok: false,
+        error: 'orchestrator operations accept only same-origin or non-browser requests',
+      },
+      403,
+    )
+  const r = cancelOrchestratorOperation(c.req.param('id'))
+  return c.json(r, r.ok ? 200 : 404)
+})
+app.delete('/api/instances/:dir', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  const body = await jsonBody(c)
+  const confirmName = typeof body.confirmName === 'string' ? body.confirmName : undefined
+  // Deleting stays on this PC: login sync leaves its account out here, so the store neither makes
+  // the profile again nor signs the other PCs out of it.
+  const account = readLoginUuid(dir)
+  const result = await removeInstance(dir, { confirmName })
+  if (result.ok && account) setLoginSyncExcluded(account, true)
+  return c.json(result)
+})
+// Update an instance's UI metadata: display label (renaming is now a pure relabel — it never
+// touches the on-disk folder, so it works while the instance is running), plus icon + color.
+// A field present in the body is applied (null clears it to the default); an absent field is
+// left unchanged. Values are sanitized/validated in core/instance-meta.ts.
+app.post('/api/instances/:dir/meta', async (c) => {
+  const dir = await instanceDirParam(c)
+  if (dir instanceof Response) return dir
+  const body = await jsonBody(c)
+
+  const patch: Parameters<typeof setInstanceMeta>[1] = {}
+  if ('label' in body) patch.label = typeof body.label === 'string' ? body.label : null
+  if ('icon' in body) {
+    patch.icon =
+      typeof body.icon === 'string' && (INSTANCE_ICON_KEYS as readonly string[]).includes(body.icon)
+        ? (body.icon as (typeof INSTANCE_ICON_KEYS)[number])
+        : null
+  }
+  if ('color' in body) {
+    patch.color =
+      typeof body.color === 'string' &&
+      (INSTANCE_COLOR_KEYS as readonly string[]).includes(body.color)
+        ? (body.color as (typeof INSTANCE_COLOR_KEYS)[number])
+        : null
+  }
+
+  const meta = setInstanceMeta(dir, patch)
+  return c.json({ ok: true, action: 'meta', dir, message: 'updated', data: meta })
+})
+// No name in the body: one is made up (core/shared.ts firstFreeName). A blank one is still refused.
+app.post('/api/instances', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const name = body?.name === undefined ? freeInstanceName() : body.name
+  if (typeof name !== 'string' || !name.trim()) return c.json({ error: 'name is required' }, 400)
+  return c.json(await createInstance(name))
+})
+
+// --- DeepSeek Harness instances (a home per account; see core/dsh-instances.ts) ------------------
+//
+// ⛔ NO ROUTE HERE EVER RETURNS THE SERVER'S URL. `dsh web` prints a one-time `?token=` that IS the
+// session, so "open" is a server-side action that opens the window itself and answers with an
+// outcome. A route that handed the SPA that URL would put the token in a fetch response, in the
+// browser's memory and in anything watching the loopback socket.
+app.get('/api/dsh-instances', async (c) => c.json(await listDshInstances()))
+app.post('/api/dsh-instances', async (c) => {
+  const body = await jsonBody(c)
+  const name = body.name === undefined ? freeDshName() : body.name
+  if (typeof name !== 'string' || !name.trim()) return c.json({ error: 'name is required' }, 400)
+  return c.json(createDshInstance(name))
+})
+app.post('/api/dsh-instances/:id/launch', async (c) =>
+  c.json(await launchDshInstance(c.req.param('id'))),
+)
+app.post('/api/dsh-instances/:id/quit', async (c) =>
+  c.json(await quitDshInstance(c.req.param('id'))),
+)
+app.post('/api/dsh-instances/:id/rename', async (c) => {
+  const body = await jsonBody(c)
+  if (typeof body.name !== 'string') return c.json({ error: 'name is required' }, 400)
+  return c.json(renameDshInstance(c.req.param('id'), body.name))
+})
+app.delete('/api/dsh-instances/:id', async (c) => {
+  const body = await jsonBody(c)
+  return c.json(
+    deleteDshInstance(c.req.param('id'), {
+      deleteFiles: body.deleteFiles === true,
+      confirmName: typeof body.confirmName === 'string' ? body.confirmName : undefined,
+    }),
+  )
+})

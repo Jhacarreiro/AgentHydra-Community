@@ -1,0 +1,21 @@
+base_url = "https://api.tavily.com"
+transport = "service"
+check_path = "/usage"
+about = "Tavily web search through its REST API."
+website = "https://tavily.com"
+key_url = "https://app.tavily.com"
+docs = "https://docs.tavily.com/documentation/api-reference/endpoint/search"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+capabilities = ["search"]
+
+# Development keys: 100 requests a minute; production keys get 1,000. The lower figure is set.
+# Source: https://docs.tavily.com/documentation/rate-limits.md
+[limits]
+key_rpm = 100
+
+[operations.search]
+method = "POST"
+path = "/search"
+capability = "search"
+response = "json"

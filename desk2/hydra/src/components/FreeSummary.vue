@@ -1,0 +1,123 @@
+<script setup lang="ts">
+// The Free accounts' part of the Usage history card (owner, 2026-10-08: "total tokens ... Claude and ChatGPT ... per
+// each ... also the success rate across which models ... were used on each"): the token totals in the table's window,
+// the success rate by model, and Free tokens per day. A list of every account with its models was here briefly and
+// came out the same day (owner: "don't need this"); each account's tokens are the table's own column. On All the models
+// are one list of every source's (CombinedModels), so `hideModels` leaves out the answered-by-model list.
+import type { FreeProvider } from '@desk/shared/free-instances'
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import HourBars from '@/components/charts/HourBars.vue'
+import ProviderLogo from '@/components/ProviderLogo.vue'
+import { useFreeInstances } from '@/composables/useFreeInstances'
+import { freeStatDays, useFreeStats } from '@/composables/useFreeStats'
+import { useUsageSpan } from '@/composables/useUsagePeriod'
+import { useDesktopTokenWindow } from '@/composables/useTokenWindow'
+import { seriesColor } from '@/lib/chart'
+import { freeLogo } from '@/lib/free-instances'
+import { answeredShare, type FreeTally, summarizeFree } from '@/lib/free-stats'
+import { formatTokens } from '@/lib/kit'
+import { dayLabel } from '@/lib/usage-history'
+
+defineProps<{ hideModels?: boolean }>()
+const { t } = useI18n()
+const { instances, tokens } = useFreeInstances()
+const { rows, failed } = useFreeStats()
+const tokenWindow = useDesktopTokenWindow()
+
+const summary = computed(() => summarizeFree(rows.value ?? [], instances.value, tokens.value, tokenWindow.value, freeStatDays.value, Date.now()))
+const windowLabel = computed(() => ({ '5h': t('freeInstances.stats.window5h'), week: t('freeInstances.stats.windowWeek'), total: t('freeInstances.stats.windowTotal') })[tokenWindow.value])
+const providerLabel = (p: FreeProvider) => (p === 'claude' ? 'Claude' : 'ChatGPT')
+const pct = (x: Pick<FreeTally, 'sent' | 'failed'>) => {
+  const share = answeredShare(x)
+  return share === null ? '–' : `${Math.round(share * 100)}%`
+}
+/** A rate under nine in ten reads as a warning, as the row's own mark does at the far end (health.ts). */
+const rateClass = (x: Pick<FreeTally, 'sent' | 'failed'>) => {
+  const share = answeredShare(x)
+  return share === null ? 'text-muted-foreground' : share < 0.5 ? 'text-destructive' : share < 0.9 ? 'text-warning' : ''
+}
+const tiles = computed(() => (['all', 'claude', 'chatgpt'] as const).map(key => ({
+  key, label: key === 'all' ? t('freeInstances.stats.allFree') : providerLabel(key), ...summary.value.totals[key],
+})))
+const SERIES = ['claude', 'chatgpt'] as const
+const series = SERIES.map(s => ({ key: s, label: providerLabel(s), color: seriesColor(s, SERIES) }))
+const dayBars = computed(() => summary.value.days.map(d => ({ label: dayLabel(d.key), values: [d.claude, d.chatgpt] })))
+const daysEmpty = computed(() => summary.value.days.every(d => d.claude + d.chatgpt === 0))
+const { freeSpan } = useUsageSpan()
+/** A failure's error code in words (server/src/free-instances/stats.ts keeps them by day); an unlisted one shows as is. */
+const WHY: Record<string, string> = {
+  generation_error: 'freeInstances.stats.why.generation_error', answer_not_confirmed: 'freeInstances.stats.why.answer_not_confirmed',
+  not_found: 'freeInstances.stats.why.not_found', rate_limited: 'freeInstances.stats.why.rate_limited',
+  http_rejected: 'freeInstances.stats.why.http_rejected', http_verification_required: 'freeInstances.stats.why.http_verification_required',
+  login_required: 'freeInstances.stats.why.login_required', network_error: 'freeInstances.stats.why.network_error',
+  operation_interrupted: 'freeInstances.stats.why.operation_interrupted', stream_interrupted: 'freeInstances.stats.why.stream_interrupted',
+  response_pending: 'freeInstances.stats.why.response_pending', unknown: 'freeInstances.stats.why.unknown',
+}
+/** The failures' three most common reasons ("150 reply failed, 30 limit reached"). */
+function whyText(x: FreeTally): string {
+  return Object.entries(x.why).sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([code, n]) => `${n} ${WHY[code] ? t(WHY[code]) : code.replace(/_/g, ' ')}`).join(', ')
+}
+const messagesTip = (x: FreeTally) => {
+  const why = whyText(x)
+  return t(why ? 'freeInstances.stats.messagesWhyTip' : 'freeInstances.stats.messagesTip', { sent: x.sent, failed: x.failed, span: freeSpan.value, why })
+}
+</script>
+
+<template>
+  <div class="space-y-3">
+    <h3 class="text-xs font-semibold">{{ $t('freeInstances.stats.title') }}</h3>
+    <div class="grid grid-cols-3 gap-2">
+      <div v-for="tile in tiles" :key="tile.key" class="rounded-md border px-2.5 py-2">
+        <p class="flex items-center gap-1.5 text-2xs text-muted-foreground">
+          <ProviderLogo v-if="tile.key !== 'all'" :provider="freeLogo(tile.key)" class="size-3" />
+          {{ tile.label }}
+        </p>
+        <p class="text-base font-semibold tabular-nums">
+          {{ formatTokens(tile.tokens) }}
+          <span class="text-2xs font-normal text-muted-foreground">{{ $t('freeInstances.stats.tokensIn', { window: windowLabel }) }}</span>
+        </p>
+        <p class="text-2xs tabular-nums text-muted-foreground" :title="messagesTip(tile)">
+          <span :class="rateClass(tile)">{{ pct(tile) }}</span>
+          {{ $t('freeInstances.stats.answeredOf', { sent: tile.sent, span: freeSpan }) }}
+        </p>
+      </div>
+    </div>
+
+    <p v-if="failed" class="py-2 text-center text-2xs text-muted-foreground">{{ $t('freeInstances.stats.unavailable') }}</p>
+    <template v-else>
+      <div v-if="!hideModels">
+        <h4 class="mb-1 text-2xs font-semibold text-muted-foreground">{{ $t('freeInstances.stats.byModel', { span: freeSpan }) }}</h4>
+        <p v-if="!summary.models.length" class="py-2 text-center text-2xs text-muted-foreground">{{ $t('freeInstances.stats.noModels') }}</p>
+        <ul v-else class="divide-y rounded-md border text-xs">
+          <li v-for="m in summary.models" :key="`${m.provider}/${m.model}`" class="flex items-center gap-3 px-2.5 py-1.5">
+            <span class="flex min-w-40 items-center gap-1.5">
+              <ProviderLogo :provider="freeLogo(m.provider)" class="size-3.5 shrink-0" />
+              <span class="truncate">{{ m.model }}</span>
+            </span>
+            <span class="inline-flex w-28 items-baseline gap-1 tabular-nums" :title="messagesTip(m)">
+              <span :class="rateClass(m)">{{ pct(m) }}</span>
+              <span class="text-2xs text-muted-foreground">{{ $t('freeInstances.stats.ofSent', { sent: m.sent }) }}</span>
+            </span>
+            <span class="tabular-nums">{{ formatTokens(m.tokens) }} <span class="text-2xs text-muted-foreground">{{ $t('freeInstances.stats.tokens') }}</span></span>
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h4 class="mb-1 text-2xs font-semibold text-muted-foreground">{{ $t('freeInstances.stats.perDay', { span: freeSpan }) }}</h4>
+        <p v-if="daysEmpty" class="py-2 text-center text-2xs text-muted-foreground">{{ $t('freeInstances.stats.noTokens') }}</p>
+        <template v-else>
+          <HourBars :hours="dayBars" :series="series" :format-value="formatTokens" height-class="h-20" />
+          <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-3xs text-muted-foreground">
+            <li v-for="s in series" :key="s.key" class="flex items-center gap-1">
+              <span class="inline-block size-2 rounded-sm bg-(--dot-c)" :style="{ '--dot-c': s.color }"></span>
+              {{ s.label }}
+            </li>
+          </ul>
+        </template>
+      </div>
+    </template>
+  </div>
+</template>

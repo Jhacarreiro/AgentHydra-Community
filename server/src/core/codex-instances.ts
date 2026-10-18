@@ -1,0 +1,803 @@
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { CODEX_HOME, CONFIG_DIR, resolveCodexExe } from '../config'
+import type { CodexInstance } from '../types'
+import { localCodexAccount } from './codex-account'
+import {
+  type CodexDesktopRuntime,
+  codexDesktopRunState,
+  codexDesktopUserDataDir,
+  codexPathKey,
+  defaultCodexDesktopUserDataDir,
+  focusCodexDesktop,
+  listCodexDesktopProcesses,
+  openCodexDesktop,
+  quitCodexDesktop,
+  type ScanDesktopProcesses,
+  scanCodexDesktopProcesses,
+} from './codex-desktop'
+import { instanceNumbers, instanceRef } from './instance-numbers'
+import {
+  describeStoreRefusal,
+  type JsonStoreMutation,
+  type JsonStoreSpec,
+  mutateJsonStore,
+  readJsonStore,
+} from './json-store'
+import {
+  CODEX_LAUNCH_EFFORTS,
+  type LaunchOptionsInput,
+  launchOptionError,
+  needsCmdLauncher,
+  scheduleLauncherCleanup,
+  windowsTerminalArgv,
+  writeCmdLauncher,
+} from './launch-options'
+import { isPathInside, normalizePath } from './paths'
+import { type CMActionResult, firstFreeName } from './shared'
+
+const CODEX_INSTANCES_ROOT = join(CONFIG_DIR, 'codex-instances')
+const STORE_PATH = join(CONFIG_DIR, 'codex-instances.json')
+const NAME_MAX = 60
+
+/** The store deliberately does NOT hold `num`: the number registry (core/instance-numbers.ts) owns
+ *  it, so there is exactly one place it can be assigned from and no stale mirror to reconcile. */
+type StoredCodexInstance = Omit<
+  CodexInstance,
+  | 'num'
+  | 'loggedIn'
+  | 'account'
+  | 'desktopUserDataDir'
+  | 'isDesktopRunning'
+  | 'desktopPid'
+  | 'isExternal'
+  | 'isDefault'
+>
+
+interface Store {
+  instances: StoredCodexInstance[]
+  /** CODEX_HOMEs of deleted instances that Codex's sandbox service still held a lock in (see
+   *  onlySandboxGuardsLeft). Retried by sweepCodexLeftovers until they are gone. */
+  leftoverDirs?: string[]
+}
+
+// Persistence goes through core/json-store.ts, exactly as cli-instances.ts's does: a corrupt or
+// unreadable registry is never mistaken for an empty one, writes are atomic, and mutations hold
+// the interprocess lock shared with the quick-instance daemon. See that file for the why.
+
+const STORE_WHAT = 'Codex instance registry'
+
+const STORE_SPEC: JsonStoreSpec<Store> = {
+  path: STORE_PATH,
+  decode: (parsed) => {
+    if (!parsed || typeof parsed !== 'object') return null
+    const instances = (parsed as { instances?: unknown }).instances
+    if (!Array.isArray(instances)) return null
+    const leftovers = (parsed as { leftoverDirs?: unknown }).leftoverDirs
+    return {
+      instances: instances as StoredCodexInstance[],
+      ...(Array.isArray(leftovers)
+        ? { leftoverDirs: leftovers.filter((d): d is string => typeof d === 'string') }
+        : {}),
+    }
+  },
+  empty: () => ({ instances: [] }),
+}
+
+let reportedStoreFailure: string | null = null
+
+/** READERS: the store, or empty when missing. A damaged file also reads as empty - logged once,
+ *  never written back; every mutator refuses on the same condition. */
+function readStore(): Store {
+  const read = readJsonStore(STORE_SPEC)
+  if (read.status === 'ok') {
+    reportedStoreFailure = null
+    return read.value
+  }
+  if (read.status === 'missing') return STORE_SPEC.empty()
+  const key = `${read.status}:${read.reason}`
+  if (reportedStoreFailure !== key) {
+    reportedStoreFailure = key
+    console.error(
+      `[codex-instances] ${STORE_PATH} is ${read.status} (${read.reason}). Listing no stored Codex instances and refusing every change until it is repaired; the file has NOT been modified.`,
+    )
+  }
+  return STORE_SPEC.empty()
+}
+
+function mutate<R>(fn: (store: Store) => { result: R; changed: boolean }): JsonStoreMutation<R> {
+  return mutateJsonStore(STORE_SPEC, fn)
+}
+
+function refusal(
+  action: string,
+  dir: string | null,
+  data: Record<string, unknown>,
+  failure: { status: 'corrupt' | 'unreadable' | 'locked' | 'write-failed'; reason: string },
+): CMActionResult {
+  return {
+    ok: false,
+    action,
+    dir,
+    message: describeStoreRefusal(STORE_WHAT, STORE_PATH, failure),
+    data: { ...data, registry: failure.status, reason: failure.reason },
+  }
+}
+
+/** The on-disk layout versus the registry; the Codex twin of reconcileCliInstanceDirs. */
+export interface CodexInstanceReconciliation {
+  registry: 'ok' | 'missing' | 'corrupt' | 'unreadable'
+  orphanDirs: string[]
+  missingDirs: Array<{ id: string; name: string; codexHome: string }>
+}
+
+/** READ-ONLY report of CODEX_HOMEs no record claims and records whose home is gone. */
+export function reconcileCodexInstanceDirs(): CodexInstanceReconciliation {
+  const read = readJsonStore(STORE_SPEC)
+  const records = read.status === 'ok' ? read.value.instances : []
+  const claimed = new Set(records.map((rec) => basename(rec.codexHome)))
+  let orphanDirs: string[] = []
+  try {
+    if (existsSync(CODEX_INSTANCES_ROOT)) {
+      orphanDirs = readdirSync(CODEX_INSTANCES_ROOT, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !claimed.has(entry.name))
+        .map((entry) => join(CODEX_INSTANCES_ROOT, entry.name))
+        .sort()
+    }
+  } catch {
+    // An unreadable root reports no orphans; the registry status says whether to trust it.
+  }
+  const missingDirs = records
+    .map((rec) => ({ id: rec.id, name: rec.name, codexHome: rec.codexHome }))
+    .filter((rec) => !existsSync(rec.codexHome))
+  return { registry: read.status, orphanDirs, missingDirs }
+}
+
+export function isCodexLoggedIn(codexHome: string): boolean {
+  try {
+    return existsSync(join(codexHome, 'auth.json'))
+  } catch {
+    return false
+  }
+}
+
+/** An instance row before its number is stamped on. Every builder below produces this shape; the
+ *  number is attached in ONE place (numbered/withNumbers) so a row can never escape without one. */
+type UnnumberedCodexInstance = Omit<CodexInstance, 'num'>
+
+/** Stamp the permanent number onto a whole list in a single registry read/write. */
+function withNumbers(rows: UnnumberedCodexInstance[]): CodexInstance[] {
+  const numbers = instanceNumbers(rows.map((r) => instanceRef('codex', r.id)))
+  return rows.map((row) => ({ ...row, num: numbers.get(instanceRef('codex', row.id)) ?? 0 }))
+}
+
+function hydrate(
+  instance: StoredCodexInstance,
+  runtime: CodexDesktopRuntime | null = null,
+): UnnumberedCodexInstance {
+  return {
+    ...instance,
+    loggedIn: isCodexLoggedIn(instance.codexHome),
+    // Eager, because it is cheap here: auth.json is plain JSON and the identity is a base64 payload
+    // decode, so the Codex table gets an email/plan on first paint with no extra request. The live
+    // usage route refreshes the plan from the server-computed value (see codex-account.ts).
+    account: localCodexAccount(instance.codexHome),
+    desktopUserDataDir: codexDesktopUserDataDir(instance.codexHome),
+    isDesktopRunning: runtime !== null,
+    desktopPid: runtime?.pid ?? null,
+    isExternal: false,
+    isDefault: false,
+  }
+}
+
+/** Stable synthetic id for the default install. Not a uuid, so it can never collide with a stored
+ *  row and is recognizable in a usage cache key (`codex:default`). */
+export const DEFAULT_CODEX_INSTANCE_ID = 'default'
+
+/** Synthetic id for a Codex Desktop discovered running from an unrecognized profile. */
+const externalIdFor = (userDataDir: string): string => `external:${codexPathKey(userDataDir)}`
+
+/**
+ * The rows this app did not create: the DEFAULT Codex install, plus any Codex Desktop running from
+ * a profile that belongs to no stored instance.
+ *
+ * Why this exists: before it, `listCodexInstances` returned only rows created through this app, so a
+ * user with a perfectly normal Codex Desktop running saw an empty table and the message "No Codex
+ * instances found" (owner-reported 2026-08-07). The Claude side already lists such installs via
+ * `CMInstance.isExternal`; this is the same rule for Codex.
+ *
+ * The default install is listed WHETHER OR NOT it is running, because its identity lives in
+ * CODEX_HOME on disk and is readable either way — the same reason the Claude table resolves stopped
+ * instances. Its profile path is taken from the running process when there is one (authoritative,
+ * no platform guessing) and from the documented default otherwise.
+ */
+function discoveredInstances(
+  runtimes: CodexDesktopRuntime[],
+  claimed: Set<string>,
+): UnnumberedCodexInstance[] {
+  const out: UnnumberedCodexInstance[] = []
+
+  const defaultProfile = defaultCodexDesktopUserDataDir()
+  const defaultKey = codexPathKey(defaultProfile)
+  const defaultRuntime = runtimes.find((r) => codexPathKey(r.desktopUserDataDir) === defaultKey)
+  if (!claimed.has(codexPathKey(CODEX_HOME))) {
+    out.push({
+      id: DEFAULT_CODEX_INSTANCE_ID,
+      name: basename(CODEX_HOME),
+      codexHome: CODEX_HOME,
+      loggedIn: isCodexLoggedIn(CODEX_HOME),
+      account: localCodexAccount(CODEX_HOME),
+      desktopUserDataDir: defaultRuntime?.desktopUserDataDir ?? defaultProfile,
+      isDesktopRunning: defaultRuntime !== undefined,
+      desktopPid: defaultRuntime?.pid ?? null,
+      isExternal: true,
+      isDefault: true,
+      createdAt: 0,
+    })
+  }
+
+  for (const runtime of runtimes) {
+    const key = codexPathKey(runtime.desktopUserDataDir)
+    if (key === defaultKey) continue // already the default row above
+    // A profile we launched sits at <codexHome>/desktop, so the parent IS the CODEX_HOME. For a
+    // profile someone else chose that inference can be wrong, which is why the row is flagged
+    // external: it is listed and readable, never renamed or deleted.
+    const codexHome = dirname(runtime.desktopUserDataDir)
+    if (claimed.has(codexPathKey(codexHome))) continue
+    claimed.add(codexPathKey(codexHome))
+    out.push({
+      id: externalIdFor(runtime.desktopUserDataDir),
+      name: basename(codexHome),
+      codexHome,
+      loggedIn: isCodexLoggedIn(codexHome),
+      account: localCodexAccount(codexHome),
+      desktopUserDataDir: runtime.desktopUserDataDir,
+      isDesktopRunning: true,
+      desktopPid: runtime.pid,
+      isExternal: true,
+      isDefault: false,
+      createdAt: 0,
+    })
+  }
+
+  return out
+}
+
+export interface ListCodexInstancesOptions {
+  listDesktopProcesses?: () => Promise<CodexDesktopRuntime[]>
+}
+
+export async function listCodexInstances(
+  options: ListCodexInstancesOptions = {},
+): Promise<CodexInstance[]> {
+  sweepCodexLeftovers()
+  const runtimes = await (options.listDesktopProcesses ?? listCodexDesktopProcesses)()
+  const runtimeByDir = new Map(
+    runtimes.map((runtime) => [normalizePath(runtime.desktopUserDataDir), runtime]),
+  )
+  const stored = readStore().instances.map((instance) =>
+    hydrate(
+      instance,
+      runtimeByDir.get(normalizePath(codexDesktopUserDataDir(instance.codexHome))) ?? null,
+    ),
+  )
+  // Stored rows claim their CODEX_HOME first, so discovery can never duplicate one that this app
+  // manages (e.g. an instance deliberately pointed at the default home).
+  const claimed = new Set(stored.map((instance) => codexPathKey(instance.codexHome)))
+  return withNumbers([...stored, ...discoveredInstances(runtimes, claimed)])
+}
+
+/** One Codex instance reduced to what a transcript reader needs: where its store is, and what to
+ *  call the account that owns it. */
+export interface CodexInstanceStore {
+  /** `default` for the non-isolated install, else the stored instance's uuid. */
+  id: string
+  /** The permanent short handle (`#7`), shared with the Claude desktop + CLI instances in one
+   *  sequence. 0 only when the number registry could not be read. */
+  num: number
+  /** What the UI calls it: the stored label, or the CODEX_HOME folder name for the default. */
+  name: string
+  /** That instance's CODEX_HOME — the directory holding `sessions/`, `archived_sessions/` and
+   *  `session_index.jsonl`. */
+  codexHome: string
+  /** `codex:<id>` — the same ref instance-numbers.ts and usage-service.ts already key on. */
+  ref: string
+}
+
+/**
+ * Every Codex CODEX_HOME whose transcripts this machine can read, for the session indexer.
+ *
+ * WHY THIS EXISTS: the indexer resolved the Codex store from `CODEX_HOME` alone, so every chat on
+ * a MANAGED Codex account — which lives under `<CONFIG_DIR>/codex-instances/<id>/sessions` — was
+ * invisible to listing, search and tailing. Measured 2026-09-11: 100 Codex rows, not one of them
+ * from a managed instance, and `tail_session` answering "transcript not found" for a 2.9 MB
+ * rollout that was on disk the whole time. Three managed accounts' entire history was unreachable
+ * from the tools whose whole job is to answer "which account was doing X".
+ *
+ * SYNCHRONOUS AND STORE-ONLY, unlike {@link listCodexInstances}, and both halves are deliberate.
+ * The transcript index rebuilds on a TTL behind every session list, so the roots it scans must be
+ * answerable from a file read; listCodexInstances enumerates desktop PROCESSES, which on Windows
+ * means shelling out, and that cannot go inside a sweep. The rows it would add are also the ones
+ * this must not serve: an EXTERNAL Codex Desktop is only discovered while it is running, so its
+ * transcripts would appear in the index and vanish again with the app — a store that blinks is
+ * worse than an honest omission.
+ *
+ * The DEFAULT install is included, under the same synthetic `default` id listCodexInstances gives
+ * it, so EVERY Codex row can name the account that wrote it rather than only the managed ones.
+ */
+export function codexInstanceStores(): CodexInstanceStore[] {
+  const rows = readStore().instances.map((instance) => ({
+    id: instance.id,
+    name: instance.name,
+    codexHome: instance.codexHome,
+  }))
+  // First, so the default install's roots are scanned in exactly the order they were before this
+  // function existed. Skipped when a stored instance is deliberately pointed at the default home,
+  // which is the same claim rule listCodexInstances applies to discovery.
+  if (!rows.some((row) => codexPathKey(row.codexHome) === codexPathKey(CODEX_HOME)))
+    rows.unshift({
+      id: DEFAULT_CODEX_INSTANCE_ID,
+      name: basename(CODEX_HOME),
+      codexHome: CODEX_HOME,
+    })
+  const numbers = instanceNumbers(rows.map((row) => instanceRef('codex', row.id)))
+  return rows.map((row) => {
+    const ref = instanceRef('codex', row.id)
+    return { ...row, ref, num: numbers.get(ref) ?? 0 }
+  })
+}
+
+/**
+ * One STORED instance by id. Stays synchronous, and stays store-only, because every caller is a
+ * mutating action (launch / open / quit / rename / delete) and those apply solely to instances this
+ * app created — a discovered row has no store entry to act on.
+ */
+export function getCodexInstance(id: string): CodexInstance | null {
+  const instance = readStore().instances.find((candidate) => candidate.id === id)
+  return instance ? (withNumbers([hydrate(instance)])[0] ?? null) : null
+}
+
+/**
+ * One instance by id INCLUDING the discovered ones, for the read-only routes (account, usage) —
+ * so the default install's identity and quota are readable exactly like a stored instance's.
+ *
+ * Falls back to the (cached) process scan only when the id is not in the store, so the common
+ * stored-row lookup stays a pure file read.
+ *
+ * Resolve an id that may be a DISCOVERED instance rather than one this app created.
+ *
+ * Takes the same process-listing override as listCodexInstances, and forwards it. Without that a
+ * caller (or a test) resolving an id has no way to avoid enumerating the machine's real desktop
+ * processes, which on Windows means shelling out: a test asserting only that ids resolve was doing
+ * a full process sweep, and timed out on a cold CI runner at five seconds.
+ */
+export async function findCodexInstance(
+  id: string,
+  options: ListCodexInstancesOptions = {},
+): Promise<CodexInstance | null> {
+  const stored = getCodexInstance(id)
+  if (stored) return stored
+  if (id !== DEFAULT_CODEX_INSTANCE_ID && !id.startsWith('external:')) return null
+  return (await listCodexInstances(options)).find((candidate) => candidate.id === id) ?? null
+}
+
+function validName(name: string): string | null {
+  const value = (name ?? '').trim()
+  if (!value) return 'Name cannot be empty.'
+  if (value.length > NAME_MAX) return `Name must be ≤ ${NAME_MAX} chars.`
+  return null
+}
+
+/** The first `Codex <n>` no instance is called, for a create that names nothing. Not the person's own name
+ *  (`ownName`), so the row is named after its account once it signs in. */
+export function freeCodexName(): string {
+  const names = new Set(readStore().instances.map((i) => i.name.trim().toLowerCase()))
+  return firstFreeName('Codex ', (name) => names.has(name.toLowerCase()))
+}
+
+export function createCodexInstance(name: string): CMActionResult {
+  const reason = validName(name)
+  if (reason)
+    return {
+      ok: false,
+      action: 'codex-create',
+      dir: null,
+      message: reason,
+      data: { name },
+    }
+
+  const id = crypto.randomUUID()
+  const codexHome = join(CODEX_INSTANCES_ROOT, id)
+  try {
+    mkdirSync(codexHome, { recursive: true })
+  } catch (error) {
+    return {
+      ok: false,
+      action: 'codex-create',
+      dir: codexHome,
+      message: `Failed to create CODEX_HOME '${codexHome}': ${error instanceof Error ? error.message : String(error)}`,
+      data: { name },
+    }
+  }
+
+  const instance: StoredCodexInstance = {
+    id,
+    name: name.trim(),
+    codexHome,
+    createdAt: Date.now(),
+  }
+  const outcome = mutate((store) => {
+    store.instances.push(instance)
+    return { result: null, changed: true }
+  })
+  if (!outcome.ok) {
+    // The record never landed; take the freshly minted home back rather than leave an orphan.
+    try {
+      rmSync(codexHome, { recursive: true, force: true })
+    } catch {
+      // Best effort; reconcileCodexInstanceDirs reports it if it survives.
+    }
+    return refusal('codex-create', null, { name }, outcome)
+  }
+  return {
+    ok: true,
+    action: 'codex-create',
+    dir: codexHome,
+    message: `Codex instance '${instance.name}' created. Use Log in to authenticate it.`,
+    data: { id, codexHome },
+  }
+}
+
+/** A name renames it and marks the name as the person's own (`ownName`); null keeps the name and
+ *  drops the mark, so the table names the row after its account again. */
+export function renameCodexInstance(id: string, name: string | null): CMActionResult {
+  const reason = name === null ? null : validName(name)
+  if (reason)
+    return {
+      ok: false,
+      action: 'codex-rename',
+      dir: null,
+      message: reason,
+      data: { id },
+    }
+  const outcome = mutate((store) => {
+    const instance = store.instances.find((candidate) => candidate.id === id)
+    if (!instance) return { result: null, changed: false }
+    if (name === null) delete instance.ownName
+    else {
+      instance.name = name.trim()
+      instance.ownName = true
+    }
+    return { result: instance.codexHome, changed: true }
+  })
+  if (!outcome.ok) return refusal('codex-rename', null, { id }, outcome)
+  if (outcome.result === null)
+    return {
+      ok: false,
+      action: 'codex-rename',
+      dir: null,
+      message: 'Codex instance not found.',
+      data: { id },
+    }
+  return {
+    ok: true,
+    action: 'codex-rename',
+    dir: outcome.result,
+    message: 'Renamed.',
+    data: { id },
+  }
+}
+
+/** Codex's Windows sandbox service (codex-windows-sandbox-service.exe, a system service) keeps a
+ *  `.codex-provisioning-<hash>.guard` file open in every CODEX_HOME it has provisioned, for as long
+ *  as it runs, so that folder cannot be removed until the service restarts (found 2026-09-30: a
+ *  signed-out instance's delete failed EBUSY on exactly that one empty file). */
+const SANDBOX_GUARD_RE = /^\.codex-provisioning-[0-9a-f]+\.guard$/i
+
+/** Whether what is left of a CODEX_HOME is only sandbox guards (at least one): nothing of the
+ *  login or its sessions, just the lock the sandbox service holds. */
+function onlySandboxGuardsLeft(dir: string): boolean {
+  let guards = 0
+  const walk = (at: string): boolean => {
+    for (const entry of readdirSync(at, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!walk(join(at, entry.name))) return false
+      } else if (SANDBOX_GUARD_RE.test(entry.name)) guards++
+      else return false
+    }
+    return true
+  }
+  try {
+    return walk(dir) && guards > 0
+  } catch {
+    return false
+  }
+}
+
+/** Remove a CODEX_HOME. When the one-shot remove fails, every entry is removed on its own before
+ *  the error is passed on, so a single held file costs that file, not the whole login beside it. */
+function removeCodexHome(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch (error) {
+    try {
+      for (const entry of readdirSync(dir)) {
+        try {
+          rmSync(join(dir, entry), { recursive: true, force: true })
+        } catch {
+          // Held; onlySandboxGuardsLeft decides whether that still counts as deleted.
+        }
+      }
+    } catch {
+      // Unreadable or already gone: the remove's own error below is the one worth reporting.
+    }
+    throw error
+  }
+}
+
+let lastLeftoverSweep = 0
+
+/** Retry the folders deleted instances left behind in the sandbox service's hands (at most every
+ *  10 minutes; the service lets go when it restarts). Only paths this app recorded are touched. */
+function sweepCodexLeftovers(now = Date.now()): void {
+  if (now - lastLeftoverSweep < 10 * 60_000) return
+  lastLeftoverSweep = now
+  const store = readStore()
+  const pending = store.leftoverDirs ?? []
+  if (!pending.length) return
+  const claimed = new Set(store.instances.map((i) => normalizePath(i.codexHome)))
+  // Re-checked before every delete: a path a record claims again, or one that now holds anything
+  // but the sandbox guard, is dropped from the list and never removed.
+  const gone = pending.filter((dir) => {
+    if (!isPathInside(CODEX_INSTANCES_ROOT, dir) || claimed.has(normalizePath(dir))) return true
+    if (!existsSync(dir)) return true
+    if (!onlySandboxGuardsLeft(dir)) return true
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Still held.
+    }
+    return !existsSync(dir)
+  })
+  if (!gone.length) return
+  mutate((store) => {
+    store.leftoverDirs = (store.leftoverDirs ?? []).filter((d) => !gone.includes(d))
+    return { result: null, changed: true }
+  })
+}
+
+export interface DeleteCodexInstanceOptions {
+  /** Legacy/test injection: a plain runtime list, treated as a SUCCESSFUL scan. */
+  listDesktopProcesses?: () => Promise<CodexDesktopRuntime[]>
+  /** Injected scan that can also say "could not enumerate"; wins over listDesktopProcesses. */
+  scanDesktopProcesses?: ScanDesktopProcesses
+  /** Injected recursive remove, for tests that need the filesystem step to fail on every OS. */
+  removeDir?: (dir: string) => void
+}
+
+/**
+ * Guarded delete. Refuses when the name does not confirm, when the desktop is running, and - since
+ * audit AH-02 - when the OS could not say whether it is running: a failed process scan used to read
+ * as "not running" and wave the delete through. Since AH-03 the record is also kept whenever the
+ * CODEX_HOME survives the remove, instead of being dropped with a success message over a login
+ * that is still on disk - unless all that survives is the lock Codex's sandbox service holds
+ * (onlySandboxGuardsLeft): then the login is gone, the delete stands and the folder is retried.
+ */
+export async function deleteCodexInstance(
+  id: string,
+  confirmName?: string,
+  options: DeleteCodexInstanceOptions = {},
+): Promise<CMActionResult> {
+  const instance = readStore().instances.find((candidate) => candidate.id === id)
+  if (!instance)
+    return {
+      ok: false,
+      action: 'codex-delete',
+      dir: null,
+      message: 'Codex instance not found.',
+      data: { id },
+    }
+  if (!confirmName || confirmName !== instance.name)
+    return {
+      ok: false,
+      action: 'codex-delete',
+      dir: instance.codexHome,
+      message: `Refusing to delete: confirmName must exactly match '${instance.name}'.`,
+      data: { id },
+    }
+
+  const legacyList = options.listDesktopProcesses
+  const scan: ScanDesktopProcesses =
+    options.scanDesktopProcesses ??
+    (legacyList
+      ? async () => ({ ok: true, runtimes: await legacyList() })
+      : scanCodexDesktopProcesses)
+  const runState = await codexDesktopRunState(instance, scan)
+  if (runState.state === 'unknown') {
+    return {
+      ok: false,
+      action: 'codex-delete',
+      dir: instance.codexHome,
+      message: `Could not verify whether this Codex Desktop instance is running (${runState.reason}). Refusing to delete: an unknown state is not a stopped instance. Retry once process enumeration works.`,
+      data: { id, runningState: 'unknown', reason: runState.reason },
+    }
+  }
+  if (runState.state === 'running') {
+    return {
+      ok: false,
+      action: 'codex-delete',
+      dir: instance.codexHome,
+      message: 'Quit this Codex Desktop instance before deleting it.',
+      data: { id, runningState: 'running', pid: runState.runtime.pid },
+    }
+  }
+
+  // Only the sandbox service's lock left behind: the login is gone, so the delete stands and the
+  // empty folder is retried later (sweepCodexLeftovers).
+  let heldBySandbox = false
+  if (isPathInside(CODEX_INSTANCES_ROOT, instance.codexHome)) {
+    const removeDir = options.removeDir ?? removeCodexHome
+    let failure: string | null = null
+    try {
+      removeDir(instance.codexHome)
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error)
+    }
+    if (existsSync(instance.codexHome)) {
+      heldBySandbox = onlySandboxGuardsLeft(instance.codexHome)
+      if (!heldBySandbox)
+        return {
+          ok: false,
+          action: 'codex-delete',
+          dir: instance.codexHome,
+          message: failure
+            ? `Could not delete '${instance.codexHome}': ${failure}. The instance record was kept so the delete can be retried; part of its folder may already be gone, so if you keep it, it may need signing in again.`
+            : `'${instance.codexHome}' still exists after the delete (something is holding it open). The instance record was kept so the delete can be retried; part of its folder may already be gone, so if you keep it, it may need signing in again.`,
+          data: { id, partial: true },
+        }
+    }
+  }
+  const outcome = mutate((store) => {
+    const index = store.instances.findIndex((candidate) => candidate.id === id)
+    if (index < 0) return { result: false, changed: false }
+    store.instances.splice(index, 1)
+    if (heldBySandbox)
+      store.leftoverDirs = [
+        ...(store.leftoverDirs ?? []).filter((d) => d !== instance.codexHome),
+        instance.codexHome,
+      ]
+    return { result: true, changed: true }
+  })
+  if (!outcome.ok)
+    return refusal('codex-delete', instance.codexHome, { id, dirRemoved: true }, outcome)
+  if (heldBySandbox)
+    return {
+      ok: true,
+      action: 'codex-delete',
+      dir: instance.codexHome,
+      message: `Codex instance '${instance.name}' deleted. Codex's sandbox service still holds one empty lock file in its old folder, so that folder is removed once the service lets go of it (after a restart at the latest).`,
+      data: { id, leftover: instance.codexHome },
+    }
+  return {
+    ok: true,
+    action: 'codex-delete',
+    dir: instance.codexHome,
+    message: `Codex instance '${instance.name}' deleted.`,
+    data: { id },
+  }
+}
+
+function missingCodexInstance(action: string, id: string): CMActionResult {
+  return {
+    ok: false,
+    action,
+    dir: null,
+    message: 'Codex instance not found.',
+    data: { id },
+  }
+}
+
+export async function openCodexDesktopInstance(id: string): Promise<CMActionResult> {
+  const instance = getCodexInstance(id)
+  return instance ? openCodexDesktop(instance) : missingCodexInstance('codex-desktop-open', id)
+}
+
+export async function focusCodexDesktopInstance(id: string): Promise<CMActionResult> {
+  const instance = getCodexInstance(id)
+  return instance ? focusCodexDesktop(instance) : missingCodexInstance('codex-desktop-focus', id)
+}
+
+export async function quitCodexDesktopInstance(id: string): Promise<CMActionResult> {
+  const instance = getCodexInstance(id)
+  return instance ? quitCodexDesktop(instance) : missingCodexInstance('codex-desktop-quit', id)
+}
+
+export interface CodexLaunchOptions extends LaunchOptionsInput {
+  login?: boolean
+}
+
+export function launchCodexInstance(id: string, options: CodexLaunchOptions = {}): CMActionResult {
+  const instance = getCodexInstance(id)
+  if (!instance)
+    return {
+      ok: false,
+      action: 'codex-launch',
+      dir: null,
+      message: 'Codex instance not found.',
+      data: { id },
+    }
+
+  const optionError = options.login ? null : launchOptionError(options, CODEX_LAUNCH_EFFORTS)
+  if (optionError)
+    return {
+      ok: false,
+      action: 'codex-launch',
+      dir: instance.codexHome,
+      message: optionError,
+      data: { id },
+    }
+
+  const exe = resolveCodexExe()
+  const args: string[] = options.login ? ['login'] : []
+  if (!options.login && typeof options.model === 'string') args.push('--model', options.model)
+  if (!options.login && typeof options.effort === 'string')
+    args.push('-c', `model_reasoning_effort=${JSON.stringify(options.effort)}`)
+  const env = {
+    ...(process.env as Record<string, string>),
+    CODEX_HOME: instance.codexHome,
+  }
+
+  try {
+    if (process.platform === 'win32') {
+      // windowsTerminalArgv keeps the exe and args as separate argv entries — see the warning
+      // there; pre-quoting and joining is what made this print "is not recognized".
+      //
+      // The reasoning-effort override is `model_reasoning_effort="high"`, whose quotes are part of
+      // the value. cmd.exe cannot carry those through argv at all, so that one case goes via a
+      // launcher script instead, where the arg is written verbatim (see needsCmdLauncher).
+      const launcher = needsCmdLauncher(args) ? writeCmdLauncher(exe, args) : null
+      Bun.spawn(launcher ? windowsTerminalArgv(launcher) : windowsTerminalArgv(exe, args), {
+        env,
+        stdin: 'ignore',
+        stdout: 'ignore',
+        stderr: 'ignore',
+        // Hide only the transient launcher cmd; `start` still creates the visible inner terminal.
+        windowsHide: true,
+      })
+      if (launcher) scheduleLauncherCleanup(launcher)
+    } else if (process.platform === 'darwin') {
+      const command = `CODEX_HOME=${JSON.stringify(instance.codexHome)} ${JSON.stringify(exe)} ${args.map((arg) => JSON.stringify(arg)).join(' ')}`
+      Bun.spawn([
+        'osascript',
+        '-e',
+        `tell application "Terminal" to do script ${JSON.stringify(command)}`,
+      ])
+    } else {
+      const command = `${JSON.stringify(exe)} ${args.map((arg) => JSON.stringify(arg)).join(' ')}; exec bash`
+      Bun.spawn(['x-terminal-emulator', '-e', 'bash', '-lc', command], {
+        env,
+        stdin: 'ignore',
+        stdout: 'ignore',
+        stderr: 'ignore',
+      })
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      action: options.login ? 'codex-login' : 'codex-launch',
+      dir: instance.codexHome,
+      message: `Failed to open a terminal: ${error instanceof Error ? error.message : String(error)}`,
+      data: { id },
+    }
+  }
+
+  return {
+    ok: true,
+    action: options.login ? 'codex-login' : 'codex-launch',
+    dir: instance.codexHome,
+    message: options.login
+      ? 'Opened Codex login in a terminal.'
+      : 'Launched a terminal for this Codex instance.',
+    data: { id, codexHome: instance.codexHome },
+  }
+}

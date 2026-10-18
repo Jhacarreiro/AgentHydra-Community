@@ -1,0 +1,76 @@
+node_modules/
+dist/
+/out/
+data/
+!/hswarm/data/
+*.log
+# Python's bytecode cache is machine-local. An untracked one reads as a dirty tree, and the live
+# checkout's updater refuses a dirty tree (hswarm/__pycache__ held every update, 2026-10-03).
+__pycache__/
+.DS_Store
+.env
+.env.local
+# Local AI working state stays local (codemap index, memory, launch config, harnesses) - but the
+# SLASH COMMANDS ship: they are how a person operates this daemon, and a rule that lives on one
+# machine is not a rule the team has. Same idiom as .arkitect below.
+/.claude/*
+!/.claude/commands/
+# Architect: run output stays local; the config + custom checks (your-checks/) are committed
+# owner-owned tooling (the reusable guardrail checks live there). The core is fetched by npx.
+.arkitect/*
+!.arkitect/arkitect.config.json
+!.arkitect/your-checks/
+tmp/
+# SUE and Dredd records (simulated-visitor runs, rounds, rulings) stay on the machine that ran them.
+/.sue/
+/.dredd/
+PLAN.md
+
+# tray launcher: the .lnk stores absolute paths - regenerate it per machine with
+# misc/New-TrayShortcut.ps1 (the tray host refreshes it on launch)
+/AgentHydra.lnk
+/AgentHydra Instances.lnk
+# The pre-rename shortcuts survive on machines that upgraded, until they are re-created.
+/CCManagerUI.lnk
+/CCManagerUI Instances.lnk
+
+# Local root rebuild convenience wrapper (delegates to misc/rebuild_agenthydra.bat)
+/rebuild_agenthydra.bat
+
+# Owner handoff notes: internal, not for the public repo
+docs/HANDOFF_MICHAEL.md
+
+# Local AI memory for this repo. Deliberately NOT published.
+/.claude/memory/
+
+# ⛔ PUBLIC REPO: the to-do list is not published (owner directive, 2026-08-29).
+# These notes are the most candid writing in the repo - what is broken, what is half-built, what is
+# waiting on a person - and Odin's Loki files them here automatically from chat history. The
+# folder's own README stays tracked (it is already tracked, and it states the convention); only the
+# items are ignored. Managed by public_todo_guard.py in the Odin repo.
+/docs/todo/*
+!/docs/todo/README.md
+
+# bun test --parallel writes a per-file timing cache here to schedule the next run.
+/timings.json
+
+# A built or downloaded binary dropped at the repo root. `bun run dist` writes the real one to
+# dist/ (ignored above); this is the copy people leave beside the checkout after downloading a
+# release asset or hand-copying one out of dist/. It is ~100 MB, so an accidental `git add` here
+# is expensive and irreversible on a public repo. Named exactly, NOT as a blanket *.exe, because
+# misc/AgentHydra-Tray.exe is a tracked, committed part of the tray toolkit.
+/AgentHydra.exe
+
+# Local investigation write-ups: internal working notes, same convention as
+# docs/HANDOFF_MICHAEL.md and /docs/todo/* above. Findings get upstreamed as a fix plus its
+# comment, not as a file of field notes about one machine's logs.
+/FINDINGS-*.md
+*.tsbuildinfo
+
+# Python build metadata (pip install -e .)
+*.egg-info/
+
+# HSwarm's native scanners: build output (hswarm native build)
+hswarm/native/bin/
+hswarm/native/zscan-rs/target/
+hswarm/native/zscan-rs/build.log

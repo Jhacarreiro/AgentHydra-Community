@@ -1,0 +1,385 @@
+import { describe, expect, test } from 'bun:test'
+import {
+  CLAUDE_NATIVE_HOST_KEYS,
+  createNativeLaunchRegistryGuard,
+  nativeRegistryRestoreScript,
+  nativeRegistrySnapshotScript,
+} from '../src/claude-native-launch-registry'
+import type { CapturedRun } from '../src/core/process'
+
+const binary = 'C:\\Managed Claude\\2.2553.1\\claude.exe'
+const profile = 'C:\\Profiles\\Ashley'
+const protocol = 'Software\\Classes\\claude'
+function snapshot() {
+  return {
+    protocol: {
+      path: protocol,
+      exists: true,
+      keys: [
+        {
+          path: protocol,
+          values: [
+            { name: '', kind: 'String', data: 'URL:Claude' },
+            { name: 'expand', kind: 'ExpandString', data: '%USERPROFILE%\\Claude' },
+            { name: 'large', kind: 'QWord', data: '9223372036854775807' },
+            { name: 'binary', kind: 'Binary', data: 'AAECA/8=' },
+            { name: 'multi', kind: 'MultiString', data: ['one', 'two'] },
+          ],
+        },
+      ],
+    },
+    browsers: CLAUDE_NATIVE_HOST_KEYS.map((path) => ({ path, exists: false, keys: [] })),
+  }
+}
+function success(value: unknown): CapturedRun {
+  return { code: 0, timedOut: false, stdout: JSON.stringify(value), stderr: '' }
+}
+/** What the restore script carries: the arguments it was built from. */
+type RestorePayload = {
+  managedBinary: string
+  profile: string
+  snapshot: Parameters<typeof nativeRegistryRestoreScript>[2]
+}
+function decodePayload(script: string): unknown {
+  const encoded = script.match(/FromBase64String\('([^']+)'\)/)![1]!
+  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))
+}
+
+function begin(deps: Parameters<typeof createNativeLaunchRegistryGuard>[0], at = profile) {
+  return createNativeLaunchRegistryGuard(deps).begin(at)
+}
+
+describe('managed Claude launch registry guard', () => {
+  test('accepts real protocol child keys separated by single backslashes', async () => {
+    const baseline = snapshot()
+    for (const suffix of ['shell', 'shell\\open', 'shell\\open\\command']) {
+      baseline.protocol.keys.push({ path: `${protocol}\\${suffix}`, values: [] })
+    }
+    const guard = await begin({
+      platform: 'win32',
+      run: async () => success(baseline),
+    })
+    expect(typeof guard.restore).toBe('function')
+    expect(baseline.protocol.keys[3]!.path).toBe('Software\\Classes\\claude\\shell\\open\\command')
+  })
+
+  test('captures exact supported browser keys and preserves lossless snapshot values', async () => {
+    const calls: string[][] = []
+    const baseline = snapshot()
+    const expected = { restored: [protocol], preserved: CLAUDE_NATIVE_HOST_KEYS, errors: [] }
+    const guard = await begin({
+      platform: 'win32',
+      run: async (argv) => {
+        calls.push(argv)
+        return success(calls.length === 1 ? baseline : expected)
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(decodePayload(calls[0]!.at(-1)!)).toEqual({
+      protocol,
+      browsers: CLAUDE_NATIVE_HOST_KEYS,
+    })
+    expect(await guard.restore(binary)).toEqual(expected)
+    const payload = decodePayload(calls[1]!.at(-1)!) as RestorePayload
+    expect(payload).toEqual({ managedBinary: binary, profile, snapshot: baseline })
+    expect(payload.snapshot.protocol.keys[0]!.values[2]!.data).toBe('9223372036854775807')
+    expect(CLAUDE_NATIVE_HOST_KEYS[4]).toContain('ArcBrowser\\Arc')
+    expect(CLAUDE_NATIVE_HOST_KEYS[6]).toContain('Opera Software\\Opera Stable')
+  })
+
+  test('restoration is never replayed after a lost response', async () => {
+    let calls = 0
+    const guard = await begin({
+      platform: 'win32',
+      run: async () => {
+        calls++
+        if (calls === 1) return success(snapshot())
+        throw Error('transport lost')
+      },
+    })
+    const first = guard.restore(binary)
+    const second = guard.restore(binary)
+    expect(second).toBe(first)
+    await expect(first).rejects.toThrow('transport lost')
+    await expect(guard.restore(binary)).rejects.toThrow('transport lost')
+    expect(calls).toBe(2)
+  })
+
+  test('snapshot failure refuses before a managed launch can be protected', async () => {
+    await expect(
+      begin({
+        platform: 'win32',
+        run: async () => ({ code: null, timedOut: true, stdout: '', stderr: '' }),
+      }),
+    ).rejects.toThrow('timed out')
+  })
+
+  test('rejects malformed or out-of-scope snapshot paths', async () => {
+    for (const path of ['Software\\Unrelated', `${protocol}\\..\\Unrelated`]) {
+      const baseline = snapshot()
+      baseline.protocol.keys[0]!.path = path
+      await expect(
+        begin({
+          platform: 'win32',
+          run: async () => success(baseline),
+        }),
+      ).rejects.toThrow('Malformed')
+    }
+    const baseline = snapshot()
+    baseline.protocol.keys.push(baseline.protocol.keys[0]!)
+    await expect(
+      begin({
+        platform: 'win32',
+        run: async () => success(baseline),
+      }),
+    ).rejects.toThrow('Malformed')
+  })
+
+  test('non-Windows and nonabsolute paths perform no registry call', async () => {
+    const run = async () => {
+      throw Error('must not run')
+    }
+    await expect(begin({ platform: 'linux', run })).rejects.toThrow('requires Windows')
+    await expect(begin({ platform: 'win32', run }, 'Profiles\\Ashley')).rejects.toThrow(
+      'absolute Windows',
+    )
+    let calls = 0
+    const guard = await begin({
+      platform: 'win32',
+      run: async () => {
+        if (++calls > 1) throw Error('must not run')
+        return success(snapshot())
+      },
+    })
+    await expect(guard.restore('claude.exe')).rejects.toThrow('absolute Windows')
+    expect(calls).toBe(1)
+  })
+
+  test('malformed restoration evidence does not report success', async () => {
+    let calls = 0
+    const guard = await begin({
+      platform: 'win32',
+      run: async () => success(++calls === 1 ? snapshot() : { restored: true }),
+    })
+    await expect(guard.restore(binary)).rejects.toThrow('Malformed')
+  })
+
+  test('overlapping launches share one baseline; the next is read once their restorations finish', async () => {
+    const calls: string[] = []
+    let finishRestore = () => {}
+    const guard = createNativeLaunchRegistryGuard({
+      platform: 'win32',
+      run: async (argv) => {
+        const payload = decodePayload(argv.at(-1)!) as Partial<RestorePayload>
+        if (!payload.snapshot) {
+          calls.push('snapshot')
+          return success(snapshot())
+        }
+        calls.push(`restore ${payload.profile}`)
+        await new Promise<void>((resolve) => {
+          finishRestore = resolve
+        })
+        return success({ restored: [], preserved: [], errors: [] })
+      },
+    })
+    const [a, b] = await Promise.all([guard.begin('C:\\A'), guard.begin('C:\\B')])
+    const restoring = a.restore(binary)
+    // B is still starting, so C reads no baseline of its own: one now could hold A's or B's
+    // temporary registration.
+    const c = await guard.begin('C:\\C')
+    expect(calls).toEqual(['snapshot', 'restore C:\\A'])
+    b.release()
+    c.release()
+    // Every launch has ended, but A's restoration is still writing: D's baseline waits for it.
+    const d = guard.begin('C:\\D')
+    await Bun.sleep(20)
+    expect(calls).toEqual(['snapshot', 'restore C:\\A'])
+    finishRestore()
+    await restoring
+    ;(await d).release()
+    expect(calls).toEqual(['snapshot', 'restore C:\\A', 'snapshot'])
+  })
+
+  test('restorations of overlapping launches run one at a time', async () => {
+    let running = 0
+    let most = 0
+    const guard = createNativeLaunchRegistryGuard({
+      platform: 'win32',
+      run: async (argv) => {
+        const payload = decodePayload(argv.at(-1)!) as Partial<RestorePayload>
+        if (!payload.snapshot) return success(snapshot())
+        most = Math.max(most, ++running)
+        await Bun.sleep(10)
+        running--
+        return success({ restored: [], preserved: [], errors: [] })
+      },
+    })
+    const leases = await Promise.all(['C:\\A', 'C:\\B', 'C:\\C'].map((dir) => guard.begin(dir)))
+    await Promise.all(leases.map((lease) => lease.restore(binary)))
+    expect(most).toBe(1)
+  })
+})
+
+// These Windows checks execute only an inert branch harness or PowerShell's parser. They never
+// execute the real registry reader/writer. Other platforms retain all transport/payload tests.
+const windowsTest = process.platform === 'win32' ? test : test.skip
+// A cold `powershell` start on a GitHub Windows runner outlasts bun's 5 s default: the first two
+// tests in this file timed out at 5000 ms on CI while the warm ones after them passed.
+const SPAWN_TIMEOUT_MS = 30_000
+async function powershell(script: string): Promise<any> {
+  const proc = Bun.spawn(['powershell', '-NoProfile', '-NonInteractive', '-Command', '-'], {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  proc.stdin.write(script)
+  proc.stdin.end()
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  if (code !== 0) throw Error(stderr)
+  return JSON.parse(stdout.trim())
+}
+
+windowsTest(
+  'both generated PowerShell scripts parse without invoking registry APIs',
+  async () => {
+    const scripts = [
+      nativeRegistrySnapshotScript(),
+      nativeRegistryRestoreScript(binary, profile, snapshot()),
+    ]
+    const encoded = Buffer.from(JSON.stringify(scripts)).toString('base64')
+    const errors = await powershell(`
+    $scripts = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json
+    $all = @()
+    foreach ($script in $scripts) {
+      $tokens = $null; $errors = $null
+      [void][Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$errors)
+      $all += @($errors | ForEach-Object { $_.Message })
+    }
+    ConvertTo-Json -InputObject @($all) -Compress
+  `)
+    expect(errors).toEqual([])
+  },
+  SPAWN_TIMEOUT_MS,
+)
+
+async function branches(options: {
+  command: string
+  manifestBinary: string
+  browserValue: string | null
+  browserExisted?: boolean
+  /** What another launch's app writes while each key is first being restored: that readback
+   *  differs, and the key then holds this. */
+  raced?: { command: string; browserValue: string | null }
+}) {
+  const baseline = snapshot()
+  if (options.browserExisted)
+    baseline.browsers[0] = { path: CLAUDE_NATIVE_HOST_KEYS[0]!, exists: true, keys: [] }
+  const script = nativeRegistryRestoreScript(binary, profile, baseline)
+  const helpers = script.slice(
+    script.indexOf('function Same-Path'),
+    script.indexOf('function Restore-Values'),
+  )
+  const body = script.slice(script.indexOf('$p = '))
+  const fake = Buffer.from(JSON.stringify(options)).toString('base64')
+  return powershell(`
+    $ErrorActionPreference = 'Stop'
+    $fake = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${fake}')) | ConvertFrom-Json
+    $script:command = $fake.command; $script:browserValue = $fake.browserValue; $script:raced = @{}
+    function Default-Value([string]$path) {
+      if ($path.EndsWith('shell\\open\\command')) { return $script:command }
+      return $script:browserValue
+    }
+    function Restore-Tree($original, [bool]$recursive) {
+      if ($null -eq $fake.raced -or $script:raced.ContainsKey($original.path)) { return $true }
+      $script:raced[$original.path] = $true
+      if ($recursive) { $script:command = $fake.raced.command } else { $script:browserValue = $fake.raced.browserValue }
+      return $false
+    }
+    function Get-Content { param($LiteralPath, [switch]$Raw)
+      return ([pscustomobject]@{ name = 'com.anthropic.claude_browser_extension'; path = $fake.manifestBinary } | ConvertTo-Json -Compress)
+    }
+    ${helpers}
+    ${body}
+  `)
+}
+
+windowsTest(
+  'conditional restoration preserves registrations written by another application',
+  async () => {
+    const result = await branches({
+      command: '"C:\\Other\\claude.exe" "%1"',
+      manifestBinary: 'C:\\Other\\resources\\chrome-native-host.exe',
+      browserValue: 'C:\\OtherProfile\\host.json',
+    })
+    expect(result).toEqual({
+      restored: [],
+      preserved: [protocol, ...CLAUDE_NATIVE_HOST_KEYS],
+      errors: [],
+    })
+  },
+  SPAWN_TIMEOUT_MS,
+)
+
+windowsTest(
+  'conditional restoration recognizes exact managed executable and exact profile host',
+  async () => {
+    const result = await branches({
+      command: `"${binary}" "%1"`,
+      manifestBinary: 'C:\\Managed Claude\\2.2553.1\\resources\\chrome-native-host.exe',
+      browserValue: `${profile}\\ChromeNativeHost\\com.anthropic.claude_browser_extension.json`,
+    })
+    expect(result).toEqual({
+      restored: [protocol, ...CLAUDE_NATIVE_HOST_KEYS],
+      preserved: [],
+      errors: [],
+    })
+  },
+  SPAWN_TIMEOUT_MS,
+)
+
+windowsTest(
+  'prefix lookalike host cannot claim a registration, and ambiguous deletions are reported',
+  async () => {
+    const result = await branches({
+      command: `"${binary}" "%1"`,
+      manifestBinary: 'C:\\Managed Claude\\2.2553.1-other\\resources\\chrome-native-host.exe',
+      browserValue: null,
+      browserExisted: true,
+    })
+    expect(result.restored).toEqual([protocol])
+    expect(result.preserved).toEqual(CLAUDE_NATIVE_HOST_KEYS)
+    expect(result.errors).toEqual([
+      `${CLAUDE_NATIVE_HOST_KEYS[0]}: registration disappeared; ownership is uncertain`,
+    ])
+  },
+  SPAWN_TIMEOUT_MS,
+)
+
+windowsTest(
+  'a registration rewritten during restoration is restored again while it names this launch, and left to its new owner after',
+  async () => {
+    const ownHost = `${profile}\\ChromeNativeHost\\com.anthropic.claude_browser_extension.json`
+    const result = await branches({
+      command: `"${binary}" "%1"`,
+      manifestBinary: 'C:\\Managed Claude\\2.2553.1\\resources\\chrome-native-host.exe',
+      browserValue: ownHost,
+      // Another account opened from the same managed copy re-registers the handler; its browser
+      // hosts name its own profile.
+      raced: {
+        command: `"${binary}" "%1"`,
+        browserValue:
+          'C:\\OtherProfile\\ChromeNativeHost\\com.anthropic.claude_browser_extension.json',
+      },
+    })
+    expect(result).toEqual({
+      restored: [protocol],
+      preserved: CLAUDE_NATIVE_HOST_KEYS,
+      errors: [],
+    })
+  },
+  SPAWN_TIMEOUT_MS,
+)

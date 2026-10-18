@@ -1,0 +1,104 @@
+base_url = "https://api.together.ai/v1"
+about = "Together AI's hosted language models; address a model as together:<model ID>."
+website = "https://www.together.ai"
+key_url = "https://api.together.ai/settings/api-keys"
+docs = "https://docs.together.ai/docs/quickstart"
+transport = "openai"
+capabilities = ["chat"]
+key_billing = "unknown"
+models_path = "/models"
+passthrough = ["together:"]
+options = ["reasoning_effort"]
+anthropic_url = "facade"
+
+# Ranked routes (owner, 2026-10-07). Per-token prices are from together.ai/pricing. Tools is true only where the
+# Function calling column of docs.together.ai/docs/serverless/models says Yes (checked 2026-10-07, with a second
+# reader that could not refute any row); a model whose context that page does not list takes the context_length
+# Together's own /v1/models gives it (Qwen3.8 2.4T, 2026-10-10), and one that neither lists has no route.
+[models."rank:kimi-k3:together"]
+api_id = "moonshotai/Kimi-K3"
+benchmark_slug = "kimi-k3"
+ctx = 1048576
+tools = true
+price_ref = "together/rank:kimi-k3:together"
+cc_effort = false
+
+[models."rank:glm-5-3:together"]
+api_id = "zai-org/GLM-5.3"
+benchmark_slug = "glm-5-3"
+ctx = 1048575
+tools = true
+price_ref = "together/rank:glm-5-3:together"
+cc_effort = false
+
+[models."rank:glm-5-3-flash:together"]
+api_id = "zai-org/GLM-5.3-Flash"
+benchmark_slug = "glm-5-3-flash"
+ctx = 1048575
+tools = true
+price_ref = "together/rank:glm-5-3-flash:together"
+cc_effort = false
+
+[models."rank:deepseek-v4-pro:together"]
+api_id = "deepseek-ai/DeepSeek-V4-Pro-0813"
+benchmark_slug = "deepseek-v4-pro"
+ctx = 1048576
+tools = true
+price_ref = "together/rank:deepseek-v4-pro:together"
+cc_effort = false
+
+[models."rank:deepseek-v4-1-flash:together"]
+api_id = "deepseek-ai/DeepSeek-V4.1-Flash"
+benchmark_slug = "deepseek-v4-1-flash"
+ctx = 1048576
+tools = true
+price_ref = "together/rank:deepseek-v4-1-flash:together"
+cc_effort = false
+
+[models."rank:minimax-m3:together"]
+api_id = "MiniMaxAI/MiniMax-M3"
+benchmark_slug = "minimax-m3"
+ctx = 524288
+tools = true
+price_ref = "together/rank:minimax-m3:together"
+cc_effort = false
+
+[models."rank:gpt-oss-120b:together"]
+api_id = "openai/gpt-oss-120b"
+benchmark_slug = "gpt-oss-120b"
+ctx = 131072
+tools = true
+price_ref = "together/rank:gpt-oss-120b:together"
+cc_effort = false
+
+[models."rank:qwen3-7-plus:together"]
+api_id = "Qwen/Qwen3.7-Plus"
+benchmark_slug = "qwen3-7-plus"
+ctx = 1000000
+tools = false
+price_ref = "together/rank:qwen3-7-plus:together"
+cc_effort = false
+
+[models."rank:qwen3-5-9b:together"]
+api_id = "Qwen/Qwen3.5-9B"
+benchmark_slug = "qwen3-5-9b"
+ctx = 262144
+tools = true
+price_ref = "together/rank:qwen3-5-9b:together"
+cc_effort = false
+
+[models."rank:glm-5-2:together"]
+api_id = "zai-org/GLM-5.2"
+benchmark_slug = "glm-5-2"
+ctx = 1048575
+tools = true
+price_ref = "together/rank:glm-5-2:together"
+cc_effort = false
+
+[models."rank:qwen3-8-2-4t-a95b:together"]
+api_id = "Qwen/Qwen3.8-2.4T-A95B"
+benchmark_slug = "qwen3-8-2-4t-a95b"
+ctx = 1010000
+tools = true
+price_ref = "together/rank:qwen3-8-2-4t-a95b:together"
+cc_effort = false

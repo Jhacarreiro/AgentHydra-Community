@@ -1,0 +1,155 @@
+// Markdown for assistant text and plans. Pure: markdown-it only, highlighting passed in.
+import MarkdownIt from 'markdown-it'
+import { pathLike } from './reveal'
+
+/** Returns highlighted HTML for a code block (a whole <pre>), or null to fall back to plain text. */
+export type Highlight = (code: string, lang: string) => string | null
+
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+/** A code block longer than this many lines is capped with "Show more", like a long user message. */
+export const CODE_CAP_LINES = 24
+
+/** Pictures, videos and html pages the server serves from its cache (a page's url carries its serving's ?v=); the only
+ *  image targets the window loads. */
+export const MEDIA_PREFIX = '/api/media/'
+const MEDIA_ID = /^\/api\/media\/[0-9a-f]{64}\.(png|jpg|gif|webp|mp4|webm|html)(?:\?v=\d+)?$/
+
+// lucide Copy, Check and File (stroke 1.5), inline because markdown-it emits a string, not components.
+const svg = (body: string, size = 14) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`
+const COPY_ICON = svg('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>')
+const CHECK_ICON = svg('<path d="M20 6 9 17l-5-5"/>')
+const FILE_ICON = svg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>')
+// lucide FileCode, Monitor, Smartphone, Maximize2 and Minimize2, for the html preview's bar.
+const PAGE_ICON = svg('<path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>')
+const DESKTOP_ICON = svg('<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>')
+const PHONE_ICON = svg('<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>')
+const GROW_ICON = svg('<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/>')
+const SHRINK_ICON = svg('<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="m14 10 7-7"/><path d="m3 21 7-7"/>')
+
+/** An html file's live preview card: its name, Desktop and Phone width, Expand, and the page in a sandboxed frame (no
+ *  script, no forms, no popups). Spans, so it can sit in a paragraph; MarkdownBlock and HtmlPreview both draw it, and
+ *  lib/media.ts htmlPreviewClick works its buttons. */
+export function htmlPreviewMarkup(src: string, name: string): string {
+  const label = escapeHtml(name || 'Preview')
+  const view = (v: string, on: boolean, tip: string, icon: string) =>
+    `<button type="button" class="html-preview-btn" data-html-view="${v}" aria-pressed="${on}" aria-label="${tip}" title="${tip}">${icon}</button>`
+  return (
+    `<span class="html-preview" data-html-preview><span class="html-preview-bar">${PAGE_ICON}<span class="html-preview-name" title="${label}">${label}</span>` +
+    `<span class="html-preview-views" role="group" aria-label="Width">${view('desktop', true, 'Desktop width', DESKTOP_ICON)}${view('phone', false, 'Phone width', PHONE_ICON)}</span>` +
+    `<button type="button" class="html-preview-btn" data-html-expand aria-expanded="false" aria-label="Expand" title="Expand">` +
+    `<span class="html-preview-grow">${GROW_ICON}</span><span class="html-preview-shrink">${SHRINK_ICON}</span></button></span>` +
+    `<span class="html-preview-stage"><iframe class="html-preview-frame" src="${escapeHtml(src)}" sandbox="" title="${label}" loading="lazy"></iframe></span></span>`
+  )
+}
+
+/** Marks each line of a diff block (+ added, - removed, @@ hunk) on shiki's or the plain block's line spans. */
+export function markDiffLines(html: string, code: string): string {
+  const lines = code.split('\n')
+  let i = 0
+  return html.replace(/<span class="line"/g, (m) => {
+    const l = lines[i++] ?? ''
+    const cls = l.startsWith('+++') || l.startsWith('---') ? '' : l.startsWith('+') ? ' diff-add' : l.startsWith('-') ? ' diff-del' : l.startsWith('@@') ? ' diff-hunk' : ''
+    return cls ? `<span class="line${cls}"` : m
+  })
+}
+
+function plainCode(code: string, lang: string): string {
+  if (lang !== 'diff' && lang !== 'patch') return `<pre><code>${escapeHtml(code)}</code></pre>`
+  const body = code
+    .split('\n')
+    .map((l) => `<span class="line">${escapeHtml(l)}</span>`)
+    .join('\n')
+  return `<pre><code>${markDiffLines(body, code)}</code></pre>`
+}
+
+const fileName = (src: string) => {
+  let s = src
+  try {
+    s = decodeURIComponent(src)
+  } catch {
+    // keep it encoded
+  }
+  return s.split(/[\\/]/).pop() || s
+}
+
+export function createMarkdown(getHighlight: () => Highlight | null = () => null): MarkdownIt {
+  // html disabled: model output never injects markup into the window.
+  const md = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false })
+
+  md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
+    const t = tokens[idx]
+    t.attrSet('target', '_blank')
+    t.attrSet('rel', 'noopener noreferrer')
+    return self.renderToken(tokens, idx, options)
+  }
+
+  // Claude Code draws a heading one level down ("## What I did" is an h3, 15.75/20.475 600: measured).
+  const shift = (tokens: { tag: string }[], idx: number) => {
+    const n = Math.min(6, Number(tokens[idx].tag.slice(1)) + 1)
+    tokens[idx].tag = `h${n}`
+  }
+  md.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
+    shift(tokens, idx)
+    return self.renderToken(tokens, idx, options)
+  }
+  md.renderer.rules.heading_close = (tokens, idx, options, _env, self) => {
+    shift(tokens, idx)
+    return self.renderToken(tokens, idx, options)
+  }
+
+  // Tables scroll sideways in their own box instead of widening the column.
+  md.renderer.rules.table_open = (tokens, idx, options, _env, self) => `<div class="md-table">${self.renderToken(tokens, idx, options)}`
+  md.renderer.rules.table_close = (tokens, idx, options, _env, self) => `${self.renderToken(tokens, idx, options)}</div>`
+
+  // A picture from the server's cache opens in the lightbox; a video from it plays in place, muted and
+  // looping like a GIF, with its own controls (sound, seek, full screen). Any other target (a local path the
+  // server did not cache, a remote URL) is a file chip and is never loaded.
+  md.renderer.rules.image = (tokens, idx) => {
+    const t = tokens[idx]
+    const src = t.attrGet('src') ?? ''
+    const alt = t.content || fileName(src)
+    const kind = MEDIA_ID.exec(src)?.[1]
+    if (kind === 'html') return htmlPreviewMarkup(src, alt)
+    if (kind === 'mp4' || kind === 'webm') {
+      return `<video class="md-video" src="${escapeHtml(src)}" aria-label="${escapeHtml(alt)}" title="${escapeHtml(alt)}" controls autoplay muted loop playsinline preload="metadata"></video>`
+    }
+    if (kind) {
+      return `<button type="button" class="md-img" data-zoom="${escapeHtml(src)}" aria-label="Open ${escapeHtml(alt)}"><img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" loading="lazy"></button>`
+    }
+    const where = pathLike(src)
+    return `<span class="md-file-chip"${where ? ` data-reveal-path="${escapeHtml(where)}"` : ''} title="${escapeHtml(fileName(src))}">${FILE_ICON}<span>${escapeHtml(alt)}</span></span>`
+  }
+
+  md.renderer.rules.fence = (tokens, idx) => {
+    const t = tokens[idx]
+    const lang = (t.info || '').trim().split(/\s+/)[0].toLowerCase()
+    const code = t.content.replace(/\n$/, '')
+    const hl = getHighlight()
+    const highlighted = hl && lang ? hl(code, lang) : null
+    const body = highlighted ? (lang === 'diff' || lang === 'patch' ? markDiffLines(highlighted, code) : highlighted) : plainCode(code, lang)
+    const long = code.split('\n').length > CODE_CAP_LINES
+    return (
+      `<div class="md-code${long ? ' md-code-long' : ''}">` +
+      `<div class="md-code-head"><span class="md-code-lang">${escapeHtml(lang || 'text')}</span>` +
+      `<button type="button" class="md-copy" data-copy aria-label="Copy">` +
+      `<span class="md-copy-idle">${COPY_ICON}Copy</span><span class="md-copy-done">${CHECK_ICON}Copied</span></button></div>` +
+      `<div class="md-code-body">${body}</div>` +
+      (long ? `<button type="button" class="md-code-more" data-more aria-expanded="false">Show more</button>` : '') +
+      `</div>`
+    )
+  }
+  md.renderer.rules.code_block = md.renderer.rules.fence
+
+  return md
+}
+
+/** Plain-markdown instance for tests and callers without highlighting. */
+export const plainMarkdown = createMarkdown()
+
+export function renderMarkdown(text: string, md: MarkdownIt = plainMarkdown): string {
+  return md.render(text)
+}

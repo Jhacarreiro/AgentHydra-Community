@@ -1,0 +1,20 @@
+{
+  "slug": "alpha-ui",
+  "name": "Ada",
+  "title": "Interface Design Lead",
+  "role": "domain",
+  "oneLiner": "Owns how screens look and lay out.",
+  "jev": "Is this message primarily about how a screen looks or lays out?",
+  "keywords": ["button", "layout", "screen", "css"],
+  "brief": "brief.md",
+  "playbook": [
+    {
+      "file": "playbook/01-layout.md",
+      "facet": "Layout rules",
+      "read_when": "a screen layout question"
+    }
+  ],
+  "version": 1,
+  "updated": "2026-10-13",
+  "sources": ["fixture"]
+}

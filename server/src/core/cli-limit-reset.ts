@@ -1,0 +1,542 @@
+// server/src/core/cli-limit-reset.ts — use a CLI account's limit reset, through the CLI itself.
+//
+// Owner, 2026-09-30: a button (and an MCP tool) that uses a CLI account's reset. Claude Code offers
+// two kinds behind one command, `/limit-reset`: a banked reset grant ("Use your reset?" - refills
+// the limits, the grant's count goes down) and a once-a-week session reset ("Reset your session
+// limit now ... once a week, still counts toward your weekly limit"). Which one, and whether either
+// is offered at all, only the CLI knows: asked directly, the usage endpoint marks both blocks
+// `eligible: false, ineligible_reason: "surface"` (cedar_ember and juniper_tide, measured
+// 2026-09-30), and answering as another app to get past that is not something this does.
+//
+// So this runs the real CLI, in a hidden terminal (Bun's PTY, no window), types `/limit-reset`,
+// accepts the banked-grant question when one is asked (the person already asked for the reset by
+// clicking), and reports the CLI's own words.
+//
+// Checking (`confirm: false`) is safe below the 5-hour limit. The weekly session reset is claimed
+// only when the CLI's own rate-limit state is `rejected` with type `five_hour` and a future reset
+// time (read from Claude Code 2.1.286, 2026-10-03); below that limit `/limit-reset` only finds
+// banked grants, backs out of the question, and answers "A reset isn't available ..." when there is
+// none. AT the 5-hour limit a check could still spend the weekly reset, so never check there
+// (core/cli-reset-sweep.ts keeps its daily check away from it).
+//
+// Before the first run it marks the account's CLI setup finished and trusts one scratch folder in
+// the account's .claude.json, so the CLI opens straight to its prompt instead of a setup screen or
+// a "do you trust this folder" question whose default answer exits.
+//
+// ⛔ OFF THE DAEMON'S THREAD (2026-10-11). Each run is driven on its own worker thread. Starting
+// claude.exe held the daemon's one thread for seconds (Bun.spawn creates the process synchronously,
+// and on MPC-HELL a start costs 240-345 ms before Defender scans a 250 MB binary under load): over
+// 140 minutes of daemon.log, 35 STALL profiles put 131 s of /api/health silence on the spawn in this
+// file, every hour, from the sweep's checks. The worker also keeps the terminal's output (megabytes
+// of redraws) and the screen matching. The driver below is one self-contained function whose source
+// IS the worker (resetDriver.toString()), so the compiled exe needs no second entrypoint and the
+// screen rules exist once. The daemon keeps what must outlive a worker: the one-run-per-account
+// guard, and ending the CLI whatever happened to the worker.
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { CLAUDE_PROBE_NO_MCP_ARGS, DATA_DIR, resolveClaudeExe } from '../config'
+import type { CliLimitResetResult } from '../types'
+import { pinHaikuModel } from './haiku-pin'
+import { killProcessTreesAsync } from './process'
+
+type LimitResetOutcome = CliLimitResetResult['outcome']
+type LimitResetResult = CliLimitResetResult
+
+const ENV_SCRUB =
+  /^(ANTHROPIC_(API_KEY|AUTH_TOKEN|BASE_URL)|CLAUDE_CODE_\w+|CLAUDECODE|CLAUDE_CONFIG_DIR)$/
+const WORK_DIR = join(DATA_DIR, 'cli-limit-reset')
+/** The driver bounds every wait it makes (about 85 s from the CLI's start to its close); a worker
+ *  still running past this is stuck, and is ended so the account is not held forever. */
+const WORKER_BOUND_MS = 4 * 60_000
+
+/** One run, as plain data: what the worker needs, resolved on the daemon's thread. */
+interface ResetJob {
+  /** The account's .claude.json. */
+  configFile: string
+  workDir: string
+  /** The CLI and its arguments. */
+  cmd: string[]
+  env: Record<string, string>
+  confirm: boolean
+  /** When the run started: every result carries it. */
+  at: number
+}
+
+/** What the driver says while it runs, before its result. */
+type DriverNote = { type: 'pid'; pid: number } | { type: 'confirmed' }
+
+/** The driver's last word: the result, and whether the CLI was still running after the close. */
+interface DriverDone {
+  result: LimitResetResult
+  cliRunning: boolean
+}
+
+/** What one `/limit-reset` run keeps while it drives the CLI's terminal. */
+interface ResetRun {
+  at: number
+  /** The overall deadline. It bounds getting TO the command; the answer has its own wait. */
+  deadline: number
+  proc: ReturnType<typeof Bun.spawn>
+  /** What the terminal has written since it was last cleared. */
+  out: { raw: string }
+}
+
+interface ResetAnswer {
+  outcome: LimitResetOutcome
+  say: string
+  screen: string
+}
+
+/** What reading the CLI's answer has seen so far. */
+interface AnswerState {
+  /** "Yes, use my reset" was pressed: from here a missing answer may still be a spent reset. */
+  confirmed: boolean
+  answer: ResetAnswer | null
+}
+
+type DriverFs = Pick<
+  typeof import('node:fs'),
+  'mkdirSync' | 'readFileSync' | 'renameSync' | 'writeFileSync'
+>
+
+/**
+ * Everything a run does with the CLI, from the account's config to closing the terminal.
+ *
+ * ⛔ SELF-CONTAINED: its source text becomes the worker, so nothing in it may name anything outside
+ * it except globals (Bun, process, crypto, TextDecoder, timers) and `fsx`, which comes in as an
+ * argument. Types are fine: they are gone before the text is taken.
+ */
+function resetDriver(fsx: DriverFs) {
+  const TOTAL_MS = 75_000
+  const CONFIRMED_NO_ANSWER =
+    "The reset was confirmed, but the CLI's answer never arrived. It may have been used: check this account's usage before trying again."
+
+  const ESC = String.fromCharCode(27)
+  const BEL = String.fromCharCode(7)
+  const OSC_RE = new RegExp(`${ESC}\\][^${BEL}${ESC}]*(${BEL}|${ESC}\\\\)`, 'g')
+  const CSI_RE = new RegExp(`${ESC}\\[[0-9;?]*[ -/]*[@-~]`, 'g')
+  const CHARSET_RE = new RegExp(`${ESC}[=>()][0-9A-Za-z]?`, 'g')
+
+  /** Terminal escape sequences out, so the screen can be matched as text. */
+  function plain(s: string): string {
+    return s.replace(OSC_RE, '').replace(CSI_RE, '').replace(CHARSET_RE, '')
+  }
+
+  /**
+   * The CLI's answers, first match wins, each with a clean sentence to show. The screen text is
+   * matched loosely (`\s*`) because the CLI draws with cursor moves, so spaces go missing and other
+   * screen content runs into the line (measured 2026-09-30: "resetisn'tavailablerightnow.◐ medium").
+   * Only the date is taken from the screen; the rest of the message is ours.
+   */
+  const ANSWERS: Array<{ re: RegExp; outcome: LimitResetOutcome; say: string }> = [
+    { re: /Session\s*limit\s*reset\s*·/i, outcome: 'reset', say: 'Session limit reset.' },
+    { re: /Limits\s*reset\s*·/i, outcome: 'reset', say: 'Limits reset.' },
+    {
+      re: /Weekly\s*reset\s*used\s*·/i,
+      outcome: 'used',
+      say: "This week's reset is already used.",
+    },
+    { re: /Reset\s*used\s*·/i, outcome: 'used', say: 'That reset is already used.' },
+    {
+      re: /reset\s*isn'?t\s*available\s*right\s*now/i,
+      outcome: 'unavailable',
+      say: "A reset isn't available for this account right now.",
+    },
+    {
+      re: /Couldn'?t\s*(reset|confirm)/i,
+      outcome: 'error',
+      say: "The CLI couldn't reset the limits right now. Try again in a moment.",
+    },
+    {
+      re: /Unknown\s*(slash\s*)?command/i,
+      outcome: 'unavailable',
+      say: 'This CLI has no /limit-reset for this account.',
+    },
+  ]
+
+  /** Which answer the screen shows, if any (first match wins). */
+  function classifyLimitResetScreen(
+    screen: string,
+  ): { outcome: LimitResetOutcome; say: string } | null {
+    const a = ANSWERS.find((x) => x.re.test(screen))
+    return a ? { outcome: a.outcome, say: a.say } : null
+  }
+
+  /** "availableagainOct7,6pm·..." -> "Oct 7, 6pm": the date after "again"/"available", respaced. */
+  function dateAfter(screen: string): string | null {
+    const m =
+      /(?:available\s*again|next\s*reset\s*available)\s*([A-Za-z]{3,9}\s*\d{1,2}(?:\s*,\s*\d{1,2}(?::\d{2})?\s*[ap]m)?)/i.exec(
+        screen,
+      )
+    if (!m?.[1]) return null
+    return m[1]
+      .replace(/([A-Za-z])(\d)/g, '$1 $2')
+      .replace(/,\s*/g, ', ')
+      .trim()
+  }
+
+  const failedAt = (at: number, message: string): LimitResetResult => ({
+    ok: false,
+    outcome: 'error',
+    message,
+    nextAvailable: null,
+    at,
+  })
+
+  /** Setup finished and the scratch folder trusted, in this account's own .claude.json (`file`). */
+  function prepareConfig(file: string, workDir: string): void {
+    fsx.mkdirSync(workDir, { recursive: true })
+    let cfg: Record<string, unknown> = {}
+    try {
+      cfg = JSON.parse(fsx.readFileSync(file, 'utf8') || '{}') as Record<string, unknown>
+    } catch (err) {
+      // Not there: the CLI has never written one, which is what the empty config says.
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw err
+    }
+    const projects = (cfg.projects ?? {}) as Record<string, Record<string, unknown>>
+    const key = workDir.replaceAll('\\', '/')
+    if (cfg.hasCompletedOnboarding === true && projects[key]?.hasTrustDialogAccepted === true)
+      return
+    cfg.hasCompletedOnboarding = true
+    cfg.theme ??= 'dark'
+    projects[key] = { ...(projects[key] ?? {}), hasTrustDialogAccepted: true }
+    cfg.projects = projects
+    const tmp = `${file}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`
+    fsx.writeFileSync(tmp, JSON.stringify(cfg, null, 2))
+    fsx.renameSync(tmp, file)
+  }
+
+  /** Start the CLI on a pseudo-terminal whose output lands in `out`. Throws when it cannot start. */
+  function spawnResetCli(job: ResetJob, out: { raw: string }): ReturnType<typeof Bun.spawn> {
+    const decoder = new TextDecoder()
+    return Bun.spawn(job.cmd, {
+      cwd: job.workDir,
+      env: job.env,
+      windowsHide: true,
+      terminal: {
+        cols: 120,
+        rows: 40,
+        data(_t: unknown, d: Uint8Array) {
+          out.raw += decoder.decode(d, { stream: true })
+        },
+      },
+    } as unknown as Parameters<typeof Bun.spawn>[1])
+  }
+
+  function typeInto(run: ResetRun, s: string): void {
+    const term = (run.proc as unknown as { terminal?: { write(s: string): void } }).terminal
+    try {
+      term?.write(s)
+    } catch {
+      // The CLI already exited; the screen says why.
+    }
+  }
+
+  /** How much of the newest output counts as the screen. The CLI redraws its whole screen many times
+   *  a second, so the output grows by megabytes while waitUntil reads it four times a second
+   *  (2026-10-08: 16% of a 5.7 s daemon stall); what is on screen now is in the newest of it. */
+  const SCREEN_TAIL = 256 * 1024
+
+  const screenOf = (run: ResetRun): string => plain(run.out.raw.slice(-SCREEN_TAIL))
+
+  /** Poll `test` every quarter second for up to `ms`, bounded by the run's deadline unless
+   *  `capped` is false, and stop early when the CLI exits. The test's last word is the answer. */
+  async function waitUntil(
+    run: ResetRun,
+    test: () => boolean,
+    ms: number,
+    capped = true,
+  ): Promise<boolean> {
+    const end = capped ? Math.min(Date.now() + ms, run.deadline) : Date.now() + ms
+    while (Date.now() < end) {
+      if (test() || run.proc.exitCode !== null) return test()
+      await Bun.sleep(250)
+    }
+    return test()
+  }
+
+  /** Wait for the CLI's prompt. The reason it never came, or null when it is there. */
+  async function awaitPrompt(run: ResetRun): Promise<string | null> {
+    if (await waitUntil(run, () => /Try "/.test(screenOf(run)), 30_000)) return null
+    const s = screenOf(run)
+    if (/Select login method|Not logged in|\/login/i.test(s))
+      return 'This account is signed out of the CLI. Sign it in again, then retry.'
+    return 'The Claude CLI did not reach its prompt.'
+  }
+
+  /** Type `/limit-reset` and press Enter. The reason the CLI did not take it, or null. */
+  async function sendResetCommand(run: ResetRun): Promise<string | null> {
+    // Its start screen keeps drawing for a few seconds; keys typed before that are lost.
+    await Bun.sleep(6000)
+    run.out.raw = ''
+    for (const ch of '/limit-reset') {
+      typeInto(run, ch)
+      await Bun.sleep(50)
+    }
+    if (!(await waitUntil(run, () => /limit-reset/.test(screenOf(run)), 5000)))
+      return 'The Claude CLI did not take the command.'
+    await Bun.sleep(700)
+    run.out.raw = ''
+    typeInto(run, '\r')
+    return null
+  }
+
+  /** Checking only: back out of the question ("No, keep it") and report what it offered. */
+  function declineOffer(run: ResetRun, s: string): ResetAnswer {
+    typeInto(run, '\x1b')
+    const left = /(\d+)\s*left/i.exec(s)?.[1]
+    const by = /use\s*by\s*([A-Za-z]{3,9}\s*\d{1,2})/i
+      .exec(s)?.[1]
+      ?.replace(/([A-Za-z])(\d)/, '$1 $2')
+    const detail = [left ? `${left} left` : '', by ? `use by ${by}` : ''].filter(Boolean).join(', ')
+    return {
+      outcome: 'available',
+      say: `A reset is available${detail ? ` (${detail})` : ''}. It was not used.`,
+      screen: s,
+    }
+  }
+
+  /** One look at the screen after the command: answer the banked reset's question (once), or read
+   *  the outcome. True when an answer is in. */
+  function readAnswerStep(
+    run: ResetRun,
+    confirm: boolean,
+    state: AnswerState,
+    note: (n: DriverNote) => void,
+  ): boolean {
+    const s = screenOf(run)
+    if (!state.confirmed && /Use your reset\?|Yes,\s*use\s*my\s*reset/i.test(s)) {
+      if (!confirm) {
+        state.answer = declineOffer(run, s)
+        return true
+      }
+      // The person asked for this reset by clicking; the first choice is "Yes, use my reset".
+      // The daemon hears of it BEFORE the key goes in: a worker lost after this point reports a
+      // possibly spent reset, never "no answer".
+      state.confirmed = true
+      note({ type: 'confirmed' })
+      typeInto(run, '\r')
+      return false
+    }
+    const hit = classifyLimitResetScreen(s)
+    if (hit) state.answer = { ...hit, screen: s }
+    return hit !== null
+  }
+
+  /** The CLI's answer as a result, with the date it gives for the next reset when it gives one. */
+  async function resultOf(run: ResetRun, answer: ResetAnswer): Promise<LimitResetResult> {
+    const { outcome, say, screen: shown } = answer
+    // Give a date a moment to finish drawing when the answer carries one.
+    await Bun.sleep(outcome === 'reset' || outcome === 'used' ? 800 : 0)
+    const nextAvailable = dateAfter(screenOf(run)) ?? dateAfter(shown)
+    return {
+      ok: outcome === 'reset',
+      outcome,
+      message: nextAvailable ? `${say} Next one available ${nextAvailable}.` : say,
+      nextAvailable,
+      at: run.at,
+    }
+  }
+
+  /** Drive the started CLI from its prompt to the answer to `/limit-reset`. */
+  async function driveReset(
+    run: ResetRun,
+    confirm: boolean,
+    note: (n: DriverNote) => void,
+  ): Promise<LimitResetResult> {
+    const noPrompt = await awaitPrompt(run)
+    if (noPrompt) return failedAt(run.at, noPrompt)
+    const notTaken = await sendResetCommand(run)
+    if (notTaken) return failedAt(run.at, notTaken)
+
+    const state: AnswerState = { confirmed: false, answer: null }
+    await waitUntil(run, () => readAnswerStep(run, confirm, state, note), 40_000, false)
+    if (!state.answer)
+      return failedAt(
+        run.at,
+        state.confirmed ? CONFIRMED_NO_ANSWER : 'The Claude CLI gave no answer to /limit-reset.',
+      )
+    return resultOf(run, state.answer)
+  }
+
+  /** Leave the CLI: Ctrl+C twice. True when it is still running after that (the daemon ends it). */
+  async function closeResetCli(run: ResetRun): Promise<boolean> {
+    typeInto(run, '\x03')
+    await Bun.sleep(300)
+    typeInto(run, '\x03')
+    await Bun.sleep(500)
+    return run.proc.exitCode === null
+  }
+
+  /** One run, start to close. Never throws; `note` hears the CLI's pid and a confirmed reset. */
+  async function runOnce(job: ResetJob, note: (n: DriverNote) => void): Promise<DriverDone> {
+    const at = job.at
+    try {
+      prepareConfig(job.configFile, job.workDir)
+    } catch (err) {
+      return {
+        result: failedAt(
+          at,
+          `Could not prepare the CLI settings: ${err instanceof Error ? err.message : err}`,
+        ),
+        cliRunning: false,
+      }
+    }
+
+    const out = { raw: '' }
+    let proc: ReturnType<typeof Bun.spawn>
+    try {
+      proc = spawnResetCli(job, out)
+    } catch (err) {
+      return {
+        result: failedAt(
+          at,
+          `Could not start the Claude CLI: ${err instanceof Error ? err.message : err}`,
+        ),
+        cliRunning: false,
+      }
+    }
+    note({ type: 'pid', pid: proc.pid })
+    // The overall deadline bounds getting TO the command; the answer, once the command is sent, gets
+    // its own full wait. Cutting that short after a confirmed reset would report "no answer" for a
+    // reset that may already be spent, and invite a second one.
+    const run: ResetRun = { at, deadline: at + TOTAL_MS, proc, out }
+    let result: LimitResetResult
+    try {
+      result = await driveReset(run, job.confirm, note)
+    } catch (err) {
+      result = failedAt(
+        at,
+        `The reset run failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    return { result, cliRunning: await closeResetCli(run) }
+  }
+
+  return { classifyLimitResetScreen, dateAfter, failedAt, runOnce, CONFIRMED_NO_ANSWER }
+}
+
+const driver = resetDriver({ mkdirSync, readFileSync, renameSync, writeFileSync })
+
+/** Which answer the screen shows, if any (first match wins). Exported for its test. */
+export const classifyLimitResetScreen = driver.classifyLimitResetScreen
+/** The next reset's date as the CLI gives it, respaced. Exported for its test. */
+export const dateAfter = driver.dateAfter
+
+const WORKER_SOURCE = `
+const driver = (${resetDriver.toString()})(require('node:fs'))
+self.onmessage = async (e) => {
+  try {
+    const done = await driver.runOnce(e.data, (n) => self.postMessage(n))
+    self.postMessage({ type: 'done', ...done })
+  } catch (err) {
+    self.postMessage({ type: 'failed', message: String((err && err.message) || err) })
+  }
+}
+`
+
+type WorkerReply =
+  | DriverNote
+  | ({ type: 'done' } & DriverDone)
+  | { type: 'failed'; message: string }
+
+let workerUrl: string | null = null
+
+/** Accounts with a run in flight, by config dir: two runs on one account could each reach the
+ *  question and spend a grant apiece, whichever caller (button, MCP tool) started them. */
+const running = new Set<string>()
+
+/** Run `/limit-reset` for the account whose CLI config lives in `configDir`. Never throws. */
+export async function runCliLimitReset(
+  configDir: string,
+  opts: {
+    /** false = CHECK: at the banked reset's "Use your reset?" question, press Escape and report it
+     *  as available. Spends nothing while the account's 5-hour usage is below its limit; at the
+     *  limit the weekly session reset asks nothing and a check could use it. */
+    confirm?: boolean
+  } = {},
+): Promise<LimitResetResult> {
+  const key = configDir.replaceAll('\\', '/').toLowerCase()
+  if (running.has(key))
+    return {
+      ok: false,
+      outcome: 'error',
+      message: 'A reset is already running for this account.',
+      nextAvailable: null,
+      at: Date.now(),
+    }
+  running.add(key)
+  try {
+    return await runOffThread({
+      configFile: join(configDir, '.claude.json'),
+      workDir: WORK_DIR,
+      // --no-chrome: with the Chrome extension installed, the CLI (2.1.295) opens on a "Claude in
+      // Chrome extension detected" question on every account that never answered it, in place of
+      // the prompt, so every hourly check ended "did not reach its prompt" (36 of 37 accounts,
+      // 2026-10-11). The flag skips it for this run and writes no setting.
+      cmd: [resolveClaudeExe(), ...CLAUDE_PROBE_NO_MCP_ARGS, '--no-chrome'],
+      env: resetEnv(configDir),
+      confirm: opts.confirm !== false,
+      at: Date.now(),
+    })
+  } finally {
+    running.delete(key)
+  }
+}
+
+/** This process's environment without what would point the CLI at another account, for `configDir`. */
+function resetEnv(configDir: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env))
+    if (v !== undefined && !ENV_SCRUB.test(k)) env[k] = v
+  env.CLAUDE_CONFIG_DIR = configDir
+  return pinHaikuModel(env) // never Haiku 4.5 behind the alias (haiku-pin.ts)
+}
+
+/**
+ * One run on its own worker, then the CLI ended if the run left it running. Never throws.
+ * A worker that dies or overstays reports what is known: once the driver said it confirmed, the
+ * answer is CONFIRMED_NO_ANSWER (the reset may be spent), never a plain failure that invites a retry.
+ * Resolves only after the CLI is gone, so the per-account guard covers the whole life of the CLI.
+ */
+async function runOffThread(job: ResetJob): Promise<LimitResetResult> {
+  let worker: Worker
+  try {
+    workerUrl ??= URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }))
+    worker = new Worker(workerUrl)
+  } catch (err) {
+    return driver.failedAt(
+      job.at,
+      `Could not start the reset worker: ${err instanceof Error ? err.message : err}`,
+    )
+  }
+  let pid = 0
+  let confirmed = false
+  // Until the driver says it closed the CLI, a known pid is ended here.
+  let cliRunning = true
+  let bound: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await new Promise<LimitResetResult>((resolve) => {
+      const lost = (why: string) =>
+        resolve(driver.failedAt(job.at, confirmed ? driver.CONFIRMED_NO_ANSWER : why))
+      bound = setTimeout(() => lost('The reset run did not finish in time.'), WORKER_BOUND_MS)
+      worker.onmessage = (e: MessageEvent<WorkerReply>) => {
+        const m = e.data
+        if (m.type === 'pid') pid = m.pid
+        else if (m.type === 'confirmed') confirmed = true
+        else if (m.type === 'failed') lost(`The reset run failed: ${m.message}`)
+        else {
+          cliRunning = m.cliRunning
+          resolve(m.result)
+        }
+      }
+      worker.onerror = (e) => lost(`The reset run failed: ${e.message}`)
+      worker.postMessage(job)
+    })
+  } finally {
+    clearTimeout(bound)
+    worker.terminate()
+    if (pid && cliRunning) await killProcessTreesAsync([pid])
+  }
+}

@@ -1,0 +1,492 @@
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { spawnCaptured } from '../core/process'
+import { app } from '../http-app'
+import { findTranscriptById } from '../live-registry'
+import { DELIVERY_ACTUATOR_FILE, resolveMiscAsset } from '../misc-assets'
+import { samePathKey } from '../path-key'
+import { jsonBody } from '../route-helpers'
+import { desktopHomeFor, liveSessionEntry } from '../session-launch'
+
+let actuatorQueue: Promise<unknown> = Promise.resolve()
+/** Runs `run` once every actuator started before it has finished, whatever they returned or threw. */
+function actuatorTurn<T>(run: () => Promise<T>): Promise<T> {
+  const turn = actuatorQueue.then(run, run)
+  actuatorQueue = turn.catch(() => undefined)
+  return turn
+}
+
+/** Deliver a message into a desktop chat end to end - the real message endpoint. See index.ts for
+ *  the app-wide middleware this route runs behind. */
+// Deliver a MESSAGE into a desktop chat, end to end - the real message endpoint (owner word,
+// 2026-09-01). One call: find where the chat renders, type the text through the app's own
+// composer (accessibility-API control invocation - the proven Deliver-DesktopChat actuator,
+// no cursor, no coordinates), and VERIFY the turn started from the transcript itself. The
+// composer send is also what boots a dormant or crashed chat's engine (measured 2026-08-26),
+// so delivery doubles as the revive. NOTHING HEADLESS: the turn runs in the app.
+//
+// THE COLLAPSED-SIDEBAR FIX (the owner's exact complaint: a virtualized/collapsed row must
+// not break delivery): when the actuator reports the row NOT RENDERED and the session has no
+// live writer, this fires the app's OWN `claude://resume` import targeted at the instance -
+// the app re-renders the chat at the top of its sidebar - then retries the type once. A live
+// unrendered session is refused honestly (resume-importing over a live writer is forbidden).
+// POST /api/sessions/:id/stop: Claude Desktop's own Stop for a working chat, inside its RUNNING app
+// (claude-native-send.ts tryNativeStop). The instance resolves as the message route resolves it. Nothing
+// is retried or typed: unavailable answers 503 with the reason, a refusal 409, an unconfirmed stop 502.
+app.post('/api/sessions/:id/stop', async (c) => {
+  const sessionId = c.req.param('id')
+  const body = await jsonBody(c)
+  const { findDesktopChat, desktopChatOn } = await import('../instance-sessions')
+  const { listInstances } = await import('../core/instances')
+  const namedRef = typeof body.instance === 'string' ? body.instance.trim() : ''
+  const named = namedRef
+    ? (await listInstances()).find(
+        (i) => i.name === namedRef || samePathKey(i.dir, namedRef.replace(/^desktop:/, '')),
+      )
+    : undefined
+  const meta = named ? desktopChatOn(named.dir, sessionId) : findDesktopChat(sessionId)
+  if (namedRef && (!named || !meta))
+    return c.json({ ok: false, error: 'not on the named instance' }, 409)
+  const home = named ? named.dir : await desktopHomeFor(sessionId).catch(() => null)
+  if (!meta || !home) return c.json({ ok: false, error: 'no desktop chat holds this session' }, 404)
+  const inst = named ?? (await listInstances()).find((i) => samePathKey(i.dir, home))
+  if (!inst) return c.json({ ok: false, error: `no instance owns ${home}` }, 404)
+  if (!inst.isRunning)
+    return c.json(
+      { ok: false, error: `instance '${inst.name}' is not running - open it first` },
+      409,
+    )
+  const { tryNativeStop } = await import('../claude-native-send')
+  const stopped = await tryNativeStop(inst.dir, sessionId)
+  if (stopped.ok) return c.json({ ok: true, route: 'native', verified: true })
+  const status = stopped.refused ? 409 : stopped.unavailable ? 503 : 502
+  return c.json({ ok: false, error: stopped.reason ?? 'the app did not stop the chat' }, status)
+})
+
+app.post('/api/sessions/:id/message', async (c) => {
+  const sessionId = c.req.param('id')
+  const body = await jsonBody(c)
+  const text = typeof body.text === 'string' ? body.text.trim() : ''
+  if (!text) return c.json({ ok: false, error: 'text required' }, 400)
+
+  // `instance` names the instance the landed copy sits in (its name, or a desktop:<dir> ref). A moved
+  // chat keeps its session id on BOTH accounts, so without it the copy, the home and the live engine
+  // are whichever one the index prefers - the source copy's engine woke on a full account.
+  const { findDesktopChat, desktopChatOn } = await import('../instance-sessions')
+  const { listInstances } = await import('../core/instances')
+  const namedRef = typeof body.instance === 'string' ? body.instance.trim() : ''
+  const named = namedRef
+    ? (await listInstances()).find(
+        (i) => i.name === namedRef || samePathKey(i.dir, namedRef.replace(/^desktop:/, '')),
+      )
+    : undefined
+  const meta = named ? desktopChatOn(named.dir, sessionId) : findDesktopChat(sessionId)
+  if (namedRef && (!named || !meta))
+    return c.json({ ok: false, error: 'not on the named instance' }, 409)
+  const home = named ? named.dir : await desktopHomeFor(sessionId).catch(() => null)
+  if (!meta || !home) return c.json({ ok: false, error: 'no desktop chat holds this session' }, 404)
+  const inst = named ?? (await listInstances()).find((i) => samePathKey(i.dir, home))
+  if (!inst) return c.json({ ok: false, error: `no instance owns ${home}` }, 404)
+  // A live engine belongs to this instance only when its registry hostSessionId is this copy's chat.
+  const hostChatId = named ? (meta.chatId ?? '') : undefined
+  if (!inst.isRunning)
+    return c.json(
+      {
+        ok: false,
+        error: `instance '${inst.name}' is not running - open it first (delivery types into the app)`,
+      },
+      409,
+    )
+
+  const { statSync } = await import('node:fs')
+  const transcript = findTranscriptById(join(homedir(), '.claude'), sessionId)
+  const sizeOf = () => {
+    try {
+      return transcript ? statSync(transcript).size : 0
+    } catch {
+      return 0
+    }
+  }
+
+  // ROUTE 0 - THE APP'S OWN PEER DELIVERY, for a caller that never types (peer_only; 2026-10-09).
+  // The pipe below reaches only a live engine, and a note written into an IDLE engine's queue waits
+  // there without starting a turn (climayte-ping.ts): overnight every babysitter continue ended as
+  // "no peer pipe" or "wrote but no transcript growth" (44 of them). The native send makes the call
+  // one chat's SendMessage makes to reach another, and the app starts the engine itself when none
+  // runs. It goes in as a message from another session, never as the person, and the app keeps its
+  // own refusals (archived, stopped until a person sends; claude-native-send.ts). Where native control
+  // is not set up, or nothing reached the app, the pipe is tried as before.
+  let nativeWhy = ''
+  if (body.peer_only === true) {
+    const { sendOrHold } = await import('../claude-native-send')
+    const fromName =
+      typeof body.from === 'string' && body.from.trim()
+        ? body.from.trim().slice(0, 80)
+        : 'AgentHydra'
+    // hold_secs: how long a held note stays worth sending (the sender's next note comes after it). Clamped
+    // to a minute to a day; absent or not a positive number, the note waits as long as the hold's expiry.
+    const holdSecs =
+      typeof body.hold_secs === 'number' && body.hold_secs > 0
+        ? Math.min(Math.max(body.hold_secs, 60), 86_400)
+        : undefined
+    const native = await sendOrHold(
+      inst.dir,
+      sessionId,
+      text,
+      fromName,
+      holdSecs === undefined ? undefined : holdSecs * 1000,
+    )
+    if (native.ok)
+      return c.json({
+        ok: true,
+        route: 'native',
+        // delivered means in the chat's hands, as the pipe's queued note is (route 1): Desk's bridge
+        // takes anything else as a failed delivery.
+        delivered: true,
+        confirmed: native.delivery === 'delivered',
+        queued: native.delivery === 'queued' || native.delivery === 'held',
+        held: native.delivery === 'held',
+        typed: false,
+        detail:
+          native.delivery === 'held'
+            ? 'the chat is busy: AgentHydra holds the message and sends it once the chat is idle'
+            : native.delivery === 'queued'
+              ? "sent through the app's own peer delivery; the chat runs it when it is free"
+              : native.delivery === 'delivered'
+                ? "sent through the app's own peer delivery; the chat started a turn on it"
+                : "sent through the app's own peer delivery; the app had not confirmed a turn start within 35s",
+      })
+    if (!native.unavailable)
+      // The send was made and the app did not take it: never also try another route.
+      return c.json(
+        {
+          ok: false,
+          route: 'native',
+          delivered: false,
+          error: `the app did not take the message: ${native.reason ?? 'no reason given'}`,
+        },
+        422,
+      )
+    nativeWhy = native.reason ?? 'no reason given'
+  }
+
+  // ROUTE 1 - THE OFFICIAL CHANNEL (peer messaging): if the session is LIVE, inject the text
+  // into its own message pipe exactly as one session's SendMessage reaches another. It lands
+  // in the native input queue (no UI, no composer click, no verify snippet needed - the token
+  // authenticates and the session id addresses) and runs when the current turn ends. Only a
+  // live session has a pipe, so a dormant/crashed chat falls through to the composer, the one
+  // route that can BOOT it. (owner, 2026-09-01: "why don't we use the old method" - this is
+  // it, preferred wherever it applies; proven end to end the same day.)
+  {
+    const { deliverPeerMessage } = await import('../peer-message')
+    const peer = await deliverPeerMessage(
+      sessionId,
+      transcript,
+      text,
+      Math.min(120, Math.max(10, Number(body.confirm_secs) || 45)) * 1000,
+      undefined,
+      hostChatId,
+    )
+    if (peer.ok)
+      return c.json({
+        ok: true,
+        route: 'peer',
+        delivered: true,
+        typed: false,
+        detail: 'delivered over the native peer channel - queued in the chat, no UI',
+      })
+    if (peer.reason !== 'not-live')
+      // the pipe existed but did not confirm - honest failure; do NOT also composer-type
+      // (that would risk a duplicate into a live chat)
+      return c.json(
+        {
+          ok: false,
+          route: 'peer',
+          delivered: false,
+          detail: `peer channel did not confirm (${peer.reason})`,
+        },
+        422,
+      )
+    // PEER_ONLY - THE CALLER'S MID-TURN RAIL, HONOURED HERE BECAUSE HERE IS WHERE THE CHANNEL
+    // IS CHOSEN (2026-09-10). The composer fallback below TYPES, and typing into a chat whose
+    // turn is in flight is the one thing the courier's rail 4 forbids. A caller that knows the
+    // turn is in flight sets peer_only, and then "no pipe" is a refusal, never a downgrade to
+    // the route that would interrupt. Without this the courier could only obey rail 4 by
+    // refusing every live chat up front - which is exactly the bug it was fixed out of.
+    if (body.peer_only === true)
+      return c.json(
+        {
+          ok: false,
+          route: 'peer',
+          delivered: false,
+          error: `peer_only: no peer pipe for this session, and the native send did not reach the app (${nativeWhy})`,
+          detail:
+            'the composer is the only route left and it types - refusing to interrupt a live turn. Retry when the chat is idle.',
+        },
+        409,
+      )
+    // 'not-live' => no pipe (dormant/crashed): fall through to the composer, which boots it.
+  }
+  // The verify snippet: a line of the chat's OWN last words, so the actuator proves it found
+  // the right conversation before typing one character. Caller may supply one; otherwise it
+  // is derived from the transcript tail, and no derivable snippet is an honest refusal.
+  // THE FLOOR APPLIES TO THE CALLER TOO (2026-09-01). The derivation below refuses anything under
+  // 10 characters, but a SUPPLIED verify_text was taken at any length - and three deliveries
+  // arrived carrying "x". One character matches essentially any pane, so for those the wrong-chat
+  // guard was off while appearing to be on, and one of them reported "typed, but the transcript
+  // did not grow". A too-short snippet is a placeholder, not a proof: derive a real one from the
+  // transcript instead, and fall back to the placeholder only for a chat with no words yet.
+  const MIN_VERIFY = 10
+  const supplied = typeof body.verify_text === 'string' ? body.verify_text.trim() : ''
+  const placeholder = supplied.length > 0 && supplied.length < MIN_VERIFY ? supplied : ''
+  let verify = supplied.length >= MIN_VERIFY ? supplied : ''
+  if (!verify && transcript) {
+    try {
+      const raw = readFileSync(transcript, 'utf8')
+      const tail = raw.length > 60000 ? raw.slice(-60000) : raw
+      for (const line of tail.split('\n').reverse()) {
+        if (!line.includes('"text"')) continue
+        try {
+          const rec = JSON.parse(line)
+          const parts = Array.isArray(rec?.message?.content) ? rec.message.content : []
+          for (const p of parts.reverse()) {
+            if (p?.type === 'text' && typeof p.text === 'string') {
+              // TWO render truths (measured live 2026-09-01): the transcript holds RAW
+              // MARKDOWN while the pane shows RENDERED text (strip `*_#> and the line
+              // matches - inline code keeps its characters), AND the pane shows the END of
+              // a long message, so the snippet must come from the LAST lines, never an
+              // earlier "cleaner" one that is scrolled off-screen. Skip only link lines
+              // ("[text](url)" renders as just "text").
+              const lines = p.text
+                .split('\n')
+                .map((s: string) => s.trim())
+                .filter((s: string) => s.length >= 10)
+              for (const raw of lines.reverse()) {
+                if (raw.includes('](')) continue
+                // a leading "- " / "1. " renders as a bullet GLYPH, not text (measured
+                // live 2026-09-01: the pane's ListItem name starts at the first word)
+                const cand = raw
+                  .replace(/^([-*+]|\d+[.)])\s+/, '')
+                  .replace(/[`*_#>]/g, '')
+                  .trim()
+                // A line EVERY chat ends with proves nothing: the house style signs off
+                // with "- Signed: <Employee>", and preferring the last line handed that
+                // footer back as the snippet (seen live 2026-09-01). It would match a dozen
+                // panes. Walk past it to real content.
+                if (/^signed\s*[:-]/i.test(cand)) continue
+                if (cand.length >= MIN_VERIFY) {
+                  verify = cand.slice(0, 80)
+                  break
+                }
+              }
+            }
+            if (verify) break
+          }
+        } catch {
+          continue
+        }
+        if (verify) break
+      }
+    } catch {
+      /* fall through to the refusal below */
+    }
+  }
+  if (!verify && placeholder) {
+    // Nothing derivable AND the caller sent a placeholder: the one legitimate case is a chat
+    // that has no words yet (a fresh console landing). Allowed, but never quietly - this is the
+    // wrong-chat guard running at its weakest, and the log must say so.
+    verify = placeholder
+    console.warn(
+      `[message] ${meta.title ?? sessionId}: typing on a PLACEHOLDER verify_text (${JSON.stringify(placeholder)}) - no transcript text to prove the pane; acceptable only for a chat with no words yet`,
+    )
+  }
+  if (!verify)
+    return c.json(
+      {
+        ok: false,
+        error: `no verify snippet derivable from the transcript (pass verify_text of at least ${MIN_VERIFY} characters) - refusing to type blind`,
+      },
+      422,
+    )
+
+  // ⛔ TWO WAYS THIS PATH HAS BEEN WRONG, so it is resolved in one place now and never joined
+  // here. It was process.cwd() once: a daemon started in server/ looked for server/misc/ and
+  // every delivery failed. It was join(APP_ROOT, 'misc', ...) after that, which is right for a
+  // checkout and wrong for a COMPILED build, where APP_ROOT is the directory of the exe and the
+  // build had never put misc\ beside it - so every delivery on every compiled install failed
+  // with 'delivery actuator missing', by BOTH routes, since the peer channel is refused here
+  // too. resolveMiscAsset prefers a real misc\ and otherwise writes the embedded copy out of
+  // the binary. See server/src/misc-assets.ts.
+  const resolved = await resolveMiscAsset(DELIVERY_ACTUATOR_FILE)
+  const actuator = resolved.path
+  if (!actuator)
+    return c.json(
+      {
+        ok: false,
+        error: `delivery actuator unavailable (${resolved.reason}): ${resolved.error ?? ''}`,
+      },
+      500,
+    )
+  // Awaited, never spawnSync: the actuator drives the app's window for seconds to minutes, and a
+  // synchronous spawn held the daemon's one thread for all of it (2026-10-08: 18.5 s, every route
+  // and /api/health unanswered, and the tray watchdog started a second daemon). One actuator at a
+  // time (actuatorTurn), as the blocking spawn made it: two would type into the same window.
+  const type = () =>
+    actuatorTurn(async () => {
+      const run = await spawnCaptured(
+        [
+          'powershell',
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          actuator,
+          '-Title',
+          meta.title ?? '',
+          '-Message',
+          text,
+          '-VerifyText',
+          verify,
+          '-IfBusyAbort',
+          '-SearchByContent',
+          '-Instance',
+          inst.name,
+        ],
+        { timeoutMs: 240000 },
+      )
+      return { status: run.timedOut ? null : run.code, stdout: run.stdout, stderr: run.stderr }
+    })
+
+  const before = sizeOf()
+  let attempt = await type()
+  let rendered = attempt.status === 0
+  let rerendered = false
+  const saidNotRendered = /not rendered/i.test(`${attempt.stdout}${attempt.stderr}`)
+  if (!rendered && saidNotRendered) {
+    // A live writer normally forbids the resume-import - but an engine whose transcript has
+    // been QUIET for minutes has no in-flight turn to protect (the idle-booted shape: the
+    // app boots a chat's engine that then writes nothing). Stop it the way the daemon's own
+    // migrate does, kill-wait included; an engine that keeps respawning belongs to an app
+    // that has the chat OPEN, and that stays an honest refusal.
+    const live = liveSessionEntry(sessionId, hostChatId)
+    if (live) {
+      // mtime is NOT a safe quiet signal here: an idle-booted engine touches its transcript
+      // periodically without appending (measured 2026-09-01, size static for 100 minutes
+      // while mtime stayed under a minute old). Whether a turn is in flight is the CALLER'S
+      // gate to judge from the tail records; this primitive acts only on that word.
+      if (body.allow_stop_idle !== true)
+        return c.json(
+          {
+            ok: false,
+            error:
+              'the row is not rendered AND the session has a live writer - pass allow_stop_idle:true ONLY after your own gate verified no turn is in flight (the last tail record is a completed assistant turn), or migrate it',
+          },
+          409,
+        )
+      try {
+        process.kill(live.pid)
+      } catch {
+        /* already exiting */
+      }
+      const killDeadline = Date.now() + 8000
+      while (Date.now() < killDeadline && liveSessionEntry(sessionId, hostChatId))
+        await new Promise((r) => setTimeout(r, 250))
+      if (liveSessionEntry(sessionId, hostChatId))
+        return c.json(
+          {
+            ok: false,
+            error:
+              'the live writer keeps respawning - an app holds this chat open; deliver there or migrate it',
+          },
+          409,
+        )
+    }
+    // ⛔ THE SELF-HEAL GOES THROUGH THE GUARDED IMPORT, NEVER A RAW DEEPLINK (owner,
+    // 2026-09-01: "it's also duplicating chats"). Firing `claude://resume` at a profile that
+    // ALREADY carries the chat makes the app create a SECOND desktop entry, with its own
+    // chatId, for the same conversation - proved live: temp1 ended up with two rendered rows
+    // titled identically, and from then on nothing could act on either, because the sidebar
+    // actuator (correctly) refuses to guess between two identical titles. A duplicate is
+    // therefore not just clutter: it makes the chat permanently unmanageable.
+    //
+    // "The row is not rendered" is exactly the condition under which that mistake is easiest
+    // to make, because the row often IS there and merely unreachable - collapsed group,
+    // virtualized out of view. importSessionToDesktop asks the chat index first and returns
+    // alreadyRendered instead of importing, which is the check the raw spawn skipped.
+    const { importSessionToDesktop } = await import('../session-launch')
+    const healed = await importSessionToDesktop({
+      sessionId,
+      instanceDir: home,
+      title: meta.title ?? null,
+    })
+    if (healed.alreadyRendered)
+      return c.json(
+        {
+          ok: false,
+          error:
+            'the row is present in that instance but the actuator could not reach it (collapsed ' +
+            'group or scrolled out of the virtualized list) - re-importing would create a ' +
+            'DUPLICATE chat, so this refuses. Expand its group or scroll it into view, or ' +
+            'migrate the chat to another instance.',
+        },
+        409,
+      )
+    await new Promise((r) => setTimeout(r, 8000))
+    rerendered = true
+    attempt = await type()
+    rendered = attempt.status === 0
+    // A freshly re-rendered conversation paints its content ASYNC: the row selects but the
+    // pane can still be loading when the verify check looks (measured live 2026-09-01 -
+    // "after selecting ... the conversation does not show the expected text"). One more
+    // wait-and-retry covers the paint; a real wrong-chat still refuses on both tries.
+    if (
+      !rendered &&
+      /does not show the expected text/i.test(`${attempt.stdout}${attempt.stderr}`)
+    ) {
+      await new Promise((r) => setTimeout(r, 8000))
+      attempt = await type()
+      rendered = attempt.status === 0
+    }
+  }
+  if (!rendered) {
+    const lines = `${attempt.stdout ?? ''}${attempt.stderr ?? ''}`.trim().split('\n')
+    const last = lines.pop() ?? ''
+    return c.json(
+      {
+        ok: false,
+        rerendered,
+        verify_used: verify,
+        actuator_tail: lines.slice(-4),
+        error: `composer refused: ${last.slice(0, 240) || `exit ${attempt.status}`}`,
+      },
+      422,
+    )
+  }
+
+  // CONFIRM from the artifact, never the keystroke: the transcript must grow (a boot from
+  // dormant can take a while, so the window covers an engine start).
+  // A DORMANT chat must BOOT before its first byte lands, and a cold boot on a busy
+  // machine runs well past the old 45s default - healthy wakes were being reported as
+  // 'typed, but the transcript did not grow' (measured 2026-09-01). The composer route
+  // therefore waits longer by default; a caller may still pin confirm_secs.
+  const confirmMs = Math.min(240, Math.max(10, Number(body.confirm_secs) || 120)) * 1000
+  const deadline = Date.now() + confirmMs
+  let delivered = false
+  while (Date.now() < deadline) {
+    if (sizeOf() > before) {
+      delivered = true
+      break
+    }
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  return c.json({
+    ok: delivered,
+    typed: true,
+    rerendered,
+    delivered,
+    detail: delivered
+      ? 'typed, and the transcript is growing - the turn is running in the app'
+      : `typed, but the transcript did not grow within ${confirmMs / 1000}s - not claiming delivery`,
+  })
+})

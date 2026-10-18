@@ -1,0 +1,406 @@
+# Releasing
+
+## AgentHydra is 2.0: no 1.x release, and the notes open with a TL;DR
+
+- **The 1.x line is closed** (owner, 2026-10-06: "why do we keep releasing updates to GitHub on the
+  1.x path of Agent Hydra? ... when Agent Hydra became the new Hydra Desk UI, it was Agent Hydra
+  2.0"). Every release ships Desk 2 (`desk2/`) as AgentHydra's window
+  ([AGENTHYDRA-2-CUTOVER.md](AGENTHYDRA-2-CUTOVER.md)); the first one published is 2.0.1 (2.0.0's
+  tag build stopped before publishing, step 6 below), as a pre-release, and the first full release,
+  the one installed copies update to, is 2.0.2 (2026-10-08). A tag below 2.0.0 is refused by the pre-push
+  hook and by `release.yml`, and a tag build whose Windows zip has no `desk2/` does not publish.
+- **The release page reads like SageThumbs'** (owner, same day: "We always need to do it like Sage
+  does. You have a TL;DR, bullet points ... then you have the details in, like, a read more").
+  `scripts/release-notes.mjs` builds it from the version's CHANGELOG section: the icon, the TL;DR,
+  every line of the section under "Read more", then the downloads. A section with more than two
+  changes must open with its own TL;DR, or the hook and the workflow refuse the tag:
+
+  ```md
+  ## [2.0.0] - 2026-10-07
+
+  **TL;DR**
+
+  - **One short headline per change that matters**
+
+  **Everything in 2.0.0**
+
+  ### Added
+  - **The headline.** One to three plain sentences a user cares about.
+  ```
+
+  `node scripts/release-notes.mjs 2.0.0` prints the page; `--check` only says whether it may ship.
+  `--check-unreleased` holds `[Unreleased]` to the same rule before it has a version (exit 1, the
+  reason on stderr; an empty or short section passes).
+  Write each bullet for someone who uses AgentHydra: what changed for them, in a few sentences. The
+  owner's quotes, measurements, endpoints and file names belong in the commit message and the docs.
+
+## What a 2.0 bundle holds, and building one on a PC
+
+Every bundle (`AgentHydra-<version>-<target>`, a `.zip` on Windows, a `.tar.gz` elsewhere) holds:
+
+- the launcher (`AgentHydra.exe` on Windows, the sh script `agenthydra` elsewhere), `app/` (the
+  daemon as plain JS in `app/server.js`, its misc assets, `release.json`, and `bun-version`, the Bun
+  this release runs on) and `orchestrator/`; on Windows also `misc/` (the tray) and the lone
+  `.exe` beside the archive, which is the same launcher;
+- `desk2/`, AgentHydra 2.0's window: its server source, `shared/`, production `node_modules`
+  (installed hoisted, for the target's OS and CPU, with Claude Code's platform binary removed: Desk 2
+  resolves or downloads it itself), the built `web/dist` and `hydra/dist`, and on Windows `launcher/`
+  with `HydraDesk2.exe`. Windows opens it in its native window; Linux and macOS run its server on
+  the launcher's Bun and open the default browser. Desk 2's dev-servers service (for managing dev
+  servers) runs as a hidden service started by Desk 2 itself.
+
+**No Bun and no Claude Code binary ship.** The launcher downloads the Bun that `app/bun-version`
+names (from oven-sh/bun's release, its SHA-256 checked) into `runtime/` the first time it runs, and
+again whenever an update brings a new pin. `runtime/` is created by the launcher, is never in an
+archive and is never replaced by the updater. Run on its own, the lone `.exe` finds no `app/` and
+installs everything from its own version's archive first. `release.yml` resolves the newest Bun
+release once and passes it to the packager as `--bun-version`, and builds and smokes on that same
+Bun; a PC build pins the running `Bun.version`. The packager fails the Windows archive when it is
+over 30 MB (11.7 MB on 2026-10-06, and 8.2 MB for linux-x64, against 198 MB before). A POSIX
+target must be packaged on Linux or macOS: Windows cannot put the launcher's execute bit in the tar,
+so the packager refuses one there. The smoke seeds `runtime/` with its
+own Bun and points both download bases (`AGENTHYDRA_RELEASE_BASE`, `AGENTHYDRA_BUN_BASE`) at a
+refusing address, so a bundle that tries to download anything fails it.
+
+No tests, e2e, `tmp/` or dev dependencies ship. `scripts/package-release.ts` stages and archives a
+bundle and `scripts/smoke-release.ts` boots one; `release.yml` runs the same two scripts. On a PC
+(Windows shown), build Desk 2 first, since the packager never builds it or writes into the checkout:
+
+```sh
+cd desk2 && bun install --frozen-lockfile && bun run build && cd ..
+bun scripts/package-release.ts --target windows-x64 --out <dir>
+bun scripts/smoke-release.ts --bundle-dir <dir> --port <free> --desk-port <free>
+```
+
+Pick two ports nothing on the PC uses (not 7787 or 7798, where the live daemon and Desk 2 run);
+the smoke refuses a busy one. It starts the bundle's daemon and Desk 2's server on temp homes,
+headless (never the launcher, window host or tray), checks them, and stops exactly what it started.
+
+## Consolidating old releases
+
+Periodically rewrite all previous release pages from CHANGELOG.md and fold patch releases into
+their minor's release. This removes old patch releases and combines their changes with the minor
+release, making the release list shorter and keeping patches visible without their own page.
+
+`scripts/consolidate-releases.mjs` reads releases and CHANGELOG.md, groups them by minor version
+(x.y), keeps x.y.0 (or the lowest version in a line if x.y.0 does not exist), and folds every
+other release in the line into the one it keeps. The release marked latest is never folded.
+
+A kept release with folded patches gets one body in `formatLineBody`'s layout (icon, ## TL;DR,
+<details> Read more, ## Downloads, Discord) covering the whole line: the TL;DR is the kept
+version's bullets then each folded version's, duplicates removed; Read more holds each version's
+section, oldest first, each under its own `#### x.y.z` heading. Every other kept release gets
+`formatReleaseBody`'s page.
+
+Run the dry run first and read it:
+```sh
+node scripts/consolidate-releases.mjs
+```
+
+It prints a summary, writes every new body to `/tmp/consolidate-<timestamp>/bodies/<tag>.md` and
+the plan to `/tmp/consolidate-<timestamp>/plan.json` ({ edit: [tags], fold: { <kept tag>: [patch tags] },
+delete: [tags], missingSections: [versions] }). Review the bodies and plan, then apply only on the
+owner's word:
+
+```sh
+node scripts/consolidate-releases.mjs --apply
+```
+
+The git tags stay; only the release pages change. Versions with no CHANGELOG section are listed in
+the plan but not changed.
+
+## Pushing `main` is the release
+
+Auto-update (see the README's Auto-update section) applies each update as a `git pull --ff-only`
+against `origin/main`. There is no separate publish step for that path: as soon as `main` moves,
+every instance with auto-update enabled will fast-forward to it on its next check. Treat a push to
+`main` as user-facing, not as a staging step.
+
+## The pre-push gate
+
+`.githooks/pre-push` (enabled by `core.hooksPath`, which `bun install`'s `prepare` sets) runs on
+every push and enforces two rules that used to be memory only, then runs the host-only lane:
+
+1. **A public remote is announced and refused.** The hook looks the remote up on GitHub; when it
+   is public, or cannot be proven private (not GitHub, a timeout, a rate limit), it prints
+   `# WARNING: THIS REPOSITORY IS **PUBLIC**` with the refs and stops. When the owner has decided
+   the push goes out, re-run the same command with `AGENTHYDRA_PUSH_PUBLIC=1`: it prints the
+   heading again and pushes. Announce, then do. Never `--no-verify`.
+2. **A `v*.*.*` tag is refused while `docs/todo/TODO.md` has an open section.** Nothing pending
+   ships past a release. There is no override: finish the item and delete its section, or the
+   owner deletes it. The queue is gitignored, so this can only fire on a machine that holds it.
+   A tag is also refused when `scripts/release-notes.mjs` would refuse it: below 2.0.0, no
+   CHANGELOG section, or a long section with no TL;DR (read from the tagged commit).
+3. **The kit check runs, and a release tag needs green CI on its commit.** On a machine with the
+   private `../../lunarwerx-ui` checkout, every push runs the kit drift lane
+   (`.githooks/check-kit-sync-pushed.mjs`), the one lane GitHub structurally cannot run. It refuses
+   only drift the push itself carries: a synced file that a commit in the push changes, deletes or
+   adds. Another session's uncommitted edit or untracked file in a synced folder is named and left
+   alone. With a `v*.*.*` tag in the push, the hook also asks
+   `gh` for a `ci.yml` run on the exact commit the tag points to whose conclusion is success. If
+   there is one, the kit drift lane is all that runs locally: every other lane of `bun run check:deep`
+   (Biome, the i18n check, every typecheck, `bun test` with orchestrator/server's tests, the
+   orchestrator Python suite) is a `ci.yml` step that already passed on that commit, so re-running
+   them made every release wait on a duplicate 25-minute gate (measured on 1.7.0, 2026-10-02).
+   If it cannot be confirmed (`gh` missing or not signed in, offline, no run on that commit, a run
+   still going or not green), the hook prints one line saying why and runs the full
+   `bun run check:deep`. A tag on a docs-only commit has no CI run (`ci.yml` ignores
+   `docs/**` and `*.md`), so it takes that fallback; tag the version-bump commit, which CI runs.
+
+A commit whose subject starts with `wip: bundle` must also list every file in it under `Mine:` and
+`Swept:` (`.githooks/commit-msg`); `bun run save:bundle -- --mine <paths>` writes that message
+from the dirty tree. Both hooks have suites under `.githooks/tests/`.
+
+## Recipe
+
+1. **Bump the version.** Update `version` in `package.json`.
+2. **Update the changelog.** Move the relevant `[Unreleased]` entries in `CHANGELOG.md` into a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading, following the existing Keep a Changelog format already used
+   in that file, and open it with its `**TL;DR**` block (above). Only entries for what this release
+   ships: a change to `desk2/` rides only in a release that ships Desk 2.
+   `node scripts/release-notes.mjs X.Y.Z` shows the page GitHub will get.
+   **Then freeze the MCP API level:** `bun run mcp:api-level --write` commits the live tool surface
+   as `server/mcp-api-levels/<version>.json`. `bun test` refuses a version with no level, and
+   replays every level against the live tools, so a later release that drops a tool or makes an
+   optional argument required fails there (see [REFERENCE.md](REFERENCE.md#frozen-api-levels)).
+3. **Run local CI before pushing.** `.github/workflows/ci.yml` is the authoritative list; the
+   commands below are a convenience copy and the workflow wins if the two ever disagree. Check
+   the workflow rather than trusting this line when a step has been added recently.
+   `bun install --frozen-lockfile`, `bun run typecheck`, `bun run check`, `bun run build`,
+   `bun test`, then a bundle built and smoked as in "What a 2.0 bundle holds" above.
+   Don't rely on pushing to find out one of these fails.
+
+   Maintainers: also `bun run check:local`, which CI cannot run at all (see REFERENCE.md).
+
+   A local pass is one leg of a two-leg matrix. CI runs `[ubuntu-latest, windows-latest]`, so a
+   green run on Windows says nothing about Linux. Anything OS-shaped (path handling, filesystem
+   watching, process spawning, line endings) needs a real runner before you call it verified.
+4. **Commit** the version bump and changelog update.
+5. **Push `main`, then wait for CI to go green.** Not the same step as tagging, deliberately: this
+   push is the release (see above), so it is the last point at which a red run is still cheap.
+   A run on `main` finishes even when someone pushes again meanwhile (only the newest push waits
+   behind it), so the run you watch always ends in a verdict.
+   ```sh
+   git push origin main
+   gh run watch          # or: gh run list --limit 2
+   ```
+   Push nothing else to `main` until that run has STARTED: a newer push cancels a run still
+   queued behind another one, and the tag in step 6 needs a green run on the bump commit itself
+   (2.0.4, 2026-10-09: the bump's run queued behind a test fix's, and the next landing waited for it).
+6. **Tag only once `main` is green:**
+   ```sh
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+   `git push --follow-tags` bundles both into one command, which is how v0.7.0 shipped to
+   auto-update instances before anyone had looked at CI; it then failed the ubuntu leg on a
+   win32-only path assertion. Prefer the two steps.
+
+   **Name the tag in the push. Never `git push --tags`.** It pushes every local tag the remote is
+   missing, not the one just created, and a `v*` tag is a release trigger. Releasing 0.19.3 that way
+   also pushed a stale local `v0.8.0` and started a real Release build for a months-old commit; it
+   was cancelled while still queued (`gh run cancel <id>`, then `git push --delete origin v0.8.0`),
+   so nothing published. A minute later it would have been a public 0.8.0 sitting above 0.19.2 in
+   the list that auto-update clients read. These trees accumulate stale local tags precisely because
+   releases are normally pushed one at a time, so `--tags` looks harmless right up until it isn't.
+
+   **If a tag does end up on a red commit,** do not move a published tag. Fix the failure, bump to
+   the next patch version, and release that immutable version instead.
+
+   The same goes for a tag whose Release run fails before it publishes: a dispatch on the tag runs
+   the workflow file as it was at that tag, so the fix needs a new version. v2.0.0 is one: its smoke
+   job had no checkout of the repo, so `scripts/smoke-release.ts` was missing on every native leg,
+   and 2.0.1 shipped instead. Prove a workflow change with a dispatch on `main` first
+   (`gh workflow run release.yml --ref main`): it builds and smokes and publishes nothing.
+7. **Once the Release run is green, tell the site.** The download buttons on
+   `agenthydra.github.io` link the versioned release FILES, and its static HTML (what crawlers,
+   AI answer engines and no-JS visitors read) only moves when its sync workflow runs. It runs
+   daily on its own; this makes it the same minute:
+   ```sh
+   gh workflow run sync-version.yml --repo AgentHydra/agenthydra.github.io
+   ```
+   The release job cannot do this itself - a cross-repo trigger from Actions needs a PAT the
+   default token does not carry - but whoever pushed the tag has a `gh` login that can, which is
+   how SageThumbs' `release.ps1` has always done it.
+
+## The install script depends on SHA256SUMS.txt
+
+`install.ps1` (repo root) is the documented one-liner install for Windows. It downloads the
+`AgentHydra-<version>-windows-x64.zip` asset, downloads `SHA256SUMS.txt` from the SAME release, and
+refuses to install on a mismatch or a missing entry. There is no skip switch, on purpose.
+
+That makes the checksum file a **release contract, not a nicety**: the `Build checksums` step in
+`release.yml` (`sha256sum out/* > out/SHA256SUMS.txt`) and its inclusion in the upload list must
+both survive any edit to the release job. Drop either one and the installer stops working for
+everyone on the next release, with a refusal rather than a silent downgrade in safety, which is the
+right failure, but still a broken install path.
+
+Two shapes to keep intact if the workflow is ever restructured:
+
+* The ZIP is what gets installed, not the bare `.exe`. Only the ZIP carries `misc/` (the tray
+  toolkit); a bundle without it can only run console-style, which is exactly the regression 0.11.2
+  shipped.
+* `sha256sum` writes `<hash>  out/<name>`, so the path field carries the `out/` prefix. The
+  installer matches on the file's LEAF name for that reason; moving the build output to another
+  directory is fine, renaming the assets is not.
+
+**The install itself is transactional (AH-40).** After the checksum passes, `install.ps1` extracts
+into a staging directory beside `-InstallDir` (same volume, so the real swap is a rename) and
+validates the complete staged payload: the launcher, `app/`, `desk2/`, `misc/` and `orchestrator/` present, and the
+`--version` canary run **on the staged copy** before anything real is touched, then refuses to
+proceed under a detected running instance (`AgentHydra`/`AgentHydra-Tray` process, or a live pid in
+`<config dir>\runtime.json`) unless `-Force` is passed. The five release-owned components
+(`AgentHydra.exe`, `app/`, `desk2/`, `misc/`, `orchestrator/`) are then swapped one at a time: each is renamed aside (`<name>.old-<stamp>`),
+the staged copy is moved into place, and orchestrator's user-owned `state/` directory is carried
+across the swap rather than dropped. Any failure during the swap rolls every component processed
+so far back to its `.old-` copy, so a disk-full, interrupted, or locked-file mid-copy can no longer
+leave `misc/`, `orchestrator/`, and the exe at silently different versions. `-FromZip`, `-Sha256`,
+`-InstallDir`, `-NoLaunch`, and `-Force` exist so this is testable offline (see
+`tests/install-transactional.test.ts`) without touching a real install, the real daemon, or the
+real tray; none of them change the default (no-arguments) behaviour a real user gets.
+
+**The release self-updater owns the same components (AH-08).** `server/src/github-updater.ts`
+carries `RELEASE_COMPONENTS`, and a manual install and an in-app update can no longer disagree about
+what a release IS: `orchestrator/` is swapped (renamed aside, the release copy moved in, the
+user-owned `state/` carried across, a `.release-version` stamp written, retired files gone by
+construction) and `misc/` is reconciled (release files copied in, retired files removed, a locked
+file reported rather than silently skipped). Components go first, then the executable; any failure
+rolls the executable AND every swapped component back as one unit, and the aside copies are
+discarded only once everything has landed. A swap refuses to start while a toolbox script is running
+through the daemon (`orchestratorBusy()`), and a bare-executable install acquires the toolbox on its
+first update. `server/tests/github-updater-components.test.ts` pins `install.ps1`'s component list to
+`RELEASE_COMPONENTS` by parsing the PowerShell, so the two lists cannot drift apart unnoticed.
+
+**From 2.0.0 the self-updater also owns `desk2/`.** It stops Desk 2 before replacing `desk2/` and
+starts it again after. Desk 2 includes its own dev-servers service that manages development servers
+without requiring a separate daemon. `install.ps1` installs the new layout and leaves Bun to the launcher's first run. Whatever part is
+missing (`app/`, `desk2/`, `orchestrator/`, `misc/`: a 1.x updater's install, or the lone `.exe`),
+the launcher restores it from its own version's release archive before it starts the daemon,
+without a click.
+
+## The 2.0 update mechanism and the 1.x→2.0 migration
+
+In 2.0.0, the launcher (AgentHydra.exe / agenthydra) starts the daemon through Bun: it launches `runtime/bun app/server.js`. The daemon's `process.execPath` is therefore `runtime/bun(.exe)`, not the launcher. The self-updater in `server/src/github-updater.ts` must swap the LAUNCHER_PATH (not `process.execPath`) and must never touch `runtime/`, which the launcher owns.
+
+The in-app update for a 2.0 release install works as follows:
+
+1. The daemon calls `applyUpdate()` with no `exePath` override.
+2. The updater detects that this is a release build (`IS_RELEASE` = true) and defaults `exePath` to `LAUNCHER_PATH`. A source checkout (`IS_RELEASE` = false) has no launcher, and its `process.execPath` is the machine's own Bun, so there `applyUpdate()` refuses unless the caller names `exePath`: a source checkout updates through git.
+3. It downloads the 2.0.x zip, extracts it, swaps the launcher aside, and moves the new one in place.
+4. It swaps `app/`, `orchestrator/`, and reconciles `desk2/` and `misc/` the same way.
+5. It never touches `runtime/`: the launcher owns it and will download Bun on next start if needed.
+6. The relaunch is handled by the launcher: if `app/bun-version` differs from `runtime/bun.version`, it downloads the new Bun.
+
+**The 1.x→2.0 migration path** (run end to end by `scripts/upgrade-e2e-1x.ts`, below): an install on 1.13.0 (the last 1.x release) receives 2.0.0 from its old updater. That old updater:
+
+1. Downloads the 2.0 zip, checks that its `AgentHydra.exe --version` prints 2.0.0, and swaps the exe (`process.execPath`): the 1.x exe goes aside and 2.0's launcher takes its place.
+2. Swaps `orchestrator/` and reconciles `misc/`, the only components it knows. It does not move `app/` or `desk2/`.
+3. Relaunches the new exe through WMI, so no environment variable of the old daemon reaches the launcher, and waits 60 s for the relaunch ack.
+
+The 2.0 launcher then finds `app/` and `desk2/` missing, downloads the release zip again and checks it against `SHA256SUMS.txt` (the list `release.yml` writes names `out/<asset>`, so the launcher matches on the file name), downloads Bun into `runtime/`, and starts the daemon.
+
+So the 1.x updater successfully installs 2.0. The 2.0 updater adds `runtime/*.old-*` cleanup (in `cleanupStaleUpdateArtifacts`, since the launcher, not the updater, owns runtime/) and corrects the exe path for 2.0's release layout.
+
+A 2.x update whose launcher pins a new bun runs the new launcher with `--ensure-bun` (hidden, several minutes allowed) before it relaunches, so the successor starts in seconds; if that fails it is logged and the relaunch goes ahead anyway. A 1.x install cannot do that: its old updater relaunches straight into the 2.0 launcher, which downloads the release zip and bun first, so the old daemon's 60 s ack deadline can pass and it stays up on the port. The 2.0 daemon that finally starts waits for the port, and if its own predecessor (the pointer owner it was relaunched from, answering /api/health on that port) still holds it, ends that process by pid and binds the same port; any other holder is left alone.
+
+**Run the 1.x upgrade before a 2.x release becomes the latest** (a pre-release is never offered to 1.x): `bun scripts/upgrade-e2e-1x.ts` (Windows; needs git, csc.exe
+and openssl, which Git for Windows has). It builds 1.13.0 from its tag, packages this checkout, and
+serves a fake GitHub release locally without changing any system setting: a CONNECT proxy for
+api.github.com on the 1.13 process, and a .NET config shim beside the launcher for its two download
+hosts. It runs two scenarios: a plain first run, where the ack arrives and 1.13 exits itself (about 75 s
+on 2026-10-06), and one with Bun held back 90 s, where the ack deadline passes and the 2.0 daemon takes
+over (about 167 s). It exits 0 only when both end with the checkout's version healthy on the same port, the full layout on
+disk, no 1.13 process left and Desk 2 answering. Its first run found the checksum-list bug above.
+
+## A tentative release
+
+A release installed copies should not take yet (owner, 2026-10-08: "release a tentative 2.0") is
+published as a GitHub **pre-release**. Every installed copy's updater asks only for
+`releases/latest`, which is never a pre-release, so installs stay where they are while the page and
+its downloads are public for anyone who wants them. The site's sync also follows the latest release,
+so it keeps offering the previous one; skip step 7 until the release is promoted.
+
+1. **Before pushing the tag, make the release as a draft pre-release:**
+   ```sh
+   gh release create vX.Y.Z --draft --prerelease --title "AgentHydra X.Y.Z" --notes "Building."
+   ```
+   A tag push carries no workflow inputs, so this draft is what tells its Release run: the publish
+   step keeps a release that already exists as a pre-release a pre-release. Without it, the tag
+   push publishes a full release and every install updates to it.
+2. **Push the tag** as in step 6. The run attaches the downloads, writes the notes from
+   CHANGELOG.md and publishes the draft. A dispatch does the same:
+   `gh workflow run release.yml --ref vX.Y.Z -f prerelease=true`.
+3. **Promote it** once it has proved itself: `gh release edit vX.Y.Z --prerelease=false --latest`.
+   From then on installs update to it; run step 7 then.
+
+The version stays a plain X.Y.Z, never X.Y.Z-rc.N: the updater compares versions without their
+suffix, so an install of 2.0.0-rc.1 would never see 2.0.0 as newer.
+
+## When a push doesn't trigger anything
+
+GitHub's standard mitigation for an Actions incident is to **throttle webhook triggers**, which
+fails in the most confusing possible way: `git push` succeeds, the commit and the tag are really on
+`origin`, and no workflow run is ever created. Nothing is red; there is simply nothing. Both steps 5
+and 6 above silently stall, because both wait on a run that will never exist.
+
+Check <https://www.githubstatus.com/api/v2/components.json> for the `Actions` component before
+assuming it's your fault:
+
+```sh
+curl -s https://www.githubstatus.com/api/v2/components.json | grep -A2 '"name": "Actions"'
+```
+
+`workflow_dispatch` is NOT throttled with the webhooks, so it is the way through. Both workflows
+accept it:
+
+```sh
+gh workflow run ci.yml --ref main          # step 5's green gate
+gh workflow run release.yml --ref vX.Y.Z   # step 6's publish
+```
+
+Dispatching `release.yml` **against the tag ref** is the important part. The publish job gates on
+`github.ref_type == 'tag'`, not on the event that started the run, so a dispatch on a tag publishes
+a real release exactly as a tag push would; a dispatch on a branch runs build + smoke and publishes
+nothing. This is how v0.16.0 and v0.16.1 actually shipped on 2026-08-06.
+
+Do NOT try to force the webhook by deleting and re-pushing the tag. Re-pushing an identical tag is
+still a published tag moving, the failure mode this file warns about at the end of step 6, and it
+buys nothing a dispatch doesn't already give you.
+
+## What the tag push triggers
+
+Pushing a tag matching `v*.*.*` triggers `.github/workflows/release.yml`. It packages one bundle
+for every supported OS (Windows x64, Linux x64/arm64, macOS x64/arm64; see "What a 2.0 bundle
+holds"), boots every bundle **except darwin-x64** with `scripts/smoke-release.ts`, then publishes
+the GitHub Release automatically from the matching changelog section. Windows exposes the lone
+launcher `.exe` for people plus the zip the installer and the updater take; the other targets
+expose a `.tar.gz`. `SHA256SUMS.txt` covers every asset (its lines name `out/<asset>`; both
+launchers match on the file name). `workflow_dispatch` runs the same build and smoke matrix without
+publishing a release.
+
+**darwin-x64 (Intel mac) is build-only.** GitHub retired its Intel macOS runners, so the smoke job
+has no honest way to boot that target: it is packaged and archived like every other target, but
+never booted, and every other smoke assertion (tray inventory, orchestrator inventory,
+`/api/health`) skips it too. This is a documented, deliberate gap until a native or self-hosted
+Intel-mac runner exists, not a silent one.
+
+## The orchestrator rides in the bundle (since 2026-09-03)
+
+`orchestrator/` is the Python toolbox that decides what should happen to a chat (see
+REFERENCE.md, "The orchestrator"). The release job stages its python half - `orch.py`,
+`scripts/`, `docs/` - beside the launcher as `orchestrator/`, which is where a release daemon
+looks for it (`APP_ROOT/orchestrator`). Not staged: `state/` (runtime), `scripts/tests/`, and the
+remote front-end (`orchestrator/server` + `orchestrator/web`), which need bun and are a source
+checkout's business. Python 3 is the user's own; the daemon does not bundle it, and
+`GET /api/orchestrator` reports whether it answers. `misc/rebuild_agenthydra.bat` is unaffected: it rebuilds
+the daemon's own SPA, and the orchestrator's web dashboard is built separately with
+`bun run --cwd orchestrator remote:build`.
+
+**The smoke job asserts this inventory (AH-27), on every booted target.** Before boot, an "Assert
+orchestrator payload" step unpacks the archive and checks: `orchestrator/orch.py` and
+`orchestrator/scripts/lib/hydralib.py` are present, at least one `orchestrator/scripts/*.py` tool
+exists, and none of `orchestrator/scripts/tests/`, any `__pycache__/` under `orchestrator/`, or a
+non-empty `orchestrator/state/` made it into the archive. Without this, an archive that silently
+lost `orchestrator/` would still pass every other smoke check (boot, `/api/health`, the SPA);
+the daemon reports the tools unavailable rather than failing to start, so nothing else here would
+ever notice.

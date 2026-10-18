@@ -1,0 +1,1007 @@
+"""The CLI's command bodies. Each takes the parsed argparse namespace and returns an exit code;
+the parser and dispatch are in cli.py, the installer in install.py."""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import sys
+import time
+from pathlib import Path
+
+from . import batching, config, dispatch, review
+from .acceptance import tally
+from .jobs import JobManager
+from .results import taint_matches
+from .spec import Task
+
+
+def _print(obj) -> None:
+    print(json.dumps(obj, indent=1, ensure_ascii=False, default=str))
+
+
+async def cmd_doctor(_a) -> int:
+    from .mcp_server import hswarm_doctor  # the MCP tool is the one implementation; the CLI just prints it
+
+    d = await hswarm_doctor()
+    _print(d)
+    # The verdict, not the DeepSeek key: a machine with no DeepSeek key but a live Gemini/groq pool serves every
+    # auto route, and exiting 1 there told sessions the swarm was dead when it was not (verdict.py).
+    return 0 if d["verdict"]["usable"] and "api_error" not in d else 1
+
+
+async def cmd_ask(a) -> int:
+    from . import config
+
+    # `ask` is TOOL-FREE by definition, so AUTO here means the tool-free default, not the safe tool-using one.
+    from .selection import profile_for
+    profile = getattr(a, "profile", None)
+    if getattr(a, "role", None) and config.ROLES.get(a.role.strip().lower()) != config.AUTO:
+        model = config.resolve_role(a.role)
+        profile = None
+    elif not a.model or str(a.model).strip().lower() == config.AUTO:
+        model = config.AUTO
+        profile = profile or profile_for(getattr(a, "role", None), "none")
+    else:
+        model = config.resolve_model(a.model)
+        profile = None
+    schema = json.loads(a.schema) if a.schema else None
+    system = review.with_contract(getattr(a, "role", None), a.system)  # the same evidence bar the MCP ask gives a review role
+    m = JobManager()
+    try:
+        r = await m.ask_routed(a.prompt, model, route=not getattr(a, "no_route", False), system=system, schema=schema,
+                               thinking=a.thinking, reasoning_effort=a.effort, **({"profile": profile} if profile else {}))
+    finally:
+        await m.aclose()
+    if a.json:
+        _print(r.as_dict())
+    else:
+        print(r.answer if r.status == "ok" else f"[{r.status}] {r.error}")
+        cost = "-" if r.cost_usd is None else f"${r.cost_usd:.6f}"
+        via = f" (failed over from {', '.join(r.failover)})" if r.failover else ""
+        tainted = f" taint={r.taint}" if r.taint else ""
+        print(f"-- {r.model}{via}{tainted} {r.seconds}s {cost} usage={r.usage}", file=sys.stderr)
+    return 0 if r.status == "ok" else 1
+
+
+async def cmd_panel(a) -> int:
+    # The MCP tool is the one implementation (it also books the asks); the CLI just prints it.
+    from .mcp_server import hswarm_panel
+
+    models = [m for m in (a.models or "").split(",") if m.strip()] or None
+    out = await hswarm_panel(a.prompt, models=models, system=a.system, max_findings=a.max_findings, reasoning_effort=a.effort, seed=a.seed)
+    if a.json or "error" in out:
+        _print(out)
+        return 1 if "error" in out else 0
+    for r in out["findings"]:
+        who = f"upheld by {', '.join(r['upheld_by']) or '-'}; rejected by {', '.join(r['rejected_by']) or '-'}"
+        print(f"[{r['status'].upper():10}] {r['id']:6} {r['finding']}\n{'':20}{r['by']} | {who}")
+    for m in out["missed"]:
+        print(f"[MISSED    ] {m['finding']}  ({m['by']})")
+    s = out["summary"]
+    print(f"-- {s['panelists']} panelists, {s['answered']} answered, {s['contested']} contested, ${s['cost_usd']:.6f}, {s['seconds']}s"
+          + (f" ({s['note']})" if s.get("note") else ""), file=sys.stderr)
+    return 0 if s["answered"] else 1
+
+
+def _load_tasks(path: str, a) -> list[Task]:
+    """A tasks file is a list, or {defaults, tasks}; command-line flags override the file's defaults.
+
+    `run` takes a PATH, not a prompt. Handing it a prompt is the obvious first mistake (it reads like
+    every other CLI), and the bare read used to answer with a FileNotFoundError traceback whose
+    "filename" was the whole prompt - true, and useless. Say what the argument is instead, and name
+    the one-prompt command next door.
+    """
+    p = Path(path)
+    if not p.exists():
+        hint = "`hswarm ask \"<prompt>\"` runs a single prompt" if (" " in path or len(path) > 120) else ""
+        raise SystemExit(f"hswarm run: '{path}' is not a file. The argument is a PATH to a JSON tasks file "
+                         f"(a list of tasks, or {{\"defaults\": {{...}}, \"tasks\": [...]}}). {hint}".rstrip())
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"hswarm run: {path} is not valid JSON ({e}).") from None
+    defaults = {}
+    tasks = doc
+    if isinstance(doc, dict):
+        # WHY: only `defaults` and `tasks` are read, so a file written with `default` (or budget_usd, concurrency) ran
+        # its whole batch on the built-in ones: tools read instead of none, the shell's folder, no schema, no budget.
+        if extra := sorted(set(doc) - {"defaults", "tasks"}):
+            from .spec import did_you_mean
+
+            flags = {"budget_usd": "--budget", "budget": "--budget", "concurrency": "--concurrency", "label": "--label"}
+            said = "".join(f"; {k!r} is the {flags[k]} flag, not a file key" for k in extra if k in flags)
+            raise SystemExit(f"hswarm run: {path} has top-level keys a tasks file does not take: {extra}{said}; it takes "
+                             f'only "defaults" and "tasks"{did_you_mean([k for k in extra if k not in flags], ("defaults", "tasks"))}')
+        defaults = doc.get("defaults") or {}
+        tasks = doc.get("tasks") or []
+    if not isinstance(defaults, dict) or not isinstance(tasks, list):
+        raise SystemExit(f"hswarm run: {path} must be a list of tasks, or {{\"defaults\": {{...}}, \"tasks\": [...]}} "
+                         "with an object and a list.")
+    defaults = dict(defaults)
+    for k in ("backend", "model", "cwd", "tools", "web_hosts", "capability", "max_turns", "timeout_s", "confirm_write", "isolated", "recipe", "escalate", "redact", "zdr"):
+        v = getattr(a, k, None)
+        if v is not None:
+            defaults[k] = v
+    return [Task.from_dict(t if isinstance(t, dict) else {"prompt": t}, defaults, i) for i, t in enumerate(tasks)]
+
+
+def _check_run(a) -> int:
+    """`run --check`: everything `run` does to a tasks file before it submits (load, merge the flags, validate every
+    task, the batching rule, the route check), then a line per task instead of a job. Spends nothing and writes no
+    job: a file with a typo used to show its mistake only after the batch had run and been paid for (2026-10-02)."""
+    from . import jobs
+
+    try:
+        tasks = _load_tasks(a.tasks, a)
+        if not getattr(a, "unbatched", False) and (why := batching.unbatched_run(tasks)):
+            raise ValueError(why + " (CLI: --unbatched)")
+        if why := jobs.batch_refusal(tasks):  # what submit itself refuses (duplicate ids, the daily cap, ...)
+            raise ValueError(why)
+        if getattr(a, "envelope", None):
+            json.loads(a.envelope)
+    except ValueError as e:  # json.JSONDecodeError is a ValueError
+        print(f"hswarm run --check: refused: {e}")
+        return 1
+    for t in tasks:
+        route = t.model if t.model and t.model != "auto" else f"auto/{t.profile or 'general'}"
+        print(f"{t.id}: cwd={t.cwd} tools={t.tools} route={route} max_cost_usd={t.max_cost_usd} "
+              f"timeout_s={t.timeout_s} schema={'yes' if t.schema else 'no'}")
+    print(f"job: {len(tasks)} task(s), budget_usd={a.budget}, concurrency={a.concurrency}, "
+          f"label={a.label or Path(a.tasks).stem}")
+    if why := jobs.unservable(tasks):
+        print(f"not servable: {why}")
+        return 1
+    print("servable: nothing was sent")
+    return 0
+
+
+async def cmd_run(a) -> int:
+    if getattr(a, "check", False):
+        return _check_run(a)
+    m = JobManager()
+    t0 = time.perf_counter()
+    envelope = json.loads(a.envelope) if getattr(a, "envelope", None) else None
+    try:
+        tasks = _load_tasks(a.tasks, a)
+        if not getattr(a, "unbatched", False) and (why := batching.unbatched_run(tasks)):
+            raise ValueError(why + " (CLI: --unbatched)")
+        job = m.submit(tasks, concurrency=a.concurrency, label=a.label or Path(a.tasks).stem, budget_usd=a.budget,
+                       envelope=envelope, resume_from=getattr(a, "resume_from", None))
+    except ValueError as e:  # a task spec or a job refused up front (NoCapableSwarmRoute, NoCreditLeft): say why, no traceback
+        raise SystemExit(f"hswarm run: refused: {e}") from None
+    cached = sum(1 for r in job.results.values() if r.cached_from)
+    print(f"job {job.id}: {len(tasks)} tasks" + (f", {cached} reused from {job.resumed_from}" if job.resumed_from else ""), file=sys.stderr)
+    for note in dispatch.route_outlook(tasks, m._gates):  # what hswarm_run says in its first response
+        print(f"  route: {note}", file=sys.stderr)
+    last = ""
+    while not job._done.is_set():
+        await asyncio.sleep(0.5)  # a progress line whenever the status counts change, so a long batch is visibly alive
+        status = m.status(job)
+        line = " ".join(f"{k}={v}" for k, v in sorted(status["counts"].items()))
+        if waiting := status.get("waiting_on_rate_limited_pool"):
+            line += " | waiting: " + "; ".join(f"{p}: {why}" for p, why in sorted(waiting.items()))
+        if line != last and not a.quiet:
+            print(f"  {time.perf_counter() - t0:6.1f}s {line}", file=sys.stderr)
+            last = line
+    await m.aclose()
+    if a.out:
+        Path(a.out).write_text(json.dumps(job.to_dict(), indent=1, ensure_ascii=False), encoding="utf-8")
+        print(f"wrote {a.out}", file=sys.stderr)
+    s = job.summary()
+    sv = s.get("savings") or {}
+    saved = f" saved~${sv['saved_usd']:.4f} vs {sv['est_model']}" if sv.get("saved_usd") is not None else ""
+    print(f"done in {time.perf_counter() - t0:.1f}s: {s['counts']} cost=${s['cost_usd']:.4f}{saved}", file=sys.stderr)
+    if not a.out or a.print:
+        for t in tasks:
+            _print_result(t.id, job.results[t.id].as_dict())
+    return 0 if all(r.status == "ok" for r in job.results.values()) else 1
+
+
+def _print_result(task_id: str, r: dict) -> None:
+    tainted = f" taint={r['taint']}" if r.get("taint") else ""
+    print(f"\n=== {task_id} [{r['status']}]{tainted} {r['seconds']}s ${(r['cost_usd'] or 0):.5f} turns={r['turns']} files={r['files_changed']}")
+    print(r["answer"] if r["status"] == "ok" else r["error"])
+    # The receipt verdicts (receipts.py): whether the answer's claims are backed by the worker's own tool calls.
+    if r.get("citations"):
+        print(f"--- citations: {r['citations']['verdict']} ({r['citations']['resolved']} resolved of {r['citations']['receipts']} receipts)")
+    if r.get("green"):
+        print(f"--- green {r['green']['required']}: {r['green']['verdict']}" + "".join(f"\n    missing: {m}" for m in r["green"]["missing"]))
+    # The typed acceptance criteria (acceptance.py), decided in code: "2/3 hold, 1 fails" before anything is merged.
+    if r.get("acceptance"):
+        print(f"--- criteria: {tally(r['acceptance'])}" + "".join(f"\n    [{row['verdict']}] {row['criterion']} - {row['detail']}" for row in r["acceptance"]))
+
+
+async def cmd_status(a) -> int:
+    _print(JobManager.load_from_disk(a.job)["summary"])
+    return 0
+
+
+async def cmd_cancel(a) -> int:
+    try:
+        _print(JobManager.cancel_on_disk(a.job))
+    except KeyError:
+        raise SystemExit(f"hswarm cancel: no job {a.job}") from None
+    return 0
+
+
+async def cmd_results(a) -> int:
+    try:
+        taint_matches("", getattr(a, "taint", None))  # a bad --taint is a usage error, not a traceback
+    except ValueError as exc:
+        raise SystemExit(f"hswarm results --taint: {exc}") from None
+    for r in JobManager.load_from_disk(a.job)["results"].values():
+        if (not a.id or r["id"] in a.id) and taint_matches(r.get("taint"), getattr(a, "taint", None)):
+            _print_result(r["id"], r)
+    return 0
+
+
+async def cmd_jobs(a) -> int:
+    if a.archive_hours is not None:
+        from . import archive
+
+        r = await asyncio.to_thread(archive.archive_old, a.archive_hours, a.apply)
+        if not r["jobs"]:
+            print(f"no job folder older than {a.archive_hours}h under {config.JOBS_DIR}")
+            return 0
+        verb = "freed" if a.apply else "would free"
+        print(f"{r['jobs']} job(s) older than {a.archive_hours}h: {r['before']/2**20:,.0f} MiB -> {r['after']/2**20:,.0f} MiB, "
+              f"{verb} {r['saved']/2**20:,.0f} MiB ({r['saved']/r['before']*100:.0f}%)")
+        for e in r["errors"]:
+            print(f"  SKIPPED: {e}")
+        if not a.apply:
+            print("dry run. Each job becomes one compressed file; every reader falls back to it, so results and\n"
+                  "transcripts keep working. Re-run with --apply.")
+        return 0 if not r["errors"] else 1
+    if a.compact:
+        from . import blobs
+
+        folders = sorted(d for d in config.JOBS_DIR.iterdir() if d.is_dir()) if config.JOBS_DIR.exists() else []
+        before = after = 0
+        for d in folders:
+            r = await asyncio.to_thread(blobs.compact_job, d, a.apply)
+            before += r["before"]
+            after += r["after"]
+        saved = max(0, before - after)
+        verb = "freed" if a.apply else "would free"
+        print(f"{len(folders)} job folder(s): {before/2**20:,.0f} MiB of records -> {after/2**20:,.0f} MiB, {verb} {saved/2**20:,.0f} MiB "
+              f"({saved/before*100:.0f}%)" if before else "no job records on disk")
+        if not a.apply and before:
+            print("dry run, and it is lossless: long strings move to one blob per job, the records keep a short\n"
+                  "reference and expand on read. Re-run with --apply to rewrite them.")
+        return 0
+    if a.prune_days is not None:
+        from .job import Job
+
+        victims = Job.prunable(a.prune_days)
+        mb = sum(size for _, size in victims) / 2**20
+        if not victims:
+            print(f"nothing older than {a.prune_days} day(s) under {config.JOBS_DIR}")
+            return 0
+        print(f"{len(victims)} job folder(s) older than {a.prune_days} day(s), {mb:,.0f} MiB: {victims[0][0].name} .. {victims[-1][0].name}")
+        if not a.apply:
+            print("dry run. The ledger, the savings DB and the synced shard keep every number; these folders hold the\n"
+                  "workers' own results and transcripts, already delivered. Re-run with --apply to delete them.")
+            return 0
+        import shutil
+
+        for d, _ in victims:
+            shutil.rmtree(d, ignore_errors=True)
+        print(f"deleted {len(victims)} folder(s), {mb:,.0f} MiB freed")
+        return 0
+    for s in JobManager.list_on_disk(a.limit):
+        print(f"{s['job_id']}  {s['state']:9s} tasks={s['tasks']:<4d} {s['counts']}  ${s['cost_usd']:.4f}  {s['label']}")
+    return 0
+
+
+async def cmd_cost(a) -> int:
+    from .mcp_server import hswarm_cost
+
+    _print(await hswarm_cost(a.days, a.balance))
+    return 0
+
+
+async def cmd_bench(a) -> int:
+    from bench.run import run_bench  # type: ignore
+
+    return await run_bench(a)
+
+
+async def cmd_savings(a) -> int:
+    from . import savings, savings_view, utilization
+
+    savings.lower_priority()
+    if a.record:
+        done = await asyncio.to_thread(savings.record, a.backfill)
+        savings.log(f"recorded {', '.join(done) or 'nothing new'}")
+    if a.backfill_jobs:
+        added = await asyncio.to_thread(utilization.backfill)
+        print(f"backfilled {added['jobs']} job(s) and {added['asks']} ask(s) from disk into the utilization ledger")
+    if a.remeasure:
+        done = await asyncio.to_thread(savings.remeasure, a.remeasure)
+        savings.log(f"remeasured {', '.join(done) or 'nothing'}")
+        if not a.quiet:
+            print(f"re-measured {len(done)} day(s): {', '.join(done)}")
+    if a.profile:
+        rows = savings.load_rows()
+        prof = await asyncio.to_thread(utilization.refresh_profile, [rows[k] for k in sorted(rows)])
+        print(f"profile {prof['id']}: {prof['basis']} x{prof['sample']} over {prof['pool_days']} day(s), repriced {prof['repriced']} row(s)" if prof
+              else "profile: not measured, fewer than 5 sub-agents on the recorded days (run --record first)")
+    if a.sync:
+        rep = await asyncio.to_thread(utilization.sync, True)
+        savings.log(f"sync: imported {rep['imported']}, committed {rep['committed']}, pushed {rep['pushed']}, notes {rep['notes']}")
+        if not a.quiet:
+            _print(rep)
+    from . import report_html
+
+    html_to = Path(a.html) if isinstance(a.html, str) and a.html else None
+    if a.quiet and (a.record or a.profile or a.sync or a.backfill_jobs or a.remeasure):
+        if not a.sync:  # sync already measured today; a quiet record still refreshes the page with today's share
+            await asyncio.to_thread(utilization.measure_today)
+        report_html.write(html_to)
+        return 0
+    if a.list or (a.html and not a.today):
+        if not a.sync:
+            await asyncio.to_thread(utilization.measure_today)
+        print(f"html: {report_html.write(html_to)}")
+        if a.list:
+            print(utilization.render(utilization.summary(a.list)))
+        return 0
+    s = await asyncio.to_thread(savings.report, a.days, a.today)  # with today: the live scan that also records today's Claude usage
+    page = report_html.write(html_to)  # after the report, so the page carries today's share
+    if a.html:
+        print(f"html: {page}")
+        return 0
+    if a.json:
+        _print(s)
+    else:
+        print(savings_view.render(s))
+    return 0
+
+
+async def cmd_usage(a) -> int:
+    """Who used the swarm, and which Claude fan-outs the gate saw instead. `--json` for the whole report."""
+    from .ledger import usage_report
+
+    rep = usage_report(a.hours)
+    if a.json:
+        _print(rep)
+        return 0
+    sw, cf = rep["swarm"], rep["claude_fanouts"]
+    print(f"hswarm usage, last {a.hours:g}h: {sw['tasks']} tasks, ${sw['cost_usd']:.4f}")
+    print(f"  {'caller (instance / session / folder)':44s} {'jobs':>4s} {'tasks':>5s} {'ok':>5s} {'err':>4s} {'cost':>8s}  labels")
+    for g in sw["callers"]:
+        name = g["caller"] if g["stamped"] else "unstamped (before the caller stamp)"
+        print(f"  {name[:44]:44s} {g['jobs']:>4d} {g['tasks']:>5d} {g['ok']:>5d} {g['error'] + g['timeout']:>4d} {g['cost_usd']:>8.4f}  {', '.join(g['labels'])[:60]}")
+    print(f"Claude sub-agent decisions (routing gate), last {a.hours:g}h: {cf['decisions']} (blocked {cf['blocked']}, allowed {cf['allowed']}, reminded {cf['reminded']})")
+    for s, b in sorted(cf["by_session"].items(), key=lambda kv: -kv[1]["calls"]):
+        print(f"  session {s:8s} {b['instance'] or '-':12s} calls={b['calls']:<3d} blocked={b['blocked']:<3d} claude agents={b['agents']:<3d} {b['cwd']}")
+    if cf["mechanical_but_claude"]:
+        print(f"  fan-outs that matched the mechanical rule but went to Claude: {len(cf['mechanical_but_claude'])}")
+        for r in cf["mechanical_but_claude"][:20]:
+            print(f"    {r['ts'][:16]} {r['tool']:8s} {r['model']:8s} x{r['agents']} \"{r['mechanical']}\" {('reason: ' + r['reason']) if r['reason'] else ''}")
+    return 0
+
+
+async def cmd_maintain(a) -> int:
+    """Everything the machine should do once a day, in one command: age old job folders into their archives,
+    pack jobs past their warm week, spill files past their day and cc transcripts past two days into the history,
+    measure yesterday, re-measure the sub-agent profile, exchange shards with the fleet and rewrite the page."""
+    from . import archive, history, keystate, report_html, savings, survival, taskstore, utilization
+
+    if a.keep_days < 0:
+        raise SystemExit("hswarm maintain --keep-days: 0 keeps every job (the default), N >= 1 deletes jobs older than N days")
+    savings.lower_priority()
+    packed = await asyncio.to_thread(archive.archive_old, a.archive_hours, True)
+    # Kept by default and packed by day (owner, 2026-10-02: "Ideally, we would keep all of it, and you would
+    # just figure out a way to properly compress"); --keep-days N is the one way left to delete jobs.
+    pruned = await asyncio.to_thread(archive.prune_old, a.keep_days) if a.keep_days else {"jobs": 0, "freed": 0}
+    indexed = await asyncio.to_thread(taskstore.index_jobs)  # before packing: a warm zip reads in milliseconds
+    cold = await asyncio.to_thread(history.pack_jobs)
+    spilled = await asyncio.to_thread(history.pack_spill)
+    cc = await asyncio.to_thread(history.pack_cc_transcripts)
+    # Builds before the key state moved into keys.sqlite left keys.json.<pid>.tmp behind (38 files, 61.5 MiB,
+    # 2026-10-02); an older build still running can make one, so this keeps taking what a killed process leaves.
+    temps = [p for p in config.HOME.glob("keys.json.*.tmp") if time.time() - p.stat().st_mtime > 3600]
+    for p in temps:
+        p.unlink(missing_ok=True)
+    live: set[str] = set()
+    for name in config.PROVIDERS:
+        with contextlib.suppress(Exception):  # a provider with no key list has nothing to keep
+            live |= {config.fingerprint(k) for k in config.load_api_keys(name)}
+    keyrows = await asyncio.to_thread(keystate.prune, live) if live else {"stale": 0, "tombstones": 0, "expired": 0}
+    days = await asyncio.to_thread(savings.record, a.backfill)
+    kept = await asyncio.to_thread(survival.score_due)
+    from . import egress
+
+    await asyncio.to_thread(egress.compact)  # the egress receipts of earlier days, packed in place
+    rep = await asyncio.to_thread(utilization.sync, a.push)
+    page = report_html.write()
+    mib = lambda n: f"{n / 2**20:,.0f} MiB"  # noqa: E731
+    deleted = f"deleted {pruned['jobs']} job(s) older than {a.keep_days} day(s) freeing {mib(pruned['freed'])}; " if a.keep_days else ""
+    line = (f"maintain: archived {packed['jobs']} job(s) freeing {mib(packed['saved'])}; {deleted}into the history: {cold['jobs']} job(s) "
+            f"of {cold['days']} day(s) ({mib(cold['before'])} as zips), {spilled['files']} spill file(s) ({mib(spilled['before'])}) and "
+            f"{cc['files']} cc transcript(s) ({mib(cc['before'])}); indexed {indexed['tasks']} task(s) of {indexed['jobs']} job(s); "
+            f"{len(temps)} stale key temp file(s), key rows pruned {keyrows['stale']} stale/{keyrows['tombstones']} emptied/{keyrows['expired']} expired; recorded {len(days)} day(s); "
+            f"scored {kept['scored']} edit survival checkpoint(s); sync imported {rep['imported']}, pushed {rep['pushed']}; page {page}")
+    savings.log(line)
+    if not a.quiet:
+        print(line)
+        for e in packed["errors"] + cold["errors"] + spilled["errors"] + cc["errors"] + rep["notes"]:
+            print(f"  note: {e}")
+    return 0
+
+
+async def cmd_history(a) -> int:
+    """The task table (taskstore): --index backfills it now; otherwise each shape and model's tasks, how they ended,
+    and what they cost over --days, busiest first."""
+    from . import taskstore
+
+    if a.index:
+        _print(await asyncio.to_thread(taskstore.index_jobs))
+        return 0
+    rows = taskstore.report(a.days)
+    if a.json:
+        _print(rows)
+        return 0
+    print(f"tasks of the last {a.days:g} day(s) by shape and model, busiest first")
+    print(f"  {'backend/profile/tools/schema/size':44s} {'model':28s} {'tasks':>5s} {'ok':>5s} {'err':>4s} {'t/o':>4s} {'cap':>4s} {'cost $':>8s} {'avg s':>6s}")
+    for r in rows[:60]:
+        shape = f"{r['backend']}/{r['profile'] or '-'}/{r['tools']}/{'schema' if r['schema'] else '-'}/{r['size']}"
+        print(f"  {shape[:44]:44s} {(r['model'] or '-')[:28]:28s} {r['tasks']:>5d} {r['ok']:>5d} {r['error']:>4d} "
+              f"{r['timeout']:>4d} {r['capped']:>4d} {r['cost_usd']:>8.4f} {r['avg_s']:>6.1f}")
+    return 0
+
+
+
+# `hswarm backfill-free-misses`: one `free_miss` ledger row for each Free try the finished jobs' results.jsonl name in a
+# route note that the ledger does not hold yet. Idempotent on (job, task, the note's ts); a note written before notes
+# carried a `ts` takes the result's `started`.
+import datetime as _dt  # noqa: E402
+import json as _json  # noqa: E402
+
+from . import archive, history  # noqa: E402
+from .free_route import CLAUDE_MODELS, GPT_MODEL, HAIKU_PROFILES  # noqa: E402
+from .ledger import append_row, free_miss_row, ledger_rows  # noqa: E402
+
+FALLBACKS = {
+    "free account failed": ("error", "unavailable"),
+    "the free reply was unusable": ("error", "model"),
+    "free account timed out": ("timeout", "timeout"),
+    "free send failed": ("error", "unavailable"),
+    "free chat refused": ("error", "unavailable"),
+    "free results unavailable": ("error", "unavailable"),
+}
+
+
+def _model(note: dict, profile: str | None) -> str:
+    """free:<model> from what an old note still says: its model, else its account's name, else `free:unknown`."""
+    if note.get("free_model"):
+        return note["free_model"]
+    account = str(note.get("account") or "").lower()
+    if "gpt" in account or "openai" in account:
+        return "free:" + GPT_MODEL
+    if "claude" in account or "anthropic" in account:
+        return "free:" + CLAUDE_MODELS["haiku" if profile in HAIKU_PROFILES else "sonnet"]
+    return "free:unknown"
+
+
+def _notes(job_id: str):
+    text = archive.read_text(job_id, "results.jsonl") or ""
+    for line in text.splitlines():
+        try:
+            r = _json.loads(line)
+        except ValueError:
+            continue
+        note = ((r.get("selection") or {}).get("route") or {}) if isinstance(r, dict) else {}
+        if note.get("fallback") in FALLBACKS and note.get("via") == "api":
+            yield r, note
+
+
+def _jobs_since(since: _dt.datetime):
+    """The job ids that may hold a note after `since`, a cold day's jobs read in ONE pass of its archive
+    (history.each_cold_job). 2026-10-13: read one by one, each cold job re-read its day's tar.xz up to it, and a
+    30-day dry run was still going after 10 minutes. A job started over two days before `since` is skipped unread."""
+    floor = (since - _dt.timedelta(days=2)).strftime("%Y%m%d")
+    cold = history.cold_jobs()
+    by_day: dict[str, set[str]] = {}
+    for job_id in archive.job_ids():
+        if job_id[:8].isdigit() and job_id[:8] < floor:
+            continue
+        if job_id in cold and not archive.job_dir(job_id).is_dir() and not archive.archive_path(job_id).is_file():
+            by_day.setdefault(cold[job_id], set()).add(job_id)
+        else:
+            yield job_id
+    for day in sorted(by_day, reverse=True):
+        try:
+            yield from history.each_cold_job(day, by_day[day])  # each one is in the cold cache as it comes
+        except history.READ_ERRORS:
+            continue
+
+
+def backfill_free_misses(days: float = 30.0, dry_run: bool = False) -> dict:
+    """Append the missing rows; returns {"rows": n, "existing": n, "by_model": {model: n}, "dry_run": bool}."""
+    have = {(r.get("job"), r.get("task"), r.get("ts")) for r in ledger_rows(days + 2) if r.get("free_miss")}
+    since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+    out = {"rows": 0, "existing": 0, "by_model": {}, "dry_run": dry_run}
+    for job_id in _jobs_since(since):
+        for r, note in _notes(job_id):
+            ts = note.get("ts") or r.get("started") or r.get("finished")
+            try:
+                if not ts or _dt.datetime.fromisoformat(ts) < since:
+                    continue
+            except ValueError:
+                continue
+            key = (job_id, r.get("id"), ts)
+            if key in have:
+                out["existing"] += 1
+                continue
+            status, kind = FALLBACKS[note["fallback"]]
+            profile = (r.get("selection") or {}).get("profile")
+            row = free_miss_row({**note, "ts": ts, "free_model": _model(note, profile), "free_status": note.get("free_status") or status,
+                                 "free_kind": note.get("free_kind") or kind, "free_miss": True}, job_id, r.get("id"))
+            have.add(key)
+            out["rows"] += 1
+            out["by_model"][row["model"]] = out["by_model"].get(row["model"], 0) + 1
+            if not dry_run:
+                append_row(row)
+    return out
+
+
+async def cmd_backfill_free_misses(a) -> int:
+    """Append the free_miss rows the finished jobs' route notes name and the ledger lacks (free_backfill.py)."""
+    out = await asyncio.to_thread(backfill_free_misses, a.days, a.dry_run)
+    verb = "would add" if a.dry_run else "added"
+    print(f"{verb} {out['rows']} free_miss row(s) ({out['existing']} already in the ledger)")
+    for model, n in sorted(out["by_model"].items(), key=lambda kv: -kv[1]):
+        print(f"  {model:40s} {n:>6d}")
+    return 0
+
+
+async def cmd_survival(a) -> int:
+    """Score the edits that reached a checkpoint, then say per model how much of what its workers wrote was kept."""
+    from . import survival
+    from .ledger import ledger_summary
+
+    done = await asyncio.to_thread(survival.score_due)
+    by_model = {m: b["survival"] for m, b in ledger_summary(a.days)["by_model"].items() if b.get("survival")}
+    if a.json:
+        _print({"scored_now": done["scored"], "by_model": by_model})
+        return 0
+    print(f"edit survival, tasks of the last {a.days:g} day(s) that wrote files ({done['scored']} checkpoint(s) scored now)")
+    print(f"  {'model':40s} {'scored':>6s} {'kept (4-gram)':>13s} {'not reverted':>12s}")
+    for m, s in sorted(by_model.items(), key=lambda kv: -kv[1]["scored"]):
+        fg, nr = ("-" if s[k] is None else f"{s[k]:.0%}" for k in ("four_gram", "no_revert"))
+        print(f"  {m[:40]:40s} {s['scored']:>6d} {fg:>13s} {nr:>12s}")
+    if not by_model:
+        print("  nothing scored yet: an api task's edits are first scored 5 minutes after it finishes")
+    return 0
+
+
+async def cmd_sync(a) -> int:
+    """Pull the other machines' utilization shards, push ours, regenerate the fleet TOTALS.md.
+    With --restore, read THIS machine's own shard back first (rebuilding a lost ledger)."""
+    from . import utilization
+
+    if a.restore:
+        rep = await asyncio.to_thread(utilization.restore)
+        _print(rep)
+        if rep["notes"]:
+            return 1
+    rep = await asyncio.to_thread(utilization.sync, a.push)
+    _print(rep)
+    return 0 if not rep["notes"] else 1
+
+
+async def cmd_keys(a) -> int:
+    """The key pools and the disabled slot. `list` touches no network; `probe` spends one free GET per key."""
+    from . import keys as keymod
+
+    action = getattr(a, "action", "list")
+    if action in ("add", "remove"):
+        return await _keys_edit(a, action)
+    if action == "list":
+        out = keymod.report(a.provider)
+    elif action == "probe":
+        out = await keymod.probe(a.provider)
+    else:
+        want_on = action == "enable"
+        if not a.fingerprint and not (want_on and a.all):
+            raise SystemExit(f"hswarm keys {action}: give the 8-character fingerprint `hswarm keys` prints"
+                             + (", or --all to empty the slot" if want_on else ""))
+        out = keymod.set_enabled(a.fingerprint, want_on, a.provider, all_keys=a.all, reason=a.reason)
+    if a.json:
+        _print(out)
+    else:
+        _print_keys(out) if action in ("list", "probe") else print(out["note"])
+    return 0
+
+
+async def _keys_edit(a, action: str) -> int:
+    """`keys add <provider>` reads the key from stdin (piped) or a hidden prompt, so it never lands in shell history;
+    `keys remove <fingerprint> --provider P` takes it out of the key store. Both go through settings.py."""
+    from . import settings
+
+    try:
+        if action == "add":
+            provider = a.provider or a.fingerprint
+            if not provider:
+                raise settings.SettingsError("name the provider: hswarm keys add <provider>")
+            if sys.stdin.isatty():
+                import getpass
+
+                text = getpass.getpass(f"{provider} API key(s), space-separated (hidden): ")
+            else:
+                text = sys.stdin.read()  # several keys at once: one per line, or split by spaces or commas
+            batch = settings.split_keys(text)
+            if not batch:
+                raise settings.SettingsError("no key given on stdin or at the prompt")
+            from . import keys
+
+            refused = 0
+            for key in batch:
+                out = settings.add_key(provider, key)
+                if not out["added"]:
+                    print(f"{provider}: {out.get('note')} {out['fingerprint']}")
+                    continue
+                checked = await keys.check(provider, out["fingerprint"])
+                if checked.get("result") == "rejected":  # the console does the same: a refused key is not kept
+                    settings.remove_key(provider, out["fingerprint"])
+                    print(f"{provider} did not accept key {out['fingerprint']}, so it was not kept: {checked.get('note')}", file=sys.stderr)
+                    refused += 1
+                    continue
+                print(f"{provider}: added {out['fingerprint']} ({checked.get('note')})")
+            if refused:
+                return 1
+        else:
+            if not (a.provider and a.fingerprint):
+                raise settings.SettingsError("hswarm keys remove <fingerprint> --provider <provider>")
+            settings.remove_key(a.provider, a.fingerprint)
+            print(f"{a.provider}: removed {a.fingerprint}")
+    except settings.SettingsError as e:
+        print(f"hswarm keys {action}: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _read_secret_text(prompt: str) -> str:
+    """Keys and pairing codes come from stdin (piped) or a hidden prompt, never the command line or the screen."""
+    if sys.stdin.isatty():
+        import getpass
+
+        return getpass.getpass(prompt)
+    return sys.stdin.read()
+
+
+_VAULT_KEYS_USAGE = "hswarm vault add <list>  |  hswarm vault remove <list> <fingerprint>"
+
+
+async def _vault_init(a, vault) -> dict:
+    if not a.target:
+        raise vault.VaultError("hswarm vault init <backend>, e.g. ssh://user@host/hswarm-vault or dir:D:/shared/hswarm-vault")
+    return await asyncio.to_thread(vault.init, a.target)
+
+
+async def _vault_join(a, vault) -> dict:
+    return await asyncio.to_thread(vault.join, _read_secret_text("vault pairing code (hidden): "), a.backend, a.force)
+
+
+async def _vault_adopt(a, vault) -> dict:
+    return await asyncio.to_thread(vault.adopt)
+
+
+async def _vault_accept(a, vault) -> dict:
+    return await asyncio.to_thread(vault.accept, a.force)
+
+
+async def _vault_sync(a, vault) -> dict:
+    return await asyncio.to_thread(vault.sync, rebase=a.rebase, allow_removals=a.allow_removals, dry_run=a.dry_run)
+
+
+async def _vault_leave(a, vault) -> dict:
+    if not a.force:
+        if not sys.stdin.isatty():
+            raise vault.VaultError("leaving removes this machine's vault key and setup (the keys in secrets/ and the backend stay): "
+                                   "run it in a terminal to confirm, or pass --force")
+        if input("stop using the vault on this machine? type yes: ").strip().lower() != "yes":
+            raise vault.VaultError("not confirmed; the vault is still set up here")
+    return await asyncio.to_thread(vault.leave)
+
+
+async def _vault_list(a, vault) -> dict:
+    return {"rows": await asyncio.to_thread(vault.rows, a.target)}
+
+
+async def _vault_add(a, vault) -> dict:
+    if not a.target:
+        raise vault.VaultError(_VAULT_KEYS_USAGE)
+    from . import settings
+
+    return await asyncio.to_thread(vault.add_keys, a.target, settings.split_keys(_read_secret_text(f"{a.target} API key(s), space-separated (hidden): ")))
+
+
+async def _vault_remove(a, vault) -> dict:
+    if not a.target or not a.fingerprint:
+        raise vault.VaultError(_VAULT_KEYS_USAGE)
+    return await asyncio.to_thread(vault.remove_key, a.target, a.fingerprint)
+
+
+async def _vault_status(a, vault) -> dict:
+    return await asyncio.to_thread(vault.status)
+
+
+async def _vault_pair(a, vault) -> int:
+    if not sys.stdout.isatty():
+        raise vault.VaultError("the pairing code opens every stored key, so it prints only to a terminal: run `hswarm vault pair` "
+                               "in your own terminal and hand the code over directly (text or DM), never in a chat or a ticket")
+    print(await asyncio.to_thread(vault.pair_code))
+    return 0
+
+
+async def _vault_request(a, vault) -> int:
+    if not a.target:
+        raise vault.VaultError("hswarm vault request <backend>: the vault's backend as this machine reaches it, e.g. ssh://user@host/hswarm-vault")
+    r = await asyncio.to_thread(vault.request, a.target, a.force)
+    if a.json:
+        _print(r)
+    else:
+        print(f"request {r['machine']}  fingerprint {r['fingerprint']}  on {r['backend']}")
+        print(f"next: on the vault machine run `hswarm vault grant {r['machine']}` and check it shows {r['fingerprint']}; "
+              "then here: `hswarm vault accept`")
+    return 0
+
+
+def _ask_grant(row):
+    return input(f"grant {row['machine']}? type the full fingerprint the new machine printed (16 characters): ")
+
+
+async def _vault_grant(a, vault) -> int:
+    rows = await asyncio.to_thread(vault.requests_waiting)
+    if not a.json:
+        for r in rows:
+            print(f"{r['machine']:24} {r.get('at') or '-':21} {r.get('fingerprint') or r.get('error')}"
+                  f"{'  (granted, not accepted yet)' if r['granted'] else ''}")
+    ask = _ask_grant if a.yes is None and sys.stdin.isatty() else None
+    r = await asyncio.to_thread(vault.grant, a.target, a.yes, ask)
+    if a.json:
+        _print(r)
+    else:
+        print(f"granted {r['granted']} ({r['fingerprint']})")
+    return 0
+
+
+_VAULT_VERBS = {
+    "init": _vault_init, "join": _vault_join, "adopt": _vault_adopt, "accept": _vault_accept, "sync": _vault_sync,
+    "leave": _vault_leave, "list": _vault_list, "add": _vault_add, "remove": _vault_remove,
+}
+_VAULT_SELF_PRINTING = {"pair": _vault_pair, "request": _vault_request, "grant": _vault_grant}
+
+
+async def cmd_vault(a) -> int:
+    """The shared key vault (vault.py). Every verb prints counts and fingerprints; a key and the pairing code never reach
+    a pipe: `pair` refuses unless stdout is a terminal, so a script or an agent running it learns nothing."""
+    from . import vault
+
+    action = a.action
+    try:
+        if action in _VAULT_SELF_PRINTING:
+            return await _VAULT_SELF_PRINTING[action](a, vault)
+        out = await _VAULT_VERBS.get(action, _vault_status)(a, vault)
+    except vault.NotGranted as e:
+        print(f"hswarm vault {action}: {e}", file=sys.stderr)
+        return 3
+    except vault.VaultError as e:
+        print(f"hswarm vault {action}: {e}", file=sys.stderr)
+        return 2
+    if a.json:
+        _print(out)
+        return 0
+    if "rows" in out:
+        print(f"{'list':30} {'fingerprint':12} {'key':14} added by / at")
+        for r in out["rows"]:
+            print(f"{r['list']:30} {r['fingerprint']:12} {r['masked']:14} {(r['by'] or '-')} {r['at'] or ''}")
+        print(f"{len(out['rows'])} keys")
+    else:
+        for k, v in out.items():
+            print(f"{k}: {v}")
+    return 0
+
+
+def _print_keys(out: dict) -> None:
+    """A table a human reads at a glance; the fingerprint is the handle every other verb takes."""
+    for name, p in (out.get("providers") or {}).items():
+        if p.get("error"):
+            print(f"{name}: ERROR {p['error']}")
+            continue
+        rows = p.get("rows") or []
+        head = f"{name}: {len(rows)} keys"
+        if "disabled" in p:
+            head += f" | {p['ok']} ready, {p['resting']} resting, {p['disabled']} DISABLED"
+        print(f"\n{head}")
+        print(f"  {'fingerprint':12} {'state':22} {'credit':>10} {'free':>6}  why")
+        for r in rows:
+            credit = r.get("balance_usd", r.get("credit_usd"))
+            credit = "-" if credit is None else f"{float(credit):.4f}"
+            free = r.get("free_left")
+            why = r.get("disabled_reason") or r.get("note") or r.get("error") or ""
+            state = r.get("state") or ("disabled" if r.get("disabled") else "ok")
+            print(f"  {r['fingerprint']:12} {state:22} {credit:>10} {str(free if free is not None else '-'):>6}  {why[:70]}")
+    print(f"\n{out.get('note', '')}")
+
+
+async def cmd_import_keys(a) -> int:
+    """Merge key exports, retaining omitted keys and removing only explicit dead entries."""
+    from . import key_import, vault
+
+    try:
+        out = await asyncio.to_thread(key_import.run, Path(a.source_dir), dry_run=a.dry_run)
+    except (key_import.KeyImportError, vault.VaultError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if a.json:
+        print(json.dumps(out, indent=2))
+    else:
+        mode = "Would merge" if a.dry_run else "Merged"
+        print(f"{mode} {out['incoming_alive']} alive keys: {out['added']} added, {out['removed_dead']} explicitly dead removed, "
+              f"{out['restored_classifications']} stale classifications cleared; {out['provider_files_consolidated']} provider files consolidated.")
+        if out.get("sync"):
+            print(f"Vault synced: revision {out['sync']['rev']}, {out['sync']['keys']} entries.")
+    return 0
+
+
+async def cmd_import_zswarm(a) -> int:
+    """Import a ZSwarm home's stats and history into HSWARM_HOME (import_zswarm.py); prints counts only."""
+    from . import import_zswarm
+
+    src = Path(a.source_dir) if a.source_dir else import_zswarm.default_source()
+    try:
+        out = await asyncio.to_thread(import_zswarm.run, src, config.HOME, a.dry_run)
+    except (OSError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if a.json:
+        print(json.dumps({"dry_run": a.dry_run, "source": str(src), "counts": out}))
+    else:
+        print(import_zswarm.summary_line(out, a.dry_run))
+    return 0
+
+
+async def cmd_models(a) -> int:
+    from . import catalogue
+
+    if a.refresh:
+        out = await catalogue.refresh(a.refresh)
+        _print(out) if a.json else print(out["note"])
+        return 0
+    if getattr(a, "free", False):
+        from . import free_models
+
+        out = await free_models.scan()
+        if a.json:
+            _print(out)
+        else:
+            print(free_models.render(out))
+        return 3 if out.get("new") else 0
+    if getattr(a, "watch", False):
+        from . import aa_index, model_watch
+
+        out = await model_watch.scan()
+        if a.json:
+            _print(out)
+            return 0
+        print(model_watch.render(out))
+        print("\n".join(aa_index.render(out["scored_unindexed"])))
+        if out.get("scored_unindexed_error"):
+            print(f"Artificial Analysis not read, unbenchmarked models not checked against it: {out['scored_unindexed_error']}")
+        return 0
+    if getattr(a, "routes", False):
+        out = await asyncio.to_thread(catalogue.routes_view)
+        if a.json:
+            _print(out)
+            return 0
+        print(f"rate now: {out['rate_now']} | next change {out['next_change_utc']} ({out['next_state']}) | routing {'on' if out['enabled'] else 'OFF'}\n")
+        for r in out["routes"]:
+            print(f"{r['model']}  ->  {r['serves']}   ({r['why']})")
+            for o in r["options"]:
+                mark = "*" if o["model"] == r["serves"] else " "
+                price_ = "-" if o["usd_per_1m"] is None else f"${o['usd_per_1m']:.4f}/1M blended"
+                credit = "has credit" if o["has_credit"] else "NO KEY WITH CREDIT"
+                tier = "fallback" if o.get("fallback") else "primary"
+                print(f"  {mark} {o['model']:38} {o['provider']:11} {tier:9} {price_:22} {credit}")
+            print()
+        print(out["note"])
+        return 0
+    out = catalogue.listing(a.grep, a.limit)
+    if a.json:
+        _print(out)
+        return 0
+    for r in out["models"]:
+        p = r["usd_per_1m"]
+        rate = "-" if p == "-" else f"in {p['miss']:.4f} / out {p['out']:.4f} per 1M"
+        print(f"{r['model']:58} {str(r['provider'] or '-'):11} {rate}")
+    print(f"\n{out['shown']} of {out['count']} models | catalogue: {out['catalogue']}")
+    return 0
+
+
+async def cmd_index(a) -> int:
+    from . import aa_index
+
+    if a.index_cmd == "refresh":
+        out = await asyncio.to_thread(aa_index.refresh)
+        if a.json:
+            _print(out)
+        else:
+            print(f"index refreshed: {len(out['updated'])} points updated from Artificial Analysis; now sourced there "
+                  f"instead of a vendor's estimate: {', '.join(out['upgraded']) or '-'}; kept as they were "
+                  f"(not scored in full there): {', '.join(out['kept']) or '-'}")
+            print(f"wrote {out['index']}: commit it there")
+        return 0
+    out = await asyncio.to_thread(aa_index.add, a.slugs)
+    if a.json:
+        _print(out)
+    else:
+        for slug in out["added"]:
+            print(f"added {slug}")
+        for slug, why in out["refused"].items():
+            print(f"not added {slug}: {why}")
+        if out["added"]:
+            print(f"wrote {out['index']}: commit it there")
+    return 1 if out["refused"] else 0
+
+
+async def cmd_web(a) -> int:
+    """read_url's standing policy: allow-always and admin-block hosts, then the report the doctor shows too."""
+    from .mcp_server import hswarm_web  # the MCP tool is the one implementation; the CLI just prints it
+
+    _print(await hswarm_web(allow=a.allow, block=a.block, forget=a.forget))
+    return 0
+
+
+async def cmd_prefix(a) -> int:
+    # What one cc spawn ships before any work, measured against a loopback sink: no provider call, no spend.
+    from . import prefix
+
+    r = await prefix.measure(a.cwd or str(Path.cwd()), model=a.model, tools=a.tools, operator=a.operator, timeout_s=a.timeout_s, top=a.top)
+    _print(r) if a.json else print(prefix.render(r))
+    return 1 if r.get("error") else 0
+
+
+async def cmd_egress(a) -> int:
+    """The egress receipts (egress.py): verify recomputes the hash chain, tail shows the latest sends, find
+    answers "did these exact bytes ever leave" by sha256. Offline; no receipt holds any payload."""
+    from . import egress
+
+    if a.action == "verify":
+        rep = egress.verify()
+        if a.json:
+            _print(rep)
+        elif rep["ok"]:
+            print(f"egress ledger intact: {rep['lines']} receipt(s) chained in {rep['path']}")
+        else:
+            print(f"egress ledger BROKEN at line {rep['broken_at']} of {rep['path']}: {rep['reason']}")
+        return 0 if rep["ok"] else 1
+    if a.action == "find" and not a.sha256:
+        raise SystemExit("hswarm egress find: give the sha256 of the exact request body")
+    rows = egress.find(a.sha256) if a.action == "find" else egress.tail(a.limit)
+    if a.json:
+        _print(rows)
+        return 0
+    for r in rows:
+        print(f"{r.get('ts', '?')[:23]:23} {r.get('sink', '?'):40} {r.get('model', ''):34} {r.get('bytes', 0):>9} B  {r.get('sha256', '')[:16]}")
+    if a.action == "find" and not rows:
+        print("no receipt for that hash: those bytes were never sent through hswarm (since the ledger began)")
+    return 0
+
+
+async def cmd_service(a) -> int:
+    from .service import cmd_service as call_service
+
+    return await call_service(a)
+
+
+COMMANDS = {
+    "service": cmd_service,
+    "doctor": cmd_doctor, "web": cmd_web, "ask": cmd_ask, "panel": cmd_panel, "run": cmd_run, "status": cmd_status, "cancel": cmd_cancel, "results": cmd_results,
+    "jobs": cmd_jobs, "cost": cmd_cost, "savings": cmd_savings, "usage": cmd_usage, "bench": cmd_bench, "sync": cmd_sync,
+    "maintain": cmd_maintain, "history": cmd_history, "keys": cmd_keys, "vault": cmd_vault, "import-keys": cmd_import_keys, "import-zswarm": cmd_import_zswarm, "models": cmd_models, "index": cmd_index, "survival": cmd_survival, "backfill-free-misses": cmd_backfill_free_misses, "prefix": cmd_prefix, "egress": cmd_egress,
+}

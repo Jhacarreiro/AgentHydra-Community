@@ -1,0 +1,105 @@
+schema: hydra-rsi/1
+metrics:
+  # Frames over budget come from main-thread timings: it moved 81..88 of 110 between runs on one
+  # machine, so it is a time (judged against a measured band), not a count.
+  - id: desk2.stream.frames_over_budget
+    kind: time
+    better: lower
+    unit: frames
+    measure: "bun desk2/e2e/stream-frames.e2e.ts"
+    file: desk2/tmp/stream-frames.json
+    pick: 'json:$.framesOverBudget'
+  - id: desk2.stream.style_recalcs_per_chunk
+    kind: count
+    better: lower
+    unit: recalcs
+    measure: "bun desk2/e2e/stream-frames.e2e.ts"
+    file: desk2/tmp/stream-frames.json
+    pick: 'json:$.styleRecalcsPerChunk'
+    gate: exact
+  - id: desk2.stream.layouts_per_chunk
+    kind: count
+    better: lower
+    unit: layouts
+    measure: "bun desk2/e2e/stream-frames.e2e.ts"
+    file: desk2/tmp/stream-frames.json
+    pick: 'json:$.layoutsPerChunk'
+    gate: exact
+  # Claude Code keeps 2,048 characters of a server's instructions and every chat pays them on every
+  # request: past the cut, the last rules are never read.
+  - id: mcp.instructions_chars
+    kind: size
+    better: lower
+    unit: chars
+    measure: 'bun -e "const m = await import(''./server/src/mcp.ts''); console.log(JSON.stringify({chars: m.SERVER_INSTRUCTIONS.length}))"'
+    pick: 'json:$.chars'
+    light: true
+  # Every native HSwarm task re-sends its system prompt and tool schemas on every turn: the prefix of a
+  # read task with a schema, the common shape (today's date line left out, its length moves by month).
+  - id: hswarm.read_task.prefix_chars
+    kind: size
+    better: lower
+    unit: chars
+    measure: "python scripts/rsi/hswarm-prefix.py"
+    pick: 'json:$.chars'
+    light: true
+  # Free accounts cost nothing but are the first route (owner, 2026-10-07): every task HSwarm sends them pays this
+  # wrapper around its prompt, measured on the common shape (tool-free, with a schema), so a shorter one is a saving
+  # on every call.
+  - id: free.route.wrapper_chars
+    kind: size
+    better: lower
+    unit: chars
+    measure: "python scripts/rsi/free-route-wrapper.py"
+    pick: 'json:$.chars'
+    light: true
+  # Every free_chat task opens a new private claude.ai chat and pays these requests (the organization lookup, the
+  # account reads, the completion and its persistence read), each one spending the account's rate budget; a new
+  # chat should take as few as the protocol allows.
+  - id: free.claude.calls_per_new_chat
+    kind: count
+    better: lower
+    unit: requests
+    measure: "python scripts/rsi/free-claude-calls.py"
+    pick: 'json:$.requests'
+    gate: exact
+  # An agent that calls a tool it already has listed through hydra_run loses the caller binding: on 2026-10-11 the
+  # workers one chat dispatched that way were saved with no link to it, so the chat showed none running. Share of
+  # the last 7 days' hydra_run calls whose tool is one the server lists directly. A field metric over a window of
+  # past transcripts, not a build output: it moves only after the AgentHydra daemon restarts on new descriptions,
+  # so compare a window before and after a restart, not two commits.
+  - id: mcp.hydra_run.listed_share
+    kind: count
+    better: lower
+    unit: share
+    measure: "python scripts/rsi/mcp-hydra-run-listed.py"
+    pick: 'json:$.listed_share'
+    gate: exact
+    repeat: 1
+  # Every CliMayte worker carries this brief on every turn of its session.
+  - id: climayte.worker_brief_chars
+    kind: size
+    better: lower
+    unit: chars
+    measure: 'bun -e "const m = await import(''./server/src/climayte-lib.ts''); console.log(JSON.stringify({chars: m.WORKER_BRIEF.length}))"'
+    pick: 'json:$.chars'
+    light: true
+  # What AgentHydra's own pages (Desk, the HSwarm console, the orchestrator) cost the person reading them, by its own
+  # price check. Every trial on it runs the checker on a real app, so a wrong number met on the way is a pricecheck fix.
+  - id: pricecheck.own_pages.points
+    kind: count
+    better: lower
+    unit: points
+    measure: "python scripts/rsi/pricecheck-own-pages.py"
+    pick: 'json:$.points'
+    gate: exact
+    light: true
+  # How often pricecheck's advice went bad (undone, misled, or marked wrong or undone), across every project with advice.
+  - id: pricecheck.advice.bad_rate
+    kind: count
+    better: lower
+    unit: share
+    measure: "python scripts/rsi/pricecheck-advice-bad-rate.py"
+    pick: 'json:$.bad_rate'
+    gate: exact
+    repeat: 1

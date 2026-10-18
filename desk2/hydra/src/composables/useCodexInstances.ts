@@ -1,0 +1,102 @@
+import { ref, shallowRef } from 'vue'
+import type { CodexInstance } from '@/lib/api'
+import * as api from '@/lib/api'
+import { reconcileList } from '@/lib/reconcile'
+
+const instances = shallowRef<CodexInstance[]>([])
+const loading = ref(false)
+/** The list has answered once (or failed to): the Instances tab draws what sits below the Codex rows
+ *  only then, so the Codex rows never land between rows already on screen. */
+const listed = ref(false)
+const busyIds = ref(new Set<string>())
+const lastError = ref<string | null>(null)
+
+function setBusy(id: string, busy: boolean) {
+  const next = new Set(busyIds.value)
+  if (busy) next.add(id)
+  else next.delete(id)
+  busyIds.value = next
+}
+
+async function guard<T>(promise: Promise<T>): Promise<T | undefined> {
+  try {
+    return await promise
+  } catch (error) {
+    lastError.value = error instanceof Error ? error.message : String(error)
+    return undefined
+  }
+}
+
+async function refresh(opts: { silent?: boolean } = {}) {
+  if (!opts.silent) loading.value = true
+  const result = await guard(api.listCodexInstances())
+  // Unchanged rows keep their old objects, so a poll with nothing new redraws nothing.
+  if (result) instances.value = reconcileList(instances.value, result, (i) => i.id)
+  listed.value = true
+  if (!opts.silent) loading.value = false
+}
+
+/** The first load when a table opens; later refreshes are lib/warm-data.ts's. */
+function startPolling() {
+  void refresh()
+}
+
+async function create() {
+  const result = await guard(api.createCodexInstance())
+  if (result?.ok) await refresh({ silent: true })
+  return result
+}
+
+// Generic over the result shape so it also covers redeemResetCredit's CodexResetRedeemResult,
+// which carries `ok` but not CMActionResult's `action`/`dir`/`data` fields.
+async function withBusy<T extends { ok: boolean }>(
+  id: string,
+  operation: () => Promise<T>,
+  refreshAfter = false,
+) {
+  setBusy(id, true)
+  try {
+    const result = await guard(operation())
+    if (result?.ok && refreshAfter) await refresh({ silent: true })
+    return result
+  } finally {
+    setBusy(id, false)
+  }
+}
+
+const launchCli = (id: string) => withBusy(id, () => api.launchCodexInstance(id))
+const login = (id: string) => withBusy(id, () => api.codexInstanceLogin(id), true)
+const logout = (id: string) => withBusy(id, () => api.codexInstanceLogout(id), true)
+const openDesktop = (id: string) => withBusy(id, () => api.openCodexDesktopInstance(id), true)
+const focusDesktop = (id: string) => withBusy(id, () => api.focusCodexDesktopInstance(id))
+const quitDesktop = (id: string) => withBusy(id, () => api.quitCodexDesktopInstance(id), true)
+const rename = (id: string, name: string | null) =>
+  withBusy(id, () => api.renameCodexInstance(id, name), true)
+const remove = (id: string, confirmName: string) =>
+  withBusy(id, () => api.deleteCodexInstance(id, confirmName), true)
+// No refreshAfter: a redeem changes quota, not the instance list — the caller re-checks usage
+// itself (see CodexInstanceRows.vue's onRedeemResetCredit).
+const redeemResetCredit = (id: string, opts: { force?: boolean } = {}) =>
+  withBusy(id, () => api.redeemCodexResetCredit(id, opts))
+
+export function useCodexInstances() {
+  return {
+    instances,
+    loading,
+    listed,
+    busyIds,
+    lastError,
+    refresh,
+    startPolling,
+    create,
+    launchCli,
+    login,
+    logout,
+    openDesktop,
+    focusDesktop,
+    quitDesktop,
+    rename,
+    remove,
+    redeemResetCredit,
+  }
+}

@@ -1,0 +1,164 @@
+<script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue'
+import { createReusableTemplate } from '@vueuse/core'
+import { icons, newSessionGlyphs } from '@/lib/icons'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import type { ComposerApi } from './api'
+import { folderIcon, folderRows } from './folders'
+import { folderName } from './logic'
+import { focusProjectFilter, gridProjects } from '../shell/project-grid'
+import { useShellSource } from '../shell/source'
+import { HEADER, ITEM, MENU, MENU_GLYPH, SEPARATOR } from './menu'
+import { Tip } from '@/components/ui/tooltip'
+import { ENV_PILL_BUTTON, PILL_TEXT } from './pill'
+
+// The new session's folder, as the real app's folder menu: Recent by name, a check on the current folder and,
+// on hover, an X that takes a folder off the list (Delete does it from the keyboard); then "Add new folder...",
+// which opens Windows' own folder dialog. The server shows that dialog: a page cannot learn a folder's path.
+// With Project Hydra the New screen above lists every project, so a click puts the caret in its "Filter projects" box
+// instead (owner, 2026-10-13: "you probably have a lot of projects. So your first instinct is probably click, start
+// typing to find the project you want").
+// The menu's trigger sits inside the Tip's wrapper, never the other way round: a Tip swaps its child for a new element
+// on the first hover, and a trigger swapped under a menu that stayed left it anchored to a detached node, so the menu
+// opened in the window's top-left corner (2026-10-13).
+const Check = icons.check
+const Plus = icons.add
+const Remove = icons.dismiss
+const props = defineProps<{ modelValue: string | null; api: ComposerApi }>()
+const emit = defineEmits<{ 'update:modelValue': [cwd: string] }>()
+const src = useShellSource()
+
+/** Rows the menu shows; the server keeps a few more. */
+const SHOWN = 10
+
+const open = ref(false)
+const recent = ref<string[]>([])
+const error = ref<string | null>(null)
+// A logo that failed to load is dropped for good: the folder glyph shows instead.
+const failedLogos = ref(new Set<string>())
+function failed(logo: string | null) {
+  if (logo) failedLogos.value.add(logo)
+}
+function usable(logo: string | null): string | null {
+  return logo && !failedLogos.value.has(logo) ? logo : null
+}
+const listing = computed(() => gridProjects.value ?? src.cachedProjects?.() ?? null)
+const projects = computed(() => listing.value?.projects ?? [])
+const toFilter = computed(() => (listing.value?.hydra.found ? focusProjectFilter.value : null))
+const [DefinePill, ReusePill] = createReusableTemplate()
+const logo = computed(() => usable(folderIcon(projects.value, props.modelValue)))
+const rows = computed(() =>
+  folderRows(recent.value.slice(0, SHOWN), props.modelValue).map((r) => ({ ...r, icon: usable(folderIcon(projects.value, r.path)) }))
+)
+
+async function loadRecent() {
+  try {
+    recent.value = await props.api.recentFolders()
+  } catch {
+    recent.value = []
+  }
+}
+
+watch(open, (o) => {
+  if (o) loadRecent()
+  else error.value = null
+})
+
+function choose(path: string) {
+  emit('update:modelValue', path)
+  props.api.rememberFolder(path).then((list) => (recent.value = list), () => {})
+}
+
+/** Takes the row off the list and keeps the keyboard on the row that takes its place. */
+async function remove(path: string) {
+  const at = recent.value.indexOf(path)
+  recent.value = recent.value.filter((p) => p !== path)
+  props.api.forgetFolder(path).then((list) => (recent.value = list), loadRecent)
+  await nextTick()
+  const items = document.querySelectorAll<HTMLElement>('[data-composer-menu="folder"] [role^="menuitem"]')
+  items[Math.min(Math.max(at, 0), items.length - 1)]?.focus()
+}
+
+// Asking again while the dialog is open replaces it (the server closes the first one), so only the latest answer counts.
+let asked = 0
+async function addFolder() {
+  const mine = ++asked
+  error.value = null
+  try {
+    const path = await props.api.pickFolder(props.modelValue)
+    if (mine === asked && path) emit('update:modelValue', path)
+  } catch (e) {
+    if (mine !== asked) return
+    error.value = e instanceof Error ? e.message : String(e)
+    open.value = true
+  }
+}
+</script>
+
+<template>
+  <DefinePill>
+    <img v-if="logo" :src="logo" alt="" class="size-4 shrink-0 rounded-(--radius-6)" @error="failed(logo)" />
+    <newSessionGlyphs.folder v-else class="size-4 shrink-0" />
+    <span class="truncate" :class="PILL_TEXT">{{ modelValue ? folderName(modelValue) : 'Choose folder' }}</span>
+  </DefinePill>
+  <Tip v-if="toFilter" :label="modelValue ?? 'Choose a folder'">
+    <button type="button" :class="ENV_PILL_BUTTON" class="min-w-0 shrink" @click="toFilter?.()">
+      <ReusePill />
+    </button>
+  </Tip>
+  <Tip v-else :label="modelValue ?? 'Choose a folder'">
+    <span class="flex min-w-0 shrink">
+      <DropdownMenu v-model:open="open">
+        <DropdownMenuTrigger as-child>
+          <button type="button" :class="ENV_PILL_BUTTON" class="min-w-0 shrink">
+            <ReusePill />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="top" align="start" :side-offset="6" :class="[MENU, 'min-w-48 max-w-72']" data-composer-menu="folder">
+          <template v-if="rows.length">
+            <div role="presentation" :class="HEADER">Recent</div>
+            <DropdownMenuItem
+              v-for="r in rows"
+              :key="r.path"
+              role="menuitemradio"
+              :aria-checked="r.current"
+              :class="[ITEM, 'group/folder pe-1']"
+              @select="choose(r.path)"
+              @keydown.delete.prevent="remove(r.path)"
+            >
+              <img v-if="r.icon" :src="r.icon" alt="" class="me-2 size-4 shrink-0 rounded-(--radius-6)" @error="failed(r.icon)" />
+              <span class="min-w-0 flex-1 truncate">
+                {{ r.name }}<span v-if="r.hint" class="ms-1.5 text-(--text-muted)">{{ r.hint }}</span>
+              </span>
+              <span class="flex size-5 shrink-0 items-center justify-center">
+                <Check
+                  v-if="r.current"
+                  class="size-3.5 text-(--accent) group-hover/folder:hidden group-data-[highlighted]/folder:hidden"
+                  :stroke-width="3"
+                />
+                <!-- Its own click: stopped before the row sees it, so the row is not chosen. -->
+                <button
+                  type="button"
+                  tabindex="-1"
+                  class="hidden size-5 items-center justify-center rounded-(--radius-5) text-(--text-muted) transition-colors duration-60 hover:bg-(--fill-secondary-hover) hover:text-(--text) group-hover/folder:flex group-data-[highlighted]/folder:flex"
+                  :aria-label="`Remove ${r.name} from Recent`"
+                  @pointerdown.stop
+                  @pointerup.stop
+                  @click.stop.prevent="remove(r.path)"
+                >
+                  <Remove class="size-3.5" :stroke-width="2.5" />
+                </button>
+              </span>
+            </DropdownMenuItem>
+            <div role="separator" :class="SEPARATOR" />
+          </template>
+          <DropdownMenuItem :class="ITEM" @select="addFolder">
+            <Plus :class="MENU_GLYPH" />
+            Add new folder…
+          </DropdownMenuItem>
+          <p v-if="error" role="alert" class="px-2 py-1 text-ui-sm leading-4 text-(--danger-text)">{{ error }}</p>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </span>
+  </Tip>
+</template>
