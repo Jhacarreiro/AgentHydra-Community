@@ -96,10 +96,11 @@ export const ROLLOUT_UNPACKED_MAX = 256 * 1024 * 1024
 const TIME_END = 253_402_300_800
 
 /**
- * The header a pusher names its install with, on every push and on its relay socket (codex-hub-push.ts). A PC is
- * kept by its name, and two can send one: WSL beside the Windows PC it runs on, two Linux boxes called `ubuntu`, the
- * daemon's pusher beside a standalone one. They replaced each other's relay socket every few seconds, which ended
- * every Desk session on it, and each push deleted the other's rollouts. The id tells them apart.
+ * The header a pusher names its install with, on every request and on its relay socket (codex-hub-push.ts). A PC's
+ * token is bound to the install it is first used with, and refused from any other (codex-hub-pcs.ts). On the legacy
+ * token a PC is kept by its name, and two can send one: WSL beside the Windows PC it runs on, two Linux boxes called
+ * `ubuntu`, the daemon's pusher beside a standalone one. They replaced each other's relay socket every few seconds,
+ * which ended every Desk session on it, and each push deleted the other's rollouts. The id tells them apart.
  */
 export const HUB_INSTALL_HEADER = 'x-codex-hub-install'
 /** The least an install keeps its name from another one after its last push: five pushes at the default interval. */

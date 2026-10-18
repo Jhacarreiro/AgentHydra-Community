@@ -100,7 +100,7 @@ command -v bun >/dev/null || fail "bun is missing: it writes each build's THIRD-
 [ -n "${HUB_URL:-}" ] || echo "warning: HUB_URL is empty; each PC then needs the hub's address in its tray.json" >&2
 [ -n "${PAIR_URL:-}" ] || echo "warning: PAIR_URL is empty; Connect this PC then has no page to open" >&2
 case "${PAIR_URL:-}" in
-http://*) echo "warning: PAIR_URL is not https; the pairing page hands out the hub token" >&2 ;;
+http://*) echo "warning: PAIR_URL is not https; its one-time pairing codes, and your sign-in, then travel in the clear" >&2 ;;
 esac
 
 FLAGS="-s -w -buildid= -X main.hubURL=${HUB_URL:-} -X main.pairURL=${PAIR_URL:-} -X main.inboxURL=${INBOX_URL:-}"

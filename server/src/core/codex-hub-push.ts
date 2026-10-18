@@ -63,7 +63,10 @@ export interface CodexHubPushConfig {
   install?: string | null
   /** Extra request headers, e.g. a Cloudflare Access service token in front of the hub. */
   headers: Record<string, string>
-  /** Sent with each push too: the hub holds this PC's name for three of them after it (codex-hub.ts hubNameHoldMs). */
+  /**
+   * Sent with each push too: on the legacy token the hub holds this PC's name for three of them after it (codex-hub.ts
+   * hubNameHoldMs). A PC's own token holds its name for good.
+   */
   intervalMs: number
 }
 
@@ -239,8 +242,8 @@ export function codexHubPushConfig(
     // The file is not touched when the tray, or the owner, names the id.
     install: installFromEnv() ?? pusherInstallId(PUSHER_INSTALL_FILES[pusher]),
     headers,
-    // Eight hours at most: the hub holds this PC's name for three intervals after a push (codex-hub.ts
-    // hubNameHoldMs), and for a day at most.
+    // Eight hours at most: on the legacy token the hub holds this PC's name for three intervals after a push
+    // (codex-hub.ts hubNameHoldMs), and for a day at most.
     intervalMs: Math.min(
       Math.max(1, Number.isFinite(minutes) ? minutes : 2) * 60_000,
       HUB_PUSH_INTERVAL_MAX_MS,
