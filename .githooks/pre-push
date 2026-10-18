@@ -10,7 +10,10 @@
 #    aee9dfc4. No override.
 # 5. Run scripts/audit-public.mjs --push over what the push carries, on every remote, private ones
 #    too, and refuse on a finding or when the audit cannot give a verdict. No override.
-# 6. Refuse a tag on the MIT base's own history: those are upstream's tags. No override.
+# 6. Refuse a tag on upstream's work: on upstream's history up to 3a65ba8e (upstream's own tags), or
+#    on a commit with 3a65ba8e's tree (the import commit at the root of this history). No override.
+# 7. Refuse, on every remote, any ref whose history shares a commit with upstream's history up to
+#    3a65ba8e, which this repository does not carry. A clone without 3a65ba8e passes. No override.
 #
 # Then a release tag in the push also needs CI to have passed on the exact commit the tag points
 # to: `gh` is asked for a ci.yml run on that sha whose conclusion is success. When there is one,
@@ -20,10 +23,10 @@
 # (measured on 1.7.0, 2026-10-02), after docs/RELEASING.md had already made "push main, wait for
 # green CI" the step before tagging. When it cannot be confirmed (no gh, not signed in, offline, a
 # remote that is not GitHub, no run on that sha, a run still going or not green), one line says
-# why and the whole `check:deep` runs. A push with no release tag in it is done once rules 1 to 6
+# why and the whole `check:deep` runs. A push with no release tag in it is done once rules 1 to 7
 # pass.
 #
-# Rules 1 to 6 and their history live in .githooks/check-public-push.mjs. Git hands this hook the
+# Rules 1 to 7 and their history live in .githooks/check-public-push.mjs. Git hands this hook the
 # remote's name and URL as arguments and the refs on stdin; both are passed straight through.
 #
 # FAIL CLOSED. The Biome pre-commit guard steps aside when its runtime is missing, because a commit

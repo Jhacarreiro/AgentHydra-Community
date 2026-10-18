@@ -41,17 +41,33 @@ export function licenseRefusals(
   cwd?: string,
 ): Array<{ ref: string; why: string }>
 
-/** Rule 6: 3a65ba8e, the last commit upstream published under MIT, which this repository starts from. */
-export const MIT_BASE: string
+/** Rules 6 and 7: 3a65ba8e, the last commit upstream published under MIT. Its history is upstream's,
+ *  and this repository does not carry it. */
+export const UPSTREAM_BASE: string
 
-/** Rule 6's base: the audit config's base when it is a full commit id, else MIT_BASE. */
-export function baseCommit(cwd?: string): string
+/** Rule 6: 3a65ba8e's tree, which the import commit at the root of this repository's history has. */
+export const UPSTREAM_TREE: string
 
-/** Rule 6: the pushed tags that point at `base` or at a commit in its history (upstream's own tags).
- *  Fail-closed on an unclear answer; none when `base` is not in this clone. */
+/** Rules 6 and 7's commits: UPSTREAM_BASE plus the audit config's upstreamBase, when it names another. */
+export function upstreamBases(cwd?: string): string[]
+
+/** Rule 6's trees: UPSTREAM_TREE plus the audit config's baseTree, when it names another. */
+export function upstreamTrees(cwd?: string): string[]
+
+/** Rule 6: the pushed tags that point at one of `bases` or at a commit in its history (upstream's own
+ *  tags), or at a commit whose tree is one of `trees` (the import commit). Fail-closed on an unclear
+ *  answer; only the trees are checked for a base that is not in this clone. */
 export function upstreamTagRefusals(
   refs: PushRef[],
-  base: string,
+  upstream: { bases?: string[]; trees?: string[] },
+  cwd?: string,
+): Array<{ ref: string; why: string }>
+
+/** Rule 7: the pushed refs whose history shares a commit with one of `bases`. Fail-closed on an
+ *  unclear answer; none for a base that is not in this clone. */
+export function upstreamHistoryRefusals(
+  refs: PushRef[],
+  bases: string[],
   cwd?: string,
 ): Array<{ ref: string; why: string }>
 

@@ -1,16 +1,23 @@
-// tests/githooks/check-public-push-audit.test.ts - rules 4 to 6 of the pre-push gate. A pushed ref
+// tests/githooks/check-public-push-audit.test.ts - rules 4 to 7 of the pre-push gate. A pushed ref
 // whose history holds upstream's relicensing commit is refused on every remote, override or not, and
-// so is a tag on the MIT base's own history; scripts/audit-public.mjs runs over what each push
-// carries, so a push that would publish a mailbox never lands, lands once that one finding is in the
-// allowlist, and is refused when the audit cannot run at all.
+// so is a ref that shares any of upstream's history and a tag on upstream's history or on its tree
+// (the import commit); scripts/audit-public.mjs runs over what each push carries, so a push that
+// would publish a mailbox never lands, lands once that one finding is in the allowlist, and is
+// refused when the audit cannot run at all.
+//
+// None of upstream's commits is in a throwaway repo, and CI's clones of this repository do not have
+// them either, so upstream's history is built in miniature: an "upstream base" with a commit before
+// it, and an import commit with the base's tree and no parent, which this repository's own commits
+// sit on, as they sit on the real import commit.
 //
 // The end-to-end tests drive the real, on-disk .githooks/pre-push, check-public-push.mjs,
 // scripts/audit-public.mjs, its config and server/src/secrets.ts (copied fresh at test time) against a
 // throwaway repo pushing to a throwaway bare origin, as pre-push-public-guard.test.ts does for rules 1
-// to 3. The relicensing commit is not in a throwaway repo, so the sandbox's copy of the audit config
-// names one of the sandbox's own commits as its licenseBoundary, and its base is the sandbox's first
-// commit: rule 4 reads the boundary from there exactly as it reads the real one here. Visibility is
-// stubbed through the environment, so nothing reaches the network or this repo's own remote.
+// to 3. The sandbox's copy of the audit config names the sandbox's own commits: its first commit as
+// the base (the import commit) with that commit's tree as baseTree, an orphan commit with the same
+// tree as upstreamBase, and another commit as licenseBoundary. Rules 4, 6 and 7 read them from there
+// exactly as they read the real ones here. Visibility is stubbed through the environment, so nothing
+// reaches the network or this repo's own remote.
 //
 // Every value the audit must find is built at run time (see tests/audit-public.test.ts), because the
 // audit reads this file too.
@@ -28,15 +35,19 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
-  baseCommit,
   LICENSE_BOUNDARY,
   licenseBoundaries,
   licenseRefusals,
-  MIT_BASE,
   parseRefLines,
   runPushAudit,
+  UPSTREAM_BASE,
+  UPSTREAM_TREE,
+  upstreamBases,
+  upstreamHistoryRefusals,
   upstreamTagRefusals,
+  upstreamTrees,
 } from '../../.githooks/check-public-push.mjs'
 import {
   LICENSE_BOUNDARY as AUDIT_LICENSE_BOUNDARY,
@@ -108,6 +119,32 @@ function commit(dir: string, files: Record<string, string>, message: string, ema
   if (paths.length) git(dir, 'add', '--', ...paths)
   git(dir, '-c', `user.email=${email}`, 'commit', '-q', '--allow-empty', '-m', message)
   return git(dir, 'rev-parse', 'HEAD')
+}
+
+/**
+ * Upstream's history in miniature, beside `main`: `before`, then `upstreamBase` with `tree`, both on
+ * their own root, and `imported`, the import commit: the same tree, no parent. `main` is checked out
+ * at `own`, a commit of this repository's own on top of `imported`.
+ */
+function upstreamInMiniature(dir: string) {
+  git(dir, 'init', '-q', '-b', 'main')
+  git(dir, 'checkout', '-q', '--orphan', 'upstream')
+  const before = commit(dir, { 'a.txt': 'a\n' }, 'upstream, before its last MIT commit')
+  const upstreamBase = commit(dir, { 'b.txt': 'b\n' }, "upstream's last MIT commit")
+  const tree = git(dir, 'rev-parse', `${upstreamBase}^{tree}`)
+  const imported = git(dir, 'commit-tree', tree, '-m', 'the import commit')
+  git(dir, 'checkout', '-q', '-B', 'main', imported)
+  const own = commit(dir, { 'c.txt': 'c\n' }, 'own work')
+  return { before, upstreamBase, tree, imported, own }
+}
+
+/** A clone of `branch` alone over the pack protocol, so it holds only what that branch reaches: as a
+ *  clone of this repository holds none of upstream's commits. */
+function cloneOf(dir: string, branch: string) {
+  const to = scratch('clone')
+  const url = pathToFileURL(dir).href
+  git(to, 'clone', '-q', '--no-local', '--single-branch', '--no-tags', '-b', branch, url, '.')
+  return to
 }
 
 // --- rule 4's pieces, without a push -------------------------------------------------------------
@@ -185,45 +222,149 @@ describe('rule 4: the relicensing commit', () => {
   )
 })
 
-// --- rule 6's pieces, without a push -------------------------------------------------------------
+// --- rules 6 and 7's pieces, without a push ------------------------------------------------------
 
-describe("rule 6: upstream's tags", () => {
-  test('the hook and the audit config name the same base commit', () => {
-    expect(MIT_BASE).toMatch(/^[0-9a-f]{40}$/)
-    expect(loadAuditFiles().config.base).toBe(MIT_BASE)
-    expect(baseCommit(REPO_ROOT)).toBe(MIT_BASE)
-    // A checkout without the config still knows the base.
-    expect(baseCommit(scratch('no-config'))).toBe(MIT_BASE)
+describe("rules 6 and 7: upstream's base and its tree", () => {
+  test("the hook names upstream's last MIT commit and its tree, and the config can only add to them", () => {
+    expect(UPSTREAM_BASE).toMatch(/^[0-9a-f]{40}$/)
+    expect(UPSTREAM_TREE).toMatch(/^[0-9a-f]{40}$/)
+    expect(upstreamBases(REPO_ROOT)).toEqual([UPSTREAM_BASE])
+    expect(upstreamTrees(REPO_ROOT)).toEqual([UPSTREAM_TREE])
+    // A checkout without the config still knows them.
+    const dir = scratch('upstream-config')
+    expect(upstreamBases(dir)).toEqual([UPSTREAM_BASE])
+    expect(upstreamTrees(dir)).toEqual([UPSTREAM_TREE])
+
+    mkdirSync(join(dir, 'scripts'))
+    const cfg = join(dir, 'scripts', 'audit-public.config.json')
+    const commitId = 'ab'.repeat(20)
+    const treeId = 'cd'.repeat(20)
+    // The config's base, the import commit, is not what these rules read.
+    writeFileSync(cfg, JSON.stringify({ base: 'ef'.repeat(20) }))
+    expect(upstreamBases(dir)).toEqual([UPSTREAM_BASE])
+    expect(upstreamTrees(dir)).toEqual([UPSTREAM_TREE])
+    writeFileSync(cfg, JSON.stringify({ upstreamBase: commitId, baseTree: treeId }))
+    expect(upstreamBases(dir)).toEqual([UPSTREAM_BASE, commitId])
+    expect(upstreamTrees(dir)).toEqual([UPSTREAM_TREE, treeId])
+    writeFileSync(cfg, JSON.stringify({ upstreamBase: 'not a sha', baseTree: UPSTREAM_TREE }))
+    expect(upstreamBases(dir)).toEqual([UPSTREAM_BASE])
+    expect(upstreamTrees(dir)).toEqual([UPSTREAM_TREE])
   })
 
   test(
-    'a tag on the base or before it is refused; a later tag, a branch and a deletion are not',
+    "rule 6: a tag on upstream's history or on the import commit is refused; a later tag, a branch and a deletion are not",
     () => {
       const dir = scratch('upstream-tags')
-      git(dir, 'init', '-q', '-b', 'main')
-      const before = commit(dir, { 'a.txt': 'a\n' }, 'upstream, before the base')
-      const base = commit(dir, { 'b.txt': 'b\n' }, 'the base')
-      const own = commit(dir, { 'c.txt': 'c\n' }, 'own work')
+      const { before, upstreamBase, tree, imported, own } = upstreamInMiniature(dir)
       git(dir, 'tag', '-a', '-m', 'annotated', 'old-release', before)
       const tagObject = git(dir, 'rev-parse', 'old-release')
 
       const refs = parseRefLines(
         [
           `refs/tags/old-release ${tagObject} refs/tags/old-release ${ZERO}`,
-          `refs/tags/at-base ${base} refs/tags/at-base ${ZERO}`,
+          `refs/tags/at-base ${upstreamBase} refs/tags/at-base ${ZERO}`,
+          `refs/tags/imported ${imported} refs/tags/imported ${ZERO}`,
           `refs/tags/own ${own} refs/tags/own ${ZERO}`,
           `refs/heads/main ${own} refs/heads/main ${ZERO}`,
           `refs/heads/old ${before} refs/heads/old ${ZERO}`,
           `(delete) ${ZERO} refs/tags/gone ${before}`,
         ].join('\n'),
       )
-      const refused = upstreamTagRefusals(refs, base, dir)
-      expect(refused.map((r) => r.ref)).toEqual(['refs/tags/old-release', 'refs/tags/at-base'])
+      const upstream = { bases: [upstreamBase], trees: [tree] }
+      const refused = upstreamTagRefusals(refs, upstream, dir)
+      expect(refused.map((r) => r.ref)).toEqual([
+        'refs/tags/old-release',
+        'refs/tags/at-base',
+        'refs/tags/imported',
+      ])
       expect(refused[0]?.why).toContain(before.slice(0, 8))
-      expect(refused[0]?.why).toContain(base.slice(0, 8))
+      expect(refused[0]?.why).toContain(upstreamBase.slice(0, 8))
+      expect(refused[2]?.why).toBe(
+        `it points at ${imported.slice(0, 8)}, whose tree is upstream's ${tree.slice(0, 8)}`,
+      )
 
-      // A base this clone does not have cannot be in any tag's history.
-      expect(upstreamTagRefusals(refs, 'cd'.repeat(20), dir)).toEqual([])
+      // A base this clone does not have is in no tag's history; the tree still refuses the import
+      // commit, and the base's own commit, which has that tree too.
+      const absent = { bases: ['cd'.repeat(20)], trees: [tree] }
+      expect(upstreamTagRefusals(refs, absent, dir).map((r) => r.ref)).toEqual([
+        'refs/tags/at-base',
+        'refs/tags/imported',
+      ])
+      expect(upstreamTagRefusals(refs, { bases: ['cd'.repeat(20)] }, dir)).toEqual([])
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    "rule 6 in a clone without upstream's commits: the import commit is still refused, own tags are not",
+    () => {
+      const dir = scratch('upstream-tags-src')
+      const { upstreamBase, tree, imported, own } = upstreamInMiniature(dir)
+      const clone = cloneOf(dir, 'main')
+      const refs = parseRefLines(
+        [
+          `refs/tags/imported ${imported} refs/tags/imported ${ZERO}`,
+          `refs/tags/own ${own} refs/tags/own ${ZERO}`,
+        ].join('\n'),
+      )
+      const refused = upstreamTagRefusals(refs, { bases: [upstreamBase], trees: [tree] }, clone)
+      expect(refused.map((r) => r.ref)).toEqual(['refs/tags/imported'])
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    "rule 7: a ref that shares upstream's history is refused, whatever it shares; this repository's own history is not",
+    () => {
+      const dir = scratch('upstream-history')
+      const { before, upstreamBase, own } = upstreamInMiniature(dir)
+      git(dir, 'checkout', '-q', '-b', 'later', upstreamBase)
+      const later = commit(dir, { 'd.txt': 'd\n' }, 'upstream, after its last MIT commit')
+      git(dir, 'checkout', '-q', '-b', 'merged', own)
+      git(dir, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'upstream')
+      const merged = git(dir, 'rev-parse', 'HEAD')
+      git(dir, 'tag', '-a', '-m', 'annotated', 'checkpoint', own)
+      const tagObject = git(dir, 'rev-parse', 'checkpoint')
+
+      const refs = parseRefLines(
+        [
+          `refs/heads/main ${own} refs/heads/main ${ZERO}`,
+          `refs/heads/later ${later} refs/heads/later ${ZERO}`,
+          `refs/heads/older ${before} refs/heads/older ${ZERO}`,
+          `refs/heads/merged ${merged} refs/heads/merged ${own}`,
+          `refs/tags/checkpoint ${tagObject} refs/tags/checkpoint ${ZERO}`,
+          `(delete) ${ZERO} refs/heads/gone ${later}`,
+        ].join('\n'),
+      )
+      const refused = upstreamHistoryRefusals(refs, [upstreamBase], dir)
+      expect(refused.map((r) => r.ref)).toEqual([
+        'refs/heads/later',
+        'refs/heads/older',
+        'refs/heads/merged',
+      ])
+      const base = upstreamBase.slice(0, 8)
+      expect(refused[0]?.why).toBe(`its history contains ${base}`)
+      expect(refused[1]?.why).toBe(
+        `its history contains ${before.slice(0, 8)}, in the history of ${base}`,
+      )
+      expect(refused[2]?.why).toBe(`its history contains ${base}`)
+    },
+    HOOK_TEST_TIMEOUT,
+  )
+
+  test(
+    "rule 7 in a clone without upstream's commits: there is nothing to refuse, and every ref passes",
+    () => {
+      const dir = scratch('upstream-history-src')
+      const { upstreamBase, own } = upstreamInMiniature(dir)
+      const clone = cloneOf(dir, 'main')
+      expect(
+        spawnSync('git', ['cat-file', '-e', `${upstreamBase}^{commit}`], { cwd: clone }).status,
+      ).not.toBe(0)
+      const refs = parseRefLines(`refs/heads/main ${own} refs/heads/main ${ZERO}\n`)
+      expect(upstreamHistoryRefusals(refs, [upstreamBase], clone)).toEqual([])
+      // The real one is in no throwaway repo either.
+      expect(upstreamHistoryRefusals(refs, upstreamBases(clone), clone)).toEqual([])
     },
     HOOK_TEST_TIMEOUT,
   )
@@ -309,11 +450,13 @@ function originHas(origin: string, rev: string): boolean {
   return r.status === 0
 }
 
-describe('.githooks/pre-push: rules 4 and 5, end to end', () => {
+describe('.githooks/pre-push: rules 4 to 7, end to end', () => {
   const PRIVATE = { AGENTHYDRA_VISIBILITY_STUB: 'private' }
   let repo: string
   let origin: string
   let boundary: string
+  let upstreamBefore: string
+  let upstreamBase: string
   let allowFile: string
 
   beforeEach(() => {
@@ -326,7 +469,8 @@ describe('.githooks/pre-push: rules 4 and 5, end to end', () => {
     git(repo, 'config', 'core.hooksPath', '.githooks')
     git(repo, 'remote', 'add', 'origin', origin)
 
-    // Byte-identical copies of the real files, read fresh every run, committed as the base.
+    // Byte-identical copies of the real files, read fresh every run, committed as the base: the
+    // sandbox's import commit.
     const files: Record<string, string> = {}
     for (const path of COPIED) files[path] = readFileSync(join(REPO_ROOT, path), 'utf8')
     const base = commit(repo, files, 'the hook and the audit, as this repository has them')
@@ -337,6 +481,27 @@ describe('.githooks/pre-push: rules 4 and 5, end to end', () => {
     boundary = commit(repo, { LICENSE: 'relicensed\n' }, 'the relicensing commit, in miniature')
     git(repo, 'checkout', '-q', 'main')
 
+    // Upstream's history in miniature, on a root of its own, as in a clone that has upstream's
+    // commits beside this repository's: a commit before its last MIT one, and that one with the
+    // base's tree, as the real import commit has 3a65ba8e's.
+    const baseTree = git(repo, 'rev-parse', `${base}^{tree}`)
+    const emptyTree = execFileSync('git', ['hash-object', '-t', 'tree', '-w', '--stdin'], {
+      cwd: repo,
+      input: '',
+      encoding: 'utf8',
+    }).trim()
+    upstreamBefore = git(repo, 'commit-tree', emptyTree, '-m', 'upstream, in miniature')
+    upstreamBase = git(
+      repo,
+      'commit-tree',
+      baseTree,
+      '-p',
+      upstreamBefore,
+      '-m',
+      "upstream's last MIT commit, in miniature",
+    )
+    git(repo, 'branch', 'upstream-history', upstreamBase)
+
     // The config, the allowlist and the provenance list are read from the working tree, as in this
     // repository; they stay out of the sandbox's commits so its base can name the commit before them.
     const real = JSON.parse(
@@ -345,7 +510,7 @@ describe('.githooks/pre-push: rules 4 and 5, end to end', () => {
     const scripts = join(repo, 'scripts')
     writeFileSync(
       join(scripts, 'audit-public.config.json'),
-      JSON.stringify({ ...real, base, licenseBoundary: boundary }, null, 2),
+      JSON.stringify({ ...real, base, baseTree, upstreamBase, licenseBoundary: boundary }, null, 2),
     )
     allowFile = join(scripts, 'audit-public.allow.json')
     writeFileSync(allowFile, JSON.stringify({ entries: [] }))
@@ -387,21 +552,59 @@ describe('.githooks/pre-push: rules 4 and 5, end to end', () => {
   )
 
   test(
-    "a tag on the base's own history is refused, even to a private remote; a tag on a later commit lands",
+    "a tag on the import commit or on upstream's history is refused, even to a private remote; a tag on a later commit lands",
     () => {
       const base = git(repo, 'rev-parse', 'main')
       git(repo, 'tag', 'v2.0.4', base)
-      const refused = push(repo, PRIVATE, 'refs/tags/v2.0.4')
-      expect(refused.status).not.toBe(0)
-      expect(refused.output).toContain("a pushed tag is one of upstream's")
-      expect(refused.output).toContain(`refs/tags/v2.0.4: it points at ${base.slice(0, 8)}`)
+      const onImport = push(repo, PRIVATE, 'refs/tags/v2.0.4')
+      expect(onImport.status).not.toBe(0)
+      expect(onImport.output).toContain("a pushed tag is one of upstream's")
+      expect(onImport.output).toContain(
+        `refs/tags/v2.0.4: it points at ${base.slice(0, 8)}, whose tree is upstream's`,
+      )
       expect(originHas(origin, 'refs/tags/v2.0.4')).toBe(false)
+
+      git(repo, 'tag', '-a', '-m', "upstream's", 'v2.0.3', upstreamBefore)
+      const onUpstream = push(repo, PRIVATE, 'refs/tags/v2.0.3')
+      expect(onUpstream.status).not.toBe(0)
+      expect(onUpstream.output).toContain("a pushed tag is one of upstream's")
+      expect(onUpstream.output).toContain(
+        `refs/tags/v2.0.3: it points at ${upstreamBefore.slice(0, 8)}, in the history of ${upstreamBase.slice(0, 8)}`,
+      )
+      expect(originHas(origin, upstreamBefore)).toBe(false)
 
       const own = commit(repo, { 'notes.md': 'own work\n' }, 'own work')
       git(repo, 'tag', 'checkpoint', own)
       const landed = push(repo, PRIVATE, 'main', 'refs/tags/checkpoint')
       expect(landed.status).toBe(0)
       expect(originHas(origin, 'refs/tags/checkpoint')).toBe(true)
+    },
+    HOOK_TEST_TIMEOUT * 3,
+  )
+
+  test(
+    "a branch carrying upstream's history is refused, even to a private remote, and so is a merge that brings it in, override or not",
+    () => {
+      const refused = push(repo, PRIVATE, 'upstream-history')
+      expect(refused.status).not.toBe(0)
+      expect(refused.output).toContain("a pushed ref carries upstream's history")
+      expect(refused.output).toContain(
+        `refs/heads/upstream-history: its history contains ${upstreamBase.slice(0, 8)}`,
+      )
+      expect(originHas(origin, upstreamBase)).toBe(false)
+
+      commit(repo, { 'notes.md': 'own work\n' }, 'own work')
+      git(repo, 'merge', '-q', '--no-edit', '--allow-unrelated-histories', 'upstream-history')
+      const merged = push(
+        repo,
+        { AGENTHYDRA_VISIBILITY_STUB: 'public', AGENTHYDRA_PUSH_PUBLIC: '1' },
+        'main',
+      )
+      expect(merged.status).not.toBe(0)
+      expect(merged.output).toContain("a pushed ref carries upstream's history")
+      expect(merged.output).toContain('refs/heads/main')
+      expect(git(origin, 'rev-list', '--count', 'main')).toBe('1')
+      expect(originHas(origin, upstreamBase)).toBe(false)
     },
     HOOK_TEST_TIMEOUT * 2,
   )

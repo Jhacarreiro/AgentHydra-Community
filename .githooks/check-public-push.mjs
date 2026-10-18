@@ -26,13 +26,13 @@
  *     like Sage does": a TL;DR, then the detail under "read more". release.yml runs the same check;
  *     here it stops the tag before it reaches GitHub. No override, as for rule 2.
  *
- *  4. No ref may carry upstream's relicensing commit. AgentHydra Community is built from 3a65ba8e,
- *     the last commit LunarWerxs/AgentHydra published under MIT; the very next one, aee9dfc4, moved
- *     AgentHydra to the PolyForm Noncommercial license, and nothing from it on may be published
- *     from this checkout. A merge or rebase onto upstream's main would bring it in without a single
- *     changed file saying so, so the history of every pushed ref is checked, on every push to any
- *     remote. scripts/audit-public.config.json may name a further boundary commit; it can only add
- *     to this one. No override.
+ *  4. No ref may carry upstream's relicensing commit. AgentHydra Community starts from the tree of
+ *     3a65ba8e, the last commit LunarWerxs/AgentHydra published under MIT; the very next one,
+ *     aee9dfc4, moved AgentHydra to the PolyForm Noncommercial license, and nothing from it on may be
+ *     published from this checkout. A merge or rebase onto upstream's main would bring it in without
+ *     a single changed file saying so, so the history of every pushed ref is checked, on every push
+ *     to any remote. scripts/audit-public.config.json may name a further boundary commit; it can only
+ *     add to this one. No override.
  *
  *  5. scripts/audit-public.mjs runs over what the push carries (its --push mode: the commits the
  *     remote does not have yet, from the base commit on): tokens and keys, credential files, private
@@ -44,12 +44,25 @@
  *     cannot load, start or finish) refuses the push as well, and says so rather than calling it a
  *     finding. A checkout without the script has nothing to audit with and passes, as for rule 3.
  *
- *  6. No tag may point into the MIT base's own history. Every commit up to 3a65ba8e is upstream's,
- *     and the tags on them (v0.1.0 to v2.0.4, orchestrator-v1-final) are upstream's releases, which
- *     a `git push --tags` would publish as this repository's. A v2.0.x one would even pass rule 3 and
- *     start release.yml. The base is the audit config's `base`, else 3a65ba8e; a clone without that
- *     commit has no such tags. Branches are not affected: every branch here has the base in its
- *     history. No override.
+ *  6. No tag may point at upstream's work. Every commit up to 3a65ba8e is upstream's, and the tags
+ *     on them (v0.1.0 to v2.0.4, orchestrator-v1-final) are upstream's releases, which a
+ *     `git push --tags` from a clone that also has upstream's history would publish as this
+ *     repository's. A v2.0.x one would even pass rule 3 and start release.yml. The import commit at
+ *     the root of this repository's history is upstream's work too: its tree is 3a65ba8e's,
+ *     unchanged, upstream's own release.yml included, and a tag runs the workflow of the commit it
+ *     points to. So a tag is refused when its commit is 3a65ba8e or in its history, or when its tree
+ *     is 3a65ba8e's tree. The audit config's upstreamBase and baseTree may name a further commit and
+ *     tree, never take these away; its `base` is not what this rule reads. A clone without 3a65ba8e
+ *     (every clone of this repository) has none of upstream's tags, so only the tree is checked
+ *     there. No override.
+ *
+ *  7. No ref may carry upstream's history. This repository's history starts at the import commit,
+ *     which has no parent: upstream's history up to 3a65ba8e stays in upstream's repository, and
+ *     this one deliberately does not publish it. A ref whose history shares a commit with
+ *     3a65ba8e's (3a65ba8e itself or any commit before it) is refused on every remote, and so is a
+ *     merge that brings that history in. The audit config's upstreamBase may name a further commit.
+ *     A clone without 3a65ba8e has none of that history, so there is nothing to refuse and it
+ *     passes. No override.
  *
  * VISIBILITY IS FAIL-CLOSED. A remote that is not GitHub, a lookup that times out, a rate limit -
  * every "could not tell" is treated as public. A guard that passes when it cannot see is a guard
@@ -77,8 +90,10 @@ const RELEASE_TAG = /^refs\/tags\/v\d+\.\d+\.\d+/;
 const TODO_FILE = "docs/todo/TODO.md";
 // Rule 4: upstream's relicensing commit, the one that moved AgentHydra from MIT to PolyForm Noncommercial 1.0.0.
 export const LICENSE_BOUNDARY = "aee9dfc4f7dd0228d8e1740be90b646b30204f37";
-// Rule 6: upstream's last MIT commit, which this repository is built from.
-export const MIT_BASE = "3a65ba8e6497c16732f627fc8934723839c82fdd";
+// Rules 6 and 7: upstream's last MIT commit. Its history is upstream's; this repository does not carry it.
+export const UPSTREAM_BASE = "3a65ba8e6497c16732f627fc8934723839c82fdd";
+// Rule 6: that commit's tree, which the import commit at the root of this repository's history has.
+export const UPSTREAM_TREE = "d6eda7b9e375d15e916c7a001099fa96051d6cc2";
 const AUDIT_SCRIPT = "scripts/audit-public.mjs";
 const AUDIT_CONFIG = "scripts/audit-public.config.json";
 
@@ -176,33 +191,49 @@ export function openTodoSections(todoPath) {
     .filter((h) => contentsAt >= 0 || !/STATE OF PLAY/i.test(h));
 }
 
-/** Rule 4's commits: LICENSE_BOUNDARY, plus the audit config's licenseBoundary when it names another. */
-export function licenseBoundaries(cwd = process.cwd()) {
-  const out = [LICENSE_BOUNDARY];
+/**
+ * `constant`, plus the audit config's `key` when it names another full object id. The config can
+ * add to a rule, never take its constant away; no config, or an unreadable one, leaves the constant.
+ */
+function withConfigured(constant, key, cwd) {
+  const out = [constant];
   try {
     const cfg = JSON.parse(readFileSync(join(cwd, ...AUDIT_CONFIG.split("/")), "utf8"));
-    const extra = String(cfg?.licenseBoundary || "").toLowerCase();
+    const extra = String(cfg?.[key] || "").toLowerCase();
     if (/^[0-9a-f]{40}$/.test(extra) && !out.includes(extra)) out.push(extra);
   } catch {
-    /* no config, or an unreadable one: the constant above still holds */
+    /* no config, or an unreadable one: the constant still holds */
   }
   return out;
 }
 
-/** Rule 6's commit: the audit config's base when it names one, else MIT_BASE. */
-export function baseCommit(cwd = process.cwd()) {
-  try {
-    const cfg = JSON.parse(readFileSync(join(cwd, ...AUDIT_CONFIG.split("/")), "utf8"));
-    const base = String(cfg?.base || "").toLowerCase();
-    if (/^[0-9a-f]{40}$/.test(base)) return base;
-  } catch {
-    /* no config, or an unreadable one: the constant holds */
-  }
-  return MIT_BASE;
+/** Rule 4's commits: LICENSE_BOUNDARY, plus the audit config's licenseBoundary when it names another. */
+export function licenseBoundaries(cwd = process.cwd()) {
+  return withConfigured(LICENSE_BOUNDARY, "licenseBoundary", cwd);
+}
+
+/** Rules 6 and 7's commits: UPSTREAM_BASE, plus the audit config's upstreamBase when it names one. */
+export function upstreamBases(cwd = process.cwd()) {
+  return withConfigured(UPSTREAM_BASE, "upstreamBase", cwd);
+}
+
+/** Rule 6's trees: UPSTREAM_TREE, plus the audit config's baseTree when it names another. */
+export function upstreamTrees(cwd = process.cwd()) {
+  return withConfigured(UPSTREAM_TREE, "baseTree", cwd);
 }
 
 function git(args, cwd) {
   return spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/** The commit a pushed sha names (an annotated tag peeled), or "" for a tree, a blob or nothing. */
+function peeledCommit(sha, cwd) {
+  return (git(["rev-parse", "--verify", "--quiet", `${sha}^{commit}`], cwd).stdout || "").trim();
+}
+
+/** Whether this clone has `sha` as a commit. */
+function hasCommit(sha, cwd) {
+  return git(["cat-file", "-e", `${sha}^{commit}`], cwd).status === 0;
 }
 
 /**
@@ -213,11 +244,10 @@ function git(args, cwd) {
 export function licenseRefusals(refs, boundaries, cwd = process.cwd()) {
   const out = [];
   for (const boundary of boundaries) {
-    if (git(["cat-file", "-e", `${boundary}^{commit}`], cwd).status !== 0) continue;
+    if (!hasCommit(boundary, cwd)) continue;
     for (const r of refs) {
       if (r.isDelete) continue;
-      const peeled = git(["rev-parse", "--verify", "--quiet", `${r.localSha}^{commit}`], cwd);
-      const commit = (peeled.stdout || "").trim();
+      const commit = peeledCommit(r.localSha, cwd);
       if (!commit) continue; // a tag on a tree or a blob carries no history
       const s = git(["merge-base", "--is-ancestor", boundary, commit], cwd);
       if (s.status === 0) {
@@ -234,26 +264,71 @@ export function licenseRefusals(refs, boundaries, cwd = process.cwd()) {
 }
 
 /**
- * Rule 6: each pushed tag whose commit is `base` or in its history, with the reason. A base this clone
- * does not have cannot be in any tag's history, so nothing is refused; a git answer that is neither
- * yes nor no refuses (fail closed).
+ * Rule 6: each pushed tag that points at upstream's work, with the reason: a commit that is one of
+ * `bases` or in its history (upstream's own tags), or a commit whose tree is one of `trees` (the
+ * import commit, whose tree is upstream's). A base this clone does not have is in no tag's history,
+ * so then only the trees are checked; a git answer that is neither yes nor no refuses (fail closed).
  */
-export function upstreamTagRefusals(refs, base, cwd = process.cwd()) {
-  if (git(["cat-file", "-e", `${base}^{commit}`], cwd).status !== 0) return [];
+export function upstreamTagRefusals(refs, { bases = [], trees = [] } = {}, cwd = process.cwd()) {
+  const present = bases.filter((base) => hasCommit(base, cwd));
   const out = [];
   for (const r of refs) {
     if (r.isDelete || !(r.remoteRef || "").startsWith("refs/tags/")) continue;
-    const peeled = git(["rev-parse", "--verify", "--quiet", `${r.localSha}^{commit}`], cwd);
-    const commit = (peeled.stdout || "").trim();
+    const commit = peeledCommit(r.localSha, cwd);
     if (!commit) continue; // a tag on a tree or a blob points at no commit
+    const refusal = upstreamTagReason(commit, present, trees, cwd);
+    if (refusal) out.push({ ref: r.remoteRef, why: refusal });
+  }
+  return out;
+}
+
+function upstreamTagReason(commit, bases, trees, cwd) {
+  const at = commit.slice(0, 8);
+  for (const base of bases) {
     const s = git(["merge-base", "--is-ancestor", commit, base], cwd);
-    if (s.status === 0) {
-      out.push({ ref: r.remoteRef, why: `it points at ${commit.slice(0, 8)}, in the history of ${base.slice(0, 8)}` });
-    } else if (s.status !== 1) {
-      out.push({
-        ref: r.remoteRef,
-        why: `git could not tell whether ${commit.slice(0, 8)} is in the history of ${base.slice(0, 8)} (exit ${s.status})`,
-      });
+    if (s.status === 0) return `it points at ${at}, in the history of ${base.slice(0, 8)}`;
+    if (s.status !== 1) {
+      return `git could not tell whether ${at} is in the history of ${base.slice(0, 8)} (exit ${s.status})`;
+    }
+  }
+  const peeled = git(["rev-parse", "--verify", "--quiet", `${commit}^{tree}`], cwd);
+  const tree = (peeled.stdout || "").trim();
+  if (!tree) return `git could not read the tree of ${at}`;
+  if (trees.includes(tree)) return `it points at ${at}, whose tree is upstream's ${tree.slice(0, 8)}`;
+  return null;
+}
+
+/**
+ * Rule 7: each pushed ref whose history shares a commit with one of `bases` (the base itself, or
+ * any commit before it), with the reason. `git merge-base` finds the shared commit; a base this clone
+ * does not have shares nothing with any of its refs, so it is skipped, and a git answer that is
+ * neither yes nor no refuses (fail closed).
+ */
+export function upstreamHistoryRefusals(refs, bases, cwd = process.cwd()) {
+  const out = [];
+  for (const base of bases) {
+    if (!hasCommit(base, cwd)) continue;
+    const of = base.slice(0, 8);
+    for (const r of refs) {
+      if (r.isDelete) continue;
+      const commit = peeledCommit(r.localSha, cwd);
+      if (!commit) continue; // a tag on a tree or a blob carries no history
+      const s = git(["merge-base", base, commit], cwd);
+      const shared = (s.stdout || "").trim().split("\n")[0];
+      if (s.status === 0 && shared) {
+        out.push({
+          ref: r.remoteRef,
+          why:
+            shared === base
+              ? `its history contains ${of}`
+              : `its history contains ${shared.slice(0, 8)}, in the history of ${of}`,
+        });
+      } else if (s.status !== 1) {
+        out.push({
+          ref: r.remoteRef,
+          why: `git could not tell whether its history shares a commit with ${of} (exit ${s.status})`,
+        });
+      }
     }
   }
   return out;
@@ -312,25 +387,44 @@ async function main() {
         ...pastBoundary.map((r) => `    ${r.ref}: ${r.why}`),
         "",
         `  ${LICENSE_BOUNDARY.slice(0, 8)} moved upstream AgentHydra to the PolyForm Noncommercial license.`,
-        "  AgentHydra Community is built from 3a65ba8e, the last MIT commit, and nothing from that",
-        "  commit on may be pushed from this checkout. There is no override for this rule.",
+        "  AgentHydra Community starts from the tree of 3a65ba8e, the last MIT commit, and nothing",
+        "  from aee9dfc4 on may be pushed from this checkout. There is no override for this rule.",
         "",
       ].join("\n"),
     );
     return 1;
   }
 
-  const upstreamTags = upstreamTagRefusals(refs, baseCommit());
+  const upstream = { bases: upstreamBases(), trees: upstreamTrees() };
+  const upstreamTags = upstreamTagRefusals(refs, upstream);
   if (upstreamTags.length > 0) {
     console.error(
       [
         "",
-        "✗ push refused: a pushed tag is one of upstream's, on a commit up to the MIT base.",
+        "✗ push refused: a pushed tag is one of upstream's, on its history or on its tree.",
         ...upstreamTags.map((r) => `    ${r.ref}: ${r.why}`),
         "",
-        "  Those commits and their tags are upstream's own releases, not this repository's. Push the",
-        "  branches without them (git push <remote> <branch>, not --tags or --mirror), and tag this",
-        "  repository's own releases on its own commits. There is no override for this rule.",
+        "  Upstream's commits and their tags are upstream's own releases. The import commit at the root",
+        "  of this history is upstream's too: its tree is 3a65ba8e's, unchanged, upstream's release.yml",
+        "  included. Push the branches without them (git push <remote> <branch>, not --tags or --mirror),",
+        "  and tag this repository's own releases on its own commits. There is no override for this rule.",
+        "",
+      ].join("\n"),
+    );
+    return 1;
+  }
+
+  const upstreamHistory = upstreamHistoryRefusals(refs, upstream.bases);
+  if (upstreamHistory.length > 0) {
+    console.error(
+      [
+        "",
+        "✗ push refused: a pushed ref carries upstream's history.",
+        ...upstreamHistory.map((r) => `    ${r.ref}: ${r.why}`),
+        "",
+        "  This repository's history starts at the import commit, which has no parent: upstream's",
+        "  history up to 3a65ba8e stays in upstream's repository and is not published from here. Push",
+        "  only branches built on this repository's own history. There is no override for this rule.",
         "",
       ].join("\n"),
     );
