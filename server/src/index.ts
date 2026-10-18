@@ -59,6 +59,8 @@ import {
 } from './core/cli-instances'
 import { startLoginSync, stopLoginSync } from './core/cli-login-sync'
 import { startCliResetSweep, stopCliResetSweep } from './core/cli-reset-sweep'
+import { codexHubToken } from './core/codex-hub'
+import { logCodexHubStart } from './core/codex-hub-pcs'
 import { codexHubPushConfig, startCodexHubPusher } from './core/codex-hub-push'
 import { reconcileCodexInstanceDirs } from './core/codex-instances'
 import { startDesktopCliFeed, stopDesktopCliFeed } from './core/desktop-cli-pairing'
@@ -1650,6 +1652,10 @@ disarmBootWatchdog()
 // build's table, and never awaited: a daemon that cannot reach the network still prices every
 // model it shipped knowing about.
 startPriceCatalog()
+
+// A hub (AGENTHYDRA_CODEX_HUB_TOKEN set) says what its PCs are on, and when its migration window ends
+// (core/codex-hub-pcs.ts).
+if (codexHubToken()) logCodexHubStart()
 
 // This PC's Codex chats to a hub daemon on another machine (core/codex-hub-push.ts), when
 // AGENTHYDRA_CODEX_HUB_URL names one. A malformed setting stops boot here rather than failing quietly.
