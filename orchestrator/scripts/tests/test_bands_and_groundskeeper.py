@@ -591,11 +591,11 @@ class HarvestTodosTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_the_project_folder_name_resolves_back_to_the_real_repo(self):
-        (self.root / "PublicProjects" / "orchestrator").mkdir(parents=True)
-        with mock.patch.object(self.mod, "ROOTS", [self.root / "PublicProjects"]):
+        (self.root / "Projects" / "orchestrator").mkdir(parents=True)
+        with mock.patch.object(self.mod, "ROOTS", [self.root / "Projects"]):
             idx = self.mod._repo_index()
         # case-insensitive, because the app writes the drive letter in either case
-        enc = self.mod._encode(self.root / "PublicProjects" / "orchestrator").lower()
+        enc = self.mod._encode(self.root / "Projects" / "orchestrator").lower()
         self.assertIn(enc, idx)
         self.assertEqual(idx[enc].name, "orchestrator")
 

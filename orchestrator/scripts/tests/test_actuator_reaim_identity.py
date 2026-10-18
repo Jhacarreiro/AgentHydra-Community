@@ -124,8 +124,8 @@ def kebab(key, parent, state, name):
 #: The rest of a real sidebar, always present: two Expanded group headers (they are ExpandCollapse
 #: buttons too, and the verdict must not mistake them for the row) and a neighbour's collapsed kebab.
 SIDEBAR = [
-    kebab("42.5771536.4.7.4.640", "42.5771536.4.7.4.635", "Expanded", "NEWProjects"),
-    kebab("42.5771536.4.7.4.675", "42.5771536.4.7.4.670", "Expanded", "PublicProjects"),
+    kebab("42.5771536.4.7.4.640", "42.5771536.4.7.4.635", "Expanded", "Projects"),
+    kebab("42.5771536.4.7.4.675", "42.5771536.4.7.4.670", "Expanded", "Work"),
     kebab(N_KEBAB, N_ROW, "Collapsed", "More options for SageThumbs"),
 ]
 OUR_MENU = {"Key": MENU, "ItemKeys": ITEMS}

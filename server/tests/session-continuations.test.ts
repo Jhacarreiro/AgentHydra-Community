@@ -15,7 +15,7 @@ const file = (id: string, extra: Partial<TranscriptFile> = {}): TranscriptFile =
   session_id: id,
   source: 'claude',
   path: `C:/store/${id}.jsonl`,
-  project: 'D--NEWProjects',
+  project: 'D--Projects',
   mtime_ms: 1_000,
   size_bytes: 10,
   archived: false,
