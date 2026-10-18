@@ -22,6 +22,10 @@ import { findRepoRoot } from './repo-root'
 const scratch = mkdtempSync(join(tmpdir(), 'package-release-test-'))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
+// The import check runs in a child process of its own, and the bundled module is run in one: under a second here,
+// and a cold CI runner has been seen ten times slower than a developer machine.
+const SPAWN_TIMEOUT_MS = 30_000
+
 let n = 0
 function tree(files: Record<string, string>): string {
   const root = join(scratch, `t${n++}`)
@@ -58,29 +62,33 @@ describe('the daemon modules Desk imports', () => {
     ])
   })
 
-  test('a staged desk2 without them is caught before it ships', async () => {
-    const root = tree(CHECKOUT)
-    // A bundle: desk2/ alone, no server/src beside it.
-    const stage = tree(
-      Object.fromEntries(Object.entries(CHECKOUT).filter(([rel]) => rel.startsWith('desk2/'))),
-    )
-    const missing = unresolvedImports(join(stage, 'desk2/server/src'))
-    expect(missing.join('\n')).toContain('@agenthydra/server/greet')
+  test(
+    'a staged desk2 without them is caught before it ships',
+    async () => {
+      const root = tree(CHECKOUT)
+      // A bundle: desk2/ alone, no server/src beside it.
+      const stage = tree(
+        Object.fromEntries(Object.entries(CHECKOUT).filter(([rel]) => rel.startsWith('desk2/'))),
+      )
+      const missing = unresolvedImports(join(stage, 'desk2/server/src'))
+      expect(missing.join('\n')).toContain('@agenthydra/server/greet')
 
-    const subpaths = aliasedImports(sourceFilesUnder(join(stage, 'desk2/server/src')))
-    const meta = await bundleServerModules(root, join(stage, 'desk2'), subpaths)
-    pointAliasAtBundle(join(stage, 'desk2/tsconfig.base.json'))
-    expect(Object.keys(meta.inputs).sort()).toEqual(['server/src/greet.ts', 'server/src/name.ts'])
-    expect(readFileSync(join(stage, 'desk2/tsconfig.base.json'), 'utf8')).toContain(
-      `"@agenthydra/server/*": ["./${SERVER_MODULES_DIR}/*"]`,
-    )
-    expect(unresolvedImports(join(stage, 'desk2/server/src'))).toEqual([])
+      const subpaths = aliasedImports(sourceFilesUnder(join(stage, 'desk2/server/src')))
+      const meta = await bundleServerModules(root, join(stage, 'desk2'), subpaths)
+      pointAliasAtBundle(join(stage, 'desk2/tsconfig.base.json'))
+      expect(Object.keys(meta.inputs).sort()).toEqual(['server/src/greet.ts', 'server/src/name.ts'])
+      expect(readFileSync(join(stage, 'desk2/tsconfig.base.json'), 'utf8')).toContain(
+        `"@agenthydra/server/*": ["./${SERVER_MODULES_DIR}/*"]`,
+      )
+      expect(unresolvedImports(join(stage, 'desk2/server/src'))).toEqual([])
 
-    const run = Bun.spawnSync([process.execPath, join(stage, 'desk2/server/src/main.ts')], {
-      cwd: scratch,
-    })
-    expect(run.stdout.toString().trim()).toBe('hello desk')
-  })
+      const run = Bun.spawnSync([process.execPath, join(stage, 'desk2/server/src/main.ts')], {
+        cwd: scratch,
+      })
+      expect(run.stdout.toString().trim()).toBe('hello desk')
+    },
+    SPAWN_TIMEOUT_MS,
+  )
 
   test('a tsconfig that maps the alias some other way is refused, not rewritten', () => {
     const root = tree({

@@ -42,6 +42,10 @@ const SCRIPT = join(ROOT, 'scripts', 'third-party-licenses.ts')
 const scratch = mkdtempSync(join(tmpdir(), 'third-party-licenses-test-'))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
+// The command, cargo and go run as child processes: each well under a second here, and a cold CI runner has been seen
+// ten times slower than a developer machine.
+const SPAWN_TIMEOUT_MS = 30_000
+
 let n = 0
 function tree(files: Record<string, string>): string {
   const root = join(scratch, `t${n++}`)
@@ -391,49 +395,53 @@ describe('the file', () => {
     expect(() => readPackageList(file)).toThrow('not a package')
   })
 
-  test('the command writes the file, and writes nothing when a package cannot ship', () => {
-    const ok = tree({
-      'node_modules/alpha/package.json': pkgJson({
-        name: 'alpha',
-        version: '1.0.0',
-        license: 'MIT',
-      }),
-      'node_modules/alpha/LICENSE': MIT('Example Owner'),
-    })
-    const out = join(ok, 'THIRD-PARTY-LICENSES')
-    const good = Bun.spawnSync([
-      process.execPath,
-      SCRIPT,
-      '--npm-tree',
-      `${join(ok, 'node_modules')}=desk2/node_modules`,
-      '--out',
-      out,
-      '--title',
-      'Example',
-    ])
-    expect(good.exitCode).toBe(0)
-    expect(readFileSync(out, 'utf8')).toContain('alpha 1.0.0 (npm)')
+  test(
+    'the command writes the file, and writes nothing when a package cannot ship',
+    () => {
+      const ok = tree({
+        'node_modules/alpha/package.json': pkgJson({
+          name: 'alpha',
+          version: '1.0.0',
+          license: 'MIT',
+        }),
+        'node_modules/alpha/LICENSE': MIT('Example Owner'),
+      })
+      const out = join(ok, 'THIRD-PARTY-LICENSES')
+      const good = Bun.spawnSync([
+        process.execPath,
+        SCRIPT,
+        '--npm-tree',
+        `${join(ok, 'node_modules')}=desk2/node_modules`,
+        '--out',
+        out,
+        '--title',
+        'Example',
+      ])
+      expect(good.exitCode).toBe(0)
+      expect(readFileSync(out, 'utf8')).toContain('alpha 1.0.0 (npm)')
 
-    const bad = tree({
-      'node_modules/closed/package.json': pkgJson({
-        name: 'closed',
-        version: '1.0.0',
-        license: 'UNLICENSED',
-      }),
-      'node_modules/closed/LICENSE': 'All rights reserved.\n',
-    })
-    const refused = Bun.spawnSync([
-      process.execPath,
-      SCRIPT,
-      '--npm-tree',
-      join(bad, 'node_modules'),
-      '--out',
-      join(bad, 'OUT'),
-    ])
-    expect(refused.exitCode).toBe(1)
-    expect(refused.stderr.toString()).toContain('npm:closed@1.0.0')
-    expect(existsSync(join(bad, 'OUT'))).toBe(false)
-  })
+      const bad = tree({
+        'node_modules/closed/package.json': pkgJson({
+          name: 'closed',
+          version: '1.0.0',
+          license: 'UNLICENSED',
+        }),
+        'node_modules/closed/LICENSE': 'All rights reserved.\n',
+      })
+      const refused = Bun.spawnSync([
+        process.execPath,
+        SCRIPT,
+        '--npm-tree',
+        join(bad, 'node_modules'),
+        '--out',
+        join(bad, 'OUT'),
+      ])
+      expect(refused.exitCode).toBe(1)
+      expect(refused.stderr.toString()).toContain('npm:closed@1.0.0')
+      expect(existsSync(join(bad, 'OUT'))).toBe(false)
+    },
+    SPAWN_TIMEOUT_MS,
+  )
 })
 
 describe('Rust and Go programs', () => {
@@ -500,17 +508,22 @@ describe('Rust and Go programs', () => {
       expect(found[0]!.texts.length).toBeGreaterThan(0)
       expect(licenceProblems(found)).toEqual([])
     },
+    SPAWN_TIMEOUT_MS,
   )
 
-  test.skipIf(!Bun.which('go'))("a Go program ships Go's own licence", () => {
-    const dir = tree({
-      'go.mod': 'module example.test/tray\n\ngo 1.21\n',
-      'main.go': 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("tray") }\n',
-    })
-    const found = goModules(dir, ['codex-hub-tray'], { goos: 'windows', goarch: 'amd64' })
-    expect(found.map((p) => `${p.ecosystem} ${p.name} ${p.license}`)).toEqual([
-      'toolchain Go BSD-3-Clause',
-    ])
-    expect(found[0]!.texts.map((t) => t.file)).toContain('LICENSE')
-  })
+  test.skipIf(!Bun.which('go'))(
+    "a Go program ships Go's own licence",
+    () => {
+      const dir = tree({
+        'go.mod': 'module example.test/tray\n\ngo 1.21\n',
+        'main.go': 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("tray") }\n',
+      })
+      const found = goModules(dir, ['codex-hub-tray'], { goos: 'windows', goarch: 'amd64' })
+      expect(found.map((p) => `${p.ecosystem} ${p.name} ${p.license}`)).toEqual([
+        'toolchain Go BSD-3-Clause',
+      ])
+      expect(found[0]!.texts.map((t) => t.file)).toContain('LICENSE')
+    },
+    SPAWN_TIMEOUT_MS,
+  )
 })
