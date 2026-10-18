@@ -2,6 +2,9 @@
 name = "hydra-desk2-host"
 version = "1.0.0"
 edition = "2021"
+description = "AgentHydra's native window: a WebView2 host for the window desk2/ serves."
+license = "MIT"
+repository = "https://github.com/Jhacarreiro/AgentHydra-Community"
 publish = false
 
 # AgentHydra's native window (desk2/, called Hydra Desk 2 until 2026-10-06): tao + wry (WebView2). Built to

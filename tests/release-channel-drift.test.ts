@@ -102,6 +102,52 @@ describe('links', () => {
   })
 })
 
+// The package manifests say where the project lives. The workspaces are private and never published, but their
+// metadata is what a package manager, an editor or a code search shows for them.
+describe('package metadata', () => {
+  const tracked = (pattern: string) =>
+    execFileSync('git', ['ls-files', '-z', pattern], { cwd: REPO_ROOT, encoding: 'utf8' })
+      .split('\0')
+      .filter(Boolean)
+
+  test('every package.json names the channel repository as its home, its repository and its tracker', () => {
+    const files = tracked('*package.json')
+    expect(files.length).toBeGreaterThanOrEqual(9)
+    for (const file of files) {
+      const pkg = JSON.parse(read(file)) as {
+        homepage?: string
+        repository?: { type?: string; url?: string; directory?: string }
+        bugs?: { url?: string }
+      }
+      const dir = file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : undefined
+      expect({ file, homepage: pkg.homepage?.startsWith(repoUrl()) }).toEqual({
+        file,
+        homepage: true,
+      })
+      expect({ file, repository: pkg.repository }).toEqual({
+        file,
+        repository: {
+          type: 'git',
+          url: `git+${repoUrl()}.git`,
+          ...(dir ? { directory: dir } : {}),
+        },
+      })
+      expect({ file, bugs: pkg.bugs?.url }).toEqual({ file, bugs: `${repoUrl()}/issues` })
+    }
+  })
+
+  test("the native crates and HSwarm's pyproject name the channel repository", () => {
+    for (const file of [...tracked('*Cargo.toml'), 'hswarm/pyproject.toml']) {
+      const toml = Bun.TOML.parse(read(file)) as {
+        package?: { repository?: string }
+        project?: { urls?: { Repository?: string } }
+      }
+      const named = toml.package?.repository ?? toml.project?.urls?.Repository
+      expect({ file, named }).toEqual({ file, named: repoUrl() })
+    }
+  })
+})
+
 // Code only: the CHANGELOG and the docs tell the history, which names the project this one came from, and tests
 // name it as the case that must be refused.
 describe('no code points at the project this one was forked from', () => {

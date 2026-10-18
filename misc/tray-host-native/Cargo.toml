@@ -2,9 +2,15 @@
 name = "lunarwerx-tray"
 version = "1.0.0"
 edition = "2021"
+description = "AgentHydra's native Windows tray host, shipped as misc/AgentHydra-Tray.exe and driven by misc/AgentHydra-Tray.json."
+license = "MIT"
+repository = "https://github.com/Jhacarreiro/AgentHydra-Community"
+publish = false
 
-# NO dependencies on purpose: every Win32 call this needs is declared inline, so the kit gains a
-# tray host without gaining a supply chain, a vendor directory or an offline-build problem.
+# The package keeps its old name, so the build still writes target/release/lunarwerx-tray.exe (the
+# README's commands use it); the copy that ships is named misc/AgentHydra-Tray.exe.
+# NO dependencies on purpose: every Win32 call this needs is declared inline, so the tray host
+# comes with no supply chain, no vendor directory and no offline-build problem.
 [dependencies]
 
 # Its own workspace root: cargo never walks up into a host repo's manifest, so the profiles below apply.

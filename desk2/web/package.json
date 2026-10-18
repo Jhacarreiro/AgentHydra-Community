@@ -2,6 +2,17 @@
   "name": "@hydra-desk/web",
   "version": "2026.10.0",
   "private": true,
+  "description": "AgentHydra's window: the web app its native host shows.",
+  "license": "MIT",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community/tree/main/desk2/web",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git",
+    "directory": "desk2/web"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -3,6 +3,16 @@
   "private": true,
   "version": "2026.10.0",
   "license": "MIT",
+  "description": "AgentHydra Community: every local AI coding session (Claude Code, Codex, OpenCode) in one window and one dashboard. A community fork of AgentHydra.",
+  "author": "AgentHydra Community contributors",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "workspaces": [
     "server",
     "orchestrator/server",

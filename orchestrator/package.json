@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "description": "Standalone fleet orchestrator. Talks to the AgentHydra daemon over HTTP; owns no state of its own.",
+  "license": "MIT",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community/tree/main/orchestrator#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git",
+    "directory": "orchestrator"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "workspaces": [
     "web",
     "server"

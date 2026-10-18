@@ -2,6 +2,17 @@
   "name": "@hydra-desk/server",
   "version": "2026.10.0",
   "private": true,
+  "description": "The server of AgentHydra's window: chats, connectors, dev servers and the bridge to AgentHydra's daemon.",
+  "license": "MIT",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community/tree/main/desk2/server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git",
+    "directory": "desk2/server"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "type": "module",
   "module": "src/index.ts",
   "scripts": {

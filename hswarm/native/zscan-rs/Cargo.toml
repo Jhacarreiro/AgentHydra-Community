@@ -3,6 +3,8 @@ name = "zscan"
 version = "0.1.0"
 edition = "2021"
 description = "hswarm: Claude Code transcript scanner (the native arm of claude_usage.collect)"
+license = "MIT"
+repository = "https://github.com/Jhacarreiro/AgentHydra-Community"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

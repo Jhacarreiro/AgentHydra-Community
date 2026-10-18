@@ -3,6 +3,17 @@
   "//": "Hydra Desk 2's own copy of AgentHydra's window (copied from web/ at 779aa0fd), served by Desk 2 at /ah/. Its types still come from AgentHydra's server (vite.config.ts alias): it talks to that one daemon.",
   "version": "1.3.1",
   "private": true,
+  "description": "AgentHydra's own pages (Instances, Analytics, HSwarm), served inside the window at /ah/.",
+  "license": "MIT",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community/tree/main/desk2/hydra",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git",
+    "directory": "desk2/hydra"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

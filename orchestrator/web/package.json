@@ -2,6 +2,17 @@
   "name": "@orchestrator/web",
   "version": "1.3.1",
   "private": true,
+  "description": "The orchestrator's dashboard page.",
+  "license": "MIT",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community/tree/main/orchestrator/web",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git",
+    "directory": "orchestrator/web"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

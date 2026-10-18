@@ -2,6 +2,9 @@
 name = "climayte-runner"
 version = "1.0.0"
 edition = "2021"
+description = "The process one CliMayte worker's CLI runs under on Windows, outside AgentHydra's daemon."
+license = "MIT"
+repository = "https://github.com/Jhacarreiro/AgentHydra-Community"
 publish = false
 
 # NO dependencies on purpose, as in tray-host-native: every Win32 call is declared inline, so the

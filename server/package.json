@@ -2,6 +2,17 @@
   "name": "@agenthydra/server",
   "version": "1.3.1",
   "private": true,
+  "description": "AgentHydra's daemon: the HTTP API, the MCP server, the scheduler and the tray bootstrap behind every window.",
+  "license": "MIT",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community/tree/main/server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git",
+    "directory": "server"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "type": "module",
   "module": "src/index.ts",
   "exports": {
