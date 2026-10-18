@@ -363,7 +363,8 @@ export function asksQuestion(text) {
   return /\?(?=\s|$)/.test(paragraphs.at(-1) ?? "");
 }
 
-// The owner tier is whoever the catalog says it is (`tier: "owner"`, in a hand-*.json of your own): no person is built in.
+// The owner tier is whoever the catalog says it is: every person with `tier: "owner"` in a generated-*.json (a person folder
+// catalog/build.mjs built, the creator family by default) or a hand-*.json of your own. No person is built in.
 function ownerIds(dir) {
   const ids = new Set();
   const catalog = path.join(dir, "catalog");

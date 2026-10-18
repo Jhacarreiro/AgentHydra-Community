@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import { test } from "node:test";
 import { asksQuestion, blockReason, handle } from "../hook.mjs";
 import { defaultHookPath, install, uninstall } from "../install.mjs";
 
+const BUILD = path.resolve(import.meta.dirname, "..", "catalog", "build.mjs");
 const CLEARED = ["HYDRA_DESK_CHAT_ID", "AGENTHYDRA_CLIMAYTE_WORKER", "AGENTHYDRA_CLIMAYTE_CHAT"];
 
 async function withCore(fn) {
@@ -103,6 +105,38 @@ test("with no owner-tier person in the catalog there is nobody to ask first, so 
     rmSync(path.join(dir, "catalog"), { recursive: true, force: true });
     assert.equal(await fire(input, envFor(dir)), null);
     assert.throws(() => readFileSync(path.join(dir, "log.jsonl"), "utf8"));
+  }));
+
+test("a creator person folder the catalog builder built is an owner, as a hand entry is", () =>
+  withCore(async (dir) => {
+    // The usual way to have an owner: ~/.agenthydra/people/creator/<slug>/persona.json, built into generated-people.json.
+    const home = path.join(dir, "home");
+    const folder = path.join(home, ".agenthydra", "people", "creator", "example-founder");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "persona.json"), JSON.stringify({ name: "Example Founder", oneLiner: "decides" }));
+    mkdirSync(path.join(dir, "catalog"), { recursive: true });
+    const built = spawnSync(process.execPath, [BUILD], {
+      env: { ...envFor(dir), HOME: home, USERPROFILE: home },
+      encoding: "utf8",
+    });
+    assert.equal(built.status, 0, built.stderr);
+    const generated = JSON.parse(readFileSync(path.join(dir, "catalog", "generated-people.json"), "utf8"));
+    assert.deepEqual(
+      generated.filter((e) => e.kind === "person").map((e) => [e.id, e.tier]),
+      [["person:creator-example-founder", "owner"]],
+    );
+    turnOn(dir);
+    const asked = stop(dir, [prompt("fix it"), says("Should I delete the old folder?")]);
+    const out = await fire(asked, envFor(dir));
+    assert.equal(out.decision, "block");
+    assert.match(out.reason, /id: "person:creator-example-founder"/);
+    const consulted = stop(dir, [
+      prompt("fix it"),
+      uses("mcp__agenthydra__core_use", { mode: "consult", id: "person:creator-example-founder", question: "delete?" }),
+      result(),
+      says("Should I delete the old folder?"),
+    ]);
+    assert.equal(await fire(consulted, envFor(dir)), null);
   }));
 
 test("no person is an owner by name alone: a consult or a command naming one is not an owner consult", () =>
