@@ -8,14 +8,22 @@ export type ChatGptVisibleView = { visibleTurnCount: number; messages: ChatGptVi
 export function parseChatGptVisibleView(input: unknown): ChatGptVisibleView {
   if (!input || typeof input !== 'object') throw new Error('Invalid ChatGPT view')
   const record = input as Record<string, unknown>
-  if (!Number.isSafeInteger(record.visibleTurnCount) || Number(record.visibleTurnCount) < 0 || !Array.isArray(record.messages)) {
+  if (
+    !Number.isSafeInteger(record.visibleTurnCount) ||
+    Number(record.visibleTurnCount) < 0 ||
+    !Array.isArray(record.messages)
+  ) {
     throw new Error('Invalid ChatGPT view shape')
   }
   if (record.messages.length > 1000) throw new Error('ChatGPT view too large')
   const messages: ChatGptVisibleMessage[] = record.messages.map((item) => {
     if (!item || typeof item !== 'object') throw new Error('Invalid ChatGPT message')
     const message = item as Record<string, unknown>
-    if ((message.role !== 'user' && message.role !== 'assistant') || typeof message.text !== 'string' || message.text.length > 250_000) {
+    if (
+      (message.role !== 'user' && message.role !== 'assistant') ||
+      typeof message.text !== 'string' ||
+      message.text.length > 250_000
+    ) {
       throw new Error('Invalid ChatGPT message')
     }
     return { role: message.role, text: message.text }
@@ -26,7 +34,9 @@ export function parseChatGptVisibleView(input: unknown): ChatGptVisibleView {
 /** Execute an explicitly requested read using the Hub's future authorized transport.
  * The caller supplies the transport; this does not open SSH, expose CDP, or cache messages.
  */
-export async function readChatGptThroughHub(readFromBrowser: () => Promise<unknown>): Promise<ChatGptVisibleView> {
+export async function readChatGptThroughHub(
+  readFromBrowser: () => Promise<unknown>,
+): Promise<ChatGptVisibleView> {
   return parseChatGptVisibleView(await readFromBrowser())
 }
 
@@ -49,6 +59,7 @@ export function parseChatGptReadRequest(value: unknown): ChatGptReadRequest {
     typeof request.conversationId === 'string' &&
     CONVERSATION_ID.test(request.conversationId) &&
     Object.keys(request).length === 2
-  ) return { operation: 'read-visible', conversationId: request.conversationId }
+  )
+    return { operation: 'read-visible', conversationId: request.conversationId }
   throw new Error('Invalid ChatGPT read request')
 }
