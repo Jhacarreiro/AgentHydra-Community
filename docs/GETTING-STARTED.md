@@ -2,16 +2,24 @@
 
 Choose the path that matches what you want. **You do not need a hub to use AgentHydra on one computer.** The Codex hub is an optional, self-hosted addition, not a cloud account or an included hosted service.
 
-## A. Use AgentHydra on one Windows PC
+## A. Install on one PC (no server required)
 
-1. Go to the [latest official Community release](https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest). Download the **Windows x64 ZIP** (not the standalone EXE), then extract the **whole ZIP** into a folder you can keep.
-2. Open `AgentHydra.exe` in that extracted folder. Do not move the EXE away from its `app`, `desk2`, `misc` and `orchestrator` folders.
-3. On the first launch, allow the app to fetch its pinned Bun runtime if it asks; that requires internet access. Additional coding tools may be downloaded only when you first use features that need them. Sign in to the coding tools themselves as needed; AgentHydra is not an account provider.
-4. Open the app and check that your local sessions appear. A single-PC install is now complete.
+**Windows x64 — easiest first install**
 
-**Prefer an installed copy with a Start Menu shortcut?** Download the repository's [Windows installer script](https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/install.ps1) and run it in PowerShell. It downloads the latest release ZIP, checks its SHA-256 against the release checksums and installs under your user profile without Administrator rights. Read the script before running it. The full command and details are in [README — Install](../README.md#install).
+1. Open the [latest Community release](https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest) and download `AgentHydra-<version>-windows-x64.zip` from **Assets**.
+2. Right-click the ZIP and choose **Extract All**. Keep the extracted folder together; do not copy the executable out of it.
+3. Open `AgentHydra.exe` **inside the extracted folder**. Windows may display a security prompt for an unsigned build; verify the file came from this project's release rather than bypassing warnings for an unknown download.
+4. The first launch needs an internet connection to download the pinned Bun runtime, and features may need additional tools on first use. Sign into the coding tools you use. Your local sessions should then appear in the window.
 
-**Linux or macOS:** use the matching release tarball. For developer installations from source, see [README — Install](../README.md#install). The Windows installer script does not support these platforms.
+**Alternative:** a standalone Windows `.exe` is available for users with an internet connection; it fetches the remaining application files. The **complete ZIP** is recommended for troubleshooting and offline preparation (the app may still need Bun or other tools online).
+
+**Verify your download:** download `SHA256SUMS.txt` from the same release, calculate the SHA-256 of the ZIP using Windows PowerShell `Get-FileHash -Algorithm SHA256`, and compare it with the matching filename in the checksum file. Do not run an unexpected download if they differ.
+
+**Installed copy:** the optional [Windows PowerShell installer](https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/install.ps1) downloads the release ZIP, verifies its checksum and installs under your user profile, without Administrator rights. Read the script before running it. See [README — Install](../README.md#install).
+
+**macOS / Linux:** download the tarball matching your OS and architecture from the same release. Consult [README — Install](../README.md#install) for prerequisites and source installation. The PowerShell installer is Windows-only.
+
+**No hub setup is needed** to use AgentHydra on one PC. Only follow section B if you specifically want the self-hosted multi-PC feature.
 
 ## B. See Codex chats from several PCs in one place
 
@@ -29,7 +37,7 @@ This requires **two separate installations**: one always-on AgentHydra hub, plus
 
 | Symptom | Check first |
 | --- | --- |
-| Windows EXE opens but parts of the app are missing | Extract the **full ZIP**, with its accompanying directories. Do not run only the standalone launcher in an offline environment. |
+| Windows EXE opens but parts of the app are missing | Extract the **full ZIP**, with its accompanying directories. A standalone launcher can fetch the app only when the network and release downloads are available. |
 | First launch cannot fetch Bun or a tool | Check network access and the app's error message. The release does **not** bundle Bun or all coding tools. |
 | Hub is up but a PC cannot pair | Check HTTPS, reverse-proxy routing, your authentication gate, and the one-time pairing link's expiry. |
 | PC was revoked or reinstalled | Follow the [re-pairing/replacement procedure](CODEX-HUB.md#pairing-from-the-connect-button); do not share the admin token or another PC's token. |
