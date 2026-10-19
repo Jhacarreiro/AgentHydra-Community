@@ -4,7 +4,12 @@
  * read browser credentials or persist messages. Not a background scraper.
  * The ChatGPT DOM is undocumented and subject to breaking changes.
  */
-export function readVisibleChatGptConversation(doc = document) {
+export function readVisibleChatGptConversation(doc = document, expectedConversationId) {
+  if (typeof expectedConversationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(expectedConversationId))
+    throw new Error('A specific ChatGPT conversation must be selected')
+  const pathname = new URL(doc.location?.href ?? doc.URL).pathname
+  if (pathname !== `/c/${expectedConversationId}`)
+    throw new Error('The open ChatGPT conversation does not match the requested conversation')
   const turns = [...doc.querySelectorAll('[data-turn-key]')]
   const messages = []
   for (const turn of turns) {
