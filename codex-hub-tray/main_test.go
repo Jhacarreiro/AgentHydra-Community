@@ -910,7 +910,8 @@ func TestPairURL(t *testing.T) {
 
 // A token the tray asked the hub to take (next) is settled at the next check: the hub has it, so it is the token; the
 // hub does not have it and the PC has a token of its own, so it goes; the hub does not have it and the PC still has
-// the legacy token, so the exchange is sent again as it was; no answer, so it is asked about again.
+// the legacy token, so the exchange is sent again as it was; no answer, or any refusal but a 401, so it is asked about
+// again.
 func TestSettleNext(t *testing.T) {
 	t.Cleanup(func() { os.Remove(configPath) })
 	var mu sync.Mutex
@@ -924,6 +925,8 @@ func TestSettleNext(t *testing.T) {
 			return whoami(c)
 		case "/api/codex-hub/exchange":
 			return exchange(c)
+		case "/api/codex-hub/retire":
+			return 200, `{"pc":"Old-PC","key":"old-pc","state":"revoked"}`
 		}
 		return 404, errJSON("not-found")
 	})
@@ -980,10 +983,35 @@ func TestSettleNext(t *testing.T) {
 		t.Errorf("the exchange sent again: tray.json %v", f)
 	}
 
+	// The hub has it under another name than tray.json's: a rename whose answer was lost, so the old name's token,
+	// which this PC holds, is retired. Under the same name, nothing is.
+	has := func(pc string) func(hubCall) (int, string) {
+		return func(c hubCall) (int, string) { return 200, pcJSON(pc, pcTokenID(c.bearer)) }
+	}
+	for _, to := range []string{"New-PC", "Old-PC"} {
+		answers(has(to), nil)
+		old := pcConfig(srv.URL)
+		old.PC, old.Next = "Old-PC", next
+		retired := len(calls("retire"))
+		if f := settle(old); f["token"] != next || f["pc"] != to || f["next"] != "" {
+			t.Errorf("the hub has it as %s: tray.json %v", to, f)
+		}
+		r := calls("retire")[retired:]
+		if to == "Old-PC" && len(r) != 0 {
+			t.Errorf("retired a token under the same name: %+v", r)
+		}
+		if to == "New-PC" && (len(r) != 1 || r[0].bearer != old.Token || r[0].text("renamedTo") != "New-PC" || r[0].install == "") {
+			t.Errorf("the rename's retire: %+v", r)
+		}
+	}
+
 	for what, no := range map[string]func(hubCall) (int, string){
-		"no answer":            answer(0, ""),
-		"the hub's trouble":    answer(503, errJSON("store-unreadable")),
-		"an unreadable answer": answer(200, `{"pc":"Example-PC","id":"0000000000000000"}`),
+		"no answer":                 answer(0, ""),
+		"the hub's trouble":         answer(503, errJSON("store-unreadable")),
+		"an unreadable answer":      answer(200, `{"pc":"Example-PC","id":"0000000000000000"}`),
+		"a proxy's refusal":         answer(403, errJSON("forbidden")),
+		"too many requests":         answer(429, errJSON("rate-limited")),
+		"a hub with no admin token": answer(404, errJSON("hub-off")),
 	} {
 		answers(no, answer(500, errJSON("internal")))
 		exchanged := len(calls("exchange"))

@@ -347,10 +347,11 @@ func (a *app) updates() {
 }
 
 // updateOnce is one check: the token first (a token the hub may have taken, the legacy token traded for one of this
-// PC's own, the name the hub has it under), then the hub's builds, asked for with the token as it is now.
+// PC's own, the name the hub has it under), then the hub's builds, asked for with the token as it is now. A next that
+// is still unsettled is the one token the hub may have: no new one is made over it, and settleNext sends it again.
 func (a *app) updateOnce() {
 	a.settleNext()
-	if cfg := loadConfig(); cfg.Token != "" && !isPcToken(cfg.Token) {
+	if cfg := loadConfig(); cfg.Token != "" && !isPcToken(cfg.Token) && cfg.Next == "" {
 		a.exchange(cfg, "")
 	}
 	cfg := loadConfig()
@@ -412,6 +413,8 @@ func (a *app) updateOnce() {
 // settleNext settles a token the tray asked the hub to take and has no answer for (next: a redeem or an exchange
 // whose answer was lost, or a tray stopped in between): whoami with it says whether the hub has it. The hub answers a
 // repeat of either with the same id and hash the same way, so an exchange the hub did not take is sent again as it was.
+// Only a 401 says the hub does not have it; any other refusal (a proxy's 403 or 429, a hub started without its admin
+// token) keeps it for the next check, as no answer does.
 func (a *app) settleNext() {
 	cfg := loadConfig()
 	if cfg.Next == "" {
@@ -421,23 +424,39 @@ func (a *app) settleNext() {
 	next.Token = cfg.Next
 	who, ans, err := whoami(next)
 	switch {
-	case err != nil || ans.status >= 500:
+	case err != nil || (ans.status != http.StatusOK && ans.status != http.StatusUnauthorized):
 		if err == nil {
 			err = ans.refusal("whoami")
 		}
 		log.Printf("token: the hub did not say whether it took chp_%s (%v); asking again at the next check", pcTokenID(cfg.Next), err)
 	case ans.status == http.StatusOK:
+		adopted := false
 		if err := updateConfig(func(c *config) {
 			if c.Next == cfg.Next {
 				c.Token, c.PC, c.ID, c.Install, c.Next = cfg.Next, who.PC, who.ID, cfg.Install, ""
+				adopted = true
 			}
 		}); err != nil {
 			log.Println("config:", err)
 			return
 		}
+		if !adopted {
+			return
+		}
 		log.Printf("token: the hub has chp_%s, for %s", who.ID, who.PC)
+		// A rename whose redeem answer was lost: the token this PC had is the old name's, which only it can retire.
+		if isPcToken(cfg.Token) && cfg.PC != "" && pcKey(cfg.PC) != who.Key {
+			if _, ans, err := retire(cfg, who.PC); err == nil && ans.status == http.StatusOK {
+				log.Printf("token: retired %s's token (chp_%s)", cfg.PC, pcTokenID(cfg.Token))
+			} else {
+				if err == nil {
+					err = ans.refusal("retire")
+				}
+				log.Printf("token: could not retire %s's token (%v): on the hub, run `scripts/codex-hub-pcs.ts revoke %s`", cfg.PC, err, cfg.PC)
+			}
+		}
 		a.restartIfChanged(loadConfig())
-	case ans.status == http.StatusUnauthorized && cfg.Token != "" && !isPcToken(cfg.Token):
+	case cfg.Token != "" && !isPcToken(cfg.Token):
 		a.exchange(cfg, cfg.Next)
 	default:
 		dropNext(cfg.Next)

@@ -149,12 +149,14 @@ func TestExchange(t *testing.T) {
 	const legacy = "legacy-token-0123"
 	var mu sync.Mutex
 	exchangeAs := func(c hubCall) (int, string) { return 200, pcJSON("Example-PC", c.text("id")) }
-	windowOpen := true
+	windowOpen, away := true, false
 	srv, calls := stubHub(t, func(c hubCall) (int, string) {
 		mu.Lock()
-		exchange, open := exchangeAs, windowOpen
+		exchange, open, gone := exchangeAs, windowOpen, away
 		mu.Unlock()
 		switch {
+		case gone:
+			return 0, ""
 		case c.path == "/api/codex-hub/exchange":
 			return exchange(c)
 		case c.path == "/api/codex-hub/whoami":
@@ -242,7 +244,8 @@ func TestExchange(t *testing.T) {
 		}
 	}
 
-	// No answer: the token sent stays next, and the next check, which finds the hub does not have it, sends it again.
+	// No answer: the token sent stays next. A check that reaches no hub at all keeps it and makes no other over it,
+	// as the hub may have taken it; the next check, which finds the hub does not have it, sends it again.
 	answers(answer(0, ""), true)
 	a.updateOnce()
 	ex = calls("exchange")
@@ -250,6 +253,20 @@ func TestExchange(t *testing.T) {
 	if c := savedConfig(); c.Token != legacy || c.Next != sent.next || pcTokenID(c.Next) != sent.text("id") {
 		t.Errorf("no answer: tray.json %+v", c)
 	}
+	mu.Lock()
+	away = true
+	mu.Unlock()
+	asked = len(calls("exchange"))
+	a.updateOnce()
+	if n := len(calls("exchange")) - asked; n != 0 {
+		t.Errorf("no hub: exchanged %d times", n)
+	}
+	if c := savedConfig(); c.Token != legacy || c.Next != sent.next {
+		t.Errorf("no hub: tray.json %+v", c)
+	}
+	mu.Lock()
+	away = false
+	mu.Unlock()
 	answers(func(c hubCall) (int, string) { return 200, pcJSON("Example-PC", c.text("id")) }, true)
 	a.updateOnce()
 	ex = calls("exchange")
