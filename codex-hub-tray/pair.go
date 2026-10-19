@@ -170,11 +170,20 @@ type pairOpen struct {
 	state, host, name, from string
 }
 
+// settledPairing is a pairing's next that a settle adopted: its token, and the old name its rename retired (from),
+// with what came of that (retired: nil when it was).
+type settledPairing struct {
+	token, from string
+	retired     error
+}
+
 var pairCode = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // pairHandler takes the hub page's post for this pairing: a code, which it redeems with a token it makes, or the
 // token a hub from before PC tokens posts.
 func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
+	// The tokens this link's posts sent whose answer was lost (redeemCode), held under a.token.
+	lost := map[string]bool{}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			page(w, http.StatusMethodNotAllowed, "Open the hub's pairing page from the Codex Hub menu.")
@@ -187,7 +196,7 @@ func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
 		code, token := r.PostFormValue("code"), r.PostFormValue("token")
 		switch {
 		case pairCode.MatchString(code):
-			a.redeemCode(w, open, code, finish)
+			a.redeemCode(w, open, lost, code, finish)
 		case code == "" && tokenUsable(token) && !isPcToken(token):
 			a.takeHubToken(w, token, finish)
 		default:
@@ -198,27 +207,37 @@ func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
 
 // redeemCode makes this PC a token and redeems the page's code with it. The token is saved as next before it is
 // sent, so an answer lost on the way is settled at the next check (settleNext), and as the token only once the hub
-// has answered that it took it.
-func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, finish func()) {
+// has answered that it took it. lost is this link's tokens whose answer was lost.
+func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]bool, code string, finish func()) {
 	a.token.Lock()
 	defer a.token.Unlock()
 	// A next from before (a check's or a pairing's whose answer was lost) may be a token the hub has: settled first, so
 	// this one never takes its place. While the hub says nothing about it, this pairing waits.
-	if had := savedConfig(); loadConfig().Next != "" {
+	had := savedConfig()
+	if loadConfig().Next != "" {
 		a.settleNext()
-		now := savedConfig()
 		if loadConfig().Next != "" {
 			page(w, http.StatusServiceUnavailable, "This PC is still waiting for the hub to say whether it took the token it sent last. Nothing changed: choose Connect this PC again in a few minutes.")
 			return
 		}
-		// The hub had it under this link's name (this pairing, posted again after its answer was lost): this PC is
-		// connected as that name, and the page's new code, which would pair it again or under another name, is left.
-		if now.Token != had.Token && isPcToken(now.Token) && pcKey(now.PC) == pcKey(open.name) {
-			page(w, http.StatusOK, "This PC is connected as "+now.PC+" and is pushing its Codex chats.")
-			finish()
-			go a.kick()
-			return
+	}
+	// The hub had a pairing's token whose answer was lost, settled just now or, if this link's own post sent it, by a
+	// check since: this PC is connected under the name that pairing chose (the link's, or another the page offered),
+	// and the page's new code, which would pair it a second time, is left. So it is when the hub had a check's token
+	// under this link's name.
+	now := savedConfig()
+	settled, s := now.Token != had.Token, a.settled
+	pairings := s.token != "" && s.token == now.Token && (settled || lost[now.Token])
+	if isPcToken(now.Token) && (pairings || settled && pcKey(now.PC) == pcKey(open.name)) {
+		a.settled = settledPairing{}
+		text := "This PC is connected as " + now.PC + " and is pushing its Codex chats."
+		if pairings && s.from != "" {
+			text += renamed(s.from, s.retired)
 		}
+		page(w, http.StatusOK, text)
+		finish()
+		go a.kick()
+		return
 	}
 	before := savedConfig()
 	cfg := loadConfig()
@@ -235,7 +254,7 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 		var id, hash string
 		token, id, hash = newPcToken()
 		if err := updateConfig(func(c *config) {
-			c.Next, c.Install, c.RenameFrom, c.RenameTo = token, cfg.Install, from, to
+			c.Next, c.Install, c.RenameFrom, c.RenameTo, c.Pairing = token, cfg.Install, from, to, true
 		}); err != nil {
 			page(w, http.StatusInternalServerError, "Could not save the token: "+err.Error())
 			return
@@ -252,6 +271,7 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 		err = ans.refusal("the pairing")
 	}
 	if err != nil {
+		lost[token] = true
 		log.Println("pair: the hub did not answer the redeem:", err)
 		page(w, http.StatusBadGateway, "The hub did not answer ("+err.Error()+"). If it took the pairing, this PC connects by itself within 10 minutes; if not, choose Connect this PC again.")
 		return
@@ -275,7 +295,7 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 	}
 	if err := updateConfig(func(c *config) {
 		c.Token, c.PC, c.ID, c.Install, c.Next = token, who.PC, who.ID, cfg.Install, ""
-		c.RenameFrom, c.RenameTo = "", ""
+		c.RenameFrom, c.RenameTo, c.Pairing = "", "", false
 	}); err != nil {
 		page(w, http.StatusInternalServerError, "Could not save the token: "+err.Error())
 		return
@@ -286,20 +306,24 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 	if from != "" && who.Key == pcKey(to) {
 		old := cfg
 		old.Token = before.Token
-		if err := retireOld("pair", old, from, who.PC); err == nil {
-			text += " " + from + " was retired on the hub; its copies there stay until you forget them."
-		} else {
-			text += " " + from + " could not be retired (" + err.Error() + "): on the hub, run `scripts/codex-hub-pcs.ts revoke " + from + "`."
-		}
+		text += renamed(from, retireOld("pair", old, from, who.PC))
 	}
 	page(w, http.StatusOK, text)
 	finish()
 	// The running pusher has the token it was started with; it starts again with this one.
-	now := loadConfig()
+	started := loadConfig()
 	go func() {
-		a.restartIfChanged(now)
+		a.restartIfChanged(started)
 		a.kick()
 	}()
+}
+
+// renamed is the page's sentence on a rename's old name: retired (err nil), or not, and what to run then.
+func renamed(from string, err error) string {
+	if err == nil {
+		return " " + from + " was retired on the hub; its copies there stay until you forget them."
+	}
+	return " " + from + " could not be retired (" + err.Error() + "): on the hub, run `scripts/codex-hub-pcs.ts revoke " + from + "`."
 }
 
 // retireOld has the hub retire old's token, this PC's under oldName, after the PC was paired as newName: only this
@@ -336,7 +360,7 @@ func (a *app) takeHubToken(w http.ResponseWriter, token string, finish func()) {
 	}
 	// Only what the user set, and now the token: the hub stays the build's unless they set another.
 	if serr := updateConfig(func(c *config) {
-		c.Token, c.PC, c.ID, c.Next, c.RenameFrom, c.RenameTo = token, "", "", "", "", ""
+		c.Token, c.PC, c.ID, c.Next, c.RenameFrom, c.RenameTo, c.Pairing = token, "", "", "", "", "", false
 	}); serr != nil {
 		page(w, http.StatusInternalServerError, "Could not save the token: "+serr.Error())
 		return
@@ -360,7 +384,7 @@ func (a *app) takeHubToken(w http.ResponseWriter, token string, finish func()) {
 func dropNext(token string) {
 	if err := updateConfig(func(c *config) {
 		if c.Next == token {
-			c.Next, c.RenameFrom, c.RenameTo = "", "", ""
+			c.Next, c.RenameFrom, c.RenameTo, c.Pairing = "", "", "", false
 		}
 	}); err != nil {
 		log.Println("config:", err)

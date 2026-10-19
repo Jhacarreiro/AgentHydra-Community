@@ -931,13 +931,16 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   409 `name-changed` when the key changed since the page made the code (paired or revoked meanwhile), or 409
   `id-taken`, at which the tray makes another token once. Only then does the token become `token`; a `next`
   whose answer was lost, or answered by a proxy's own 5xx, is settled at the next check, with `whoami`. A
-  pairing posted while one is unsettled settles it first: when the hub has it under the link's name, the PC is
-  connected as that name and the new code is not used; while the hub says nothing about it, the page says so and
-  nothing changes. After a rename the tray retires the old
+  pairing posted while one is unsettled settles it first, and while the hub says nothing about it, the page says
+  so and nothing changes. When the hub has a pairing's token (`pairing` in `tray.json`), under whatever name that
+  pairing's page chose, the PC is connected as that name and the new code is not used; so it is when a check
+  settled the token since this link's own post sent it, and when the hub has a check's token under the link's
+  name. After a rename the tray retires the old
   name's token (`POST /api/codex-hub/retire` with `{ renamedTo }`), and the old name's copies stay, revoked,
-  until they are forgotten; a rename whose answer was lost keeps both names with `next`, so the check that
-  settles it retires the old one. A page from a hub before PC tokens posts the hub's token itself, which the
-  current tray still takes. `tray.json` is `{ hub, token, pc, id, install, next, renameFrom, renameTo }`, mode 600, written whole through a
+  until they are forgotten; a rename whose answer was lost keeps both names with `next`, so the check or the
+  pairing that settles it retires the old one, and the page says what came of that. A page from a hub before PC
+  tokens posts the hub's token itself, which the current tray still takes. `tray.json` is
+  `{ hub, token, pc, id, install, next, renameFrom, renameTo, pairing }`, mode 600, written whole through a
   temporary file, in a `codex-hub` folder under `%LOCALAPPDATA%`, `~/Library/Application Support` or
   `~/.local/share`. The page is outside `/api/codex-hub/` and is served only through the operator's
   authenticating reverse proxy (a sign-in such as Cloudflare Access), never through the `/api/codex-hub/`

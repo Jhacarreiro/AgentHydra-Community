@@ -927,6 +927,180 @@ func TestPairHandler(t *testing.T) {
 	}
 }
 
+// A pairing whose answer was lost, which the hub had: whatever name the page paired it under (the link's, or the
+// <name>-N it offered), a pairing posted after it finds this PC connected under that name, says what came of a
+// rename, and redeems no code, whether it settles the token itself or a check settled it after this link sent it. A
+// check's token the hub has under the link's name stops the code too; under another name, it does not.
+func TestAPairingWhoseAnswerWasLost(t *testing.T) {
+	savedGap := redeemGap
+	redeemGap = 10 * time.Millisecond
+	t.Cleanup(func() { redeemGap = savedGap; os.Remove(configPath) })
+	code := strings.Repeat("c0de", 16)
+	var mu sync.Mutex
+	var redeemAs, retireAs, whoamiAs func(hubCall) (int, string)
+	hubAnswers := func(redeem, retire, whoami func(hubCall) (int, string)) {
+		mu.Lock()
+		redeemAs, retireAs, whoamiAs = redeem, retire, whoami
+		mu.Unlock()
+	}
+	srv, calls := stubHub(t, func(c hubCall) (int, string) {
+		mu.Lock()
+		redeem, retire, whoami := redeemAs, retireAs, whoamiAs
+		mu.Unlock()
+		switch {
+		case c.path == "/api/codex-hub/redeem" && redeem != nil:
+			return redeem(c)
+		case c.path == "/api/codex-hub/retire" && retire != nil:
+			return retire(c)
+		case c.path == "/api/codex-hub/whoami" && whoami != nil:
+			return whoami(c)
+		}
+		return 404, errJSON("not-found")
+	})
+	takes := func(pc string) func(hubCall) (int, string) {
+		return func(c hubCall) (int, string) { return 200, pcJSON(pc, c.text("id")) }
+	}
+	answer := func(status int, body string) func(hubCall) (int, string) {
+		return func(hubCall) (int, string) { return status, body }
+	}
+	// whoami as the hub that has the token it is asked with under pc.
+	has := func(pc string) func(hubCall) (int, string) {
+		return func(c hubCall) (int, string) { return 200, pcJSON(pc, pcTokenID(c.bearer)) }
+	}
+	silent, unsure := answer(0, ""), answer(503, errJSON("store-unreadable"))
+	a := newApp()
+	finished := false
+	link := func(name, from string) http.HandlerFunc {
+		return a.pairHandler(pairOpen{state: testOpen.state, host: testOpen.host, name: name, from: from}, func() { finished = true })
+	}
+	if err := saveConfig(config{Hub: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	install := loadConfig().Install
+	// lose posts code on h with the redeem's answer lost, and returns the token it left as next.
+	lose := func(what string, h http.HandlerFunc) string {
+		t.Helper()
+		hubAnswers(silent, nil, unsure)
+		if status, body := postCode(h, code); status != http.StatusBadGateway {
+			t.Fatalf("%s: the lost redeem: %d %s", what, status, body)
+		}
+		c := savedConfig()
+		if !isPcToken(c.Next) || !c.Pairing {
+			t.Fatalf("%s: tray.json after the lost redeem: %+v", what, c)
+		}
+		return c.Next
+	}
+	// connected posts code on h and wants this PC connected as pc with token, by no redeem, its page saying all of want.
+	connected := func(what string, h http.HandlerFunc, token, pc string, want ...string) {
+		t.Helper()
+		finished = false
+		before := len(calls("redeem"))
+		status, body := postCode(h, code)
+		if status != http.StatusOK || !strings.Contains(body, "This PC is connected as "+pc+" and is pushing its Codex chats.") ||
+			len(calls("redeem")) != before || !finished {
+			t.Errorf("%s: %d %s (%d redeems, finished %v)", what, status, body, len(calls("redeem"))-before, finished)
+		}
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Errorf("%s: the page does not say %q: %s", what, w, body)
+			}
+		}
+		if c := savedConfig(); c.Token != token || c.PC != pc || c.Next != "" || c.Pairing || c.RenameFrom != "" {
+			t.Errorf("%s: tray.json %+v", what, c)
+		}
+	}
+	// redeemed posts code on h and wants it redeemed, this PC then connected as pc with the redeem's token.
+	redeemed := func(what string, h http.HandlerFunc, pc string) {
+		t.Helper()
+		before := len(calls("redeem"))
+		status, body := postCode(h, code)
+		r := calls("redeem")[before:]
+		if status != http.StatusOK || !strings.Contains(body, "This PC is connected as "+pc) || len(r) != 1 {
+			t.Fatalf("%s: %d %s (%d redeems)", what, status, body, len(r))
+		}
+		if c := savedConfig(); c.Token != r[0].next || c.PC != pc || c.Next != "" || c.Pairing {
+			t.Errorf("%s: tray.json %+v", what, c)
+		}
+	}
+
+	// The page offered Example-PC-2, as Example-PC is another PC's; reloaded, it offers Example-PC-3. The post of that
+	// one settles the lost token, which the hub has as Example-PC-2.
+	l1 := link("Example-PC", "")
+	t1 := lose("the page's other name", l1)
+	hubAnswers(takes("Example-PC-3"), nil, has("Example-PC-2"))
+	connected("the page's other name", l1, t1, "Example-PC-2")
+	// The same from another link, opened after this one expired: the lost token is a pairing's, whichever link sent it.
+	t2 := lose("another link's", link("Office", ""))
+	hubAnswers(takes("Office-3"), nil, has("Office-2"))
+	connected("another link's", link("Office", ""), t2, "Office-2")
+
+	// A check settles the lost token before the page is posted again: this link's post sent it, so it is connected.
+	l3 := link("Desk", "")
+	t3 := lose("a check first", l3)
+	hubAnswers(takes("Desk-3"), nil, has("Desk-2"))
+	a.token.Lock()
+	a.settleNext()
+	a.token.Unlock()
+	if c := savedConfig(); c.Token != t3 || c.PC != "Desk-2" {
+		t.Fatalf("a check first: tray.json %+v", c)
+	}
+	connected("a check first", l3, t3, "Desk-2")
+	// Another link's code is its own: a pairing it asks for now.
+	t4 := lose("a check first, then another link", link("Lab", ""))
+	hubAnswers(takes("Lab-3"), nil, has("Lab-2"))
+	a.token.Lock()
+	a.settleNext()
+	a.token.Unlock()
+	if c := savedConfig(); c.Token != t4 {
+		t.Fatalf("a check first, then another link: tray.json %+v", c)
+	}
+	redeemed("a check first, then another link", link("Lab", ""), "Lab-3")
+
+	// A check's token (an exchange's whose answer was lost), which the hub has under the link's name: connected. Under
+	// another name, the link's code is redeemed.
+	check, _, _ := newPcToken()
+	if err := saveConfig(config{Hub: srv.URL, Token: "legacy-token-0123", Install: install, Next: check}); err != nil {
+		t.Fatal(err)
+	}
+	hubAnswers(takes("Never-PC"), nil, has("Example-PC"))
+	connected("a check's under the link's name", link("Example-PC", ""), check, "Example-PC")
+	check, _, _ = newPcToken()
+	if err := saveConfig(config{Hub: srv.URL, Token: "legacy-token-0123", Install: install, Next: check}); err != nil {
+		t.Fatal(err)
+	}
+	hubAnswers(takes("Example-PC"), nil, has("Legacy-PC"))
+	redeemed("a check's under another name", link("Example-PC", ""), "Example-PC")
+
+	// A rename whose answer was lost: the old name's token is retired as the post settles the new one, and the page
+	// says what came of that, as the rename's own answer would have.
+	for _, c := range []struct {
+		what   string
+		retire func(hubCall) (int, string)
+		want   string
+	}{
+		{"a rename the hub retires", answer(200, `{"pc":"Old-PC","key":"old-pc","state":"revoked"}`),
+			" Old-PC was retired on the hub; its copies there stay until you forget them."},
+		{"a rename the hub does not retire", answer(500, errJSON("internal")),
+			" Old-PC could not be retired (the hub answered 500 for retire"},
+	} {
+		old, oldID, _ := newPcToken()
+		if err := saveConfig(config{Hub: srv.URL, Token: old, PC: "Old-PC", ID: oldID, Install: install}); err != nil {
+			t.Fatal(err)
+		}
+		r := link("New-PC", "Old-PC")
+		next := lose(c.what, r)
+		if s := savedConfig(); s.RenameFrom != "Old-PC" || s.RenameTo != "New-PC" {
+			t.Fatalf("%s: tray.json after the lost redeem: %+v", c.what, s)
+		}
+		retired := len(calls("retire"))
+		hubAnswers(takes("Never-PC"), c.retire, has("New-PC"))
+		connected(c.what, r, next, "New-PC", c.want)
+		if ret := calls("retire")[retired:]; len(ret) != 1 || ret[0].bearer != old || ret[0].text("renamedTo") != "New-PC" {
+			t.Errorf("%s: retire %+v", c.what, ret)
+		}
+	}
+}
+
 // A link's until is pairFor after now by the page's clock when that is ahead of this PC's, and by this PC's when the
 // page's is behind it (a Date from a cache or a proxy).
 func TestPairUntil(t *testing.T) {

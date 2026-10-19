@@ -35,6 +35,10 @@ type config struct {
 	// have (settleNext). They go with next.
 	RenameFrom string `json:"renameFrom,omitempty"`
 	RenameTo   string `json:"renameTo,omitempty"`
+	// Whether next is a pairing's (redeemCode's), not a check's (exchange): one the hub turns out to have is this PC
+	// paired already, under the name that pairing chose, so a pairing posted then redeems no code of its own. It goes
+	// with next.
+	Pairing bool `json:"pairing,omitempty"`
 }
 
 // pusherConfig is what the pusher is started with (startPusher): a change of any of these restarts it, and a change
