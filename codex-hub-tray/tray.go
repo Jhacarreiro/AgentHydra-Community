@@ -47,9 +47,11 @@ type app struct {
 	refused     map[string]string
 	toldBlocked bool
 	moveRefused bool
-	// The pairing's next a settle adopted last (settleNext), for the page of a pairing posted after it: its token, and
-	// the old name a rename retired with it (from) and what came of that (retired: nil when it was). Held under token.
-	settled settledPairing
+	// The token of the pairing's next a settle adopted last (settleNext), for a pairing posted after it; and what came
+	// of the old names the renames it settled retired, which the next page that connects this PC says, as nothing else
+	// shows it. Held under token.
+	settled     string
+	retirements []retirement
 
 	status, restart *systray.MenuItem // nil when there is no tray to show them (Linux without a desktop session)
 	shown           string
@@ -455,14 +457,14 @@ func (a *app) settleNext() {
 		}
 		log.Printf("token: the hub has chp_%s, for %s", who.ID, who.PC)
 		if cfg.Pairing {
-			a.settled = settledPairing{token: cfg.Next}
+			a.settled = cfg.Next
 		}
 		// A rename whose redeem answer was lost, retired as redeemCode retires one: its link named this PC's old name,
 		// and the hub has the token under the key of the name that link paired as.
 		if cfg.RenameFrom != "" && isPcToken(old.Token) && who.Key == pcKey(cfg.RenameTo) {
 			retiring := cfg
 			retiring.Token = old.Token
-			a.settled.from, a.settled.retired = cfg.RenameFrom, retireOld("token", retiring, cfg.RenameFrom, who.PC)
+			a.retirements = append(a.retirements, retirement{cfg.RenameFrom, retireOld("token", retiring, cfg.RenameFrom, who.PC)})
 		}
 		a.restartIfChanged(loadConfig())
 	case notHeld && cfg.Token != "" && !isPcToken(cfg.Token):

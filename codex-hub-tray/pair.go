@@ -170,11 +170,10 @@ type pairOpen struct {
 	state, host, name, from string
 }
 
-// settledPairing is a pairing's next that a settle adopted: its token, and the old name its rename retired (from),
-// with what came of that (retired: nil when it was).
-type settledPairing struct {
-	token, from string
-	retired     error
+// retirement is what came of retiring a rename's old name (from): err is nil when it was retired.
+type retirement struct {
+	from string
+	err  error
 }
 
 // linkPosts is what one link's posts share, held under a.token: the pairings' tokens whose answer was lost while the
@@ -228,7 +227,13 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, posts *linkPosts,
 		page(w, http.StatusOK, posts.page)
 		return
 	}
+	// connected answers the post that connects this PC, adding what came of the renames a check retired that no page has
+	// said yet.
 	connected := func(token, text string) {
+		for _, r := range a.retirements {
+			text += renamed(r.from, r.err)
+		}
+		a.retirements = nil
 		posts.token, posts.page = token, text
 		page(w, http.StatusOK, text)
 		finish()
@@ -245,33 +250,27 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, posts *linkPosts,
 	}
 	// The hub had a pairing's token whose answer was lost, settled just now or, if it was lost while this link was
 	// open, by a check since: this PC is connected under the name that pairing chose (the link's, or another the page
-	// offered), and the page's new code, which would pair it a second time, is left. So it is when the hub had a
-	// check's token under this link's name.
+	// offered), and the page's new code, which would pair it a second time, is left. So it is when this post settled a
+	// check's token that the hub has under this link's name.
 	now := savedConfig()
-	settled, s := now.Token != had.Token, a.settled
-	pairings := isPcToken(now.Token) && s.token == now.Token && (settled || posts.lost[now.Token])
-	// One a check settled before this post: the hub may have revoked it since, and then this code pairs the PC again,
-	// and the page says what came of that check's rename, if it was one.
-	var earlier settledPairing
+	settled := now.Token != had.Token
+	pairings := isPcToken(now.Token) && a.settled == now.Token && (settled || posts.lost[now.Token])
+	// One a check settled before this post: the hub may have revoked it since, and then this code pairs the PC again.
 	if pairings && !settled {
 		_, ans, err := whoami(loadConfig())
 		switch {
 		case err == nil && ans.status == http.StatusOK:
 		case err == nil && (ans.status == http.StatusUnauthorized && (ans.code == "unknown-token" || ans.code == "revoked") ||
 			ans.status == http.StatusConflict && ans.code == "install-mismatch"):
-			pairings, earlier, a.settled = false, s, settledPairing{}
+			pairings, a.settled = false, ""
 		default:
 			page(w, http.StatusServiceUnavailable, "This PC is still waiting for the hub to say whether it has this PC's token. Nothing changed: choose Connect this PC again in a few minutes.")
 			return
 		}
 	}
 	if isPcToken(now.Token) && (pairings || settled && pcKey(now.PC) == pcKey(open.name)) {
-		a.settled = settledPairing{}
-		text := "This PC is connected as " + now.PC + " and is pushing its Codex chats."
-		if pairings && s.from != "" {
-			text += renamed(s.from, s.retired)
-		}
-		connected(now.Token, text)
+		a.settled = ""
+		connected(now.Token, "This PC is connected as "+now.PC+" and is pushing its Codex chats.")
 		go a.kick()
 		return
 	}
@@ -344,8 +343,6 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, posts *linkPosts,
 		old := cfg
 		old.Token = before.Token
 		text += renamed(from, retireOld("pair", old, from, who.PC))
-	} else if earlier.from != "" {
-		text += renamed(earlier.from, earlier.retired)
 	}
 	connected(token, text)
 	// The running pusher has the token it was started with; it starts again with this one.

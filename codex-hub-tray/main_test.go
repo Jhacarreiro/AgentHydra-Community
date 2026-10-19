@@ -939,8 +939,8 @@ func TestPairHandler(t *testing.T) {
 // A pairing whose answer was lost, which the hub had: whatever name the page paired it under (the link's, or the
 // <name>-N it offered), a pairing posted after it finds this PC connected under that name, says what came of a
 // rename, and redeems no code, whether it settles the token itself or a check settled it while this link was open
-// and the hub still has it. A link opened after the check is the user's own. A check's token the hub has under the
-// link's name stops the code too; under another name, it does not.
+// and the hub still has it. A link opened after the check is the user's own. A check's token the post settles,
+// which the hub has under the link's name, stops the code too; under another name, it does not.
 func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 	savedGap := redeemGap
 	redeemGap = 10 * time.Millisecond
@@ -1189,6 +1189,47 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 			t.Errorf("%s: %d retires sent with the post", c.what, n)
 		}
 	}
+
+	// What came of such a retire is said by the page that connects this PC, however many posts it takes to get there:
+	// the first post after the revoke had a code the revoke dropped, or lost its answer. It is said once.
+	for _, c := range []struct {
+		what  string
+		first func(hubCall) (int, string)
+		as    string
+	}{
+		{"a refused post first", answer(401, errJSON("pair-code")), "New-PC-2"},
+		{"a lost post first", silent, "New-PC"},
+	} {
+		old, oldID, _ := newPcToken()
+		if err := saveConfig(config{Hub: srv.URL, Token: old, PC: "Old-PC", ID: oldID, Install: install}); err != nil {
+			t.Fatal(err)
+		}
+		r := link("New-PC", "Old-PC")
+		next := lose(c.what, r)
+		hubAnswers(takes("Never-PC"), answer(500, errJSON("internal")), has("New-PC"))
+		byCheck(c.what, next)
+		hubAnswers(c.first, nil, answer(401, errJSON("revoked")))
+		if status, body := postCode(r, code); status == http.StatusOK || strings.Contains(body, "Old-PC") {
+			t.Errorf("%s: %d %s", c.what, status, body)
+		}
+		if lost := savedConfig().Next; lost != "" {
+			// The lost one's token, which the hub has: this PC is connected as it, and the page says it.
+			hubAnswers(takes("Never-PC"), nil, has(c.as))
+			connected(c.what, r, lost, c.as, " Old-PC could not be retired (the hub answered 500 for retire")
+		} else {
+			// A new code, which the hub pairs.
+			hubAnswers(takes(c.as), nil, nil)
+			before := len(calls("redeem"))
+			if status, body := postCode(r, code); status != http.StatusOK || len(calls("redeem")) != before+1 ||
+				!strings.Contains(body, "This PC is connected as "+c.as+" and is pushing its Codex chats. Old-PC could not be retired (the hub answered 500 for retire") {
+				t.Errorf("%s, then paired: %d %s", c.what, status, body)
+			}
+		}
+		hubAnswers(takes("Shed-9"), nil, nil)
+		if status, body := postCode(link("Shed-9", ""), code); status != http.StatusOK || strings.Contains(body, "Old-PC") {
+			t.Errorf("%s, then paired again: %d %s", c.what, status, body)
+		}
+	}
 }
 
 // A link's until is pairFor after now by the page's clock when that is ahead of this PC's, and by this PC's when the
@@ -1387,6 +1428,13 @@ func TestSettleNext(t *testing.T) {
 	}
 	if f["token"] != next || f["id"] != id || f["next"] != "" {
 		t.Errorf("the exchange sent again: tray.json %v", f)
+	}
+	// A pairing's next the hub does not have, on a PC that still has the legacy token, is sent as an exchange: the
+	// token is a check's from then on, even while that exchange's answer is lost too.
+	answers(answer(401, errJSON("unknown-token")), answer(0, ""))
+	f = settle(config{Hub: srv.URL, Token: legacy, Next: next, Pairing: true})
+	if c := savedConfig(); f["next"] != next || f["token"] != legacy || c.Pairing {
+		t.Errorf("a pairing's next sent as an exchange: tray.json %+v", c)
 	}
 
 	// A rename whose answer was lost: its redeem saved the link's old name and new one with next, and the hub has the
