@@ -3,11 +3,11 @@
   "binaries": [
     {
       "path": ".github/og-image.png",
-      "blob": "22c963b20349898a81197d48dc1c92a38e4399fb",
-      "sha256": "131930ff00f5019d9000db951eb7a9a4003c7a7d24f917b9c49241a3e8839f5b",
-      "source": "The social preview card of this fork, made for it: the AgentHydra logo (misc/brand/icon.svg), the words \"AgentHydra Community\", one line on what it does and the repository's address, set in the Inter the window already ships (desk2/hydra/public/fonts, SIL OFL 1.1). Its source is scripts/og-image/card.html. It replaced the card inherited from LunarWerxs/AgentHydra at 3a65ba8e, which showed upstream's name and site.",
-      "build": "scripts/og-image/render.mjs (bun run og-image) shoots scripts/og-image/card.html at 1280x640 with a local headless Chrome or Chromium over the DevTools protocol, then writes this entry's blob and sha256.",
-      "license": "MIT, as part of this repository."
+      "blob": "1302068e88f54966e5c0e6060730e811fb1c3e6d",
+      "sha256": "cf053a05baf4f010765b1c18bdebacb093517dfb14844bdea4c5a597e68d66ac",
+      "source": "AgentHydra Community social preview, created for this fork with the new hydra logo and independent project description.",
+      "build": "Rendered locally with ImageMagick from the new community hydra logo.",
+      "license": "Original artwork for AgentHydra Community, MIT."
     },
     {
       "path": ".github/screenshots/analytics.png",
@@ -43,11 +43,19 @@
     },
     {
       "path": "desk2/hydra/public/favicon.ico",
-      "blob": "f5c73bd6e318d1b35e9267ca76d0d7f72420c67e",
-      "sha256": "29f2e9f1cfccc4d08642c523e95fb8940e0d58d014a4f2f31bf86bc9dddd2e0d",
-      "source": "The AgentHydra icon, inherited from LunarWerxs/AgentHydra at 3a65ba8e (misc/AgentHydra.ico came with upstream commit 366e292c; desk2/hydra and desk2/web got copies in 5fdeda83 and 31523bc0). misc/AgentHydra.ico and the two favicon.ico files are the same bytes.",
-      "build": "misc/Make-Icon.ps1 builds it (16/24/32/48 px frames plus a 256 px PNG) from misc/AgentHydra-icon.png; the desk2 favicons are copies of misc/AgentHydra.ico.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
+      "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810",
+      "source": "New community hydra favicon for the Hydra desktop UI.",
+      "build": "Copy of misc/AgentHydra.ico.",
+      "license": "Original artwork for AgentHydra Community, MIT."
+    },
+    {
+      "path": "desk2/hydra/public/favicon.png",
+      "blob": "9e85db727562e5753fb50742969078272e16d8c0",
+      "sha256": "0e38a9cd2989a07bbc2b27e7c72b42faa71bb51f396bf7207894a6186e139358",
+      "source": "New community hydra favicon PNG.",
+      "build": "Derived from the approved community hydra artwork.",
+      "license": "Original artwork for AgentHydra Community, MIT."
     },
     {
       "path": "desk2/hydra/public/fonts/inter-latin-ext.woff2",
@@ -67,27 +75,35 @@
     },
     {
       "path": "desk2/web/public/favicon.ico",
-      "blob": "f5c73bd6e318d1b35e9267ca76d0d7f72420c67e",
-      "sha256": "29f2e9f1cfccc4d08642c523e95fb8940e0d58d014a4f2f31bf86bc9dddd2e0d",
-      "source": "The AgentHydra icon, inherited from LunarWerxs/AgentHydra at 3a65ba8e (misc/AgentHydra.ico came with upstream commit 366e292c; desk2/hydra and desk2/web got copies in 5fdeda83 and 31523bc0). misc/AgentHydra.ico and the two favicon.ico files are the same bytes.",
-      "build": "misc/Make-Icon.ps1 builds it (16/24/32/48 px frames plus a 256 px PNG) from misc/AgentHydra-icon.png; the desk2 favicons are copies of misc/AgentHydra.ico.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
+      "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810",
+      "source": "New community hydra favicon for the web UI.",
+      "build": "Copy of misc/AgentHydra.ico.",
+      "license": "Original artwork for AgentHydra Community, MIT."
+    },
+    {
+      "path": "desk2/web/public/favicon.png",
+      "blob": "9e85db727562e5753fb50742969078272e16d8c0",
+      "sha256": "0e38a9cd2989a07bbc2b27e7c72b42faa71bb51f396bf7207894a6186e139358",
+      "source": "New community hydra favicon PNG.",
+      "build": "Derived from the approved community hydra artwork.",
+      "license": "Original artwork for AgentHydra Community, MIT."
     },
     {
       "path": "misc/AgentHydra-icon.png",
-      "blob": "00e9d37bf7ccd1c966320107d3af0a73fcdd3741",
-      "sha256": "557ecc7b1ae83b512be472f1b21e625685cad3b7e25f036d7b007a8ec8c947a4",
-      "source": "The AgentHydra logo as a PNG, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit 366e292c).",
-      "build": "A 1024x1024 render of the brand vector misc/brand/icon.svg (magick -background none misc/brand/icon.svg -resize 1024x1024 -depth 8 PNG32:misc/AgentHydra-icon.png, per misc/Make-Icon.ps1).",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "f84da4626976e1f895da19cb4d428ac0dbfa3a9d",
+      "sha256": "bc26d3948a9d491f27e6f8ab83fa44dea0f6cfbe88a1bfe9dfe2597053ad75e9",
+      "source": "New AgentHydra Community hydra icon, independently generated for this fork, derived from concept 3; original standalone symbol is maintained at misc/brand/icon.svg.",
+      "build": "Resized to 1024 pixels from the original approved graphic using ImageMagick.",
+      "license": "Original artwork for AgentHydra Community, MIT."
     },
     {
       "path": "misc/AgentHydra.ico",
-      "blob": "f5c73bd6e318d1b35e9267ca76d0d7f72420c67e",
-      "sha256": "29f2e9f1cfccc4d08642c523e95fb8940e0d58d014a4f2f31bf86bc9dddd2e0d",
-      "source": "The AgentHydra icon, inherited from LunarWerxs/AgentHydra at 3a65ba8e (misc/AgentHydra.ico came with upstream commit 366e292c; desk2/hydra and desk2/web got copies in 5fdeda83 and 31523bc0). misc/AgentHydra.ico and the two favicon.ico files are the same bytes.",
-      "build": "misc/Make-Icon.ps1 builds it (16/24/32/48 px frames plus a 256 px PNG) from misc/AgentHydra-icon.png; the desk2 favicons are copies of misc/AgentHydra.ico.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
+      "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810",
+      "source": "New community hydra icon for Windows shortcuts and launchers.",
+      "build": "Generated using ImageMagick from the approved community hydra artwork, at multiple ICO sizes.",
+      "license": "Original artwork for AgentHydra Community, MIT."
     }
   ]
 }
