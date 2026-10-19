@@ -520,15 +520,15 @@ interface Pairing {
 }
 
 /**
- * Writes key `key`'s record for a new token, in place of what it had. While the window is open, an install id the
- * key leaves behind (its record's, or a pending manifest's) is claimed, so no folder that carries it moves later.
+ * Writes key `key`'s record for a new token, in place of what it had. An install id the key leaves behind (its
+ * record's, or a pending manifest's) is claimed whatever the window, so no folder that carries it moves later.
  */
 function writePairing(s: Survey, key: string, p: Pairing, now: number): HubRefusal | null {
   const target = targetOf(s, key)
   const previous =
     target.record?.install ?? (target.state === 'pending' ? target.manifest?.install : undefined)
   return change(s.root, (store) => {
-    if (s.window.open && previous && previous !== p.install) claim(store, previous)
+    if (previous && previous !== p.install) claim(store, previous)
     store.pcs[key] = {
       pc: p.pc,
       tokenId: p.id,
@@ -950,8 +950,11 @@ const isDir = (path: string): boolean => {
 }
 
 /**
- * The owner forgets key `key`: its record and its folder of copies go, its relay closes, its codes go. While the
- * window is open its install id is claimed, so no other folder that carries it can move.
+ * The owner forgets key `key`: its record and its folder of copies go, its relay closes, its codes go. The install id
+ * of a record, or of the folder its install's legacy token acts for (pending, or the newest while the window is
+ * closed), is claimed whatever the window, so no other folder that carries it can move, even once the window is
+ * opened again. A stale copy (a duplicate, or an old folder of a PC since renamed) claims nothing: the folder the PC
+ * pushes to now keeps moving by itself.
  */
 export function forgetPc(
   key: string,
@@ -968,9 +971,10 @@ export function forgetPc(
   const manifest = readCodexHubManifest(dir)
   const pc = record?.pc ?? manifest?.pc ?? key
   const install = record?.install ?? hubInstallId(manifest?.install) ?? undefined
-  if (record || (s.window.open && install)) {
+  const live = !!record || s.pending.has(key) || s.why.get(key) === 'window-closed'
+  if (record || (live && install)) {
     const failed = change(root, (store) => {
-      if (s.window.open) claim(store, install)
+      if (live) claim(store, install)
       delete store.pcs[key]
     })
     if (failed) return failed

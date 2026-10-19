@@ -983,8 +983,8 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   in use is 409 `name-paired` without `replace`, which stops its current token and closes its relay. `POST
   /api/codex-relay/admin/pcs/<key>/revoke` revokes one at once (`relayClosed` says whether a relay closed; a
   pending or unpaired key gets a record that holds its install id, so it cannot move), and `DELETE
-  /api/codex-relay/admin/pcs/<key>` forgets one: its record and its folder of copies (while the window is open,
-  its install id stays claimed). A revoked token is refused as `revoked`, a forgotten one as `unknown-token`.
+  /api/codex-relay/admin/pcs/<key>` forgets one: its record and its folder of copies (the install id of a record,
+  or of the folder its PC pushes to now, stays claimed; a stale duplicate claims nothing). A revoked token is refused as `revoked`, a forgotten one as `unknown-token`.
   `scripts/codex-hub-pcs.ts` makes these requests (`list [--json]`, `add <pc> [--replace] [--json]`,
   `revoke <pc>`, `forget <pc>`, and `--hub <url>`, by default `http://127.0.0.1:$PORT`, else port 7787:
   [CODEX-HUB.md](CODEX-HUB.md#listing-pcs-and-revoking-one)). The same with `curl`, on the hub:

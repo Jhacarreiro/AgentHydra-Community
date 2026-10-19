@@ -738,6 +738,57 @@ test('an exchange, a revoke of a pending key, a forget and a re-pair from anothe
   expect(stored(root).legacy.claimed).toEqual([C, D, E])
 })
 
+test('forgetting a stale copy claims nothing: the folder its PC pushes to now still moves', () => {
+  const root = newRoot()
+  settings({ admin: ADMIN, legacy: LEGACY })
+  // One Mac under two keys, and a PC renamed long ago: the newest folder of each is pending, the others are stale.
+  folder(root, 'example-mac', { pc: 'Example-Mac', install: A, pushedAt: T0 })
+  folder(root, 'example-mac-lan', { pc: 'Example-Mac-Lan', install: A, pushedAt: T0 - HOUR })
+  folder(root, 'newname', { install: B, pushedAt: T0 })
+  folder(root, 'oldname', { install: B, pushedAt: T0 - 40 * DAY })
+  expect(pendingKeys(root, T0)).toEqual(['example-mac', 'newname'])
+  expect(whys(root)).toMatchObject({ 'example-mac-lan': 'duplicate:example-mac', oldname: 'old' })
+  expect(forgetPc('example-mac-lan', root, T0)).toMatchObject({ ok: true })
+  expect(forgetPc('oldname', root, T0)).toMatchObject({ ok: true })
+  expect(pendingKeys(root, T0)).toEqual(['example-mac', 'newname'])
+  expect(stored(root).legacy.claimed).toBeUndefined()
+  const t = newPcToken()
+  expect(exchangeLegacy({ id: t.id, hash: t.hash, install: A }, root, T0 + 1)).toMatchObject({
+    ok: true,
+    key: 'example-mac',
+  })
+})
+
+test('with the window closed, a forget and a re-pair still claim: opening it again moves no other folder', () => {
+  const late = T0 + 8 * DAY
+  for (const how of ['revoke, then forget', 'revoke, then re-pair', 'forget'] as const) {
+    const root = newRoot()
+    settings({ admin: ADMIN, legacy: LEGACY })
+    folder(root, 'mac-local', { install: A, pushedAt: T0 })
+    folder(root, 'mac-lan', { install: A, pushedAt: T0 - HOUR })
+    expect(pendingKeys(root, T0)).toEqual(['mac-local'])
+    if (how !== 'forget') expect(revokePc('mac-local', root, T0)).toMatchObject({ ok: true })
+    expect(legacyWindow(root, late).open).toBe(false)
+    if (how === 'revoke, then re-pair') {
+      const code = mintPairCode({ key: 'mac-local', pc: 'mac-local', replaces: null }, root, late)
+      const u = newPcToken()
+      expect(
+        redeemPairCode({ code, id: u.id, hash: u.hash, install: 'install-new-00001' }, root, late),
+      ).toMatchObject({ ok: true })
+    } else {
+      expect(forgetPc('mac-local', root, late)).toMatchObject({ ok: true })
+    }
+    // The owner opens the window again, for another PC that was off.
+    settings({ admin: ADMIN, legacy: LEGACY, until: iso(late + DAY) })
+    expect({ how, pending: pendingKeys(root, late) }).toEqual({ how, pending: [] })
+    const t = newPcToken()
+    expect({
+      how,
+      r: exchangeLegacy({ id: t.id, hash: t.hash, install: A }, root, late),
+    }).toMatchObject({ how, r: { status: 401 } })
+  }
+})
+
 test('legacy.claimed keeps the newest 256 install ids', () => {
   const root = newRoot()
   mkdirSync(root, { recursive: true })
