@@ -138,6 +138,12 @@
       "path": "desk2/hydra/src/style.css",
       "fp": "cfd4a17fe7fd244e",
       "reason": "The stylesheet is AgentHydra's own. Its comment says where the self-hosted Inter font's licence ships (public/fonts/OFL.txt); THIRD-PARTY-NOTICES.md covers the font under rsms/inter."
+    },
+    {
+      "rule": "binary.provenance",
+      "path": ".github/og-image.png",
+      "fp": "131930ff00f5019d",
+      "reason": "Historical social-preview PNG from the already-published commit 02c5eaa8, made for the MIT community fork and previously recorded in binary-provenance.json. This branding change replaces the current PNG; this exception applies only to the earlier recorded blob, not future assets."
     }
   ]
 }
