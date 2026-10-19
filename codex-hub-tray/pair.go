@@ -333,7 +333,10 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, posts *linkPosts,
 		c.Token, c.PC, c.ID, c.Install, c.Next = token, who.PC, who.ID, cfg.Install, ""
 		c.RenameFrom, c.RenameTo, c.Pairing = "", "", false
 	}); err != nil {
-		page(w, http.StatusInternalServerError, "Could not save the token: "+err.Error())
+		// The hub has the token, and tray.json still has it as next: settled as one whose answer was lost.
+		posts.lost[token] = true
+		log.Println("pair: the hub took the pairing, but its token could not be saved:", err)
+		page(w, http.StatusInternalServerError, "The hub took the pairing, but this PC could not save its token ("+err.Error()+"). It connects by itself within 10 minutes, once it can.")
 		return
 	}
 	log.Printf("pair: connected as %s (chp_%s)", who.PC, who.ID)

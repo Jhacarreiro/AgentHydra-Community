@@ -1230,6 +1230,60 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 			t.Errorf("%s, then paired again: %d %s", c.what, status, body)
 		}
 	}
+
+	// So it is on another link, the rename's never posted again: after its own lost post and a wait, the page that
+	// connects the PC says it, and a second click on that page gets it whole, with nothing sent.
+	old, oldID, _ := newPcToken()
+	if err := saveConfig(config{Hub: srv.URL, Token: old, PC: "Old-PC", ID: oldID, Install: install}); err != nil {
+		t.Fatal(err)
+	}
+	renaming := lose("another link's page", link("New-PC", "Old-PC"))
+	hubAnswers(takes("Never-PC"), answer(500, errJSON("internal")), has("New-PC"))
+	byCheck("another link's page", renaming)
+	l8 := link("Attic", "")
+	t8 := lose("another link's page", l8)
+	hubAnswers(takes("Never-PC"), nil, unsure)
+	if status, body := postCode(l8, code); status != http.StatusServiceUnavailable || strings.Contains(body, "Old-PC") {
+		t.Errorf("another link's page, told to wait: %d %s", status, body)
+	}
+	hubAnswers(takes("Never-PC"), nil, has("Attic"))
+	connected("another link's page", l8, t8, "Attic", " Old-PC could not be retired (the hub answered 500 for retire")
+	held := savedConfig()
+	requests := func() int { return len(calls("redeem")) + len(calls("whoami")) + len(calls("retire")) }
+	sentBefore := requests()
+	_, again := postCode(l8, code)
+	if status, body := postCode(l8, code); status != http.StatusOK || body != again || savedConfig() != held ||
+		requests() != sentBefore || !strings.Contains(again, "Attic and is pushing its Codex chats. Old-PC could not be retired") {
+		t.Errorf("a second click on another link's page: %d %s (%d requests)", status, body, requests()-sentBefore)
+	}
+	if err := saveConfig(config{Hub: srv.URL, Token: old, PC: "Old-PC", ID: oldID, Install: install}); err != nil {
+		t.Fatal(err)
+	}
+	renaming = lose("another link's code", link("New-PC", "Old-PC"))
+	hubAnswers(takes("Never-PC"), answer(500, errJSON("internal")), has("New-PC"))
+	byCheck("another link's code", renaming)
+	hubAnswers(takes("Loft"), nil, nil)
+	if status, body := postCode(link("Loft", ""), code); status != http.StatusOK ||
+		!strings.Contains(body, "This PC is connected as Loft and is pushing its Codex chats. Old-PC could not be retired") {
+		t.Errorf("another link's code: %d %s", status, body)
+	}
+
+	// A pairing the hub took whose token this PC could not save is the link's own lost one: the check that saves it
+	// leaves this PC connected under that pairing, and the page posted again redeems nothing.
+	l9 := link("Cellar", "")
+	hubAnswers(func(c hubCall) (int, string) {
+		os.Mkdir(configPath+".tmp", 0o700) // the save after the redeem fails
+		return 200, pcJSON("Cellar", c.text("id"))
+	}, nil, nil)
+	status, body := postCode(l9, code)
+	os.Remove(configPath + ".tmp")
+	t9 := savedConfig().Next
+	if status != http.StatusInternalServerError || !strings.Contains(body, "could not save its token") || !isPcToken(t9) || !savedConfig().Pairing {
+		t.Fatalf("a pairing whose token was not saved: %d %s, tray.json %+v", status, body, savedConfig())
+	}
+	hubAnswers(takes("Cellar-2"), nil, has("Cellar"))
+	byCheck("a pairing whose token was not saved", t9)
+	connected("a pairing whose token was not saved", l9, t9, "Cellar")
 }
 
 // A link's until is pairFor after now by the page's clock when that is ahead of this PC's, and by this PC's when the

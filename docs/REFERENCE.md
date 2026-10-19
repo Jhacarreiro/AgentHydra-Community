@@ -929,19 +929,20 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   and redeems the code: `POST /api/codex-hub/redeem` with `{ code, id, hash }` and its install id, and no
   bearer. The hub answers `{ pc, key, id }`, or 401 `pair-code` for a code that is used, expired or unknown,
   409 `name-changed` when the key changed since the page made the code (paired or revoked meanwhile), or 409
-  `id-taken`, at which the tray makes another token once. Only then does the token become `token`; a `next`
-  whose answer was lost, or answered by a proxy's own 5xx, is settled at the next check, with `whoami`. A
-  pairing posted while one is unsettled settles it first, and while the hub says nothing about it, the page says
-  so and nothing changes. When the hub has a pairing's token (`pairing` in `tray.json`), under whatever name that
-  pairing's page chose, the PC is connected as that name and the new code is not used; so it is when a check
-  settled such a token while this link was open and `whoami` says the hub still has it (a link opened after the
-  check is a pairing of the user's own), and when the post itself settles a check's token that the hub has under
-  the link's name. A second post of a page that connected the PC (a second click, in the moment before the tray
-  closes the link) gets the same answer, and nothing is sent. After a rename the tray retires the old name's
-  token, while the token it holds is still that name's (`POST /api/codex-hub/retire` with `{ renamedTo }`), and
-  the old name's copies stay, revoked, until they are forgotten; a rename whose answer was lost keeps both names
-  with `next`, so the check or the pairing that settles it retires the old one, and the next pairing page that
-  connects the PC says what came of that. A page from a hub before PC tokens posts the hub's token itself, which
+  `id-taken`, at which the tray makes another token once. Only then does the token become `token`; a `next` whose
+  answer was lost, or answered by a proxy's own 5xx, or that this PC could not save once the hub took it, is
+  settled at the next check, with `whoami`. A pairing posted while one is unsettled settles it first, and while
+  the hub says nothing about it, the page says so and nothing changes. When the hub has a pairing's token
+  (`pairing` in `tray.json`), under whatever name that pairing's page chose, the PC is connected as that name and
+  the new code is not used; so it is when a check settled such a token while this link was open and `whoami` says
+  the hub still has it (a link opened after the check is a pairing of the user's own), and when the post itself
+  settles a check's token that the hub has under the link's name. A second post of a page that connected the PC (a
+  second click, in the moment before the tray closes the link) gets the same answer, and nothing is sent. After a
+  rename the tray retires the old name's token, while the token it holds is still that name's
+  (`POST /api/codex-hub/retire` with `{ renamedTo }`), and the old name's copies stay, revoked, until they are forgotten;
+  a rename whose answer was lost keeps both names with `next`, so the check or the pairing that settles it retires
+  the old one, and the next pairing page that connects the PC with a code while the tray runs says what came of
+  that (the tray's log says it either way). A page from a hub before PC tokens posts the hub's token itself, which
   the current tray still takes. `tray.json` is
   `{ hub, token, pc, id, install, next, renameFrom, renameTo, pairing }`, mode 600, written whole through a
   temporary file, in a `codex-hub` folder under `%LOCALAPPDATA%`, `~/Library/Application Support` or

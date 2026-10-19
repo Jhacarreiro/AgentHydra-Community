@@ -48,8 +48,8 @@ type app struct {
 	toldBlocked bool
 	moveRefused bool
 	// The token of the pairing's next a settle adopted last (settleNext), for a pairing posted after it; and what came
-	// of the old names the renames it settled retired, which the next page that connects this PC says, as nothing else
-	// shows it. Held under token.
+	// of the old names the renames it settled retired, which the next pairing page that connects this PC with a code
+	// says, while the tray runs (the log says it either way). Held under token.
 	settled     string
 	retirements []retirement
 
