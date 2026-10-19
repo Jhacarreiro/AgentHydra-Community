@@ -9,7 +9,7 @@ describe('ephemeral ChatGPT Hub view', () => {
     expect(() => parseChatGptReadRequest({operation:'read-visible',conversationId:'https://example.invalid'})).toThrow('Invalid ChatGPT read request')
   })
   test('preserves ordered roles and content for a requested read', async () => {
-    const supplied = { visibleTurnCount: 2, messages: [
+    const supplied: import('../src/core/chatgpt-visible').ChatGptVisibleView = { visibleTurnCount: 2, messages: [
       { role: 'user', text: 'First question' },
       { role: 'assistant', text: 'First answer' },
       { role: 'user', text: 'Follow-up' },
