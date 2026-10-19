@@ -332,6 +332,11 @@ test("a PC token pushes its own chats; a body naming another PC writes under the
     `[codex-hub] ${c.pc}'s token pushed as "${c.pc.replace('-', '\\u009b')}"; kept as ${c.pc}`,
     `[codex-hub] ${d.pc}'s token pushed as "Push\\u007f\\u202eD"; kept as ${d.pc}`,
   ])
+  // The record's own name is printed escaped too: one with a zero-width space, which the hub takes as a name.
+  const e = pcNamed('Push​E')
+  expect(await push(e, 'Push-F')).toMatchObject({ status: 200, json: { pc: e.pc } })
+  const eShown = e.pc.replace('​', '\\u200b')
+  expect(said).toContain(`[codex-hub] ${eShown}'s token pushed as "Push-F"; kept as ${eShown}`)
 })
 
 test('a PC token needs its install id: none is 400, another is 409, and a token from add binds the first it is sent with', async () => {

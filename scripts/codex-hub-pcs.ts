@@ -81,7 +81,8 @@ if (!admin)
 
 /**
  * A line as the terminal gets it: a control character (C0, DEL or C1), a format character (a zero-width space, a bidi
- * override) or a line separator in a name or a reason is printed escaped.
+ * override), a line separator or any other character drawn as nothing (a variation selector) in a name or a reason is
+ * printed escaped.
  */
 const shown = plainText
 
@@ -161,8 +162,11 @@ if (command === 'list' && !name) {
       console.log(
         shown(
           [
-            // The key too where the name does not make it, or is printed escaped: revoke and forget take the key.
-            hubPcKey(r.pc) === r.key && shown(r.pc) === r.pc ? r.pc : `${r.pc} (key ${r.key})`,
+            // The key too where the name does not make it, or has anything but printable ASCII (a letter that looks
+            // like another, a character printed escaped): revoke and forget take the key.
+            hubPcKey(r.pc) === r.key && /^[\x20-\x7e]*$/.test(r.pc)
+              ? r.pc
+              : `${r.pc} (key ${r.key})`,
             `${r.state}${r.why ? ` (${r.why})` : ''}`,
             r.tokenId ? `chp_${r.tokenId}` : '-',
             r.pairedAt
@@ -195,9 +199,11 @@ if (command === 'list' && !name) {
   )
   console.log(flags.has('--json') ? plainJson({ token, ...added }) : token)
   console.error(
-    `${added.pc} has a token of its own on the hub (chp_${added.id}). Put it in that PC's tray.json as ` +
-      '{"token": "<the token>"}, keeping "hub" if the file has one, or in its pusher\'s ' +
-      'AGENTHYDRA_CODEX_HUB_TOKEN, and use it at once: its first request with an install id binds it.',
+    shown(
+      `${added.pc} has a token of its own on the hub (chp_${added.id}). Put it in that PC's tray.json as ` +
+        '{"token": "<the token>"}, keeping "hub" if the file has one, or in its pusher\'s ' +
+        'AGENTHYDRA_CODEX_HUB_TOKEN, and use it at once: its first request with an install id binds it.',
+    ),
   )
 } else if (command === 'revoke' && name) {
   const key = await keyOf(name)

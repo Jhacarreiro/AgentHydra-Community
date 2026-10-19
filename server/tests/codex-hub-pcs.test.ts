@@ -825,6 +825,65 @@ test("a name with a control character is never a record's or a log line's: a spa
   }
 })
 
+test('a name with a format character, a line separator or a variation selector is kept, and every log line prints it escaped', () => {
+  const root = newRoot()
+  settings({ admin: ADMIN, legacy: LEGACY })
+  // Reads as Desktop, and makes desk-top: none of these is a control character, so the name is the record's.
+  const odd = 'Desk​ top‮️'
+  const shown = 'Desk\\u200b\\u2028top\\u202e\\ufe0f'
+  folder(root, 'desk-top', { pc: odd, install: C, pushedAt: T0 })
+  const lines: string[] = []
+  const log = spyOn(console, 'log').mockImplementation((s: unknown) => void lines.push(String(s)))
+  const warn = spyOn(console, 'warn').mockImplementation((s: unknown) => void lines.push(String(s)))
+  try {
+    logCodexHubStart(root, T0)
+    const t = newPcToken()
+    expect(exchangeLegacy({ id: t.id, hash: t.hash, install: C }, root, T0 + 1)).toMatchObject({
+      ok: true,
+      pc: odd,
+    })
+    // Another exchange from its install, after it moved: the warning names it too.
+    const late = newPcToken()
+    expect(
+      exchangeLegacy({ id: late.id, hash: late.hash, install: C }, root, T0 + 2),
+    ).toMatchObject({
+      status: 401,
+    })
+    expect(retirePc('desk-top', t.id, `Lap top`, root, T0 + 3)).toMatchObject({ ok: true, pc: odd })
+    expect(forgetPc('desk-top', root, T0 + 4)).toMatchObject({ ok: true, pc: odd })
+    const paged = newPcToken()
+    const code = mintPairCode({ key: 'desk-top', pc: odd, replaces: null }, root, T0 + 5)
+    expect(
+      redeemPairCode(
+        { code, id: paged.id, hash: paged.hash, install: A, from: 'x​y' },
+        root,
+        T0 + 6,
+      ),
+    ).toMatchObject({ ok: true, pc: odd })
+    expect(revokePc('desk-top', root, T0 + 7)).toMatchObject({ ok: true, pc: odd })
+    expect(
+      registerPcToken({ pc: odd, ...newPcToken(), install: B, replace: true }, root, T0 + 8),
+    ).toMatchObject({ ok: true, pc: odd })
+    for (const what of [
+      `old shared token: ${shown} (last push`,
+      `${shown} moved to a token of its own`,
+      `an exchange for ${shown}'s install arrived after ${shown} moved`,
+      `${shown} retired its token (renamed to "Lap\\u2029top")`,
+      `${shown} forgotten`,
+      `${shown} paired through the page (`,
+      '; from x\\u200by)',
+      `${shown} revoked`,
+      `${shown} was given a token on the command line`,
+    ])
+      expect(lines.some((l) => l.includes(what))).toBe(true)
+    for (const line of lines)
+      expect(line).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u)
+  } finally {
+    log.mockRestore()
+    warn.mockRestore()
+  }
+})
+
 test("a record's name is one whose key is its key, and one the page takes, for a cut key that ends in a dash too", () => {
   const root = newRoot()
   settings({ admin: ADMIN, legacy: LEGACY })

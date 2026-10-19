@@ -629,7 +629,8 @@ bun --env-file ~/.config/codex-hub/hub.env scripts/codex-hub-pcs.ts forget <pc>
 
 `<pc>` is a name or a key: `revoke` and `forget` take its key, and `add` keeps the name as you typed it, but refuses a
 key that the cut at 63 characters left ending in a dash, which as a name makes another PC's key. `list` shows a PC's
-key beside its name whenever the name does not make it or is printed escaped. The same
+key beside its name whenever the name does not make it or has anything but printable ASCII in it (a letter that
+looks like another, or a character it prints escaped, as `\uXXXX`). The same
 requests with `curl` are in [REFERENCE.md](REFERENCE.md#codex-chats-from-other-pcs-codex-hub).
 
 ### Moving PCs to tokens of their own

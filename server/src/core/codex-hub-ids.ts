@@ -27,12 +27,13 @@ const escaped = (ch: string): string =>
 
 /**
  * What a terminal does not show as itself: a control (C0, DEL, C1), a format character (a zero-width space, a bidi
- * override) or a line or paragraph separator. Of these, JSON.stringify escapes C0 alone.
+ * override), a line or paragraph separator, or any other character Unicode says to draw as nothing (a variation
+ * selector, a combining grapheme joiner, a Hangul filler). Of these, JSON.stringify escapes C0 alone.
  */
-const UNSEEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
-const UNSEEN_IN_JSON = /[\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/gu
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu
+const UNSEEN_IN_JSON = /[\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu
 
-/** `text` with each character a terminal does not show as itself escaped as \uXXXX: for a line the CLI prints. */
+/** `text` with each character a terminal does not show as itself escaped as \uXXXX: for a line the CLI or the log prints. */
 export function plainText(text: string): string {
   return text.replace(UNSEEN, escaped)
 }

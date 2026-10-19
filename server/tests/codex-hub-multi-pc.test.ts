@@ -925,28 +925,36 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
 })
 
 test(
-  'the command line prints a control character in a name or a reason escaped, a C1 one included',
+  'the command line prints a control character in a name or a reason escaped, a C1 one included, and the key beside a name that is not plain ASCII',
   async () => {
     const fake = Bun.serve({
       port: 0,
       hostname: '127.0.0.1',
-      fetch: () =>
-        Response.json({
-          legacy: { open: false, pending: 0 },
-          pcs: [
-            {
-              key: 'office-pc',
-              pc: 'Office\u009b\u0085\u001b[2K\u007fPC',
-              state: 'revoked',
-              revokedAt: '2026-10-18T09:00:00.000Z',
-              revokedWhy: 'renamed to x\ny',
-            },
-            // Its name makes its key, but is printed escaped: the key is shown too.
-            { key: 'desk-pc', pc: 'Desk\u009bPC', state: 'unpaired', why: 'no-install' },
-            // One that reads as Laptop, with a zero-width space and a bidi override, makes lap-top.
-            { key: 'lap-top', pc: 'Lap\u200btop\u202e', state: 'unpaired', why: 'no-install' },
-          ],
-        }),
+      fetch: (req) =>
+        req.method === 'POST'
+          ? Response.json({ pc: 'Lap\u200btop', key: 'lap-top', id: '0123456789abcdef' })
+          : Response.json({
+              legacy: { open: false, pending: 0 },
+              pcs: [
+                {
+                  key: 'office-pc',
+                  pc: 'Office\u009b\u0085\u001b[2K\u007fPC',
+                  state: 'revoked',
+                  revokedAt: '2026-10-18T09:00:00.000Z',
+                  revokedWhy: 'renamed to x\ny',
+                },
+                // Its name makes its key, but is printed escaped: the key is shown too.
+                { key: 'desk-pc', pc: 'Desk\u009bPC', state: 'unpaired', why: 'no-install' },
+                // One that reads as Laptop, with a zero-width space and a bidi override, makes lap-top.
+                { key: 'lap-top', pc: 'Lap\u200btop\u202e', state: 'unpaired', why: 'no-install' },
+                // One that reads as Desktop with a variation selector, which is no format character, makes desk-top.
+                { key: 'desk-top', pc: 'Desk\ufe0ftop', state: 'unpaired', why: 'no-install' },
+                // One with a Cyrillic a, which a terminal draws as it is, makes l-ptop: the key is shown beside it.
+                { key: 'l-ptop', pc: 'L\u0430ptop', state: 'unpaired', why: 'no-install' },
+                // A name of printable ASCII that makes its key is printed alone.
+                { key: 'laptop', pc: 'Laptop', state: 'unpaired', why: 'no-install' },
+              ],
+            }),
     })
     try {
       const r = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'list')
@@ -956,16 +964,31 @@ test(
       expect(r.stdout).toContain('renamed to x\\u000ay')
       expect(r.stdout).toContain('Desk\\u009bPC (key desk-pc)')
       expect(r.stdout).toContain('Lap\\u200btop\\u202e (key lap-top)')
-      expect(r.stdout).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}]/u)
+      expect(r.stdout).toContain('Desk\\ufe0ftop (key desk-top)')
+      expect(r.stdout).toContain('L\u0430ptop (key l-ptop)')
+      expect(r.stdout).toContain('\nLaptop  unpaired')
+      expect(r.stdout).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u)
       // As JSON too: the same values, with DEL and C1 escaped as C0 is.
       const j = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'list', '--json')
       expect(j.code).toBe(0)
-      expect(j.stdout.replaceAll('\n', '')).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u)
+      expect(j.stdout.replaceAll('\n', '')).not.toMatch(
+        /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u,
+      )
       expect(JSON.parse(j.stdout).pcs.map((p: { pc: string }) => p.pc)).toEqual([
         'Office\u009b\u0085\u001b[2K\u007fPC',
         'Desk\u009bPC',
         'Lap\u200btop\u202e',
+        'Desk\ufe0ftop',
+        'L\u0430ptop',
+        'Laptop',
       ])
+      // add's line on stderr, which names the PC the hub registered.
+      const a = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'add', 'Lap\u200btop')
+      expect(a.code).toBe(0)
+      expect(a.stderr).toContain(
+        'Lap\\u200btop has a token of its own on the hub (chp_0123456789abcdef)',
+      )
+      expect(a.stderr).not.toMatch(/\p{Cf}/u)
     } finally {
       fake.stop(true)
     }

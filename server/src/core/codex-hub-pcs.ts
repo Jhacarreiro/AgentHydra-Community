@@ -44,7 +44,7 @@ import {
   legacyToken,
   readCodexHubManifest,
 } from './codex-hub'
-import { CONTROL, isHubPcKey, pcTokenHash, pcTokenId, plainJson } from './codex-hub-ids'
+import { CONTROL, isHubPcKey, pcTokenHash, pcTokenId, plainJson, plainText } from './codex-hub-ids'
 import { closeRelayUnless, relayPcs } from './codex-hub-relay'
 
 export type PairedBy = 'page' | 'cli' | 'exchange'
@@ -628,7 +628,9 @@ export function registerPcToken(
   )
   if (failed) return failed
   closeRelayUnless(key, reg.id, closeWhy(target.replaces))
-  console.log(`[codex-hub] ${pc} was given a token on the command line (${tokenName(reg.id)})`)
+  console.log(
+    plainText(`[codex-hub] ${pc} was given a token on the command line (${tokenName(reg.id)})`),
+  )
   return { ok: true, pc, key, id: reg.id }
 }
 
@@ -800,8 +802,10 @@ export function redeemPairCode(
         ? tokenName(entry.replaces)
         : 'nothing'
   console.log(
-    `[codex-hub] ${entry.pc} paired through the page (${tokenName(r.id)}; replaced ${replaced}` +
-      `${r.from ? `; from ${r.from}` : ''})`,
+    plainText(
+      `[codex-hub] ${entry.pc} paired through the page (${tokenName(r.id)}; replaced ${replaced}` +
+        `${r.from ? `; from ${r.from}` : ''})`,
+    ),
   )
   return { ok: true, pc: entry.pc, key: entry.key, id: r.id }
 }
@@ -861,9 +865,11 @@ export function exchangeLegacy(
           if (it && !it.contestedAt) it.contestedAt = iso(now)
         })
       console.warn(
-        `[codex-hub] an exchange for ${r.pc}'s install arrived after ${r.pc} moved to ${tokenName(r.tokenId!)} ` +
-          `(paired ${hubWhen(r.pairedAt)} by ${PAIRED_BY[r.pairedBy ?? 'page']}, from ${r.pairedFrom ?? 'an unknown address'}). ` +
-          `If ${r.pc} did not send it, pair ${r.pc} again through the page and change the legacy token.`,
+        plainText(
+          `[codex-hub] an exchange for ${r.pc}'s install arrived after ${r.pc} moved to ${tokenName(r.tokenId!)} ` +
+            `(paired ${hubWhen(r.pairedAt)} by ${PAIRED_BY[r.pairedBy ?? 'page']}, from ${r.pairedFrom ?? 'an unknown address'}). ` +
+            `If ${r.pc} did not send it, pair ${r.pc} again through the page and change the legacy token.`,
+        ),
       )
     } else console.log(`[codex-hub] no PC is pending for install ${installName(install)}`)
     return unauthorized
@@ -881,10 +887,12 @@ export function exchangeLegacy(
   closeRelayUnless(key, x.id, 'This PC moved to a token of its own.')
   const left = pendingKeys(root, now)
   console.log(
-    `[codex-hub] ${pc} moved to a token of its own (${tokenName(x.id)}); ` +
-      (left.length
-        ? `${left.length} PC(s) still on the old shared token: ${left.join(', ')}`
-        : 'every pending PC has a token of its own; remove AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN and restart the hub'),
+    plainText(
+      `[codex-hub] ${pc} moved to a token of its own (${tokenName(x.id)}); ` +
+        (left.length
+          ? `${left.length} PC(s) still on the old shared token: ${left.join(', ')}`
+          : 'every pending PC has a token of its own; remove AGENTHYDRA_CODEX_HUB_LEGACY_TOKEN and restart the hub'),
+    ),
   )
   return { ok: true, pc, key, id: x.id }
 }
@@ -938,7 +946,7 @@ export function revokePc(
   }
   const relayClosed = closeRelayUnless(key, null, 'This PC was revoked on the hub.')
   dropPairing(key, root)
-  console.log(`[codex-hub] ${pc} revoked`)
+  console.log(plainText(`[codex-hub] ${pc} revoked`))
   return { ok: true, pc, key, state: 'revoked', relayClosed }
 }
 
@@ -974,7 +982,9 @@ export function retirePc(
   )
   dropPairing(key, root)
   console.log(
-    `[codex-hub] ${record.pc} retired its token${renamedTo ? ` (renamed to ${plainJson(renamedTo)})` : ''}`,
+    plainText(
+      `[codex-hub] ${record.pc} retired its token${renamedTo ? ` (renamed to ${plainJson(renamedTo)})` : ''}`,
+    ),
   )
   return { ok: true, pc: record.pc, key, state: 'revoked' }
 }
@@ -1022,7 +1032,7 @@ export function forgetPc(
   closeRelayUnless(key, null, 'This PC was removed from the hub.')
   dropPairing(key, root)
   rmSync(dir, { recursive: true, force: true })
-  console.log(`[codex-hub] ${pc} forgotten`)
+  console.log(plainText(`[codex-hub] ${pc} forgotten`))
   return { ok: true, pc, key, removed: true }
 }
 
@@ -1150,8 +1160,10 @@ export function logCodexHubStart(root: string = CODEX_HUB_DIR, now: number = Dat
       ([key, m]) => `${plainName(m.pc, key)} (last push ${hubWhen(m.pushedAt)})`,
     )
     console.log(
-      `[codex-hub] legacy window open until ${hubWhen(s.window.until)}: ${pending.length} PC(s) still on the ` +
-        `old shared token${pending.length ? `: ${pending.join(', ')}` : ''}`,
+      plainText(
+        `[codex-hub] legacy window open until ${hubWhen(s.window.until)}: ${pending.length} PC(s) still on the ` +
+          `old shared token${pending.length ? `: ${pending.join(', ')}` : ''}`,
+      ),
     )
     const stuck = [...s.why]
       .sort(([a], [b]) => (a < b ? -1 : 1))
