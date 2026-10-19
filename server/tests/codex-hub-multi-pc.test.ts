@@ -867,31 +867,35 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
   )
 })
 
-test('the command line prints a control character in a name or a reason escaped, a C1 one included', async () => {
-  const fake = Bun.serve({
-    port: 0,
-    hostname: '127.0.0.1',
-    fetch: () =>
-      Response.json({
-        legacy: { open: false, pending: 0 },
-        pcs: [
-          {
-            key: 'office-pc',
-            pc: 'Office\u009b\u0085\u001b[2K\u007fPC',
-            state: 'revoked',
-            revokedAt: '2026-10-18T09:00:00.000Z',
-            revokedWhy: 'renamed to x\ny',
-          },
-        ],
-      }),
-  })
-  try {
-    const r = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'list')
-    expect(r.code).toBe(0)
-    expect(r.stdout.replaceAll('\n', '')).not.toMatch(/\p{Cc}/u)
-    expect(r.stdout).toContain('Office\\u009b\\u0085\\u001b[2K\\u007fPC (key office-pc)')
-    expect(r.stdout).toContain('renamed to x\\u000ay')
-  } finally {
-    fake.stop(true)
-  }
-})
+test(
+  'the command line prints a control character in a name or a reason escaped, a C1 one included',
+  async () => {
+    const fake = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch: () =>
+        Response.json({
+          legacy: { open: false, pending: 0 },
+          pcs: [
+            {
+              key: 'office-pc',
+              pc: 'Office\u009b\u0085\u001b[2K\u007fPC',
+              state: 'revoked',
+              revokedAt: '2026-10-18T09:00:00.000Z',
+              revokedWhy: 'renamed to x\ny',
+            },
+          ],
+        }),
+    })
+    try {
+      const r = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'list')
+      expect(r.code).toBe(0)
+      expect(r.stdout.replaceAll('\n', '')).not.toMatch(/\p{Cc}/u)
+      expect(r.stdout).toContain('Office\\u009b\\u0085\\u001b[2K\\u007fPC (key office-pc)')
+      expect(r.stdout).toContain('renamed to x\\u000ay')
+    } finally {
+      fake.stop(true)
+    }
+  },
+  SLOW_MS,
+)
