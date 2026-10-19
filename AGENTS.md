@@ -92,9 +92,9 @@ tests are skipped, and CI builds both first.
   The pre-push hook and `release.yml` refuse a tag below 2.0.0, and the hook refuses any tag on a commit up to the
   base (upstream's own tags); nothing refuses a new `2.0.x` tag, so the rest is on you.
   `release-channel.json` names the repository releases come from (Jhacarreiro/AgentHydra-Community) and what a build
-  may do about a newer one; it says `"updates": "off"` until the first release, and a release whose own commit says
-  `off` is published as a pre-release. Every release ships Desk 2 (`desk2/`) as the window, and a tag build whose
-  Windows zip has no `desk2/` does not publish. See [docs/RELEASING.md](docs/RELEASING.md).
+  may do about a newer one; it said `"updates": "off"` until the first release (2026.10.0) and says `"auto"` since,
+  and a release whose own commit says `off` is published as a pre-release. Every release ships Desk 2 (`desk2/`) as
+  the window, and a tag build whose Windows zip has no `desk2/` does not publish. See [docs/RELEASING.md](docs/RELEASING.md).
 - **Release notes, CHANGELOG sections and READMEs open with a TL;DR, and the detail is folded**,
   as SageThumbs does it ("I ain't fucking reading that 10,000-mile-long detailed bullshit list just
   to figure out that you fixed two little things"). A CHANGELOG version section opens with

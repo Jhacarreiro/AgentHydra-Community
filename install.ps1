@@ -20,10 +20,10 @@
     * No auto-start. AgentHydra has its own update path once installed (docs/RELEASING.md).
 
   Releases come from one repository, the release channel's (release-channel.json at the repository
-  root; $Repo below is its copy). While the channel says "updates": "off", the repository has
-  published no release, so the download path refuses before it asks GitHub anything, and only
-  -FromZip installs (a ZIP you built yourself with scripts/package-release.ts). A download is
-  installed only from that repository's own release files.
+  root; $Repo below is its copy). While the channel says "updates": "off", as it did before the
+  repository published its first release, the download path refuses before it asks GitHub
+  anything, and only -FromZip installs (a ZIP you built yourself with scripts/package-release.ts).
+  A download is installed only from that repository's own release files.
 
 .PARAMETER Version
   A specific release tag (e.g. v2026.10.0). Defaults to the latest published release.
@@ -88,7 +88,7 @@ if ($Sha256 -and -not $FromZip) { throw "-Sha256 only applies together with -Fro
 # The release channel, copied from release-channel.json: `irm | iex` runs this file alone, with no
 # checkout beside it to read. tests/release-channel-drift.test.ts holds both values to that file.
 $Repo = 'Jhacarreiro/AgentHydra-Community'
-$Updates = 'off'
+$Updates = 'auto'
 
 # --- release-owned components ---------------------------------------------------------------
 # The complete windows-x64 payload, per scripts/package-release.ts: AgentHydra.exe (the launcher)

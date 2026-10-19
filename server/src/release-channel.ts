@@ -14,7 +14,7 @@
 // tests/release-channel-drift.test.ts holds every copy to the file.
 //
 // `updates` is what a RELEASE build does: "off" makes no update check and downloads no part of AgentHydra
-// (the state until the first release is installed by hand; a release built with it is a pre-release), "notify" checks
+// (the state before the first release; a release built with it is a pre-release), "notify" checks
 // and tells but never installs, "auto" installs when Settings lets it. A source checkout updates through git and is
 // held to the repository instead (server/src/updater.ts).
 import channelFile from '../../release-channel.json'

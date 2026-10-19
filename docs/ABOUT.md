@@ -24,8 +24,8 @@ goes through `fan_out` or a visible desktop chat.
 
 There is no hosted service or account sign-up: it reads the local stores the CLIs and desktop apps already write and
 talks to localhost, with a Windows system-tray launcher and an MCP server so agents can drive all of it themselves.
-What does leave the machine is listed in the README's network section: the update check (a release build's is off
-until this repository publishes releases; a source checkout's `git ls-remote` runs on its timer either way), Bun and
+What does leave the machine is listed in the README's network section: the update check (a release build asks this
+repository's releases on GitHub; a source checkout's `git ls-remote` runs on its timer either way), Bun and
 Claude Code downloads (and, in a release, the Claude Agent SDK at the version it pins), the Claude upkeep pass on
 Windows (Claude Desktop's own update feed, about hourly, with the device id, version and OS version the app sends;
 the install's own updater and an npm update of the CLI when they are behind), a daily price list, usage lookups for

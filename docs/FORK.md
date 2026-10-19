@@ -137,7 +137,7 @@ git log -1 --format=%P aee9dfc4           # the relicensing commit's only parent
 Each of these only worked with a service the upstream owner runs, or with a private repository nobody else has:
 
 - **The update relay and its install-id ping:** update checks went through an upstream-run proxy with an install
-  id; a release build now asks only this repository's releases, and not at all until it publishes one, and a source
+  id; a release build now asks only this repository's releases, and a source
   checkout asks only this repository, with git.
 - **Connections settings sync, its `@cnct/connect` dependency, and Desk's Connections connector, chip and pane:**
   they needed an account on LunarWerx's own Connections service.

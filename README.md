@@ -35,7 +35,7 @@ stays on, and let your other PCs report to it:
 - **The inbox from a phone:** the window can sit behind a reverse proxy that signs you in first, so the same list
   opens on your phone.
 
-All of this is off until you set it up, and it is new: none of it has been in a published release yet. This
+All of this is off until you set it up, and it is new: 2026.10.0 is the first release that has it. This
 repository's tests run the hub and the tray on Linux, including two PCs that pair, push and relay through the real
 daemon. Before the fork, the same hub and tray ran in the maintainer's own setup with Windows PCs and were tried on a
 Mac. See [One server, several PCs](#one-server-several-pcs).
@@ -232,8 +232,18 @@ the window's [ports and remote access](desk2/README.md#ports).
 
 ## Install
 
-This project has not published a release yet, so for now you **build it from source** (Windows, macOS or Linux)
-with [Bun](https://bun.sh) 1.4.3:
+**Windows, one line** (no Administrator; the download's SHA-256 is checked before anything unpacks):
+
+```powershell
+irm https://raw.githubusercontent.com/Jhacarreiro/AgentHydra-Community/main/install.ps1 | iex
+```
+
+Or take a download from the [releases page](https://github.com/Jhacarreiro/AgentHydra-Community/releases): the
+Windows `.zip` (unpack it and run `AgentHydra.exe` in its folder), or the `.tar.gz` for Linux or macOS. An installed
+copy updates itself from this repository's releases once you turn auto-update on in Settings, and
+`install.ps1 -FromZip <zip>` installs a zip you downloaded or built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
+
+**From source** (Windows, macOS or Linux), with [Bun](https://bun.sh) 1.4.3:
 
 ```sh
 git clone https://github.com/Jhacarreiro/AgentHydra-Community.git
@@ -245,24 +255,13 @@ On Windows, `bun scripts/build-natives.ts` also builds the tray icon, the window
 their Rust source (it needs Rust and Visual Studio's C++ build tools). Without them AgentHydra still runs: the tray
 is the PowerShell one, and AgentHydra opens in your browser.
 
-**Windows, one line**, once releases exist (no Administrator; the download's SHA-256 is checked before anything
-unpacks):
-
-```powershell
-irm https://raw.githubusercontent.com/Jhacarreiro/AgentHydra-Community/main/install.ps1 | iex
-```
-
-While `release-channel.json` says updates are off, as it does until the first release has been installed by hand,
-the installer stops with a message instead of downloading anything; `install.ps1 -FromZip <zip>` installs a zip you
-downloaded or built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
-
 <details>
 <summary><b>Read more: downloads, Windows programs, licences, versions, updates, requirements, network</b></summary>
 
-- **Downloads,** once published: the Windows `.zip` holds the whole app: the window, the tray icon and the
-  orchestrator tools. Once updates are on, a release also has a single `.exe`, a small launcher that fetches the
-  rest of the app from the same release the first time you run it; a release built while they are off has the zip
-  only, since a build with updates off downloads no part of AgentHydra. Linux and macOS get a `.tar.gz`. No download
+- **Downloads:** the Windows `.zip` holds the whole app: the window, the tray icon and the orchestrator tools. A
+  release also has a single `.exe`, a small launcher that fetches the rest of the app from the same release the
+  first time you run it; a release built while updates were off has the zip only, since a build with updates off
+  downloads no part of AgentHydra. Linux and macOS get a `.tar.gz`. No download
   packs Bun, Claude Code or the Claude Agent SDK: the launcher fetches the Bun the release was built with on first
   run, and again after an update that changes that version (checked against Bun's published checksums), and the
   window fetches Claude Code, and the Agent SDK the release pins, when a chat first needs them.
@@ -296,7 +295,7 @@ downloaded or built yourself ([docs/RELEASING.md](docs/RELEASING.md)).
   `0.x`, `1.x` and `2.0.x` releases of the project this one was forked from.
 - **Updates** come only from this repository, the one named in `release-channel.json`, and auto-update is off
   until you turn it on in Settings. A release build does only what its channel allows: `off` checks nothing and
-  downloads nothing (the setting until the first release), `notify` tells you about a newer release, and `auto`
+  downloads nothing (the setting before the first release), `notify` tells you about a newer release, and `auto`
   installs it, taking only files from this repository's release downloads, checked against that release's
   `SHA256SUMS.txt`. A source checkout updates with `git pull --ff-only` of the branch it tracks, and only when that
   remote is this repository on GitHub; any other remote is reported in Settings and never contacted. It checks

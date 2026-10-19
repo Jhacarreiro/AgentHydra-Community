@@ -9,9 +9,11 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+## [2026.10.0] - 2026-10-19
+
 **TL;DR**
 
-- **Updates come only from this project's own releases, and stay off until it publishes one**
+- **Updates come only from this project's own releases**
 - **Versions are now numbered by date, starting at 2026.10.0**
 - **Codex chats from your other PCs appear here, and Desk can continue them**
 - **Whoever runs a Codex hub can build a tray app that connects a PC to it in one click**
@@ -30,11 +32,11 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **This repository's history starts with one commit that imports AgentHydra's last MIT version unchanged**
 - **And every change below that AgentHydra had made, not yet released, by its last MIT-licensed commit**
 
-**Everything in Unreleased**
+**Everything in 2026.10.0**
 
-- **Updates come only from this project's own releases, and stay off until it publishes one.** An installed copy no
-  longer asks the original project's update service and sends no install id. It installs only files from this
-  repository's own release downloads, and auto-update is off until you turn it on in Settings. A copy run from
+- **Updates come only from this project's own releases.** An installed copy no longer asks the original project's
+  update service and sends no install id. It checks this repository's releases, installs only files from their
+  downloads, and installs nothing until you turn auto-update on in Settings. A copy run from
   source updates only from this repository, and says so when its remote is another one.
 - **Versions are now numbered by date, starting at 2026.10.0.** A release can no longer share a number or a file
   name with one of the original project's.
@@ -103,9 +105,8 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
   is not linked to a Git remote.
 - **A fresh install checks for updates every six hours, as documented.** It checked every 15 minutes until you
   saved your own interval. An interval you have saved is kept as before.
-- **The Windows installer installs only this project's releases.** While updates are off, as they are until the
-  first release, it stops with a message before downloading anything. A zip you downloaded or built yourself still
-  installs.
+- **The Windows installer installs only this project's releases.** It downloads only this repository's release
+  files and checks them before anything unpacks. A zip you downloaded or built yourself still installs.
 - **With updates off, a launcher that finds part of the install missing tells you how to restore it.** It downloads
   none of the app, so it names the missing part and says to copy it from the AgentHydra folder of an unpacked
   release archive, or to run from a source checkout. Releases built with updates off have no separate Windows
