@@ -929,8 +929,9 @@ func TestPairHandler(t *testing.T) {
 
 // A pairing whose answer was lost, which the hub had: whatever name the page paired it under (the link's, or the
 // <name>-N it offered), a pairing posted after it finds this PC connected under that name, says what came of a
-// rename, and redeems no code, whether it settles the token itself or a check settled it after this link sent it. A
-// check's token the hub has under the link's name stops the code too; under another name, it does not.
+// rename, and redeems no code, whether it settles the token itself or a check settled it while this link was open
+// and the hub still has it. A link opened after the check is the user's own. A check's token the hub has under the
+// link's name stops the code too; under another name, it does not.
 func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 	savedGap := redeemGap
 	redeemGap = 10 * time.Millisecond
@@ -1034,27 +1035,63 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 	hubAnswers(takes("Office-3"), nil, has("Office-2"))
 	connected("another link's", link("Office", ""), t2, "Office-2")
 
-	// A check settles the lost token before the page is posted again: this link's post sent it, so it is connected.
+	// A check settles the lost token before the page is posted again: it was lost while this link was open, so this
+	// PC is connected, once the hub says it still has it.
+	byCheck := func(what, token string) {
+		t.Helper()
+		a.token.Lock()
+		a.settleNext()
+		a.token.Unlock()
+		if c := savedConfig(); c.Token != token || c.Next != "" {
+			t.Fatalf("%s: tray.json after the check %+v", what, c)
+		}
+	}
 	l3 := link("Desk", "")
 	t3 := lose("a check first", l3)
 	hubAnswers(takes("Desk-3"), nil, has("Desk-2"))
-	a.token.Lock()
-	a.settleNext()
-	a.token.Unlock()
-	if c := savedConfig(); c.Token != t3 || c.PC != "Desk-2" {
-		t.Fatalf("a check first: tray.json %+v", c)
-	}
+	byCheck("a check first", t3)
+	asked := len(calls("whoami"))
 	connected("a check first", l3, t3, "Desk-2")
-	// Another link's code is its own: a pairing it asks for now.
-	t4 := lose("a check first, then another link", link("Lab", ""))
-	hubAnswers(takes("Lab-3"), nil, has("Lab-2"))
-	a.token.Lock()
-	a.settleNext()
-	a.token.Unlock()
-	if c := savedConfig(); c.Token != t4 {
-		t.Fatalf("a check first, then another link: tray.json %+v", c)
+	if w := calls("whoami")[asked:]; len(w) != 1 || w[0].bearer != t3 {
+		t.Errorf("a check first: whoami %+v", w)
 	}
-	redeemed("a check first, then another link", link("Lab", ""), "Lab-3")
+	// So it is on a link opened while the token was unsettled (after a restart, or once the first link expired),
+	// whose first post was told to wait.
+	t4 := lose("a link opened while it was unsettled", link("Lab", ""))
+	l4 := link("Lab", "")
+	hubAnswers(takes("Lab-3"), nil, unsure)
+	if status, body := postCode(l4, code); status != http.StatusServiceUnavailable || !strings.Contains(body, "still waiting") {
+		t.Errorf("a link opened while it was unsettled, told to wait: %d %s", status, body)
+	}
+	hubAnswers(takes("Lab-3"), nil, has("Lab-2"))
+	byCheck("a link opened while it was unsettled", t4)
+	connected("a link opened while it was unsettled", l4, t4, "Lab-2")
+	// One opened after a check settled it is a pairing of the user's own, asked for with the tray showing this PC
+	// connected: its code is redeemed.
+	t5 := lose("a link opened after the check", link("Lab-2", ""))
+	hubAnswers(takes("Lab-4"), nil, has("Lab-3"))
+	byCheck("a link opened after the check", t5)
+	redeemed("a link opened after the check", link("Lab-3", ""), "Lab-4")
+	// A token the hub revoked since a check settled it: the same link's code pairs this PC again.
+	l6 := link("Shed", "")
+	t6 := lose("revoked since", l6)
+	hubAnswers(takes("Shed-3"), nil, has("Shed-2"))
+	byCheck("revoked since", t6)
+	hubAnswers(takes("Shed-3"), nil, answer(401, errJSON("revoked")))
+	redeemed("revoked since", l6, "Shed-3")
+	// While the hub does not say whether it still has it, the post waits, and nothing changes.
+	l7 := link("Barn", "")
+	t7 := lose("not told", l7)
+	hubAnswers(takes("Barn-3"), nil, has("Barn-2"))
+	byCheck("not told", t7)
+	hubAnswers(takes("Barn-3"), nil, unsure)
+	before := len(calls("redeem"))
+	if status, body := postCode(l7, code); status != http.StatusServiceUnavailable ||
+		!strings.Contains(body, "whether it has this PC&#39;s token") || len(calls("redeem")) != before || savedConfig().Token != t7 {
+		t.Errorf("not told: %d %s (%d redeems), tray.json %+v", status, body, len(calls("redeem"))-before, savedConfig())
+	}
+	hubAnswers(takes("Barn-3"), nil, has("Barn-2"))
+	connected("not told, then told", l7, t7, "Barn-2")
 
 	// A check's token (an exchange's whose answer was lost), which the hub has under the link's name: connected. Under
 	// another name, the link's code is redeemed.

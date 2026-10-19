@@ -182,8 +182,13 @@ var pairCode = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // pairHandler takes the hub page's post for this pairing: a code, which it redeems with a token it makes, or the
 // token a hub from before PC tokens posts.
 func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
-	// The tokens this link's posts sent whose answer was lost (redeemCode), held under a.token.
+	// The pairings' tokens whose answer was lost while this link was open, held under a.token: one still unsettled
+	// when it opened, and those its own posts sent (redeemCode). A token settled before it opened is not one: a
+	// pairing posted on it is the user's own, made with the tray showing this PC connected.
 	lost := map[string]bool{}
+	if c := savedConfig(); c.Pairing && c.Next != "" {
+		lost[c.Next] = true
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			page(w, http.StatusMethodNotAllowed, "Open the hub's pairing page from the Codex Hub menu.")
@@ -207,7 +212,7 @@ func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
 
 // redeemCode makes this PC a token and redeems the page's code with it. The token is saved as next before it is
 // sent, so an answer lost on the way is settled at the next check (settleNext), and as the token only once the hub
-// has answered that it took it. lost is this link's tokens whose answer was lost.
+// has answered that it took it. lost is the pairings' tokens whose answer was lost while this link was open.
 func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]bool, code string, finish func()) {
 	a.token.Lock()
 	defer a.token.Unlock()
@@ -221,13 +226,26 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]b
 			return
 		}
 	}
-	// The hub had a pairing's token whose answer was lost, settled just now or, if this link's own post sent it, by a
-	// check since: this PC is connected under the name that pairing chose (the link's, or another the page offered),
-	// and the page's new code, which would pair it a second time, is left. So it is when the hub had a check's token
-	// under this link's name.
+	// The hub had a pairing's token whose answer was lost, settled just now or, if it was lost while this link was
+	// open, by a check since: this PC is connected under the name that pairing chose (the link's, or another the page
+	// offered), and the page's new code, which would pair it a second time, is left. So it is when the hub had a
+	// check's token under this link's name.
 	now := savedConfig()
 	settled, s := now.Token != had.Token, a.settled
-	pairings := s.token != "" && s.token == now.Token && (settled || lost[now.Token])
+	pairings := isPcToken(now.Token) && s.token == now.Token && (settled || lost[now.Token])
+	// One a check settled before this post: the hub may have revoked it since, and then this code pairs the PC again.
+	if pairings && !settled {
+		_, ans, err := whoami(loadConfig())
+		switch {
+		case err == nil && ans.status == http.StatusOK:
+		case err == nil && (ans.status == http.StatusUnauthorized && (ans.code == "unknown-token" || ans.code == "revoked") ||
+			ans.status == http.StatusConflict && ans.code == "install-mismatch"):
+			pairings, a.settled = false, settledPairing{}
+		default:
+			page(w, http.StatusServiceUnavailable, "This PC is still waiting for the hub to say whether it has this PC's token. Nothing changed: choose Connect this PC again in a few minutes.")
+			return
+		}
+	}
 	if isPcToken(now.Token) && (pairings || settled && pcKey(now.PC) == pcKey(open.name)) {
 		a.settled = settledPairing{}
 		text := "This PC is connected as " + now.PC + " and is pushing its Codex chats."
