@@ -667,8 +667,10 @@ nothing anywhere.
    from before this change fetches the new pusher and the new tray with the legacy token and replaces itself, and the
    new tray moves as it starts.
 4. **Give a token to each pusher that runs without a tray,** a daemon's or a standalone one: pushers never move by
-   themselves. Run `add <pc>`, put the token in that PC's `AGENTHYDRA_CODEX_HUB_TOKEN`, and restart its pusher,
-   before the window closes.
+   themselves. Run `add <pc> --replace`, put the token in that PC's `AGENTHYDRA_CODEX_HUB_TOKEN`, and restart its
+   pusher, before the window closes. Such a PC is pending while it pushes with the old token, and `add` refuses a
+   pending name without `--replace`; its pushes with the old token stop there, until its pusher restarts with the new
+   one.
 5. **Watch `list` until nothing is pending.** The window closes 7 days after the hub first saw the legacy token, or at
    `AGENTHYDRA_CODEX_HUB_LEGACY_UNTIL`, an ISO 8601 date or date-time, earlier or later. The start is kept in
    `.pcs.json`, so setting the legacy token again after the window has closed reopens nothing unless you move that
@@ -687,7 +689,8 @@ cannot move by itself (`list` says why), do one of these:
 
 - while the legacy token is still in `hub.env`, move `AGENTHYDRA_CODEX_HUB_LEGACY_UNTIL` later and restart the hub
   (a folder past the 30 days still needs one of the next two);
-- run `add <pc>` on the hub (`--replace` when the name has a token), and write that token into the PC's `tray.json`
+- run `add <pc>` on the hub (`--replace` when the name has a token or is still pending), and write that token into
+  the PC's `tray.json`
   by hand, keeping `"hub"`: even a tray from before this change takes it and updates itself, and the new tray fills
   in the rest;
 - or install the current tray on it by hand, over the old one, and choose Connect this PC.
@@ -700,7 +703,11 @@ the builds within the window. A hub that restarts on the new code without the le
 for example, refuses every PC that has not moved, which shows "The hub refused the token": add the setting, restart,
 and they come back. There is no rollback after the first exchange, though. A hub rolled back to before this change
 refuses every token of a PC's own, and each moved PC then needs Connect this PC, which the current tray takes from
-the old page too. So run the tests (step 1) before you publish the builds (step 3).
+the old page too. So run the tests (step 1) before you publish the builds (step 3). To roll back anyway, put back the
+old `hub.env` with the old checkout: `AGENTHYDRA_CODEX_HUB_TOKEN=<old>` again, and no legacy settings. Otherwise the
+old hub takes the new admin token as its one shared token: it refuses every PC that has not moved, and its pairing
+page hands that token to each PC that pairs. To update again later, make a new admin token as in step 2, move
+`AGENTHYDRA_CODEX_HUB_LEGACY_UNTIL` later, and pair again the PCs that had moved.
 
 ### Moving the hub
 
@@ -734,8 +741,10 @@ install id is not a secret, what protects the window is the legacy token itself,
 `CONTESTED` mark that `list` shows on a PC whose exchange came second. If that token may have leaked, pair the PCs
 instead of moving them.
 
-Every refusal of a value that does not have the shape of a PC's token is the same bare 401, whatever the reason, so
-an answer never tells whether a value is the admin token, the legacy token or neither. The hub's log says why, at
+Every refusal of the admin token, or of a value the hub does not know, is the same bare 401, whatever the reason, so
+an answer never tells the admin token from any other value. The legacy token gets that 401 too outside its window;
+while the window is open, a malformed request with it gets the 400 any malformed request gets (`install-required`,
+`bad-request`). The hub's log says why, at
 most once a minute for each route and reason, and names a token by its id only.
 
 **The pairing page hands out one-time codes, not tokens.** A code lasts 20 minutes and never past the tray's

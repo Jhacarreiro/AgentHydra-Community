@@ -1006,7 +1006,7 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   has claimed its install id, and it is the newest folder with that install id. Each other folder has its `why`:
   `no-install`, `old`, `claimed`, `duplicate:<key>` or `window-closed`. The legacy token gets the builds while
   any PC is pending and, for a pending key with that key's install id, pushes and its relay; anything else is
-  the bare 401. `POST /api/codex-hub/exchange`, with the legacy bearer, the install id and `{ id, hash }`, trades
+  the bare 401, but a malformed request with it gets the 400 any malformed request gets. `POST /api/codex-hub/exchange`, with the legacy bearer, the install id and `{ id, hash }`, trades
   it once for a token the tray made: the hub writes the record (`pairedBy` `exchange`), closes the key's legacy
   relay and answers `{ pc, key, id }`. A repeat with the same id, hash and install gets the same answer; an
   exchange for an install that has already moved is a 401 that marks that PC `contestedAt` and logs a warning.
@@ -1018,7 +1018,7 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   [CODEX-HUB.md](CODEX-HUB.md#moving-pcs-to-tokens-of-their-own).
 - **Refusals:** every refusal is JSON, `{ error, code }`: 404 `hub-off` (no admin token); 400 `bad-request`,
   `install-required` or `bad-key`; 401 `unauthorized` (the one answer to any bearer that is not a PC's token,
-  the admin and legacy tokens included), `unknown-token`, `revoked` or `pair-code`; 404 `not-found` (a key the
+  the admin token included, and to the legacy token outside its window), `unknown-token`, `revoked` or `pair-code`; 404 `not-found` (a key the
   hub does not have, or a build it does not hand out); 409 `install-mismatch`, `name-taken`, `name-changed`,
   `id-taken` or `name-paired`; 413 `too-large`; 500 `store-unwritable`; 503 `store-unreadable`. A relay is
   refused with these before the upgrade; a live one whose credential changed (paired again, revoked, retired,
