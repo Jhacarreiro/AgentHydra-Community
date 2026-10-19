@@ -825,18 +825,23 @@ test("a name with a control character is never a record's or a log line's: a spa
   }
 })
 
-test("a record's name is one whose key is its key, for a cut key that ends in a dash too", () => {
+test("a record's name is one whose key is its key, and one the page takes, for a cut key that ends in a dash too", () => {
   const root = newRoot()
   settings({ admin: ADMIN, legacy: LEGACY })
   const cut = `${'a'.repeat(62)}-`
-  // Pushed before control characters were refused: with a space for it, the name still makes the cut key.
+  // Pushed before control characters were refused. With a space for it, the name makes the cut key, but is longer
+  // than the page and add take.
   folder(root, cut, { pc: `${'a'.repeat(62)}-\u0007b`, install: A, pushedAt: T0 })
   // One whose name, with spaces, is another key's.
   const other = `${'b'.repeat(62)}-`
   folder(root, other, { pc: 'Other\u0007PC', install: B, pushedAt: T0 })
+  // One that makes its key and is short enough: kept, with a space for the control character.
+  const long = `${'c'.repeat(30)}-${'d'.repeat(32)}`
+  folder(root, long, { pc: `${'C'.repeat(30)}\u0007${'D'.repeat(32)}`, install: C, pushedAt: T0 })
   for (const [key, install] of [
     [cut, A],
     [other, B],
+    [long, C],
   ] as const) {
     const t = newPcToken()
     expect(exchangeLegacy({ id: t.id, hash: t.hash, install }, root, T0 + 1)).toMatchObject({
@@ -844,11 +849,16 @@ test("a record's name is one whose key is its key, for a cut key that ends in a 
       key,
     })
     const pc: string = stored(root).pcs[key].pc
-    expect({ key, made: hubPcKey(pc) }).toEqual({ key, made: key })
+    expect({ key, made: hubPcKey(pc), fits: pc.length <= 64 }).toEqual({
+      key,
+      made: key,
+      fits: true,
+    })
     expect(pc).not.toMatch(/\p{Cc}/u)
   }
-  expect(stored(root).pcs[cut].pc).toBe(`${'a'.repeat(62)}- b`)
+  expect(stored(root).pcs[cut].pc).toBe(`${cut}0`)
   expect(stored(root).pcs[other].pc).toBe(`${other}0`)
+  expect(stored(root).pcs[long].pc).toBe(`${'C'.repeat(30)} ${'D'.repeat(32)}`)
 })
 
 test("a folder whose name is not a PC's key is left out: never pending, listed or paired, and the start log names it", () => {

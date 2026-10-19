@@ -320,12 +320,17 @@ test("a PC token pushes its own chats; a body naming another PC writes under the
     json: { pc: a.pc },
   })
   expect(manifestOf(a.key)?.pc).toBe(a.pc)
-  // Nor does one with DEL or a C1 control, and the log line prints those escaped, as it does C0.
+  // Nor does one with a C1 control, and the log line prints it escaped, as it does C0; DEL and a bidi override too.
   const c = pcNamed('Push-C')
-  expect(await push(c, 'Push\u009b2J\u007fC')).toMatchObject({ status: 200, json: { pc: c.pc } })
+  const c1 = c.pc.replace('-', '\u009b')
+  expect(hubPcKey(c1)).toBe(c.key)
+  expect(await push(c, c1)).toMatchObject({ status: 200, json: { pc: c.pc } })
   expect(manifestOf(c.key)?.pc).toBe(c.pc)
-  expect(said.filter((l) => l.startsWith(`[codex-hub] ${c.pc}'s token pushed as`))).toEqual([
-    `[codex-hub] ${c.pc}'s token pushed as "Push\\u009b2J\\u007fC"; kept as ${c.pc}`,
+  const d = pcNamed('Push-D')
+  expect(await push(d, 'Push\u007f\u202eD')).toMatchObject({ status: 200, json: { pc: d.pc } })
+  expect(said.filter((l) => l.includes("'s token pushed as") && !l.includes(b.pc))).toEqual([
+    `[codex-hub] ${c.pc}'s token pushed as "${c.pc.replace('-', '\\u009b')}"; kept as ${c.pc}`,
+    `[codex-hub] ${d.pc}'s token pushed as "Push\\u007f\\u202eD"; kept as ${d.pc}`,
   ])
 })
 

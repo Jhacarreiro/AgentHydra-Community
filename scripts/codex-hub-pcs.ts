@@ -21,11 +21,11 @@
 
 import { randomBytes } from 'node:crypto'
 import {
-  CONTROL,
   hubPcKey,
   isHubPcKey,
   pcTokenHash,
   plainJson,
+  plainText,
 } from '../server/src/core/codex-hub-ids'
 
 const USAGE = `usage: bun --env-file <hub.env> scripts/codex-hub-pcs.ts list [--json]
@@ -79,12 +79,11 @@ const admin = (
 if (!admin)
   fail('AGENTHYDRA_CODEX_HUB_TOKEN is not set: run this with --env-file pointing at hub.env')
 
-/** A line as the terminal gets it: a control character in a name or a reason (C0, DEL or C1) is printed escaped. */
-const shown = (line: string): string =>
-  line.replace(
-    new RegExp(CONTROL.source, 'gu'),
-    (ch) => `\\u${ch.codePointAt(0)!.toString(16).padStart(4, '0')}`,
-  )
+/**
+ * A line as the terminal gets it: a control character (C0, DEL or C1), a format character (a zero-width space, a bidi
+ * override) or a line separator in a name or a reason is printed escaped.
+ */
+const shown = plainText
 
 const when = (iso: string | undefined): string =>
   iso && Number.isFinite(Date.parse(iso))

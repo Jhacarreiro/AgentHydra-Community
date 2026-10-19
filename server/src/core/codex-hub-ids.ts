@@ -18,15 +18,31 @@ const PC_MAX = 63
 /** A control character (a line break, a tab, ESC): never in a PC's name, which the hub logs and the CLI prints. */
 export const CONTROL = /\p{Cc}/u
 
+/** A character as \uXXXX escapes, one for each UTF-16 unit: as JSON writes one, and as a terminal shows it plainly. */
+const escaped = (ch: string): string =>
+  ch
+    .split('')
+    .map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`)
+    .join('')
+
 /**
- * `value` as JSON with DEL and the C1 controls escaped too, as \uXXXX (JSON.stringify escapes only C0): for a log
+ * What a terminal does not show as itself: a control (C0, DEL, C1), a format character (a zero-width space, a bidi
+ * override) or a line or paragraph separator. Of these, JSON.stringify escapes C0 alone.
+ */
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
+const UNSEEN_IN_JSON = /[\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/gu
+
+/** `text` with each character a terminal does not show as itself escaped as \uXXXX: for a line the CLI prints. */
+export function plainText(text: string): string {
+  return text.replace(UNSEEN, escaped)
+}
+
+/**
+ * `value` as JSON with every character a terminal does not show as itself escaped as \uXXXX, not only C0: for a log
  * line or a terminal, of a value a client sent. It is still JSON, and parses back to the same value.
  */
 export function plainJson(value: unknown, space?: number): string {
-  return (JSON.stringify(value, null, space) ?? 'null').replace(
-    /[\u007f-\u009f]/g,
-    (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  )
+  return (JSON.stringify(value, null, space) ?? 'null').replace(UNSEEN_IN_JSON, escaped)
 }
 
 /** A PC token: the first group is its id. */

@@ -1021,8 +1021,8 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   [CODEX-HUB.md](CODEX-HUB.md#moving-pcs-to-tokens-of-their-own).
 - **Refusals:** every refusal is JSON, `{ error, code }`: 404 `hub-off` (no admin token); 400 `bad-request`,
   `install-required` or `bad-key`; 401 `unauthorized` (the one answer to any bearer not shaped like a PC's token,
-  the admin token included, and to the legacy token outside its window), `unknown-token` (one shaped like a PC's
-  token that the hub has no record of), `revoked` or `pair-code`; 404 `not-found` (a key the
+  the admin token included, and to the legacy token outside its window), `unknown-token` (on a PC's routes, one shaped like a
+  PC's token that the hub has no record of, or no longer has for that key), `revoked` or `pair-code`; 404 `not-found` (a key the
   hub does not have, or a build it does not hand out); 409 `install-mismatch`, `name-taken`, `name-changed`,
   `id-taken` or `name-paired`; 413 `too-large`; 500 `store-unwritable`; 503 `store-unreadable`. A relay is
   refused with these before the upgrade; a live one whose credential changed (paired again, revoked, retired,

@@ -741,6 +741,56 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
   )
 
   test(
+    "a PC token's push stays in its token's folder, for a record kept under a cut key whose name makes another",
+    async () => {
+      for (const relay of relays.splice(0)) relay.stop()
+      await hub!.stop()
+      // A store from before names were made to fit their keys: the record of 'aaa…a-' (a key the cut at 63 left
+      // ending in a dash) is named by that key, which as a name makes 'aaa…a', another PC's folder.
+      const cut = `${'a'.repeat(62)}-`
+      const other = 'a'.repeat(62)
+      const t = newPcToken()
+      secrets.add(t.token)
+      const install = `install-${crypto.randomUUID()}`
+      const file = join(HUB_DIR, '.pcs.json')
+      const store = JSON.parse(readFileSync(file, 'utf8'))
+      store.pcs[cut] = {
+        pc: cut,
+        tokenId: t.id,
+        tokenHash: t.hash,
+        install,
+        pairedAt: new Date().toISOString(),
+        pairedBy: 'cli',
+      }
+      writeFileSync(file, JSON.stringify(store, null, 2))
+      seedFolder(other, { pc: other, pushedAt: Date.now() })
+      const before = readFileSync(join(HUB_DIR, other, 'manifest.json'), 'utf8')
+      await restart({ admin: secondAdmin })
+      try {
+        const res = await fetch(`${hubUrl()}/api/codex-hub/push`, {
+          method: 'POST',
+          headers: { ...bearer(t.token, install), 'content-type': 'application/json' },
+          body: JSON.stringify({ pc: 'Another-Name', threads: [] }),
+        })
+        expect({ status: res.status, body: await res.json() }).toMatchObject({
+          status: 200,
+          body: { pc: cut },
+        })
+        expect(JSON.parse(readFileSync(join(HUB_DIR, cut, 'manifest.json'), 'utf8')).pc).toBe(cut)
+        expect(readFileSync(join(HUB_DIR, other, 'manifest.json'), 'utf8')).toBe(before)
+      } finally {
+        rmSync(join(HUB_DIR, other), { recursive: true, force: true })
+        const gone = await fetch(`${hubUrl()}/api/codex-relay/admin/pcs/${cut}`, {
+          method: 'DELETE',
+          headers: bearer(secondAdmin),
+        })
+        expect(gone.status).toBe(200)
+      }
+    },
+    SLOW_MS,
+  )
+
+  test(
     'migration: a PC that pushed with the shared token of before moves to a token of its own while the window is open, and only then',
     async () => {
       for (const relay of relays.splice(0)) relay.stop()
@@ -893,6 +943,8 @@ test(
             },
             // Its name makes its key, but is printed escaped: the key is shown too.
             { key: 'desk-pc', pc: 'Desk\u009bPC', state: 'unpaired', why: 'no-install' },
+            // One that reads as Laptop, with a zero-width space and a bidi override, makes lap-top.
+            { key: 'lap-top', pc: 'Lap\u200btop\u202e', state: 'unpaired', why: 'no-install' },
           ],
         }),
     })
@@ -903,13 +955,16 @@ test(
       expect(r.stdout).toContain('Office\\u009b\\u0085\\u001b[2K\\u007fPC (key office-pc)')
       expect(r.stdout).toContain('renamed to x\\u000ay')
       expect(r.stdout).toContain('Desk\\u009bPC (key desk-pc)')
+      expect(r.stdout).toContain('Lap\\u200btop\\u202e (key lap-top)')
+      expect(r.stdout).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}]/u)
       // As JSON too: the same values, with DEL and C1 escaped as C0 is.
       const j = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'list', '--json')
       expect(j.code).toBe(0)
-      expect(j.stdout.replaceAll('\n', '')).not.toMatch(/\p{Cc}/u)
+      expect(j.stdout.replaceAll('\n', '')).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u)
       expect(JSON.parse(j.stdout).pcs.map((p: { pc: string }) => p.pc)).toEqual([
         'Office\u009b\u0085\u001b[2K\u007fPC',
         'Desk\u009bPC',
+        'Lap\u200btop\u202e',
       ])
     } finally {
       fake.stop(true)

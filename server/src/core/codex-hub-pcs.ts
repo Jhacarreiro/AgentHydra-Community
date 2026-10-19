@@ -566,13 +566,13 @@ function writePairing(s: Survey, key: string, p: Pairing, now: number): HubRefus
 
 /**
  * A folder's name for a record or a log line, one that hubPcKey makes `key` again, as a PC token's push and whoami
- * take it: its manifest's, with each run of control characters made a space (which hubPcKey makes the same dash), when
- * that has this key. Else the key itself, or, for a key the cut at 63 characters left ending in a dash (which hubPcKey
- * would trim), the key and a 0.
+ * take it, and one the page and add take (64 characters at most), as the tray pairs again by it: its manifest's, with
+ * each run of control characters made a space (which hubPcKey makes the same dash), when that is such a name. Else the
+ * key itself, or, for a key the cut at 63 characters left ending in a dash (which hubPcKey would trim), the key and a 0.
  */
 const plainName = (pc: string | undefined, key: string): string => {
   const name = pc?.replace(/\p{Cc}+/gu, ' ').trim()
-  if (name && hubPcKey(name) === key) return name
+  if (name && name.length <= 64 && hubPcKey(name) === key) return name
   return hubPcKey(key) === key ? key : `${key}0`
 }
 
