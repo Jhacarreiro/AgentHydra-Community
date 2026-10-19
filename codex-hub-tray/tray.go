@@ -413,23 +413,24 @@ func (a *app) updateOnce() {
 // settleNext settles a token the tray asked the hub to take and has no answer for (next: a redeem or an exchange
 // whose answer was lost, or a tray stopped in between): whoami with it says whether the hub has it. The hub answers a
 // repeat of either with the same id and hash the same way, so an exchange the hub did not take is sent again as it was.
-// Only a 401 says the hub does not have it; any other refusal (a proxy's 403 or 429, a hub started without its admin
-// token) keeps it for the next check, as no answer does.
+// Only the hub's own answers for a PC token settle it: 200, it has it; 401 unknown-token or revoked, or 409
+// install-mismatch, it does not have it for this PC. Anything else (no answer, a 5xx, a proxy's own 401, 403 or 429,
+// a hub started without its admin token) keeps it for the next check.
 func (a *app) settleNext() {
 	cfg := loadConfig()
 	if cfg.Next == "" {
 		return
 	}
+	// The name a pairing link names now, before tray.json changes: one of another key than tray.json's pc is a rename's.
+	name := pairName()
 	next := cfg
 	next.Token = cfg.Next
 	who, ans, err := whoami(next)
+	notHeld := err == nil &&
+		(ans.status == http.StatusUnauthorized && (ans.code == "unknown-token" || ans.code == "revoked") ||
+			ans.status == http.StatusConflict && ans.code == "install-mismatch")
 	switch {
-	case err != nil || (ans.status != http.StatusOK && ans.status != http.StatusUnauthorized):
-		if err == nil {
-			err = ans.refusal("whoami")
-		}
-		log.Printf("token: the hub did not say whether it took chp_%s (%v); asking again at the next check", pcTokenID(cfg.Next), err)
-	case ans.status == http.StatusOK:
+	case err == nil && ans.status == http.StatusOK:
 		adopted := false
 		if err := updateConfig(func(c *config) {
 			if c.Next == cfg.Next {
@@ -444,22 +445,21 @@ func (a *app) settleNext() {
 			return
 		}
 		log.Printf("token: the hub has chp_%s, for %s", who.ID, who.PC)
-		// A rename whose redeem answer was lost: the token this PC had is the old name's, which only it can retire.
-		if isPcToken(cfg.Token) && cfg.PC != "" && pcKey(cfg.PC) != who.Key {
-			if _, ans, err := retire(cfg, who.PC); err == nil && ans.status == http.StatusOK {
-				log.Printf("token: retired %s's token (chp_%s)", cfg.PC, pcTokenID(cfg.Token))
-			} else {
-				if err == nil {
-					err = ans.refusal("retire")
-				}
-				log.Printf("token: could not retire %s's token (%v): on the hub, run `scripts/codex-hub-pcs.ts revoke %s`", cfg.PC, err, cfg.PC)
-			}
+		// A rename whose redeem answer was lost, retired as redeemCode retires one: the link named this PC's old name
+		// (from), and the hub has the token under the key of the name the link paired.
+		if isPcToken(cfg.Token) && cfg.PC != "" && pcKey(name) != pcKey(cfg.PC) && who.Key == pcKey(name) {
+			retireOld("token", cfg, cfg.PC, who.PC)
 		}
 		a.restartIfChanged(loadConfig())
-	case cfg.Token != "" && !isPcToken(cfg.Token):
+	case notHeld && cfg.Token != "" && !isPcToken(cfg.Token):
 		a.exchange(cfg, cfg.Next)
-	default:
+	case notHeld:
 		dropNext(cfg.Next)
+	default:
+		if err == nil {
+			err = ans.refusal("whoami")
+		}
+		log.Printf("token: the hub did not say whether it took chp_%s (%v); asking again at the next check", pcTokenID(cfg.Next), err)
 	}
 }
 

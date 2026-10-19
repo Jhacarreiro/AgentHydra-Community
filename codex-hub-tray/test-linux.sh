@@ -673,7 +673,7 @@ if command -v bun >/dev/null && [ -e ../node_modules ]; then
 			exec "$APP2/codex-hub-tray" >"$T/second-pc.out" 2>&1
 		) &
 		BG+=($!)
-		if wait_for 10 grep -q "no desktop session to show an icon in" "$APP2/tray.log"; then
+		if wait_for 10 grep -qs "no desktop session to show an icon in" "$APP2/tray.log"; then
 			kill -USR1 "$(tr -dc 0-9 <"$APP2/tray.lock")"
 		fi
 		moved2() { pc_token "$(field "$APP2/tray.json" token)" && [ "$(field "$APP2/tray.json" pc)" = E2E-Moving-PC ]; }

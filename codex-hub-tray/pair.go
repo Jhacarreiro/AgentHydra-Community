@@ -102,8 +102,13 @@ func (a *app) pair() {
 	rand.Read(b)
 	open := pairOpen{state: hex.EncodeToString(b), host: ln.Addr().String(), name: pairName()}
 	a.pairing.until = time.Now().Add(pairFor)
-	// The page judges until by the hub's clock: one by this PC's, if it runs behind, would have expired already.
-	a.pairing.link, open.from = pairLink(ln.Addr().(*net.TCPAddr).Port, open.state, open.name, pageTime().Add(pairFor))
+	// The page judges until by the hub's clock: one by this PC's, if it runs behind, would have expired already. Never
+	// earlier than by this PC's, though: a Date from a cache or a proxy can be behind the hub's.
+	at := time.Now()
+	if page := pageTime(); page.After(at) {
+		at = page
+	}
+	a.pairing.link, open.from = pairLink(ln.Addr().(*net.TCPAddr).Port, open.state, open.name, at.Add(pairFor))
 	a.pairing.from = open.from
 
 	srv := &http.Server{ReadHeaderTimeout: 10 * time.Second}
@@ -199,7 +204,7 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 	for try := 1; ; try++ {
 		var id, hash string
 		token, id, hash = newPcToken()
-		if err := updateConfig(func(c *config) { c.Next = token }); err != nil {
+		if err := updateConfig(func(c *config) { c.Next, c.Install = token, cfg.Install }); err != nil {
 			page(w, http.StatusInternalServerError, "Could not save the token: "+err.Error())
 			return
 		}
@@ -244,14 +249,9 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 	if isPcToken(before.Token) && open.from != "" && who.Key == pcKey(open.name) {
 		old := cfg
 		old.Token = before.Token
-		if _, ans, err := retire(old, who.PC); err == nil && ans.status == http.StatusOK {
-			log.Printf("pair: retired %s's token (chp_%s)", open.from, pcTokenID(before.Token))
+		if err := retireOld("pair", old, open.from, who.PC); err == nil {
 			text += " " + open.from + " was retired on the hub; its copies there stay until you forget them."
 		} else {
-			if err == nil {
-				err = ans.refusal("retire")
-			}
-			log.Printf("pair: could not retire %s's token: %v", open.from, err)
 			text += " " + open.from + " could not be retired (" + err.Error() + "): on the hub, run `scripts/codex-hub-pcs.ts revoke " + open.from + "`."
 		}
 	}
@@ -263,6 +263,26 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 		a.restartIfChanged(now)
 		a.kick()
 	}()
+}
+
+// retireOld has the hub retire old's token, this PC's under oldName, after the PC was paired as newName: only this
+// PC can, from its install. A token the hub answers revoked or unknown-token for is retired already (a check that
+// settled the rename first, or a revoke). Nil when the old name is retired; logged under what either way.
+func retireOld(what string, old config, oldName, newName string) error {
+	_, ans, err := retire(old, newName)
+	switch {
+	case err != nil:
+	case ans.status == http.StatusOK:
+		log.Printf("%s: retired %s's token (chp_%s)", what, oldName, pcTokenID(old.Token))
+		return nil
+	case ans.status == http.StatusUnauthorized && (ans.code == "revoked" || ans.code == "unknown-token"):
+		log.Printf("%s: %s's token (chp_%s) was retired already", what, oldName, pcTokenID(old.Token))
+		return nil
+	default:
+		err = ans.refusal("retire")
+	}
+	log.Printf("%s: could not retire %s's token (%v): on the hub, run `scripts/codex-hub-pcs.ts revoke %s`", what, oldName, err, oldName)
+	return err
 }
 
 // takeHubToken saves the token a hub from before PC tokens posts (one rolled back to it): checked with the hub as

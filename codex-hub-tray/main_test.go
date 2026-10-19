@@ -952,7 +952,7 @@ func TestPairURL(t *testing.T) {
 func TestSettleNext(t *testing.T) {
 	t.Cleanup(func() { os.Remove(configPath) })
 	var mu sync.Mutex
-	var whoamiAs, exchangeAs func(hubCall) (int, string)
+	var whoamiAs, exchangeAs, retireAs func(hubCall) (int, string)
 	srv, calls := stubHub(t, func(c hubCall) (int, string) {
 		mu.Lock()
 		whoami, exchange := whoamiAs, exchangeAs
@@ -963,6 +963,12 @@ func TestSettleNext(t *testing.T) {
 		case "/api/codex-hub/exchange":
 			return exchange(c)
 		case "/api/codex-hub/retire":
+			mu.Lock()
+			retire := retireAs
+			mu.Unlock()
+			if retire != nil {
+				return retire(c)
+			}
 			return 200, `{"pc":"Old-PC","key":"old-pc","state":"revoked"}`
 		}
 		return 404, errJSON("not-found")
@@ -1001,11 +1007,17 @@ func TestSettleNext(t *testing.T) {
 		t.Errorf("whoami: %+v", w)
 	}
 
-	answers(answer(401, errJSON("unknown-token")), answer(500, errJSON("internal")))
-	own := pcConfig(srv.URL)
-	own.Next = next
-	if f := settle(own); f["token"] != own.Token || f["pc"] != own.PC || f["next"] != "" {
-		t.Errorf("a token the hub does not have, with a PC token: tray.json %v", f)
+	for _, not := range []func(hubCall) (int, string){
+		answer(401, errJSON("unknown-token")),
+		answer(401, errJSON("revoked")),
+		answer(409, errJSON("install-mismatch")),
+	} {
+		answers(not, answer(500, errJSON("internal")))
+		own := pcConfig(srv.URL)
+		own.Next = next
+		if f := settle(own); f["token"] != own.Token || f["pc"] != own.PC || f["next"] != "" {
+			t.Errorf("a token the hub does not have, with a PC token: tray.json %v", f)
+		}
 	}
 	if n := len(calls("exchange")); n != 0 {
 		t.Errorf("exchanged %d times with a PC token", n)
@@ -1020,27 +1032,52 @@ func TestSettleNext(t *testing.T) {
 		t.Errorf("the exchange sent again: tray.json %v", f)
 	}
 
-	// The hub has it under another name than tray.json's: a rename whose answer was lost, so the old name's token,
-	// which this PC holds, is retired. Under the same name, nothing is.
+	// A rename whose answer was lost: AGENTHYDRA_CODEX_HUB_PC names a new name, so the link named the old one, and the
+	// hub has the token under the new name's key. The old name's token, which this PC holds, is retired, as an answered
+	// rename retires it; one the hub has revoked already counts as retired. Under the same name, under another key than
+	// the link's (the page's "another PC" choice), or with no new name set, nothing is.
 	has := func(pc string) func(hubCall) (int, string) {
 		return func(c hubCall) (int, string) { return 200, pcJSON(pc, pcTokenID(c.bearer)) }
 	}
-	for _, to := range []string{"New-PC", "Old-PC"} {
-		answers(has(to), nil)
+	said := captureLog(t)
+	for _, c := range []struct {
+		env, to string
+		retires bool
+		retire  func(hubCall) (int, string)
+	}{
+		{"New-PC", "New-PC", true, nil},
+		{"New-PC", "New-PC", true, answer(401, errJSON("revoked"))},
+		{"", "Old-PC", false, nil},
+		{"", "Old-PC-2", false, nil},
+		{"New-PC", "New-PC-2", false, nil},
+		{"Old-PC", "Old-PC", false, nil},
+	} {
+		t.Setenv("AGENTHYDRA_CODEX_HUB_PC", c.env)
+		answers(has(c.to), nil)
+		mu.Lock()
+		retireAs = c.retire
+		mu.Unlock()
 		old := pcConfig(srv.URL)
 		old.PC, old.Next = "Old-PC", next
 		retired := len(calls("retire"))
-		if f := settle(old); f["token"] != next || f["pc"] != to || f["next"] != "" {
-			t.Errorf("the hub has it as %s: tray.json %v", to, f)
+		if f := settle(old); f["token"] != next || f["pc"] != c.to || f["next"] != "" {
+			t.Errorf("%s, the hub has it as %s: tray.json %v", c.env, c.to, f)
 		}
 		r := calls("retire")[retired:]
-		if to == "Old-PC" && len(r) != 0 {
-			t.Errorf("retired a token under the same name: %+v", r)
+		if !c.retires && len(r) != 0 {
+			t.Errorf("%q, the hub has it as %s: retired %+v", c.env, c.to, r)
 		}
-		if to == "New-PC" && (len(r) != 1 || r[0].bearer != old.Token || r[0].text("renamedTo") != "New-PC" || r[0].install == "") {
-			t.Errorf("the rename's retire: %+v", r)
+		if c.retires && (len(r) != 1 || r[0].bearer != old.Token || r[0].text("renamedTo") != c.to || r[0].install == "") {
+			t.Errorf("%q, the hub has it as %s: the rename's retire %+v", c.env, c.to, r)
 		}
 	}
+	if said.count("could not retire") != 0 || said.count("Old-PC's token (chp_") != 2 {
+		t.Errorf("the retires said: %d could not, %d did", said.count("could not retire"), said.count("Old-PC's token (chp_"))
+	}
+	t.Setenv("AGENTHYDRA_CODEX_HUB_PC", "")
+	mu.Lock()
+	retireAs = nil
+	mu.Unlock()
 
 	for what, no := range map[string]func(hubCall) (int, string){
 		"no answer":                 answer(0, ""),
@@ -1049,6 +1086,8 @@ func TestSettleNext(t *testing.T) {
 		"a proxy's refusal":         answer(403, errJSON("forbidden")),
 		"too many requests":         answer(429, errJSON("rate-limited")),
 		"a hub with no admin token": answer(404, errJSON("hub-off")),
+		"a proxy's own 401":         answer(401, `{"error":"sign in"}`),
+		"a 409 of another kind":     answer(409, errJSON("name-taken")),
 	} {
 		answers(no, answer(500, errJSON("internal")))
 		exchanged := len(calls("exchange"))
