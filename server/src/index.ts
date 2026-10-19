@@ -812,6 +812,7 @@ app.post('/api/chatgpt/context-pack', async (c) => {
 // (see the MUST-STAY-ABOVE comments in routes/sessions.ts). Awaited in sequence so the
 // original file's registration order is reproduced exactly, group by group.
 await import('./routes/sessions')
+await import('./routes/chatgpt-view')
 await import('./routes/analytics')
 await import('./routes/kit')
 await import('./routes/queue')
