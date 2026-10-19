@@ -15,6 +15,9 @@ import { createHash } from 'node:crypto'
 
 const PC_MAX = 63
 
+/** A control character (a line break, a tab, ESC): never in a PC's name, which the hub logs and the CLI prints. */
+export const CONTROL = /\p{Cc}/u
+
 /** A PC token: the first group is its id. */
 export const PC_TOKEN = /^chp_([0-9a-f]{16})_[0-9a-f]{64}$/
 

@@ -235,11 +235,12 @@ test('registering keeps the id and hash: .pcs.json holds no token, at mode 600, 
     expect(mode(storeFile(root))).toBe(0o600)
     expect(mode(root)).toBe(0o700)
   }
-  // Shapes are checked: a name, a 16-hex id and a 64-hex hash.
+  // Shapes are checked: a name with no control characters, a 16-hex id and a 64-hex hash.
   for (const bad of [
     { pc: '', id: t.id, hash: t.hash },
     { pc: '...', id: t.id, hash: t.hash },
     { pc: 'x'.repeat(65), id: t.id, hash: t.hash },
+    { pc: 'Laptop\n[codex-hub] forged', id: t.id, hash: t.hash },
     { pc: 'Laptop', id: t.id.toUpperCase(), hash: t.hash },
     { pc: 'Laptop', id: t.id, hash: t.hash.slice(1) },
     { pc: 'Laptop', id: t.token, hash: t.hash },

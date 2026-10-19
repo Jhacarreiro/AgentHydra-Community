@@ -15,7 +15,8 @@
 //
 //	POST /fake/pair-code?pc=NAME            a pairing code for NAME, as the page puts it in its form
 //	POST /fake/add?pc=NAME[&install=ID]     a token for NAME, as scripts/codex-hub-pcs.ts add makes one (bound to ID)
-//	POST /fake/pending?pc=NAME&install=ID   NAME pushes with the legacy token, from install ID, and may move
+//	POST /fake/pending?pc=NAME&install=ID   NAME pushes with the legacy token, from install ID, and may move (409 for
+//	                                        an ID a PC here has, which the hub's rule claims)
 //	POST /fake/revoke?pc=NAME               NAME revoked, a pending one included
 //	GET  /fake/state                        {"pcs": [...], "pending": [...]}
 //
@@ -474,6 +475,12 @@ func (h *hub) control(w http.ResponseWriter, r *http.Request) int {
 	case "POST /fake/pending":
 		if k == "" || !install.MatchString(q.Get("install")) {
 			return refuse(400, "bad-request", "pc and install are required").send(w)
+		}
+		// The hub's rule: an install id a record carries is claimed, and no folder with it is pending.
+		for _, rec := range h.pcs {
+			if rec.Install == q.Get("install") {
+				return refuse(409, "install-claimed", "a PC on this hub has that install id").send(w)
+			}
 		}
 		h.pending[k] = q.Get("install")
 		return say(k)

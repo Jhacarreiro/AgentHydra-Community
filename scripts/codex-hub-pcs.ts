@@ -20,7 +20,7 @@
 // <pc> is a name or a key: revoke and forget take its key, add keeps the name as typed.
 
 import { randomBytes } from 'node:crypto'
-import { hubPcKey, isHubPcKey, pcTokenHash } from '../server/src/core/codex-hub-ids'
+import { CONTROL, hubPcKey, isHubPcKey, pcTokenHash } from '../server/src/core/codex-hub-ids'
 
 const USAGE = `usage: bun --env-file <hub.env> scripts/codex-hub-pcs.ts list [--json]
        bun --env-file <hub.env> scripts/codex-hub-pcs.ts add <pc> [--replace] [--json]
@@ -72,6 +72,10 @@ const admin = (
 )?.trim()
 if (!admin)
   fail('AGENTHYDRA_CODEX_HUB_TOKEN is not set: run this with --env-file pointing at hub.env')
+
+/** A line as the terminal gets it: a control character in a name or a reason is printed escaped, never sent. */
+const shown = (line: string): string =>
+  line.replace(new RegExp(CONTROL.source, 'gu'), (ch) => JSON.stringify(ch).slice(1, -1))
 
 const when = (iso: string | undefined): string =>
   iso && Number.isFinite(Date.parse(iso))
@@ -135,20 +139,22 @@ if (command === 'list' && !name) {
     )
     for (const r of list.pcs)
       console.log(
-        [
-          r.pc,
-          `${r.state}${r.why ? ` (${r.why})` : ''}`,
-          r.tokenId ? `chp_${r.tokenId}` : '-',
-          r.pairedAt
-            ? `paired ${when(r.pairedAt)} by ${r.pairedBy}${r.pairedFrom ? ` from ${r.pairedFrom}` : ''}`
-            : 'not paired',
-          `first used ${when(r.firstUsedAt)}`,
-          `last push ${when(r.pushedAt)}`,
-          `relay ${r.relay ? 'on' : 'off'}`,
-          `install ${r.install ? `${r.install.slice(0, 8)}…` : '-'}`,
-          ...(r.revokedAt ? [`revoked ${when(r.revokedAt)}: ${r.revokedWhy}`] : []),
-          ...(r.contestedAt ? [`CONTESTED ${when(r.contestedAt)}`] : []),
-        ].join('  '),
+        shown(
+          [
+            r.pc,
+            `${r.state}${r.why ? ` (${r.why})` : ''}`,
+            r.tokenId ? `chp_${r.tokenId}` : '-',
+            r.pairedAt
+              ? `paired ${when(r.pairedAt)} by ${r.pairedBy}${r.pairedFrom ? ` from ${r.pairedFrom}` : ''}`
+              : 'not paired',
+            `first used ${when(r.firstUsedAt)}`,
+            `last push ${when(r.pushedAt)}`,
+            `relay ${r.relay ? 'on' : 'off'}`,
+            `install ${r.install ? `${r.install.slice(0, 8)}…` : '-'}`,
+            ...(r.revokedAt ? [`revoked ${when(r.revokedAt)}: ${r.revokedWhy}`] : []),
+            ...(r.contestedAt ? [`CONTESTED ${when(r.contestedAt)}`] : []),
+          ].join('  '),
+        ),
       )
   }
 } else if (command === 'add' && name) {
@@ -173,12 +179,14 @@ if (command === 'list' && !name) {
     `/api/codex-relay/admin/pcs/${key}/revoke`,
   )
   console.log(
-    `${r.pc} revoked${r.relayClosed ? '; its relay closed' : ''}. Its copies stay until you forget it.`,
+    shown(
+      `${r.pc} revoked${r.relayClosed ? '; its relay closed' : ''}. Its copies stay until you forget it.`,
+    ),
   )
 } else if (command === 'forget' && name) {
   const key = keyOf(name)
   const r = await call<{ pc: string }>('DELETE', `/api/codex-relay/admin/pcs/${key}`)
-  console.log(`${r.pc} forgotten: its token and its copies are gone from the hub.`)
+  console.log(shown(`${r.pc} forgotten: its token and its copies are gone from the hub.`))
 } else {
   fail(USAGE)
 }

@@ -44,7 +44,7 @@ import {
   legacyToken,
   readCodexHubManifest,
 } from './codex-hub'
-import { isHubPcKey, pcTokenHash, pcTokenId } from './codex-hub-ids'
+import { CONTROL, isHubPcKey, pcTokenHash, pcTokenId } from './codex-hub-ids'
 import { closeRelayUnless, relayPcs } from './codex-hub-relay'
 
 export type PairedBy = 'page' | 'cli' | 'exchange'
@@ -566,8 +566,13 @@ export function registerPcToken(
   now: number = Date.now(),
 ): PcRegistered {
   const pc = typeof reg.pc === 'string' ? reg.pc.trim() : ''
-  const key = pc.length <= 64 ? hubPcKey(pc) : null
-  if (!key) return refuse(400, 'bad-request', 'pc is required, as a name of up to 64 characters')
+  const key = pc.length <= 64 && !CONTROL.test(pc) ? hubPcKey(pc) : null
+  if (!key)
+    return refuse(
+      400,
+      'bad-request',
+      'pc is required, as a name of up to 64 characters and no control characters',
+    )
   if (badShape(reg.id, reg.hash))
     return refuse(400, 'bad-request', 'id must be 16 hex and hash 64 hex')
   const s = survey(root, now)
@@ -934,7 +939,7 @@ export function retirePc(
   )
   dropPairing(key, root)
   console.log(
-    `[codex-hub] ${record.pc} retired its token${renamedTo ? ` (renamed to ${renamedTo})` : ''}`,
+    `[codex-hub] ${record.pc} retired its token${renamedTo ? ` (renamed to ${JSON.stringify(renamedTo)})` : ''}`,
   )
   return { ok: true, pc: record.pc, key, state: 'revoked' }
 }

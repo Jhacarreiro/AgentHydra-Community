@@ -102,7 +102,8 @@ func (a *app) pair() {
 	rand.Read(b)
 	open := pairOpen{state: hex.EncodeToString(b), host: ln.Addr().String(), name: pairName()}
 	a.pairing.until = time.Now().Add(pairFor)
-	a.pairing.link, open.from = pairLink(ln.Addr().(*net.TCPAddr).Port, open.state, open.name, a.pairing.until)
+	// The page judges until by the hub's clock: one by this PC's, if it runs behind, would have expired already.
+	a.pairing.link, open.from = pairLink(ln.Addr().(*net.TCPAddr).Port, open.state, open.name, pageTime().Add(pairFor))
 	a.pairing.from = open.from
 
 	srv := &http.Server{ReadHeaderTimeout: 10 * time.Second}
@@ -125,6 +126,31 @@ func (a *app) pair() {
 		a.pairing.mu.Unlock()
 	}()
 	openURL(a.pairing.link)
+}
+
+// pageTime is now by the clock of the server the pairing page is on: the Date of its answer to a HEAD of the page,
+// taken as it comes (a redirect to a sign-in page has one too), or now by this PC's clock when there is no answer.
+// No hub headers go with it: the page may be on another host than the hub.
+func pageTime() time.Time {
+	now := time.Now()
+	req, err := http.NewRequest(http.MethodHead, pairURL, nil)
+	if err != nil {
+		return now
+	}
+	cl := &http.Client{
+		Timeout:       5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	res, err := cl.Do(req)
+	if err != nil {
+		return now
+	}
+	res.Body.Close()
+	at, err := http.ParseTime(res.Header.Get("Date"))
+	if err != nil {
+		return now
+	}
+	return at
 }
 
 // pairOpen is what one open pairing's posts are checked against: its state, the address its listener has (the Host

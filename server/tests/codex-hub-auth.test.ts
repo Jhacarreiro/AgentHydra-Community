@@ -700,7 +700,13 @@ test('retire revokes only the caller, from its own install, and closes its relay
   })
   expect(pcByToken(a.token)).toMatchObject({ ok: true })
   expect(relayPcToken(a.key)).toBe(a.id)
-  for (const body of [{ renamedTo: 5 }, { renamedTo: 'x'.repeat(65) }, []])
+  for (const body of [
+    { renamedTo: 5 },
+    { renamedTo: 'x'.repeat(65) },
+    { renamedTo: 'x)\n[codex-hub] Office-PC revoked' },
+    { renamedTo: 'New\u001b[2K' },
+    [],
+  ])
     expect(await retire(a.install, body)).toMatchObject({
       status: 400,
       json: { code: 'bad-request' },
@@ -1120,11 +1126,14 @@ test('the replace step: a confirmation is used once, a link past until has expir
   expect(expired.text).toContain(
     'This pairing link has expired. Choose Connect this PC in the Codex Hub app again.',
   )
+  expect(expired.text).toContain("the PC's clock is probably behind the hub's")
   const bad: Record<string, string>[] = [
     { until: 'soon' },
     { pc: '' },
     { pc: 'x'.repeat(65) },
+    { pc: 'Name\n[codex-hub] forged' },
     { from: 'y'.repeat(65) },
+    { from: 'Old\u001b[2K' },
   ]
   for (const q of bad) expect((await pairPage({ pc: a.pc, ...q })).status).toBe(400)
 })

@@ -562,11 +562,17 @@ OLD=24227516
 if git -C .. cat-file -e "$OLD^{commit}" 2>/dev/null && mkdir -p "$T/old" &&
 	git -C .. archive "$OLD" codex-hub-tray | tar -x -C "$T/old" &&
 	(cd "$T/old/codex-hub-tray" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $FLAGS" -o "$T/old-tray" .); then
-	curl -s -X POST "$HUB2/fake/pending?pc=E2E-Old-Tray&install=$INSTALL" >/dev/null
+	# An install id of its own: $INSTALL is e2e-old-pc's since its exchange, so the hub would not let it move again.
+	OLDINST=e2e-old-tray-install-1
+	cp "$HOME/.agenthydra/codex-hub-push-install" "$T/install.kept"
+	echo "$OLDINST" >"$HOME/.agenthydra/codex-hub-push-install"
+	check "the hub's rule: an install id a PC has is not pending again" \
+		test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HUB2/fake/pending?pc=E2E-Old-Tray&install=$INSTALL")" = 409
+	curl -s -X POST "$HUB2/fake/pending?pc=E2E-Old-Tray&install=$OLDINST" >/dev/null
 	install -m 755 "$T/old-tray" "$TRAY"
 	rm -f "$PUSH"
 	legacy_at "$HUB2"
-	E0=$(grep -c "bearer=legacy install=$INSTALL POST /api/codex-hub/exchange 200" "$T/hub2.log")
+	E0=$(grep -c "bearer=legacy install=$OLDINST POST /api/codex-hub/exchange 200" "$T/hub2.log")
 	headless
 	check "the old tray starts" wait_for 10 up_headless
 	kill -USR1 "$(tray_pid)"
@@ -575,14 +581,15 @@ if git -C .. cat-file -e "$OLD^{commit}" 2>/dev/null && mkdir -p "$T/old" &&
 	check "it replaces itself with this tray" wait_for 30 has_sha "$TRAY" "$V1"
 	check "  ...fetched with the legacy token" grep -q "bearer=legacy install=- GET /api/codex-hub/tray/download platform=$P 200" "$T/hub2.log"
 	check "this tray's exchange is taken, with the id in codex-hub-push-install" \
-		wait_for 30 more "bearer=legacy install=$INSTALL POST /api/codex-hub/exchange 200" "$T/hub2.log" "$E0"
+		wait_for 30 more "bearer=legacy install=$OLDINST POST /api/codex-hub/exchange 200" "$T/hub2.log" "$E0"
 	MOVED=$(field "$APP/tray.json" token)
 	check "tray.json holds a token of this PC's own" pc_token "$MOVED"
 	check "  ...and its name" test "$(field "$APP/tray.json" pc)" = e2e-old-tray
 	check "the pusher gets the token, the name and the install id" wait_for 20 env_is "AGENTHYDRA_CODEX_HUB_TOKEN=$MOVED"
 	check "  ...the name" env_is "AGENTHYDRA_CODEX_HUB_PC=e2e-old-tray"
-	check "  ...the install id" env_is "AGENTHYDRA_CODEX_HUB_INSTALL=$INSTALL"
+	check "  ...the install id" env_is "AGENTHYDRA_CODEX_HUB_INSTALL=$OLDINST"
 	stop_tray
+	cp "$T/install.kept" "$HOME/.agenthydra/codex-hub-push-install"
 
 	# The same old tray with a token from the hub's command line, written in by hand: it updates itself as well.
 	install -m 755 "$T/old-tray" "$TRAY"

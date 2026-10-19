@@ -853,6 +853,43 @@ func TestPairHandler(t *testing.T) {
 	}
 }
 
+// The link's until is by the pairing page's clock: the Date of its answer, a redirect's included, or this PC's clock
+// when the page gives none or does not answer.
+func TestPageTime(t *testing.T) {
+	saved := pairURL
+	t.Cleanup(func() { pairURL = saved })
+	ahead := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	for _, status := range []int{http.StatusOK, http.StatusFound} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodHead {
+				t.Errorf("the page was asked with %s", r.Method)
+			}
+			w.Header().Set("Date", ahead.Format(http.TimeFormat))
+			if status == http.StatusFound {
+				w.Header().Set("Location", "https://sign-in.example.test/")
+			}
+			w.WriteHeader(status)
+		}))
+		pairURL = srv.URL + "/codex-hub/pair"
+		if got := pageTime(); !got.Equal(ahead) {
+			t.Errorf("%d: pageTime() = %v, want %v", status, got, ahead)
+		}
+		srv.Close()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["Date"] = nil
+	}))
+	pairURL = srv.URL
+	if got := time.Since(pageTime()); got < 0 || got > time.Minute {
+		t.Errorf("no Date: pageTime() is %v from now", got)
+	}
+	srv.Close()
+	pairURL = srv.URL
+	if got := time.Since(pageTime()); got < 0 || got > time.Minute {
+		t.Errorf("no answer: pageTime() is %v from now", got)
+	}
+}
+
 // The page's address always says when the listener closes, and names an old name (from) only for a PC with a token of
 // its own paired under a name of another key. The name it pairs as is AGENTHYDRA_CODEX_HUB_PC, else the hub's name
 // for this PC, else its own.

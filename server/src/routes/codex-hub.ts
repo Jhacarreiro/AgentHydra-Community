@@ -30,7 +30,7 @@ import {
   pusherRelease,
   ROLLOUT_UNPACKED_MAX,
 } from '../core/codex-hub'
-import { pcTokenId } from '../core/codex-hub-ids'
+import { CONTROL, pcTokenId } from '../core/codex-hub-ids'
 import {
   bindPcInstall,
   exchangeLegacy,
@@ -430,9 +430,17 @@ app.post('/api/codex-hub/retire', async (c) => {
     typeof body !== 'object' ||
     Array.isArray(body) ||
     (renamedTo !== undefined &&
-      (typeof renamedTo !== 'string' || !renamedTo.trim() || renamedTo.length > 64))
+      (typeof renamedTo !== 'string' ||
+        !renamedTo.trim() ||
+        renamedTo.length > 64 ||
+        CONTROL.test(renamedTo)))
   )
-    return fail(c, 400, 'bad-request', 'renamedTo, when sent, is a PC name of up to 64 characters')
+    return fail(
+      c,
+      400,
+      'bad-request',
+      'renamedTo, when sent, is a PC name of up to 64 characters and no control characters',
+    )
   const r = retirePc(
     caller.key,
     caller.record.tokenId!,
@@ -528,8 +536,9 @@ app.get('/codex-hub/pair', pairGuard, (c) => {
     port > 65535 ||
     !/^[0-9a-f]{32}$/.test(state) ||
     !key ||
+    CONTROL.test(pc) ||
     Number.isNaN(until) ||
-    (from && from.length > 64)
+    (from && (from.length > 64 || CONTROL.test(from)))
   )
     return c.text('Open this page from the Codex Hub app on the PC (Connect this PC).', 400)
   const target = `http://127.0.0.1:${port}/paired`
@@ -540,10 +549,12 @@ app.get('/codex-hub/pair', pairGuard, (c) => {
     'content-security-policy',
     `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${target}; frame-ancestors 'none'`,
   )
+  // The tray's until is by its own clock (one from before this hub's Date header was read, or one that got none).
   if (until !== null && until <= now)
     return c.html(
       pairPage('This link has expired', [
         'This pairing link has expired. Choose Connect this PC in the Codex Hub app again.',
+        `If you chose it just now, the PC's clock is probably behind the hub's, which says ${new Date(now).toISOString().slice(0, 16).replace('T', ' ')} UTC: set the PC's clock right, then choose Connect this PC again.`,
       ]),
       400,
     )
