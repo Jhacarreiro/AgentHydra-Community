@@ -204,10 +204,19 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, code string, fini
 	defer a.token.Unlock()
 	// A next from before (a check's or a pairing's whose answer was lost) may be a token the hub has: settled first, so
 	// this one never takes its place. While the hub says nothing about it, this pairing waits.
-	if loadConfig().Next != "" {
+	if had := savedConfig(); loadConfig().Next != "" {
 		a.settleNext()
+		now := savedConfig()
 		if loadConfig().Next != "" {
 			page(w, http.StatusServiceUnavailable, "This PC is still waiting for the hub to say whether it took the token it sent last. Nothing changed: choose Connect this PC again in a few minutes.")
+			return
+		}
+		// The hub had it under this link's name (this pairing, posted again after its answer was lost): this PC is
+		// connected as that name, and the page's new code, which would pair it again or under another name, is left.
+		if now.Token != had.Token && isPcToken(now.Token) && pcKey(now.PC) == pcKey(open.name) {
+			page(w, http.StatusOK, "This PC is connected as "+now.PC+" and is pushing its Codex chats.")
+			finish()
+			go a.kick()
 			return
 		}
 	}

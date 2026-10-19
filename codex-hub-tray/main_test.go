@@ -866,6 +866,19 @@ func TestPairHandler(t *testing.T) {
 		len(calls("redeem")) != before || savedConfig() != waiting {
 		t.Errorf("a pairing over an unsettled next: %d %s, tray.json %+v", status, body, savedConfig())
 	}
+	// The hub has it, under this link's name: the page posted again after its answer was lost. Connected, and the new
+	// code is left alone.
+	mu.Lock()
+	whoamiAs = func(c hubCall) (int, string) { return 200, pcJSON("Example-PC", pcTokenID(c.bearer)) }
+	mu.Unlock()
+	finished = false
+	if status, body := postCode(h, code); status != http.StatusOK || !strings.Contains(body, "This PC is connected as Example-PC") ||
+		len(calls("redeem")) != before || !finished {
+		t.Errorf("a pairing whose earlier answer was lost: %d %s (%d redeems, finished %v)", status, body, len(calls("redeem"))-before, finished)
+	}
+	if c := savedConfig(); c.Token != waiting.Next || c.Next != "" || c.PC != "Example-PC" {
+		t.Errorf("a pairing whose earlier answer was lost: tray.json %+v", c)
+	}
 	mu.Lock()
 	whoamiAs = answer(401, errJSON("unknown-token"))
 	mu.Unlock()

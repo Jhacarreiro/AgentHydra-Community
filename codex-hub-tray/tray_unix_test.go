@@ -141,8 +141,8 @@ func TestANewTokenRestartsThePusher(t *testing.T) {
 }
 
 // A pairing posted while a check's exchange is out waits for it. Here the exchange's answer is lost, though the hub
-// took its token: the pairing then settles that token first, the hub has it, so it stays this PC's, and the redeem,
-// which the hub refuses as the key changed, takes nothing from it.
+// took its token: the pairing then settles that token first, the hub has it under the link's name, so it stays this
+// PC's, and the page's code is not redeemed over it.
 func TestAPairingWaitsForACheck(t *testing.T) {
 	useTestKey(t)
 	const legacy = "legacy-token-0123"
@@ -203,7 +203,7 @@ func TestAPairingWaitsForACheck(t *testing.T) {
 	if c := savedConfig(); c.Token != e || c.Next != "" || c.PC != "Example-PC" {
 		t.Errorf("tray.json %+v, want the exchange's token %s, which the hub has", c, e)
 	}
-	if status != http.StatusConflict || !strings.Contains(body, "changed on the hub since the page opened") || len(calls("redeem")) != 1 {
+	if status != http.StatusOK || !strings.Contains(body, "This PC is connected as Example-PC") || len(calls("redeem")) != 0 {
 		t.Errorf("the pairing: %d %s (%d redeems)", status, body, len(calls("redeem")))
 	}
 }

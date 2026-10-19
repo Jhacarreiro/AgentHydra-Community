@@ -930,8 +930,10 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   bearer. The hub answers `{ pc, key, id }`, or 401 `pair-code` for a code that is used, expired or unknown,
   409 `name-changed` when the key changed since the page made the code (paired or revoked meanwhile), or 409
   `id-taken`, at which the tray makes another token once. Only then does the token become `token`; a `next`
-  whose answer was lost, or answered by a proxy's own 5xx, is settled at the next check, with `whoami`, and a
-  pairing posted while one is unsettled settles it first, or waits. After a rename the tray retires the old
+  whose answer was lost, or answered by a proxy's own 5xx, is settled at the next check, with `whoami`. A
+  pairing posted while one is unsettled settles it first: when the hub has it under the link's name, the PC is
+  connected as that name and the new code is not used; while the hub says nothing about it, the page says so and
+  nothing changes. After a rename the tray retires the old
   name's token (`POST /api/codex-hub/retire` with `{ renamedTo }`), and the old name's copies stay, revoked,
   until they are forgotten; a rename whose answer was lost keeps both names with `next`, so the check that
   settles it retires the old one. A page from a hub before PC tokens posts the hub's token itself, which the
