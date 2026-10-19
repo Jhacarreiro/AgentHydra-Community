@@ -29,3 +29,26 @@ export function parseChatGptVisibleView(input: unknown): ChatGptVisibleView {
 export async function readChatGptThroughHub(readFromBrowser: () => Promise<unknown>): Promise<ChatGptVisibleView> {
   return parseChatGptVisibleView(await readFromBrowser())
 }
+
+/** Commands crossing the Hub/browser boundary are fixed data, never shell strings.
+ * A transport must enforce its own authentication and must not expose browser credentials.
+ */
+export type ChatGptReadRequest =
+  | { operation: 'list-visible' }
+  | { operation: 'read-visible'; conversationId: string }
+
+const CONVERSATION_ID = /^[0-9a-f-]{36}$/i
+
+export function parseChatGptReadRequest(value: unknown): ChatGptReadRequest {
+  if (!value || typeof value !== 'object') throw new Error('Invalid ChatGPT read request')
+  const request = value as Record<string, unknown>
+  if (request.operation === 'list-visible' && Object.keys(request).length === 1)
+    return { operation: 'list-visible' }
+  if (
+    request.operation === 'read-visible' &&
+    typeof request.conversationId === 'string' &&
+    CONVERSATION_ID.test(request.conversationId) &&
+    Object.keys(request).length === 2
+  ) return { operation: 'read-visible', conversationId: request.conversationId }
+  throw new Error('Invalid ChatGPT read request')
+}

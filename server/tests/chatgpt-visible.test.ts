@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import { readChatGptThroughHub } from '../src/core/chatgpt-visible'
+import { parseChatGptReadRequest, readChatGptThroughHub } from '../src/core/chatgpt-visible'
 
 describe('ephemeral ChatGPT Hub view', () => {
+  test('accepts a specific conversation reference, but no arbitrary browser operation', () => {
+    const id = '11111111-2222-3333-4444-555555555555'
+    expect(parseChatGptReadRequest({operation:'read-visible',conversationId:id})).toEqual({operation:'read-visible',conversationId:id})
+    expect(() => parseChatGptReadRequest({operation:'eval',command:'document.cookie'})).toThrow('Invalid ChatGPT read request')
+    expect(() => parseChatGptReadRequest({operation:'read-visible',conversationId:'https://example.invalid'})).toThrow('Invalid ChatGPT read request')
+  })
   test('preserves ordered roles and content for a requested read', async () => {
     const supplied = { visibleTurnCount: 2, messages: [
       { role: 'user', text: 'First question' },
