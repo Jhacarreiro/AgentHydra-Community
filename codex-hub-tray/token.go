@@ -44,8 +44,8 @@ var notKey = regexp.MustCompile(`[^a-z0-9_-]+`)
 
 // pcKey is the hub's key for a PC's name, its folder there and the one name the hub keeps it under, as hubPcKey in
 // server/src/core/codex-hub-ids.ts makes it: lower case, every run of characters but a-z, 0-9, _ and - made one dash,
-// no dash at either end, and at most 63 characters; "" for a name that has none. testdata/pckey.json holds the cases
-// both must pass.
+// no dash at either end, then cut to 63 characters, which can leave one at the end; "" for a name that has none.
+// testdata/pckey.json holds the cases both must pass.
 func pcKey(name string) string {
 	// JavaScript lowers İ to i and a combining dot, which then becomes a dash; Go lowers it to i alone.
 	lower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "İ", "i̇"))

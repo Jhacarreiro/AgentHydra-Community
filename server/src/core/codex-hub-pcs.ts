@@ -44,7 +44,7 @@ import {
   legacyToken,
   readCodexHubManifest,
 } from './codex-hub'
-import { pcTokenHash, pcTokenId } from './codex-hub-ids'
+import { isHubPcKey, pcTokenHash, pcTokenId } from './codex-hub-ids'
 import { closeRelayUnless, relayPcs } from './codex-hub-relay'
 
 export type PairedBy = 'page' | 'cli' | 'exchange'
@@ -176,7 +176,7 @@ function badStore(raw: unknown): string | null {
   if (!s.pcs || typeof s.pcs !== 'object' || Array.isArray(s.pcs)) return 'it has no pcs object'
   const ids = new Set<string>()
   for (const [key, r] of Object.entries(s.pcs)) {
-    if (hubPcKey(key) !== key) return `${JSON.stringify(key)} is not a PC's key`
+    if (!isHubPcKey(key)) return `${JSON.stringify(key)} is not a PC's key`
     if (!r || typeof r !== 'object' || typeof r.pc !== 'string') return `${key} has no pc`
     if (r.tokenId !== undefined && !TOKEN_ID.test(r.tokenId)) return `${key} has a bad tokenId`
     if (r.tokenHash !== undefined && !TOKEN_HASH.test(r.tokenHash))
@@ -852,7 +852,7 @@ export function exchangeLegacy(
 // --- revoke, retire, forget ----------------------------------------------------------------------
 
 const badKey = (key: string): HubRefusal | null =>
-  hubPcKey(key) === key ? null : refuse(400, 'bad-key', `${JSON.stringify(key)} is not a PC's key`)
+  isHubPcKey(key) ? null : refuse(400, 'bad-key', `${JSON.stringify(key)} is not a PC's key`)
 
 export type PcRevoked =
   | { ok: true; pc: string; key: string; state: 'revoked'; relayClosed: boolean }

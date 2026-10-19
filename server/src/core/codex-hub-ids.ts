@@ -43,3 +43,12 @@ export function hubPcKey(pc: string): string | null {
     .slice(0, PC_MAX)
   return key || null
 }
+
+// What hubPcKey makes: 1 to 63 of a-z, 0-9, _ and -, never a dash first, and a dash last only where the cut at 63
+// left one ('aaa…a-b' makes 'aaa…a-', which hubPcKey would cut to 'aaa…a'), so a key is not always its own key.
+const PC_KEY = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_]|[a-z0-9_-]{62})?$/
+
+/** Whether `key` is one hubPcKey makes: a folder or a record the hub can keep. */
+export function isHubPcKey(key: string): boolean {
+  return PC_KEY.test(key)
+}

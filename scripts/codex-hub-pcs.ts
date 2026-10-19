@@ -20,7 +20,7 @@
 // <pc> is a name or a key: revoke and forget take its key, add keeps the name as typed.
 
 import { randomBytes } from 'node:crypto'
-import { hubPcKey, pcTokenHash } from '../server/src/core/codex-hub-ids'
+import { hubPcKey, isHubPcKey, pcTokenHash } from '../server/src/core/codex-hub-ids'
 
 const USAGE = `usage: bun --env-file <hub.env> scripts/codex-hub-pcs.ts list [--json]
        bun --env-file <hub.env> scripts/codex-hub-pcs.ts add <pc> [--replace] [--json]
@@ -111,8 +111,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return answer as T
 }
 
+/** A key as `list` prints it is taken as it is: a key cut at 63 characters can end in a dash hubPcKey would trim. */
 function keyOf(pc: string | undefined): string {
-  const key = pc ? hubPcKey(pc) : null
+  const key = pc && isHubPcKey(pc) ? pc : pc ? hubPcKey(pc) : null
   if (!key) fail(USAGE)
   return key
 }

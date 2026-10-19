@@ -7,6 +7,7 @@ import { afterAll, beforeEach, expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -17,7 +18,7 @@ import {
 import { join } from 'node:path'
 import pckeys from '../../codex-hub-tray/testdata/pckey.json'
 import { codexHubToken, hubTokenMatches } from '../src/core/codex-hub'
-import { hubPcKey, isPcToken, pcTokenId } from '../src/core/codex-hub-ids'
+import { hubPcKey, isHubPcKey, isPcToken, pcTokenId } from '../src/core/codex-hub-ids'
 import {
   bindPcInstall,
   exchangeLegacy,
@@ -180,6 +181,26 @@ test('every key case in codex-hub-tray/testdata/pckey.json is what hubPcKey answ
   expect(pckeys.length).toBeGreaterThan(10)
   for (const { pc, key } of pckeys as { pc: string; key: string | null }[])
     expect({ pc, key: hubPcKey(pc) }).toEqual({ pc, key })
+})
+
+test('isHubPcKey is what hubPcKey makes: a dash last only where the cut at 63 left one', () => {
+  for (const { key } of pckeys as { key: string | null }[])
+    if (key) expect({ key, ok: isHubPcKey(key) }).toEqual({ key, ok: true })
+  for (const key of ['a', '_', '_under_', 'a--b', `${'a'.repeat(62)}-`, `${'a'.repeat(61)}--`])
+    expect({ key, ok: isHubPcKey(key) }).toEqual({ key, ok: true })
+  for (const key of [
+    '',
+    '-',
+    '-a',
+    'a-',
+    `${'a'.repeat(61)}-`,
+    'a'.repeat(64),
+    'A',
+    'a b',
+    '.pusher',
+    '..',
+  ])
+    expect({ key, ok: isHubPcKey(key) }).toEqual({ key, ok: false })
 })
 
 // --- the store ------------------------------------------------------------------------------------
@@ -413,6 +434,59 @@ test("revoke and forget take a PC's key and nothing else: .., .pusher, '' and A 
       expect({ key, r }).toMatchObject({ key, r: { ok: false, status: 400, code: 'bad-key' } })
   expect(existsSync(join(root, '.pusher', 'codex-hub-push.exe'))).toBe(true)
   expect(stored(root).pcs.a.revokedAt).toBeUndefined()
+})
+
+test('a key the cut at 63 characters leaves ending in a dash is paired, redeemed, moved, revoked, forgotten and read after a restart', () => {
+  const cut = (pckeys as { pc: string; key: string | null }[]).filter((c) => c.key?.endsWith('-'))
+  expect(cut.length).toBe(2)
+  const [one, two] = cut as { pc: string; key: string }[]
+  const root = newRoot()
+  settings({ admin: ADMIN, legacy: LEGACY })
+  const office = pcIn(root, 'Office-PC', { install: C })
+  // The command line's add, and the page's code.
+  const a = pcIn(root, one.pc)
+  expect(a.r).toMatchObject({ ok: true, key: one.key })
+  const code = mintPairCode({ key: two.key, pc: two.pc, replaces: null }, root, T0)
+  const b = newPcToken()
+  expect(
+    redeemPairCode({ code, id: b.id, hash: b.hash, install: B }, root, T0 + MIN),
+  ).toMatchObject({
+    ok: true,
+    key: two.key,
+  })
+  // A restart reads them: a new root with a copy of the store is what a fresh process sees.
+  const again = newRoot()
+  mkdirSync(again, { recursive: true })
+  copyFileSync(storeFile(root), storeFile(again))
+  expect(pcStoreReadable(again)).toBe(true)
+  for (const t of [office, a, b]) expect(pcByToken(t.token, again)).toMatchObject({ ok: true })
+
+  expect(revokePc(one.key, root, T0 + 2 * MIN)).toMatchObject({
+    ok: true,
+    key: one.key,
+    state: 'revoked',
+  })
+  expect(pcByToken(a.token, root)).toMatchObject({ code: 'revoked' })
+  expect(forgetPc(two.key, root, T0 + 3 * MIN)).toMatchObject({
+    ok: true,
+    key: two.key,
+    removed: true,
+  })
+  expect(pcByToken(b.token, root)).toMatchObject({ code: 'unknown-token' })
+  expect(pcByToken(office.token, root)).toMatchObject({ ok: true })
+
+  // An old pusher's folder under such a key moves by the exchange, and the store still reads.
+  const moved = newRoot()
+  folder(moved, two.key, { pc: two.pc, install: A, pushedAt: T0 })
+  const t = newPcToken()
+  expect(exchangeLegacy({ id: t.id, hash: t.hash, install: A }, moved, T0 + 1)).toMatchObject({
+    ok: true,
+    key: two.key,
+  })
+  const after = newRoot()
+  mkdirSync(after, { recursive: true })
+  copyFileSync(storeFile(moved), storeFile(after))
+  expect(pcByToken(t.token, after)).toMatchObject({ ok: true, key: two.key })
 })
 
 test('a credential a relay link was let in with holds while its record has that token, or its key is pending', () => {

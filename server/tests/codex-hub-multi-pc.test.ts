@@ -666,6 +666,14 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
       })
       expect((await cli(firstAdmin, 'add', 'Spare-PC')).stderr).toContain('409 name-paired')
       expect((await cli(firstAdmin, 'forget', 'spare-pc')).code).toBe(0)
+      // A key the cut at 63 characters leaves ending in a dash is taken as the list prints it.
+      const long = JSON.parse(
+        (await cli(firstAdmin, 'add', `${'a'.repeat(62)}-b`, '--json')).stdout,
+      )
+      secrets.add(long.token)
+      expect(long.key).toBe(`${'a'.repeat(62)}-`)
+      expect((await cli(firstAdmin, 'revoke', long.key)).code).toBe(0)
+      expect((await cli(firstAdmin, 'forget', long.key)).code).toBe(0)
       expect(
         (await fetch(`${hubUrl()}/api/codex-hub/whoami`, { headers: bearer(spare.token) })).status,
       ).toBe(401)
