@@ -30,6 +30,11 @@ type config struct {
 	ID      string `json:"id,omitempty"`
 	Install string `json:"install,omitempty"`
 	Next    string `json:"next,omitempty"`
+	// The names a pairing link said this PC is renamed from and pairs as (5.3), saved with next by that link's redeem:
+	// a check that finds the hub has next under the second's key retires the first's token, as the page's answer would
+	// have (settleNext). They go with next.
+	RenameFrom string `json:"renameFrom,omitempty"`
+	RenameTo   string `json:"renameTo,omitempty"`
 }
 
 // pusherConfig is what the pusher is started with (startPusher): a change of any of these restarts it, and a change

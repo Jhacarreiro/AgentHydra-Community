@@ -543,9 +543,10 @@ func TestPcNameFrom(t *testing.T) {
 	}
 }
 
-// hubCall is one request a stubHub had: what it carried, and tray.json's next as it came.
+// hubCall is one request a stubHub had: what it carried, and tray.json (saved) and its next as it came.
 type hubCall struct {
 	path, bearer, install, next string
+	saved                       config
 	body                        map[string]any
 }
 
@@ -560,7 +561,8 @@ func stubHub(t *testing.T, answer func(c hubCall) (int, string)) (*httptest.Serv
 	var mu sync.Mutex
 	var all []hubCall
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c := hubCall{path: r.URL.Path, install: r.Header.Get(installHeader), next: savedConfig().Next}
+		saved := savedConfig()
+		c := hubCall{path: r.URL.Path, install: r.Header.Get(installHeader), next: saved.Next, saved: saved}
 		c.bearer, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		json.NewDecoder(r.Body).Decode(&c.body)
 		mu.Lock()
@@ -635,16 +637,20 @@ func TestPairHandler(t *testing.T) {
 	// A code as the page hands one out (64 hex), and a token as a hub from before PC tokens hands one out.
 	code, oldPageToken := strings.Repeat("c0de", 16), "Hub Token ~!"
 	var mu sync.Mutex
-	var redeemAs, retireAs func(hubCall) (int, string)
+	var redeemAs, retireAs, whoamiAs func(hubCall) (int, string)
 	srv, calls := stubHub(t, func(c hubCall) (int, string) {
 		mu.Lock()
-		redeem, retire := redeemAs, retireAs
+		redeem, retire, whoami := redeemAs, retireAs, whoamiAs
 		mu.Unlock()
 		switch c.path {
 		case "/api/codex-hub/redeem":
 			return redeem(c)
 		case "/api/codex-hub/retire":
 			return retire(c)
+		case "/api/codex-hub/whoami":
+			if whoami != nil {
+				return whoami(c)
+			}
 		case "/api/codex-hub/pusher": // the old page's token, checked as a hub from before PC tokens checks it
 			if c.bearer != oldPageToken {
 				return 401, errJSON("unauthorized")
@@ -668,6 +674,9 @@ func TestPairHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	install := loadConfig().Install
+	if savedConfig().Install != "" {
+		t.Fatalf("tray.json has an install id before the first pairing: %+v", savedConfig())
+	}
 	a := newApp()
 	finished := false
 	h := a.pairHandler(testOpen, func() { finished = true })
@@ -716,6 +725,10 @@ func TestPairHandler(t *testing.T) {
 	if !isPcToken(first.next) || pcTokenID(first.next) != first.text("id") || pcTokenHash(first.next) != first.text("hash") {
 		t.Errorf("tray.json's next %q while the hub was asked, for id %s hash %s", first.next, first.text("id"), first.text("hash"))
 	}
+	// With the install id the redeem sent, so a check that settles next sends that one; and no rename.
+	if first.saved.Install != install || first.saved.RenameFrom != "" || first.saved.RenameTo != "" {
+		t.Errorf("tray.json while the hub was asked: %+v, want install %s", first.saved, install)
+	}
 	if c := savedConfig(); c != (config{Hub: srv.URL, Token: first.next, PC: "Example-PC", ID: first.text("id"), Install: install}) {
 		t.Errorf("tray.json after the code: %+v", c)
 	}
@@ -735,6 +748,13 @@ func TestPairHandler(t *testing.T) {
 	}
 	if ret := calls("retire"); len(ret) != 1 || ret[0].bearer != first.next || ret[0].install != install || ret[0].text("renamedTo") != "New-PC" {
 		t.Errorf("retire: %+v", ret)
+	}
+	// The rename was saved with next, for a check to retire the old name if this answer had been lost.
+	if r := calls("redeem"); r[len(r)-1].saved.RenameFrom != "Example-PC" || r[len(r)-1].saved.RenameTo != "New-PC" {
+		t.Errorf("tray.json while the rename was asked: %+v", r[len(r)-1].saved)
+	}
+	if c := savedConfig(); c.RenameFrom != "" || c.RenameTo != "" {
+		t.Errorf("tray.json keeps a rename after its answer: %+v", c)
 	}
 	if c := savedConfig(); c.PC != "New-PC" || c.Token == first.next || !isPcToken(c.Token) {
 		t.Errorf("tray.json after the rename: %+v", c)
@@ -761,6 +781,9 @@ func TestPairHandler(t *testing.T) {
 	answers(takes("Sixth-PC"), answer(200, `{}`))
 	if status, body := postCode(rename("Sixth-PC", "Old-PC"), code); status != http.StatusOK || strings.Contains(body, "retire") {
 		t.Errorf("from the legacy token: %d %s", status, body)
+	}
+	if r := calls("redeem"); r[len(r)-1].saved.RenameFrom != "" {
+		t.Errorf("a pairing from the legacy token saved a rename: %+v", r[len(r)-1].saved)
 	}
 	if n := len(calls("retire")); n != retired {
 		t.Errorf("retired %d more", n-retired)
@@ -793,10 +816,35 @@ func TestPairHandler(t *testing.T) {
 		}
 	}
 
-	// No answer: the same request twice more, then next stays, for the next check to settle.
+	// A proxy's own 5xx (no code: not the hub's) may come after the hub took the code: next stays, as with no answer.
 	before := len(calls("redeem"))
-	answers(answer(0, ""), nil)
+	answers(answer(502, `{"error":"bad gateway"}`), nil)
 	status, body := postCode(h, code)
+	r = calls("redeem")[before:]
+	if status != http.StatusBadGateway || !strings.Contains(body, "The hub did not answer (the hub answered 502 for the pairing") {
+		t.Errorf("a proxy's 502: %d %s", status, body)
+	}
+	if c := savedConfig(); len(r) != 1 || c.Next != r[0].next || c.Token != paired.Token {
+		t.Errorf("a proxy's 502: %d requests, tray.json %+v", len(r), c)
+	}
+	// So the next pairing settles it first: the hub does not have it, so it goes, and this one is redeemed.
+	answers(takes("Example-PC"), nil)
+	mu.Lock()
+	whoamiAs = answer(401, errJSON("unknown-token"))
+	mu.Unlock()
+	before = len(calls("redeem"))
+	if status, body := postCode(h, code); status != http.StatusOK || len(calls("redeem")) != before+1 {
+		t.Errorf("a pairing after a 502: %d %s", status, body)
+	}
+	if w := calls("whoami"); len(w) == 0 || w[len(w)-1].bearer != r[0].next {
+		t.Errorf("whoami before the pairing: %+v", w)
+	}
+	paired = savedConfig()
+
+	// No answer: the same request twice more, then next stays, for the next check to settle.
+	before = len(calls("redeem"))
+	answers(answer(0, ""), nil)
+	status, body = postCode(h, code)
 	r = calls("redeem")[before:]
 	if status != http.StatusBadGateway || !strings.Contains(body, "The hub did not answer (") ||
 		!strings.Contains(body, "If it took the pairing, this PC connects by itself within 10 minutes; if not, choose Connect this PC again.") {
@@ -808,6 +856,19 @@ func TestPairHandler(t *testing.T) {
 	if c := savedConfig(); c.Next != r[0].next || pcTokenID(c.Next) != r[0].text("id") || c.Token != paired.Token {
 		t.Errorf("no answer: tray.json %+v", c)
 	}
+	// While the hub says nothing about that next, a pairing waits: nothing is sent, and tray.json stays.
+	mu.Lock()
+	whoamiAs = answer(503, errJSON("store-unreadable"))
+	mu.Unlock()
+	waiting := savedConfig()
+	before = len(calls("redeem"))
+	if status, body := postCode(h, code); status != http.StatusServiceUnavailable || !strings.Contains(body, "still waiting for the hub") ||
+		len(calls("redeem")) != before || savedConfig() != waiting {
+		t.Errorf("a pairing over an unsettled next: %d %s, tray.json %+v", status, body, savedConfig())
+	}
+	mu.Lock()
+	whoamiAs = answer(401, errJSON("unknown-token"))
+	mu.Unlock()
 
 	// The hub has the id already: another token, once.
 	var asked int
@@ -853,15 +914,34 @@ func TestPairHandler(t *testing.T) {
 	}
 }
 
-// The link's until is by the pairing page's clock: the Date of its answer, a redirect's included, or this PC's clock
-// when the page gives none or does not answer.
+// A link's until is pairFor after now by the page's clock when that is ahead of this PC's, and by this PC's when the
+// page's is behind it (a Date from a cache or a proxy).
+func TestPairUntil(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, c := range []struct {
+		what string
+		page time.Time
+		want time.Time
+	}{
+		{"the page ahead", now.Add(time.Hour), now.Add(time.Hour + pairFor)},
+		{"the page behind", now.Add(-time.Hour), now.Add(pairFor)},
+		{"the same clock", now, now.Add(pairFor)},
+	} {
+		if got := pairUntil(now, c.page); !got.Equal(c.want) {
+			t.Errorf("%s: pairUntil = %v, want %v", c.what, got, c.want)
+		}
+	}
+}
+
+// The page's clock: the Date of its answer to a GET (the hub's own server sends none to a HEAD), a redirect's
+// included, or this PC's clock when the page gives none or does not answer.
 func TestPageTime(t *testing.T) {
 	saved := pairURL
 	t.Cleanup(func() { pairURL = saved })
 	ahead := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	for _, status := range []int{http.StatusOK, http.StatusFound} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodHead {
+			if r.Method != http.MethodGet {
 				t.Errorf("the page was asked with %s", r.Method)
 			}
 			w.Header().Set("Date", ahead.Format(http.TimeFormat))
@@ -1032,48 +1112,62 @@ func TestSettleNext(t *testing.T) {
 		t.Errorf("the exchange sent again: tray.json %v", f)
 	}
 
-	// A rename whose answer was lost: AGENTHYDRA_CODEX_HUB_PC names a new name, so the link named the old one, and the
-	// hub has the token under the new name's key. The old name's token, which this PC holds, is retired, as an answered
-	// rename retires it; one the hub has revoked already counts as retired. Under the same name, under another key than
-	// the link's (the page's "another PC" choice), or with no new name set, nothing is.
+	// A rename whose answer was lost: its redeem saved the link's old name and new one with next, and the hub has the
+	// token under the new one's key. The old name's token, which this PC holds, is retired, as an answered rename
+	// retires it; one the hub has revoked already counts as retired. With no rename saved (whatever
+	// AGENTHYDRA_CODEX_HUB_PC says now), or under another key than the link's (the page's "another PC" choice), nothing
+	// is.
 	has := func(pc string) func(hubCall) (int, string) {
 		return func(c hubCall) (int, string) { return 200, pcJSON(pc, pcTokenID(c.bearer)) }
 	}
 	said := captureLog(t)
 	for _, c := range []struct {
-		env, to string
-		retires bool
-		retire  func(hubCall) (int, string)
+		what, from, to, env, has string
+		retires                  bool
+		retire                   func(hubCall) (int, string)
 	}{
-		{"New-PC", "New-PC", true, nil},
-		{"New-PC", "New-PC", true, answer(401, errJSON("revoked"))},
-		{"", "Old-PC", false, nil},
-		{"", "Old-PC-2", false, nil},
-		{"New-PC", "New-PC-2", false, nil},
-		{"Old-PC", "Old-PC", false, nil},
+		{"a rename", "Old-PC", "New-PC", "", "New-PC", true, nil},
+		{"a rename retired already", "Old-PC", "New-PC", "", "New-PC", true, answer(401, errJSON("revoked"))},
+		{"a rename, with the name set back since", "Old-PC", "New-PC", "Old-PC", "New-PC", true, nil},
+		{"a rename the hub gave another key", "Old-PC", "New-PC", "", "New-PC-2", false, nil},
+		{"no rename saved", "", "", "", "Old-PC", false, nil},
+		{"no rename saved, a new name set since", "", "", "New-PC", "New-PC", false, nil},
 	} {
 		t.Setenv("AGENTHYDRA_CODEX_HUB_PC", c.env)
-		answers(has(c.to), nil)
+		answers(has(c.has), nil)
 		mu.Lock()
 		retireAs = c.retire
 		mu.Unlock()
 		old := pcConfig(srv.URL)
-		old.PC, old.Next = "Old-PC", next
+		old.PC, old.Next, old.RenameFrom, old.RenameTo = "Old-PC", next, c.from, c.to
 		retired := len(calls("retire"))
-		if f := settle(old); f["token"] != next || f["pc"] != c.to || f["next"] != "" {
-			t.Errorf("%s, the hub has it as %s: tray.json %v", c.env, c.to, f)
+		if f := settle(old); f["token"] != next || f["pc"] != c.has || f["next"] != "" || f["renameFrom"] != "" || f["renameTo"] != "" {
+			t.Errorf("%s: tray.json %v", c.what, f)
 		}
 		r := calls("retire")[retired:]
 		if !c.retires && len(r) != 0 {
-			t.Errorf("%q, the hub has it as %s: retired %+v", c.env, c.to, r)
+			t.Errorf("%s: retired %+v", c.what, r)
 		}
-		if c.retires && (len(r) != 1 || r[0].bearer != old.Token || r[0].text("renamedTo") != c.to || r[0].install == "") {
-			t.Errorf("%q, the hub has it as %s: the rename's retire %+v", c.env, c.to, r)
+		if c.retires && (len(r) != 1 || r[0].bearer != old.Token || r[0].text("renamedTo") != c.has || r[0].install == "") {
+			t.Errorf("%s: the rename's retire %+v", c.what, r)
 		}
 	}
-	if said.count("could not retire") != 0 || said.count("Old-PC's token (chp_") != 2 {
+	if said.count("could not retire") != 0 || said.count("Old-PC's token (chp_") != 3 {
 		t.Errorf("the retires said: %d could not, %d did", said.count("could not retire"), said.count("Old-PC's token (chp_"))
 	}
+	// A token in the user's environment only (tray.json has none): no rename was saved for it, so nothing is retired.
+	t.Setenv("AGENTHYDRA_CODEX_HUB_PC", "New-PC")
+	envOwn := pcConfig(srv.URL)
+	t.Setenv("AGENTHYDRA_CODEX_HUB_TOKEN", envOwn.Token)
+	answers(has("New-PC"), nil)
+	retired := len(calls("retire"))
+	if f := settle(config{Hub: srv.URL, PC: "Old-PC", ID: envOwn.ID, Next: next}); f["token"] != next || f["pc"] != "New-PC" {
+		t.Errorf("the environment's token: tray.json %v", f)
+	}
+	if n := len(calls("retire")) - retired; n != 0 {
+		t.Errorf("the environment's token: retired %d", n)
+	}
+	t.Setenv("AGENTHYDRA_CODEX_HUB_TOKEN", "")
 	t.Setenv("AGENTHYDRA_CODEX_HUB_PC", "")
 	mu.Lock()
 	retireAs = nil

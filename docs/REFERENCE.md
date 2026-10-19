@@ -930,10 +930,12 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   bearer. The hub answers `{ pc, key, id }`, or 401 `pair-code` for a code that is used, expired or unknown,
   409 `name-changed` when the key changed since the page made the code (paired or revoked meanwhile), or 409
   `id-taken`, at which the tray makes another token once. Only then does the token become `token`; a `next`
-  whose answer was lost is settled at the next check, with `whoami`. After a rename the tray retires the old
+  whose answer was lost, or answered by a proxy's own 5xx, is settled at the next check, with `whoami`, and a
+  pairing posted while one is unsettled settles it first, or waits. After a rename the tray retires the old
   name's token (`POST /api/codex-hub/retire` with `{ renamedTo }`), and the old name's copies stay, revoked,
-  until they are forgotten. A page from a hub before PC tokens posts the hub's token itself, which the current
-  tray still takes. `tray.json` is `{ hub, token, pc, id, install, next }`, mode 600, written whole through a
+  until they are forgotten; a rename whose answer was lost keeps both names with `next`, so the check that
+  settles it retires the old one. A page from a hub before PC tokens posts the hub's token itself, which the
+  current tray still takes. `tray.json` is `{ hub, token, pc, id, install, next, renameFrom, renameTo }`, mode 600, written whole through a
   temporary file, in a `codex-hub` folder under `%LOCALAPPDATA%`, `~/Library/Application Support` or
   `~/.local/share`. The page is outside `/api/codex-hub/` and is served only through the operator's
   authenticating reverse proxy (a sign-in such as Cloudflare Access), never through the `/api/codex-hub/`

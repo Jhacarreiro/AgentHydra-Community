@@ -26,7 +26,10 @@ const (
 
 // app is the running tray: it owns the pusher process and the builds on disk.
 type app struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// token is held by whatever makes, sends or settles this PC's token: a check (settleNext, exchange, named) and a
+	// pairing's post (redeemCode, takeHubToken). So neither saves its next over one the other may have sent.
+	token   sync.Mutex
 	cmd     *exec.Cmd
 	ran     pusherConfig // what cmd has in its environment
 	hold    bool         // an update is swapping the pusher's file: do not start it
@@ -350,6 +353,7 @@ func (a *app) updates() {
 // PC's own, the name the hub has it under), then the hub's builds, asked for with the token as it is now. A next that
 // is still unsettled is the one token the hub may have: no new one is made over it, and settleNext sends it again.
 func (a *app) updateOnce() {
+	a.token.Lock()
 	a.settleNext()
 	if cfg := loadConfig(); cfg.Token != "" && !isPcToken(cfg.Token) && cfg.Next == "" {
 		a.exchange(cfg, "")
@@ -363,6 +367,7 @@ func (a *app) updateOnce() {
 			cfg = a.named(cfg)
 		}
 	}
+	a.token.Unlock()
 	a.restartIfChanged(cfg)
 	if cfg.Token == "" {
 		return
@@ -415,14 +420,14 @@ func (a *app) updateOnce() {
 // repeat of either with the same id and hash the same way, so an exchange the hub did not take is sent again as it was.
 // Only the hub's own answers for a PC token settle it: 200, it has it; 401 unknown-token or revoked, or 409
 // install-mismatch, it does not have it for this PC. Anything else (no answer, a 5xx, a proxy's own 401, 403 or 429,
-// a hub started without its admin token) keeps it for the next check.
+// a hub started without its admin token) keeps it for the next check. The caller holds a.token.
 func (a *app) settleNext() {
 	cfg := loadConfig()
 	if cfg.Next == "" {
 		return
 	}
-	// The name a pairing link names now, before tray.json changes: one of another key than tray.json's pc is a rename's.
-	name := pairName()
+	// tray.json's own token, before it changes: the one a rename retires, as redeemCode's before is.
+	old := savedConfig()
 	next := cfg
 	next.Token = cfg.Next
 	who, ans, err := whoami(next)
@@ -435,6 +440,7 @@ func (a *app) settleNext() {
 		if err := updateConfig(func(c *config) {
 			if c.Next == cfg.Next {
 				c.Token, c.PC, c.ID, c.Install, c.Next = cfg.Next, who.PC, who.ID, cfg.Install, ""
+				c.RenameFrom, c.RenameTo = "", ""
 				adopted = true
 			}
 		}); err != nil {
@@ -445,10 +451,12 @@ func (a *app) settleNext() {
 			return
 		}
 		log.Printf("token: the hub has chp_%s, for %s", who.ID, who.PC)
-		// A rename whose redeem answer was lost, retired as redeemCode retires one: the link named this PC's old name
-		// (from), and the hub has the token under the key of the name the link paired.
-		if isPcToken(cfg.Token) && cfg.PC != "" && pcKey(name) != pcKey(cfg.PC) && who.Key == pcKey(name) {
-			retireOld("token", cfg, cfg.PC, who.PC)
+		// A rename whose redeem answer was lost, retired as redeemCode retires one: its link named this PC's old name,
+		// and the hub has the token under the key of the name that link paired as.
+		if cfg.RenameFrom != "" && isPcToken(old.Token) && who.Key == pcKey(cfg.RenameTo) {
+			retiring := cfg
+			retiring.Token = old.Token
+			retireOld("token", retiring, cfg.RenameFrom, who.PC)
 		}
 		a.restartIfChanged(loadConfig())
 	case notHeld && cfg.Token != "" && !isPcToken(cfg.Token):
@@ -467,13 +475,15 @@ func (a *app) settleNext() {
 // open (POST /api/codex-hub/exchange): the hub finds the PC by the install id, which must be the one its pusher has
 // pushed with. token is a token to send again (settleNext), or "" for a new one. Saved as next first, as a redeem's.
 // Refused (401), the PC keeps the legacy token, says it must be paired again, and asks again at the next check; a hub
-// from before PC tokens (404) is left alone with the token it takes.
+// from before PC tokens (404) is left alone with the token it takes. The caller holds a.token.
 func (a *app) exchange(cfg config, token string) {
 	for try := 1; ; try++ {
 		if token == "" {
 			token, _, _ = newPcToken()
 		}
-		if err := updateConfig(func(c *config) { c.Next, c.Install = token, cfg.Install }); err != nil {
+		if err := updateConfig(func(c *config) {
+			c.Next, c.Install, c.RenameFrom, c.RenameTo = token, cfg.Install, "", ""
+		}); err != nil {
 			log.Println("config:", err)
 			return
 		}
@@ -488,6 +498,7 @@ func (a *app) exchange(cfg config, token string) {
 		case ans.status == http.StatusOK:
 			if err := updateConfig(func(c *config) {
 				c.Token, c.PC, c.ID, c.Install, c.Next = token, who.PC, who.ID, cfg.Install, ""
+				c.RenameFrom, c.RenameTo = "", ""
 			}); err != nil {
 				log.Println("config:", err)
 				return

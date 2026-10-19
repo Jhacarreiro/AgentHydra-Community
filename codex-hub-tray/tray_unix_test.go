@@ -140,6 +140,74 @@ func TestANewTokenRestartsThePusher(t *testing.T) {
 	}
 }
 
+// A pairing posted while a check's exchange is out waits for it. Here the exchange's answer is lost, though the hub
+// took its token: the pairing then settles that token first, the hub has it, so it stays this PC's, and the redeem,
+// which the hub refuses as the key changed, takes nothing from it.
+func TestAPairingWaitsForACheck(t *testing.T) {
+	useTestKey(t)
+	const legacy = "legacy-token-0123"
+	code := strings.Repeat("c0de", 16)
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	held, exchanges := "", 0
+	srv, calls := stubHub(t, func(c hubCall) (int, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch c.path {
+		case "/api/codex-hub/exchange":
+			held = c.text("id")
+			if exchanges++; exchanges == 1 {
+				close(arrived)
+				mu.Unlock()
+				<-release
+				mu.Lock()
+			}
+			return 0, "" // taken, and the answer lost
+		case "/api/codex-hub/whoami":
+			if held != "" && pcTokenID(c.bearer) == held {
+				return 200, pcJSON("Example-PC", held)
+			}
+			return 401, errJSON("unknown-token")
+		case "/api/codex-hub/redeem":
+			return 409, errJSON("name-changed")
+		}
+		return 404, errJSON("not-found")
+	})
+	recordingPusher(t)
+	if err := saveConfig(config{Hub: srv.URL, Token: legacy}); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp()
+	t.Cleanup(func() { a.stopPusher(true) })
+	h := a.pairHandler(testOpen, func() {})
+
+	checked := make(chan struct{})
+	go func() { a.updateOnce(); close(checked) }()
+	<-arrived
+	var status int
+	var body string
+	posted := make(chan struct{})
+	go func() { status, body = postCode(h, code); close(posted) }()
+	time.Sleep(200 * time.Millisecond)
+	if n := len(calls("redeem")) + len(calls("whoami")); n != 0 {
+		t.Errorf("the pairing did not wait for the check: %d requests", n)
+	}
+	close(release)
+	<-checked
+	<-posted
+	ex := calls("exchange")
+	if len(ex) == 0 {
+		t.Fatal("no exchange")
+	}
+	e := ex[0].next
+	if c := savedConfig(); c.Token != e || c.Next != "" || c.PC != "Example-PC" {
+		t.Errorf("tray.json %+v, want the exchange's token %s, which the hub has", c, e)
+	}
+	if status != http.StatusConflict || !strings.Contains(body, "changed on the hub since the page opened") || len(calls("redeem")) != 1 {
+		t.Errorf("the pairing: %d %s (%d redeems)", status, body, len(calls("redeem")))
+	}
+}
+
 // A PC still on the legacy token trades it at its next check for one of its own, with the install id its pusher pushes
 // with: taken, the pusher starts again with the new token, which the build check that follows uses too; a hub from
 // before PC tokens leaves it the token it has, said once; refused, the PC must be paired again, and asks again at the
