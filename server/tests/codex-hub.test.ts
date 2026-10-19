@@ -278,6 +278,17 @@ test('a file path that leaves sessions/ is never written', () => {
   rmSync(root, { recursive: true, force: true })
 })
 
+test('a push whose name has a control character is refused, and writes nothing', () => {
+  const root = join(process.env.AGENTHYDRA_HOME!, `hub-${crypto.randomUUID().slice(0, 6)}`)
+  for (const pc of ['Office\n[codex-hub] forged', 'Office\u001b[2K', 'Office\u009bPC'])
+    expect(acceptCodexHubPush({ pc, threads: [] }, root)).toEqual({
+      ok: false,
+      status: 400,
+      error: 'pc has a control character',
+    })
+  expect(existsSync(root)).toBe(false)
+})
+
 test("the pairing page posts a one-time code, never a token, only to the tray's own loopback port", async () => {
   const state = 'a'.repeat(32)
   const name = `<b>Page-PC-${crypto.randomUUID().slice(0, 6)}</b>`

@@ -270,8 +270,8 @@ app.post('/api/codex-hub/push', async (c) => {
       logRefusal(c, `${tokenName(record.tokenId!)}: ${late.code} after its body arrived`)
       return refusal(c, late)
     }
-    // The token is the PC: a name with its key only sets how it is written.
-    const pc = named && hubPcKey(named) === key ? named : record.pc
+    // The token is the PC: a name with its key, and no control character, only sets how it is written.
+    const pc = named && !CONTROL.test(named) && hubPcKey(named) === key ? named : record.pc
     if (named && pc !== named && !namedOther.has(key)) {
       namedOther.add(key)
       console.log(

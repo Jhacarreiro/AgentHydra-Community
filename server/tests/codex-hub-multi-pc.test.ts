@@ -71,11 +71,14 @@ const getJson = async <T>(path: string): Promise<T> =>
   (await (await fetch(`${hubUrl()}${path}`)).json()) as T
 
 /** scripts/codex-hub-pcs.ts as the owner runs it on the server, with `admin` in its environment. */
-async function cli(admin: string, ...args: string[]) {
+const cli = (admin: string, ...args: string[]) => cliAt(hubUrl(), admin, ...args)
+
+/** The same, against the hub at `hub`. */
+async function cliAt(hub: string, admin: string, ...args: string[]) {
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env))
     if (v !== undefined && !/^(AGENTHYDRA_|CCMANAGERUI_)CODEX_HUB_/.test(k)) env[k] = v
-  const proc = Bun.spawn([process.execPath, CLI, ...args, '--hub', hubUrl()], {
+  const proc = Bun.spawn([process.execPath, CLI, ...args, '--hub', hub], {
     cwd: ROOT,
     env: { ...env, AGENTHYDRA_CODEX_HUB_TOKEN: admin },
     stdout: 'pipe',
@@ -666,14 +669,26 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
       })
       expect((await cli(firstAdmin, 'add', 'Spare-PC')).stderr).toContain('409 name-paired')
       expect((await cli(firstAdmin, 'forget', 'spare-pc')).code).toBe(0)
-      // A key the cut at 63 characters leaves ending in a dash is taken as the list prints it.
-      const long = JSON.parse(
-        (await cli(firstAdmin, 'add', `${'a'.repeat(62)}-b`, '--json')).stdout,
-      )
+      // A key the cut at 63 characters leaves ending in a dash is taken as it is. It is also a name, of the PC whose
+      // key it makes once that dash is trimmed: with both on the hub, the command line touches neither.
+      const cut = `${'a'.repeat(62)}-`
+      const long = JSON.parse((await cli(firstAdmin, 'add', `${cut}b`, '--json')).stdout)
       secrets.add(long.token)
-      expect(long.key).toBe(`${'a'.repeat(62)}-`)
-      expect((await cli(firstAdmin, 'revoke', long.key)).code).toBe(0)
-      expect((await cli(firstAdmin, 'forget', long.key)).code).toBe(0)
+      expect(long.key).toBe(cut)
+      const short = JSON.parse((await cli(firstAdmin, 'add', 'a'.repeat(62), '--json')).stdout)
+      secrets.add(short.token)
+      const both = await cli(firstAdmin, 'revoke', cut)
+      expect(both.code).toBe(1)
+      expect(both.stderr).toContain(
+        `${cut} is a PC's key on this hub and also the name of ${short.key}`,
+      )
+      const asks = async (token: string) =>
+        (await fetch(`${hubUrl()}/api/codex-hub/whoami`, { headers: bearer(token) })).status
+      expect([await asks(long.token), await asks(short.token)]).toEqual([200, 200])
+      expect((await cli(firstAdmin, 'forget', 'a'.repeat(62))).code).toBe(0)
+      expect((await cli(firstAdmin, 'revoke', cut)).code).toBe(0)
+      expect(await asks(long.token)).toBe(401)
+      expect((await cli(firstAdmin, 'forget', cut)).code).toBe(0)
       expect(
         (await fetch(`${hubUrl()}/api/codex-hub/whoami`, { headers: bearer(spare.token) })).status,
       ).toBe(401)
@@ -850,4 +865,33 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
     },
     SLOW_MS,
   )
+})
+
+test('the command line prints a control character in a name or a reason escaped, a C1 one included', async () => {
+  const fake = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch: () =>
+      Response.json({
+        legacy: { open: false, pending: 0 },
+        pcs: [
+          {
+            key: 'office-pc',
+            pc: 'Office\u009b\u0085\u001b[2K\u007fPC',
+            state: 'revoked',
+            revokedAt: '2026-10-18T09:00:00.000Z',
+            revokedWhy: 'renamed to x\ny',
+          },
+        ],
+      }),
+  })
+  try {
+    const r = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'list')
+    expect(r.code).toBe(0)
+    expect(r.stdout.replaceAll('\n', '')).not.toMatch(/\p{Cc}/u)
+    expect(r.stdout).toContain('Office\\u009b\\u0085\\u001b[2K\\u007fPC (key office-pc)')
+    expect(r.stdout).toContain('renamed to x\\u000ay')
+  } finally {
+    fake.stop(true)
+  }
 })

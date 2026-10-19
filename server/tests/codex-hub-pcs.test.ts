@@ -762,15 +762,24 @@ test('forgetting a stale copy claims nothing: the folder its PC pushes to now st
 
 test('with the window closed, a forget and a re-pair still claim: opening it again moves no other folder', () => {
   const late = T0 + 8 * DAY
-  for (const how of ['revoke, then forget', 'revoke, then re-pair', 'forget'] as const) {
+  for (const how of [
+    'revoke, then forget',
+    'revoke, then re-pair',
+    'forget',
+    'pair from another install',
+    'add',
+  ] as const) {
     const root = newRoot()
     settings({ admin: ADMIN, legacy: LEGACY })
     folder(root, 'mac-local', { install: A, pushedAt: T0 })
     folder(root, 'mac-lan', { install: A, pushedAt: T0 - HOUR })
     expect(pendingKeys(root, T0)).toEqual(['mac-local'])
-    if (how !== 'forget') expect(revokePc('mac-local', root, T0)).toMatchObject({ ok: true })
+    if (how.startsWith('revoke'))
+      expect(revokePc('mac-local', root, T0)).toMatchObject({ ok: true })
     expect(legacyWindow(root, late).open).toBe(false)
-    if (how === 'revoke, then re-pair') {
+    if (how === 'add') {
+      expect(pcIn(root, 'mac-local', { install: null, now: late }).r).toMatchObject({ ok: true })
+    } else if (how === 'revoke, then re-pair' || how === 'pair from another install') {
       const code = mintPairCode({ key: 'mac-local', pc: 'mac-local', replaces: null }, root, late)
       const u = newPcToken()
       expect(
@@ -788,6 +797,53 @@ test('with the window closed, a forget and a re-pair still claim: opening it aga
       r: exchangeLegacy({ id: t.id, hash: t.hash, install: A }, root, late),
     }).toMatchObject({ how, r: { status: 401 } })
   }
+})
+
+test("a name with a control character is never a record's or a log line's: the key stands in for it", () => {
+  const root = newRoot()
+  settings({ admin: ADMIN, legacy: LEGACY })
+  const forged = 'Office\n[codex-hub] \u001b\u009b PC'
+  folder(root, 'office-pc', { pc: forged, install: A, pushedAt: T0 })
+  folder(root, 'laptop', { pc: 'Laptop\u0085', install: B, pushedAt: T0 })
+  const said = spyOn(console, 'log').mockImplementation(() => {})
+  try {
+    logCodexHubStart(root, T0)
+    const t = newPcToken()
+    expect(exchangeLegacy({ id: t.id, hash: t.hash, install: A }, root, T0 + 1)).toMatchObject({
+      ok: true,
+      pc: 'office-pc',
+    })
+    expect(stored(root).pcs['office-pc'].pc).toBe('office-pc')
+    expect(revokePc('laptop', root, T0 + 2)).toMatchObject({ ok: true, pc: 'laptop' })
+    expect(stored(root).pcs.laptop.pc).toBe('laptop')
+    expect(forgetPc('laptop', root, T0 + 3)).toMatchObject({ ok: true, pc: 'laptop' })
+    for (const [line] of said.mock.calls) expect(String(line)).not.toMatch(/\p{Cc}/u)
+  } finally {
+    said.mockRestore()
+  }
+})
+
+test('a PC named __proto__ or constructor is a record like any other, and none before it is paired', () => {
+  const root = newRoot()
+  expect(pairTarget('constructor', root, T0)).toEqual({ state: 'free', replaces: null })
+  expect(pairTarget('__proto__', root, T0)).toEqual({ state: 'free', replaces: null })
+  const proto = pcIn(root, '__proto__')
+  const ctor = pcIn(root, 'constructor', { install: B })
+  expect(proto.r).toMatchObject({ ok: true, key: '__proto__' })
+  expect(ctor.r).toMatchObject({ ok: true, key: 'constructor' })
+  const text = readFileSync(storeFile(root), 'utf8')
+  expect(Object.keys(JSON.parse(text).pcs).sort()).toEqual(['__proto__', 'constructor'])
+  expect(pcByToken(proto.token, root)).toMatchObject({ ok: true, key: '__proto__' })
+  expect(revokePc('__proto__', root, T0 + 1)).toMatchObject({ ok: true, key: '__proto__' })
+  expect(pcByToken(proto.token, root)).toMatchObject({ code: 'revoked' })
+  // After a restart too.
+  const again = newRoot()
+  mkdirSync(again, { recursive: true })
+  copyFileSync(storeFile(root), storeFile(again))
+  expect(pcByToken(proto.token, again)).toMatchObject({ code: 'revoked' })
+  expect(pcByToken(ctor.token, again)).toMatchObject({ ok: true, key: 'constructor' })
+  expect(forgetPc('__proto__', again, T0 + 2)).toMatchObject({ ok: true })
+  expect(Object.keys(stored(again).pcs)).toEqual(['constructor'])
 })
 
 test('legacy.claimed keeps the newest 256 install ids', () => {

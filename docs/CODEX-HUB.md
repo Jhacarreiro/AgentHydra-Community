@@ -741,11 +741,11 @@ install id is not a secret, what protects the window is the legacy token itself,
 `CONTESTED` mark that `list` shows on a PC whose exchange came second. If that token may have leaked, pair the PCs
 instead of moving them.
 
-Every refusal of the admin token, or of a value the hub does not know, is the same bare 401, whatever the reason, so
-an answer never tells the admin token from any other value. The legacy token gets that 401 too outside its window;
-while the window is open, a malformed request with it gets the 400 any malformed request gets (`install-required`,
-`bad-request`). The hub's log says why, at
-most once a minute for each route and reason, and names a token by its id only.
+Every refusal of a value that does not have the shape of a PC's token is the same bare 401, whatever the reason, so
+an answer never tells the admin token from any other such value. The legacy token gets that 401 too outside its
+window; while the window is open, a malformed request with it gets the 400 any malformed request gets
+(`install-required`, `bad-request`). The hub's log says why, at most once a minute for each route and reason, and
+names a token by its id only.
 
 **The pairing page hands out one-time codes, not tokens.** A code lasts 20 minutes and never past the tray's
 listener, is used once, at most 32 are outstanding, and it is bound to one name and to the token it may replace.

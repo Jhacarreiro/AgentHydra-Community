@@ -199,12 +199,20 @@ function badStore(raw: unknown): string | null {
   return null
 }
 
+/**
+ * `pcs` with no prototype, so every key is a record's own and nothing else: a PC named `__proto__` is a record, not
+ * the object's prototype, and one named `constructor` has none until it is paired. A copy (structuredClone) has
+ * Object's prototype again, so each one goes through this.
+ */
+const ownPcs = (pcs: Record<string, HubPcRecord>): Record<string, HubPcRecord> =>
+  Object.assign(Object.create(null) as Record<string, HubPcRecord>, pcs)
+
 /** The store under `root`, read at its first use. A missing file is an empty store. */
 function load(root: string): Loaded {
   const known = stores.get(root)
   if (known) return known
   const file = join(root, STORE)
-  let loaded: Loaded = { store: { version: 1, pcs: {} }, byId: new Map() }
+  let loaded: Loaded = { store: { version: 1, pcs: ownPcs({}) }, byId: new Map() }
   let raw: string | null = null
   try {
     raw = readFileSync(file, 'utf8')
@@ -235,6 +243,7 @@ function load(root: string): Loaded {
       )
     } else {
       const store = parsed as PcStore
+      store.pcs = ownPcs(store.pcs)
       loaded = { store, byId: indexOf(store) }
     }
   }
@@ -268,6 +277,7 @@ function change(root: string, edit: (store: PcStore) => void): HubRefusal | null
   const { store } = load(root)
   if (!store) return unreadable()
   const next = structuredClone(store)
+  next.pcs = ownPcs(next.pcs)
   edit(next)
   return save(root, next) ? null : unwritable()
 }
@@ -521,12 +531,15 @@ interface Pairing {
 
 /**
  * Writes key `key`'s record for a new token, in place of what it had. An install id the key leaves behind (its
- * record's, or a pending manifest's) is claimed whatever the window, so no folder that carries it moves later.
+ * record's, or the manifest's of a folder its install's legacy token acts for: pending, or the newest while the
+ * window is closed) is claimed whatever the window, so no folder that carries it moves later.
  */
 function writePairing(s: Survey, key: string, p: Pairing, now: number): HubRefusal | null {
   const target = targetOf(s, key)
+  const live = target.state === 'pending' || target.why === 'window-closed'
   const previous =
-    target.record?.install ?? (target.state === 'pending' ? target.manifest?.install : undefined)
+    target.record?.install ??
+    (live ? (hubInstallId(target.manifest?.install) ?? undefined) : undefined)
   return change(s.root, (store) => {
     if (previous && previous !== p.install) claim(store, previous)
     store.pcs[key] = {
@@ -540,6 +553,10 @@ function writePairing(s: Survey, key: string, p: Pairing, now: number): HubRefus
     }
   })
 }
+
+/** A folder's name for a record or a log line: its manifest's, unless that has a control character, then its key. */
+const plainName = (pc: string | undefined, key: string): string =>
+  pc && !CONTROL.test(pc) ? pc : key
 
 const badShape = (id: unknown, hash: unknown): boolean =>
   typeof id !== 'string' || !TOKEN_ID.test(id) || typeof hash !== 'string' || !TOKEN_HASH.test(hash)
@@ -835,7 +852,7 @@ export function exchangeLegacy(
   }
   if (idInUse(root, x.id)) return refuse(409, 'id-taken', 'that token id is in use')
   const manifest = s.pending.get(key)!
-  const pc = manifest.pc || key
+  const pc = plainName(manifest.pc, key)
   const failed = writePairing(
     s,
     key,
@@ -879,7 +896,7 @@ export function revokePc(
   if (!s) return unreadable()
   const target = targetOf(s, key)
   if (target.state === 'free') return refuse(404, 'not-found', `no PC ${key} on this hub`)
-  const pc = target.record?.pc ?? target.manifest?.pc ?? key
+  const pc = target.record?.pc ?? plainName(target.manifest?.pc, key)
   if (target.state !== 'revoked') {
     const failed = change(root, (store) => {
       const record = store.pcs[key]
@@ -974,7 +991,7 @@ export function forgetPc(
   const record = s.store.pcs[key]
   if (!record && !isDir(dir)) return refuse(404, 'not-found', `no PC ${key} on this hub`)
   const manifest = readCodexHubManifest(dir)
-  const pc = record?.pc ?? manifest?.pc ?? key
+  const pc = record?.pc ?? plainName(manifest?.pc, key)
   const install = record?.install ?? hubInstallId(manifest?.install) ?? undefined
   const live = !!record || s.pending.has(key) || s.why.get(key) === 'window-closed'
   if (record || (live && install)) {
@@ -1107,7 +1124,7 @@ export function logCodexHubStart(root: string = CODEX_HUB_DIR, now: number = Dat
   if (!s) return
   if (s.window.open) {
     const pending = [...s.pending].map(
-      ([key, m]) => `${m.pc || key} (last push ${hubWhen(m.pushedAt)})`,
+      ([key, m]) => `${plainName(m.pc, key)} (last push ${hubWhen(m.pushedAt)})`,
     )
     console.log(
       `[codex-hub] legacy window open until ${hubWhen(s.window.until)}: ${pending.length} PC(s) still on the ` +

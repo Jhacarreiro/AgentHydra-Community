@@ -35,7 +35,7 @@ import {
 import { dirname, join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { appEnv, CONFIG_DIR } from '../config'
-import { hubPcKey, isPcToken } from './codex-hub-ids'
+import { CONTROL, hubPcKey, isPcToken } from './codex-hub-ids'
 import { relayPcInstall } from './codex-hub-relay'
 import { HUB_PLATFORMS } from './codex-hub-signature'
 
@@ -274,6 +274,8 @@ export function acceptCodexHubPush(
   const pc = typeof push?.pc === 'string' ? push.pc.trim() : ''
   const key = pc ? hubPcKey(pc) : null
   if (!key) return { ok: false, status: 400, error: 'pc is required' }
+  // The name goes into the manifest, Desk's list of PCs and the hub's log lines.
+  if (CONTROL.test(pc)) return { ok: false, status: 400, error: 'pc has a control character' }
   if ((opts.hold ?? true) && hubNameRefused(key, install, root))
     return { ok: false, status: 409, error: hubNameTaken(pc) }
   if (!Array.isArray(push?.threads))

@@ -312,6 +312,14 @@ test("a PC token pushes its own chats; a body naming another PC writes under the
   expect(hubPcKey(spelled)).toBe(a.key)
   expect(await push(a, spelled)).toMatchObject({ status: 200, json: { pc: spelled } })
   expect(manifestOf(a.key)?.pc).toBe(spelled)
+  // One with a control character in it does not: the record's is written.
+  const escaped = a.pc.replace('-', '\u001b')
+  expect(hubPcKey(escaped)).toBe(a.key)
+  expect(await push(a, escaped)).toMatchObject({
+    status: 200,
+    json: { pc: a.pc },
+  })
+  expect(manifestOf(a.key)?.pc).toBe(a.pc)
 })
 
 test('a PC token needs its install id: none is 400, another is 409, and a token from add binds the first it is sent with', async () => {

@@ -73,9 +73,12 @@ const admin = (
 if (!admin)
   fail('AGENTHYDRA_CODEX_HUB_TOKEN is not set: run this with --env-file pointing at hub.env')
 
-/** A line as the terminal gets it: a control character in a name or a reason is printed escaped, never sent. */
+/** A line as the terminal gets it: a control character in a name or a reason (C0, DEL or C1) is printed escaped. */
 const shown = (line: string): string =>
-  line.replace(new RegExp(CONTROL.source, 'gu'), (ch) => JSON.stringify(ch).slice(1, -1))
+  line.replace(
+    new RegExp(CONTROL.source, 'gu'),
+    (ch) => `\\u${ch.codePointAt(0)!.toString(16).padStart(4, '0')}`,
+  )
 
 const when = (iso: string | undefined): string =>
   iso && Number.isFinite(Date.parse(iso))
@@ -115,11 +118,23 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return answer as T
 }
 
-/** A key as `list` prints it is taken as it is: a key cut at 63 characters can end in a dash hubPcKey would trim. */
-function keyOf(pc: string | undefined): string {
-  const key = pc && isHubPcKey(pc) ? pc : pc ? hubPcKey(pc) : null
-  if (!key) fail(USAGE)
-  return key
+/**
+ * The key a revoke or forget is for: the PC's name made a key, or a key as it is. The two differ only for a key that
+ * the cut at 63 characters left ending in a dash, which hubPcKey would trim: then the list says which of the two the
+ * hub has, and a hub with both is asked about neither.
+ */
+async function keyOf(pc: string | undefined): Promise<string> {
+  const made = pc ? hubPcKey(pc) : null
+  if (!pc || !made) fail(USAGE)
+  if (made === pc || !isHubPcKey(pc)) return made
+  const list = await call<List>('GET', '/api/codex-relay/admin/pcs')
+  const keys = new Set(list.pcs.map((r) => r.key))
+  if (keys.has(pc) && keys.has(made))
+    fail(
+      `${pc} is a PC's key on this hub and also the name of ${made}: say which one, with the admin API ` +
+        '(docs/REFERENCE.md, the Codex hub)',
+    )
+  return keys.has(pc) ? pc : made
 }
 
 if (command === 'list' && !name) {
@@ -141,7 +156,8 @@ if (command === 'list' && !name) {
       console.log(
         shown(
           [
-            r.pc,
+            // The key too where the name does not make it, which revoke and forget then take.
+            hubPcKey(r.pc) === r.key ? r.pc : `${r.pc} (key ${r.key})`,
             `${r.state}${r.why ? ` (${r.why})` : ''}`,
             r.tokenId ? `chp_${r.tokenId}` : '-',
             r.pairedAt
@@ -173,7 +189,7 @@ if (command === 'list' && !name) {
       'AGENTHYDRA_CODEX_HUB_TOKEN, and use it at once: its first request with an install id binds it.',
   )
 } else if (command === 'revoke' && name) {
-  const key = keyOf(name)
+  const key = await keyOf(name)
   const r = await call<{ pc: string; relayClosed: boolean }>(
     'POST',
     `/api/codex-relay/admin/pcs/${key}/revoke`,
@@ -184,7 +200,7 @@ if (command === 'list' && !name) {
     ),
   )
 } else if (command === 'forget' && name) {
-  const key = keyOf(name)
+  const key = await keyOf(name)
   const r = await call<{ pc: string }>('DELETE', `/api/codex-relay/admin/pcs/${key}`)
   console.log(shown(`${r.pc} forgotten: its token and its copies are gone from the hub.`))
 } else {
