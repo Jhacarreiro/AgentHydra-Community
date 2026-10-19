@@ -833,8 +833,9 @@ func TestPairHandler(t *testing.T) {
 	whoamiAs = answer(401, errJSON("unknown-token"))
 	mu.Unlock()
 	before = len(calls("redeem"))
-	if status, body := postCode(h, code); status != http.StatusOK || len(calls("redeem")) != before+1 {
-		t.Errorf("a pairing after a 502: %d %s", status, body)
+	status, pairedPage := postCode(h, code)
+	if status != http.StatusOK || len(calls("redeem")) != before+1 {
+		t.Errorf("a pairing after a 502: %d %s", status, pairedPage)
 	}
 	if w := calls("whoami"); len(w) == 0 || w[len(w)-1].bearer != r[0].next {
 		t.Errorf("whoami before the pairing: %+v", w)
@@ -842,7 +843,7 @@ func TestPairHandler(t *testing.T) {
 	paired = savedConfig()
 	// A second click on the page, while the listener is still open: the same answer, and nothing sent.
 	sent := len(calls("redeem")) + len(calls("whoami"))
-	if status, body := postCode(h, code); status != http.StatusOK || !strings.Contains(body, "This PC is connected as Example-PC") ||
+	if status, body := postCode(h, code); status != http.StatusOK || body != pairedPage || !strings.Contains(body, "This PC is connected as Example-PC") ||
 		len(calls("redeem"))+len(calls("whoami")) != sent || savedConfig() != paired {
 		t.Errorf("a second click: %d %s (%d requests)", status, body, len(calls("redeem"))+len(calls("whoami"))-sent)
 	}
@@ -1001,7 +1002,7 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 		return c.Next
 	}
 	// connected posts code on h and wants this PC connected as pc with token, by no redeem, its page saying all of want.
-	connected := func(what string, h http.HandlerFunc, token, pc string, want ...string) {
+	connected := func(what string, h http.HandlerFunc, token, pc string, want ...string) string {
 		t.Helper()
 		finished = false
 		before := len(calls("redeem"))
@@ -1018,6 +1019,7 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 		if c := savedConfig(); c.Token != token || c.PC != pc || c.Next != "" || c.Pairing || c.RenameFrom != "" {
 			t.Errorf("%s: tray.json %+v", what, c)
 		}
+		return body
 	}
 	// redeemed posts code on h and wants it redeemed, this PC then connected as pc with the redeem's token.
 	redeemed := func(what string, h http.HandlerFunc, pc string) {
@@ -1038,10 +1040,10 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 	l1 := link("Example-PC", "")
 	t1 := lose("the page's other name", l1)
 	hubAnswers(takes("Example-PC-3"), nil, has("Example-PC-2"))
-	connected("the page's other name", l1, t1, "Example-PC-2")
+	page1 := connected("the page's other name", l1, t1, "Example-PC-2")
 	// A second click on that page: the same answer, and nothing sent.
 	sent := len(calls("redeem")) + len(calls("whoami"))
-	if status, body := postCode(l1, code); status != http.StatusOK || !strings.Contains(body, "connected as Example-PC-2") ||
+	if status, body := postCode(l1, code); status != http.StatusOK || body != page1 ||
 		len(calls("redeem"))+len(calls("whoami")) != sent || savedConfig().Token != t1 {
 		t.Errorf("a second click: %d %s (%d requests)", status, body, len(calls("redeem"))+len(calls("whoami"))-sent)
 	}
@@ -1247,14 +1249,15 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 		t.Errorf("another link's page, told to wait: %d %s", status, body)
 	}
 	hubAnswers(takes("Never-PC"), nil, has("Attic"))
-	connected("another link's page", l8, t8, "Attic", " Old-PC could not be retired (the hub answered 500 for retire")
+	page8 := connected("another link's page", l8, t8, "Attic",
+		"Attic and is pushing its Codex chats. Old-PC could not be retired (the hub answered 500 for retire")
 	held := savedConfig()
 	requests := func() int { return len(calls("redeem")) + len(calls("whoami")) + len(calls("retire")) }
 	sentBefore := requests()
-	_, again := postCode(l8, code)
-	if status, body := postCode(l8, code); status != http.StatusOK || body != again || savedConfig() != held ||
-		requests() != sentBefore || !strings.Contains(again, "Attic and is pushing its Codex chats. Old-PC could not be retired") {
-		t.Errorf("a second click on another link's page: %d %s (%d requests)", status, body, requests()-sentBefore)
+	for click := 2; click <= 3; click++ {
+		if status, body := postCode(l8, code); status != http.StatusOK || body != page8 || savedConfig() != held || requests() != sentBefore {
+			t.Errorf("click %d on another link's page: %d %s (%d requests), first %s", click, status, body, requests()-sentBefore, page8)
+		}
 	}
 	if err := saveConfig(config{Hub: srv.URL, Token: old, PC: "Old-PC", ID: oldID, Install: install}); err != nil {
 		t.Fatal(err)
@@ -1266,6 +1269,22 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 	if status, body := postCode(link("Loft", ""), code); status != http.StatusOK ||
 		!strings.Contains(body, "This PC is connected as Loft and is pushing its Codex chats. Old-PC could not be retired") {
 		t.Errorf("another link's code: %d %s", status, body)
+	}
+
+	// Two such retires before a page connects the PC: that page says both, once each.
+	if err := saveConfig(config{Hub: srv.URL, Token: old, PC: "Old-PC", ID: oldID, Install: install}); err != nil {
+		t.Fatal(err)
+	}
+	renaming = lose("two retires", link("New-PC", "Old-PC"))
+	hubAnswers(takes("Never-PC"), answer(500, errJSON("internal")), has("New-PC"))
+	byCheck("two retires", renaming)
+	renaming = lose("two retires", link("Newer-PC", "New-PC"))
+	hubAnswers(takes("Never-PC"), answer(200, `{"pc":"New-PC","key":"new-pc","state":"revoked"}`), has("Newer-PC"))
+	byCheck("two retires", renaming)
+	hubAnswers(takes("Den"), nil, nil)
+	if status, body := postCode(link("Den", ""), code); status != http.StatusOK ||
+		strings.Count(body, "Old-PC could not be retired") != 1 || strings.Count(body, "New-PC was retired on the hub") != 1 {
+		t.Errorf("two retires: %d %s", status, body)
 	}
 
 	// A pairing the hub took whose token this PC could not save is the link's own lost one: the check that saves it
