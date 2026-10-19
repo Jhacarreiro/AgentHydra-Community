@@ -177,17 +177,24 @@ type settledPairing struct {
 	retired     error
 }
 
+// linkPosts is what one link's posts share, held under a.token: the pairings' tokens whose answer was lost while the
+// link was open (one still unsettled when it opened, and those its own posts sent), and the token and page of the post
+// that connected this PC, which a post after it (a second click, while the listener is still open) is answered with.
+// A token settled before the link opened is not a lost one: a pairing posted on it is the user's own, made with the
+// tray showing this PC connected.
+type linkPosts struct {
+	lost        map[string]bool
+	token, page string
+}
+
 var pairCode = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // pairHandler takes the hub page's post for this pairing: a code, which it redeems with a token it makes, or the
 // token a hub from before PC tokens posts.
 func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
-	// The pairings' tokens whose answer was lost while this link was open, held under a.token: one still unsettled
-	// when it opened, and those its own posts sent (redeemCode). A token settled before it opened is not one: a
-	// pairing posted on it is the user's own, made with the tray showing this PC connected.
-	lost := map[string]bool{}
+	posts := &linkPosts{lost: map[string]bool{}}
 	if c := savedConfig(); c.Pairing && c.Next != "" {
-		lost[c.Next] = true
+		posts.lost[c.Next] = true
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -201,7 +208,7 @@ func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
 		code, token := r.PostFormValue("code"), r.PostFormValue("token")
 		switch {
 		case pairCode.MatchString(code):
-			a.redeemCode(w, open, lost, code, finish)
+			a.redeemCode(w, open, posts, code, finish)
 		case code == "" && tokenUsable(token) && !isPcToken(token):
 			a.takeHubToken(w, token, finish)
 		default:
@@ -212,10 +219,20 @@ func (a *app) pairHandler(open pairOpen, finish func()) http.HandlerFunc {
 
 // redeemCode makes this PC a token and redeems the page's code with it. The token is saved as next before it is
 // sent, so an answer lost on the way is settled at the next check (settleNext), and as the token only once the hub
-// has answered that it took it. lost is the pairings' tokens whose answer was lost while this link was open.
-func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]bool, code string, finish func()) {
+// has answered that it took it. posts is what this link's posts share.
+func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, posts *linkPosts, code string, finish func()) {
 	a.token.Lock()
 	defer a.token.Unlock()
+	// A second post of this link's page after one connected this PC: the same answer, and nothing sent.
+	if posts.token != "" && savedConfig().Token == posts.token {
+		page(w, http.StatusOK, posts.page)
+		return
+	}
+	connected := func(token, text string) {
+		posts.token, posts.page = token, text
+		page(w, http.StatusOK, text)
+		finish()
+	}
 	// A next from before (a check's or a pairing's whose answer was lost) may be a token the hub has: settled first, so
 	// this one never takes its place. While the hub says nothing about it, this pairing waits.
 	had := savedConfig()
@@ -232,15 +249,17 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]b
 	// check's token under this link's name.
 	now := savedConfig()
 	settled, s := now.Token != had.Token, a.settled
-	pairings := isPcToken(now.Token) && s.token == now.Token && (settled || lost[now.Token])
-	// One a check settled before this post: the hub may have revoked it since, and then this code pairs the PC again.
+	pairings := isPcToken(now.Token) && s.token == now.Token && (settled || posts.lost[now.Token])
+	// One a check settled before this post: the hub may have revoked it since, and then this code pairs the PC again,
+	// and the page says what came of that check's rename, if it was one.
+	var earlier settledPairing
 	if pairings && !settled {
 		_, ans, err := whoami(loadConfig())
 		switch {
 		case err == nil && ans.status == http.StatusOK:
 		case err == nil && (ans.status == http.StatusUnauthorized && (ans.code == "unknown-token" || ans.code == "revoked") ||
 			ans.status == http.StatusConflict && ans.code == "install-mismatch"):
-			pairings, a.settled = false, settledPairing{}
+			pairings, earlier, a.settled = false, s, settledPairing{}
 		default:
 			page(w, http.StatusServiceUnavailable, "This PC is still waiting for the hub to say whether it has this PC's token. Nothing changed: choose Connect this PC again in a few minutes.")
 			return
@@ -252,16 +271,16 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]b
 		if pairings && s.from != "" {
 			text += renamed(s.from, s.retired)
 		}
-		page(w, http.StatusOK, text)
-		finish()
+		connected(now.Token, text)
 		go a.kick()
 		return
 	}
 	before := savedConfig()
 	cfg := loadConfig()
-	// A rename (5.3), saved with next: a check that settles it retires the old name as this answer would.
+	// A rename (5.3), saved with next: a check that settles it retires the old name as this answer would. Only while
+	// the token this PC holds is still the old name's: one it took since (a lost pairing's) is not.
 	from, to := "", ""
-	if isPcToken(before.Token) && open.from != "" {
+	if isPcToken(before.Token) && open.from != "" && pcKey(before.PC) == pcKey(open.from) {
 		from, to = open.from, open.name
 	}
 	var who pcAnswer
@@ -289,7 +308,7 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]b
 		err = ans.refusal("the pairing")
 	}
 	if err != nil {
-		lost[token] = true
+		posts.lost[token] = true
 		log.Println("pair: the hub did not answer the redeem:", err)
 		page(w, http.StatusBadGateway, "The hub did not answer ("+err.Error()+"). If it took the pairing, this PC connects by itself within 10 minutes; if not, choose Connect this PC again.")
 		return
@@ -325,9 +344,10 @@ func (a *app) redeemCode(w http.ResponseWriter, open pairOpen, lost map[string]b
 		old := cfg
 		old.Token = before.Token
 		text += renamed(from, retireOld("pair", old, from, who.PC))
+	} else if earlier.from != "" {
+		text += renamed(earlier.from, earlier.retired)
 	}
-	page(w, http.StatusOK, text)
-	finish()
+	connected(token, text)
 	// The running pusher has the token it was started with; it starts again with this one.
 	started := loadConfig()
 	go func() {

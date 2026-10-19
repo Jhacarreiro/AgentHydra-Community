@@ -840,6 +840,14 @@ func TestPairHandler(t *testing.T) {
 		t.Errorf("whoami before the pairing: %+v", w)
 	}
 	paired = savedConfig()
+	// A second click on the page, while the listener is still open: the same answer, and nothing sent.
+	sent := len(calls("redeem")) + len(calls("whoami"))
+	if status, body := postCode(h, code); status != http.StatusOK || !strings.Contains(body, "This PC is connected as Example-PC") ||
+		len(calls("redeem"))+len(calls("whoami")) != sent || savedConfig() != paired {
+		t.Errorf("a second click: %d %s (%d requests)", status, body, len(calls("redeem"))+len(calls("whoami"))-sent)
+	}
+	// The posts below are of a link opened after this one.
+	h = a.pairHandler(testOpen, func() { finished = true })
 
 	// No answer: the same request twice more, then next stays, for the next check to settle.
 	before = len(calls("redeem"))
@@ -882,6 +890,7 @@ func TestPairHandler(t *testing.T) {
 	mu.Lock()
 	whoamiAs = answer(401, errJSON("unknown-token"))
 	mu.Unlock()
+	h = a.pairHandler(testOpen, func() { finished = true })
 
 	// The hub has the id already: another token, once.
 	var asked int
@@ -1030,6 +1039,12 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 	t1 := lose("the page's other name", l1)
 	hubAnswers(takes("Example-PC-3"), nil, has("Example-PC-2"))
 	connected("the page's other name", l1, t1, "Example-PC-2")
+	// A second click on that page: the same answer, and nothing sent.
+	sent := len(calls("redeem")) + len(calls("whoami"))
+	if status, body := postCode(l1, code); status != http.StatusOK || !strings.Contains(body, "connected as Example-PC-2") ||
+		len(calls("redeem"))+len(calls("whoami")) != sent || savedConfig().Token != t1 {
+		t.Errorf("a second click: %d %s (%d requests)", status, body, len(calls("redeem"))+len(calls("whoami"))-sent)
+	}
 	// The same from another link, opened after this one expired: the lost token is a pairing's, whichever link sent it.
 	t2 := lose("another link's", link("Office", ""))
 	hubAnswers(takes("Office-3"), nil, has("Office-2"))
@@ -1072,13 +1087,18 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 	hubAnswers(takes("Lab-4"), nil, has("Lab-3"))
 	byCheck("a link opened after the check", t5)
 	redeemed("a link opened after the check", link("Lab-3", ""), "Lab-4")
-	// A token the hub revoked since a check settled it: the same link's code pairs this PC again.
-	l6 := link("Shed", "")
-	t6 := lose("revoked since", l6)
-	hubAnswers(takes("Shed-3"), nil, has("Shed-2"))
-	byCheck("revoked since", t6)
-	hubAnswers(takes("Shed-3"), nil, answer(401, errJSON("revoked")))
-	redeemed("revoked since", l6, "Shed-3")
+	// A token the hub no longer has since a check settled it (revoked, forgotten, or another install's now): the same
+	// link's code pairs this PC again.
+	for _, gone := range []func(hubCall) (int, string){
+		answer(401, errJSON("revoked")), answer(401, errJSON("unknown-token")), answer(409, errJSON("install-mismatch")),
+	} {
+		l6 := link("Shed", "")
+		t6 := lose("gone since", l6)
+		hubAnswers(takes("Shed-3"), nil, has("Shed-2"))
+		byCheck("gone since", t6)
+		hubAnswers(takes("Shed-3"), nil, gone)
+		redeemed("gone since", l6, "Shed-3")
+	}
 	// While the hub does not say whether it still has it, the post waits, and nothing changes.
 	l7 := link("Barn", "")
 	t7 := lose("not told", l7)
@@ -1134,6 +1154,39 @@ func TestAPairingWhoseAnswerWasLost(t *testing.T) {
 		connected(c.what, r, next, "New-PC", c.want)
 		if ret := calls("retire")[retired:]; len(ret) != 1 || ret[0].bearer != old || ret[0].text("renamedTo") != "New-PC" {
 			t.Errorf("%s: retire %+v", c.what, ret)
+		}
+	}
+
+	// A rename whose lost token a check settled, which the hub no longer has: the code pairs this PC again, and the
+	// page says what came of the check's retire of the old name, sending no retire of its own, as the token this PC
+	// holds is no longer the old name's.
+	for _, c := range []struct {
+		what, as string
+		retire   func(hubCall) (int, string)
+		want     string
+	}{
+		{"a settled rename, gone since", "New-PC", answer(500, errJSON("internal")), " Old-PC could not be retired (the hub answered 500 for retire"},
+		{"a settled rename, retired, gone since", "New-PC", answer(200, `{"pc":"Old-PC","key":"old-pc","state":"revoked"}`), " Old-PC was retired on the hub"},
+		// The page's other name: nothing was retired, and nothing is said of it.
+		{"a rename settled as another name, gone since", "New-PC-2", nil, ""},
+	} {
+		old, oldID, _ := newPcToken()
+		if err := saveConfig(config{Hub: srv.URL, Token: old, PC: "Old-PC", ID: oldID, Install: install}); err != nil {
+			t.Fatal(err)
+		}
+		r := link("New-PC", "Old-PC")
+		next := lose(c.what, r)
+		hubAnswers(takes("Never-PC"), c.retire, has(c.as))
+		byCheck(c.what, next)
+		retired := len(calls("retire"))
+		hubAnswers(takes("New-PC"), answer(200, `{}`), answer(401, errJSON("revoked")))
+		status, body := postCode(r, code)
+		if status != http.StatusOK || !strings.Contains(body, "This PC is connected as New-PC and is pushing its Codex chats.") ||
+			!strings.Contains(body, c.want) || c.want == "" && strings.Contains(body, "retire") {
+			t.Errorf("%s: %d %s", c.what, status, body)
+		}
+		if n := len(calls("retire")) - retired; n != 0 {
+			t.Errorf("%s: %d retires sent with the post", c.what, n)
 		}
 	}
 }
