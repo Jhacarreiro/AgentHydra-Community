@@ -44,7 +44,7 @@ import {
   legacyToken,
   readCodexHubManifest,
 } from './codex-hub'
-import { CONTROL, isHubPcKey, pcTokenHash, pcTokenId } from './codex-hub-ids'
+import { CONTROL, isHubPcKey, pcTokenHash, pcTokenId, plainJson } from './codex-hub-ids'
 import { closeRelayUnless, relayPcs } from './codex-hub-relay'
 
 export type PairedBy = 'page' | 'cli' | 'exchange'
@@ -176,7 +176,7 @@ function badStore(raw: unknown): string | null {
   if (!s.pcs || typeof s.pcs !== 'object' || Array.isArray(s.pcs)) return 'it has no pcs object'
   const ids = new Set<string>()
   for (const [key, r] of Object.entries(s.pcs)) {
-    if (!isHubPcKey(key)) return `${JSON.stringify(key)} is not a PC's key`
+    if (!isHubPcKey(key)) return `${plainJson(key)} is not a PC's key`
     if (!r || typeof r !== 'object' || typeof r.pc !== 'string') return `${key} has no pc`
     if (r.tokenId !== undefined && !TOKEN_ID.test(r.tokenId)) return `${key} has a bad tokenId`
     if (r.tokenHash !== undefined && !TOKEN_HASH.test(r.tokenHash))
@@ -360,6 +360,8 @@ interface Survey {
   window: LegacyWindow
   /** Every folder with a manifest, by key. */
   homes: Map<string, HubManifest>
+  /** The folders with a manifest whose names are not keys, sorted: left out of everything here. */
+  ignored: string[]
   /** The pending keys and their manifests. */
   pending: Map<string, HubManifest>
   /** Why each folder without a record is not pending (2.5's `why`). */
@@ -373,7 +375,15 @@ function survey(root: string, now: number): Survey | null {
   const { store } = load(root)
   if (!store) return null
   const homes = new Map<string, HubManifest>()
-  for (const h of codexHubHomes(root)) homes.set(h.id.slice('hub:'.length), h.manifest)
+  const ignored: string[] = []
+  for (const h of codexHubHomes(root)) {
+    const key = h.id.slice('hub:'.length)
+    // A folder made or renamed by hand ('office-pc.bak'): no push writes one, and no record can be kept under it,
+    // as load() refuses a store with one. So it is never pending, listed or paired, and the start log names it.
+    if (isHubPcKey(key)) homes.set(key, h.manifest)
+    else ignored.push(key)
+  }
+  ignored.sort()
   const claimed = new Set(store.legacy?.claimed ?? [])
   for (const r of Object.values(store.pcs)) if (r.install) claimed.add(r.install)
   const since = store.legacy?.since
@@ -400,7 +410,7 @@ function survey(root: string, now: number): Survey | null {
     if (window.open) pending.set(newest, manifest)
     else why.set(newest, 'window-closed')
   }
-  return { root, store, window, homes, pending, why }
+  return { root, store, window, homes, ignored, pending, why }
 }
 
 /** The keys the legacy token may act for now, sorted. Empty while the window is not open. */
@@ -554,9 +564,17 @@ function writePairing(s: Survey, key: string, p: Pairing, now: number): HubRefus
   })
 }
 
-/** A folder's name for a record or a log line: its manifest's, unless that has a control character, then its key. */
-const plainName = (pc: string | undefined, key: string): string =>
-  pc && !CONTROL.test(pc) ? pc : key
+/**
+ * A folder's name for a record or a log line, one that hubPcKey makes `key` again, as a PC token's push and whoami
+ * take it: its manifest's, with each run of control characters made a space (which hubPcKey makes the same dash), when
+ * that has this key. Else the key itself, or, for a key the cut at 63 characters left ending in a dash (which hubPcKey
+ * would trim), the key and a 0.
+ */
+const plainName = (pc: string | undefined, key: string): string => {
+  const name = pc?.replace(/\p{Cc}+/gu, ' ').trim()
+  if (name && hubPcKey(name) === key) return name
+  return hubPcKey(key) === key ? key : `${key}0`
+}
 
 const badShape = (id: unknown, hash: unknown): boolean =>
   typeof id !== 'string' || !TOKEN_ID.test(id) || typeof hash !== 'string' || !TOKEN_HASH.test(hash)
@@ -874,7 +892,7 @@ export function exchangeLegacy(
 // --- revoke, retire, forget ----------------------------------------------------------------------
 
 const badKey = (key: string): HubRefusal | null =>
-  isHubPcKey(key) ? null : refuse(400, 'bad-key', `${JSON.stringify(key)} is not a PC's key`)
+  isHubPcKey(key) ? null : refuse(400, 'bad-key', `${plainJson(key)} is not a PC's key`)
 
 export type PcRevoked =
   | { ok: true; pc: string; key: string; state: 'revoked'; relayClosed: boolean }
@@ -956,7 +974,7 @@ export function retirePc(
   )
   dropPairing(key, root)
   console.log(
-    `[codex-hub] ${record.pc} retired its token${renamedTo ? ` (renamed to ${JSON.stringify(renamedTo)})` : ''}`,
+    `[codex-hub] ${record.pc} retired its token${renamedTo ? ` (renamed to ${plainJson(renamedTo)})` : ''}`,
   )
   return { ok: true, pc: record.pc, key, state: 'revoked' }
 }
@@ -1122,6 +1140,11 @@ export function logCodexHubStart(root: string = CODEX_HUB_DIR, now: number = Dat
     )
   const s = survey(root, now)
   if (!s) return
+  if (s.ignored.length)
+    console.log(
+      `[codex-hub] ${s.ignored.length} folder(s) left out, as their names are not a PC's key: ` +
+        `${s.ignored.map((k) => plainJson(k)).join(', ')}: move each out of ${root}, or give it its PC's key`,
+    )
   if (s.window.open) {
     const pending = [...s.pending].map(
       ([key, m]) => `${plainName(m.pc, key)} (last push ${hubWhen(m.pushedAt)})`,

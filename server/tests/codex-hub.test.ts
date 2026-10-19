@@ -289,6 +289,19 @@ test('a push whose name has a control character is refused, and writes nothing',
   expect(existsSync(root)).toBe(false)
 })
 
+test("a push given its key writes under that key, whatever key its name makes: a PC token's", () => {
+  const root = join(process.env.AGENTHYDRA_HOME!, `hub-${crypto.randomUUID().slice(0, 6)}`)
+  // The cut at 63 characters left this key ending in a dash: as a name, it makes the key without it.
+  const cut = `${'a'.repeat(62)}-`
+  expect(hubPcKey(cut)).toBe('a'.repeat(62))
+  expect(
+    acceptCodexHubPush({ pc: cut, threads: [] }, root, undefined, null, { hold: false, key: cut }),
+  ).toMatchObject({ ok: true, pc: cut })
+  expect(JSON.parse(readFileSync(join(root, cut, 'manifest.json'), 'utf8')).pc).toBe(cut)
+  expect(existsSync(join(root, 'a'.repeat(62)))).toBe(false)
+  rmSync(root, { recursive: true, force: true })
+})
+
 test("the pairing page posts a one-time code, never a token, only to the tray's own loopback port", async () => {
   const state = 'a'.repeat(32)
   const name = `<b>Page-PC-${crypto.randomUUID().slice(0, 6)}</b>`

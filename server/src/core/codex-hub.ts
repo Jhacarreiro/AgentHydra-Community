@@ -261,18 +261,20 @@ export type HubPushResult =
  * a rollout no listed chat names any more (archived or deleted there) is removed here.
  * A refused push writes nothing: every time is checked and every rollout unpacked first.
  * `install` is the pusher's install id: a name another install holds is refused (hubNameRefused), unless
- * `opts.hold` is false, as for a PC token, which is the PC's name on its own (routes/codex-hub.ts).
+ * `opts.hold` is false, as for a PC token, which is the PC's name on its own (routes/codex-hub.ts). `opts.key` is the
+ * folder a PC token's push goes in, its token's: the name only sets how the PC is written, even one whose key is
+ * another (a key the cut at 63 characters left ending in a dash is not its own key).
  */
 export function acceptCodexHubPush(
   body: unknown,
   root: string = CODEX_HUB_DIR,
   maxUnpacked: number = ROLLOUT_UNPACKED_MAX,
   install: string | null = null,
-  opts: { hold?: boolean } = {},
+  opts: { hold?: boolean; key?: string } = {},
 ): HubPushResult {
   const push = body as Partial<HubPush> | null
   const pc = typeof push?.pc === 'string' ? push.pc.trim() : ''
-  const key = pc ? hubPcKey(pc) : null
+  const key = pc ? (opts.key ?? hubPcKey(pc)) : null
   if (!key) return { ok: false, status: 400, error: 'pc is required' }
   // The name goes into the manifest, Desk's list of PCs and the hub's log lines.
   if (CONTROL.test(pc)) return { ok: false, status: 400, error: 'pc has a control character' }

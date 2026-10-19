@@ -1011,14 +1011,16 @@ so close it there first. Nothing on the hub can rename or archive a chat on its 
   relay and answers `{ pc, key, id }`. A repeat with the same id, hash and install gets the same answer; an
   exchange for an install that has already moved is a 401 that marks that PC `contestedAt` and logs a warning.
   The tray exchanges at its next check, which settles an unsettled `next` first, then exchanges while its token
-  is the shared one, then asks `whoami` when it lacks its name or id, then checks the builds; a pusher never
+  is the shared one and no `next` is left unsettled, then asks `whoami` when it lacks its name or id, then checks the builds; a pusher never
   exchanges by itself. A tray the hub would not move says "This PC must be paired again". At start the hub logs
   the window, the pending PCs with their last pushes and the folders that cannot move, with the reason; with
-  no legacy token set, it names the folders that have no token of their own. The steps are in
+  no legacy token set, it names the folders that have no token of their own. A folder whose name is not a key
+  (one renamed by hand, such as `office-pc.bak`) is left out of all of this, and the start log names it. The steps are in
   [CODEX-HUB.md](CODEX-HUB.md#moving-pcs-to-tokens-of-their-own).
 - **Refusals:** every refusal is JSON, `{ error, code }`: 404 `hub-off` (no admin token); 400 `bad-request`,
-  `install-required` or `bad-key`; 401 `unauthorized` (the one answer to any bearer that is not a PC's token,
-  the admin token included, and to the legacy token outside its window), `unknown-token`, `revoked` or `pair-code`; 404 `not-found` (a key the
+  `install-required` or `bad-key`; 401 `unauthorized` (the one answer to any bearer not shaped like a PC's token,
+  the admin token included, and to the legacy token outside its window), `unknown-token` (one shaped like a PC's
+  token that the hub has no record of), `revoked` or `pair-code`; 404 `not-found` (a key the
   hub does not have, or a build it does not hand out); 409 `install-mismatch`, `name-taken`, `name-changed`,
   `id-taken` or `name-paired`; 413 `too-large`; 500 `store-unwritable`; 503 `store-unreadable`. A relay is
   refused with these before the upgrade; a live one whose credential changed (paired again, revoked, retired,

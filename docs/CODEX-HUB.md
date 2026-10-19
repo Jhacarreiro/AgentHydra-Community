@@ -660,7 +660,9 @@ nothing anywhere.
    must not stay the admin token: a legacy token equal to the admin token is ignored, and the hub's log says so.
    Restart the hub and Desk. The start log, or `list`, then names the pending PCs, each with its last push, and the
    folders that cannot move by themselves, with the reason. Forget a stale folder with `forget`; revoke a pending PC
-   only to stop it from moving.
+   only to stop it from moving. A folder whose name is not a PC's key, such as a copy renamed `office-pc.bak` by
+   hand, is left out of the list, the window and pairing, and the start log names it: move it out of the hub's
+   folder.
 3. **Publish the new builds,** the pusher's and the tray's for each platform (step 4), one platform at a time. Linux
    first: send `kill -USR1` to that PC's tray, and `list` shows it as `token`, paired by `exchange`. Then Windows,
    where the menu's Restart the pusher runs a check at once (Windows has no SIGUSR1). Then both darwin builds. A tray

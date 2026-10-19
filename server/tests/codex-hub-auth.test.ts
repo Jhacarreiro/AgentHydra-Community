@@ -320,6 +320,13 @@ test("a PC token pushes its own chats; a body naming another PC writes under the
     json: { pc: a.pc },
   })
   expect(manifestOf(a.key)?.pc).toBe(a.pc)
+  // Nor does one with DEL or a C1 control, and the log line prints those escaped, as it does C0.
+  const c = pcNamed('Push-C')
+  expect(await push(c, 'Push\u009b2J\u007fC')).toMatchObject({ status: 200, json: { pc: c.pc } })
+  expect(manifestOf(c.key)?.pc).toBe(c.pc)
+  expect(said.filter((l) => l.startsWith(`[codex-hub] ${c.pc}'s token pushed as`))).toEqual([
+    `[codex-hub] ${c.pc}'s token pushed as "Push\\u009b2J\\u007fC"; kept as ${c.pc}`,
+  ])
 })
 
 test('a PC token needs its install id: none is 400, another is 409, and a token from add binds the first it is sent with', async () => {

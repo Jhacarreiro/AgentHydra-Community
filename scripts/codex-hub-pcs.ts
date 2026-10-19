@@ -20,7 +20,13 @@
 // <pc> is a name or a key: revoke and forget take its key, add keeps the name as typed.
 
 import { randomBytes } from 'node:crypto'
-import { CONTROL, hubPcKey, isHubPcKey, pcTokenHash } from '../server/src/core/codex-hub-ids'
+import {
+  CONTROL,
+  hubPcKey,
+  isHubPcKey,
+  pcTokenHash,
+  plainJson,
+} from '../server/src/core/codex-hub-ids'
 
 const USAGE = `usage: bun --env-file <hub.env> scripts/codex-hub-pcs.ts list [--json]
        bun --env-file <hub.env> scripts/codex-hub-pcs.ts add <pc> [--replace] [--json]
@@ -140,7 +146,7 @@ async function keyOf(pc: string | undefined): Promise<string> {
 if (command === 'list' && !name) {
   const list = await call<List>('GET', '/api/codex-relay/admin/pcs')
   if (flags.has('--json')) {
-    console.log(JSON.stringify(list, null, 2))
+    console.log(plainJson(list, 2))
   } else {
     const { legacy } = list
     console.log(
@@ -156,8 +162,8 @@ if (command === 'list' && !name) {
       console.log(
         shown(
           [
-            // The key too where the name does not make it, which revoke and forget then take.
-            hubPcKey(r.pc) === r.key ? r.pc : `${r.pc} (key ${r.key})`,
+            // The key too where the name does not make it, or is printed escaped: revoke and forget take the key.
+            hubPcKey(r.pc) === r.key && shown(r.pc) === r.pc ? r.pc : `${r.pc} (key ${r.key})`,
             `${r.state}${r.why ? ` (${r.why})` : ''}`,
             r.tokenId ? `chp_${r.tokenId}` : '-',
             r.pairedAt
@@ -174,6 +180,12 @@ if (command === 'list' && !name) {
       )
   }
 } else if (command === 'add' && name) {
+  // A key that names another: 'aaa…a-' is the key of a name cut at 63 characters, and as a name it makes 'aaa…a'.
+  if (isHubPcKey(name) && hubPcKey(name) !== name)
+    fail(
+      `${name} is the key of a longer name, and is not a name of its own (hubPcKey makes it ${hubPcKey(name)}): ` +
+        'add the PC by its name, as the list shows it',
+    )
   // Made here, as the tray makes one on the PC: the hub is sent only its id and hash.
   const id = randomBytes(8).toString('hex')
   const token = `chp_${id}_${randomBytes(32).toString('hex')}`
@@ -182,7 +194,7 @@ if (command === 'list' && !name) {
     '/api/codex-relay/admin/pcs',
     { pc: name, id, hash: pcTokenHash(token), replace: flags.has('--replace') },
   )
-  console.log(flags.has('--json') ? JSON.stringify({ token, ...added }) : token)
+  console.log(flags.has('--json') ? plainJson({ token, ...added }) : token)
   console.error(
     `${added.pc} has a token of its own on the hub (chp_${added.id}). Put it in that PC's tray.json as ` +
       '{"token": "<the token>"}, keeping "hub" if the file has one, or in its pusher\'s ' +

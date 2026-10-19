@@ -685,6 +685,13 @@ describe.skipIf(process.platform === 'win32')('a hub on a home server, with PCs 
       const asks = async (token: string) =>
         (await fetch(`${hubUrl()}/api/codex-hub/whoami`, { headers: bearer(token) })).status
       expect([await asks(long.token), await asks(short.token)]).toEqual([200, 200])
+      // As a name for add, that key would make the other's, and with --replace take its token: refused.
+      const asName = await cli(firstAdmin, 'add', cut, '--replace')
+      expect(asName.code).toBe(1)
+      expect(asName.stderr).toContain(
+        `${cut} is the key of a longer name, and is not a name of its own`,
+      )
+      expect(await asks(short.token)).toBe(200)
       expect((await cli(firstAdmin, 'forget', 'a'.repeat(62))).code).toBe(0)
       expect((await cli(firstAdmin, 'revoke', cut)).code).toBe(0)
       expect(await asks(long.token)).toBe(401)
@@ -884,6 +891,8 @@ test(
               revokedAt: '2026-10-18T09:00:00.000Z',
               revokedWhy: 'renamed to x\ny',
             },
+            // Its name makes its key, but is printed escaped: the key is shown too.
+            { key: 'desk-pc', pc: 'Desk\u009bPC', state: 'unpaired', why: 'no-install' },
           ],
         }),
     })
@@ -893,6 +902,15 @@ test(
       expect(r.stdout.replaceAll('\n', '')).not.toMatch(/\p{Cc}/u)
       expect(r.stdout).toContain('Office\\u009b\\u0085\\u001b[2K\\u007fPC (key office-pc)')
       expect(r.stdout).toContain('renamed to x\\u000ay')
+      expect(r.stdout).toContain('Desk\\u009bPC (key desk-pc)')
+      // As JSON too: the same values, with DEL and C1 escaped as C0 is.
+      const j = await cliAt(`http://127.0.0.1:${fake.port}`, 'admin-x', 'list', '--json')
+      expect(j.code).toBe(0)
+      expect(j.stdout.replaceAll('\n', '')).not.toMatch(/\p{Cc}/u)
+      expect(JSON.parse(j.stdout).pcs.map((p: { pc: string }) => p.pc)).toEqual([
+        'Office\u009b\u0085\u001b[2K\u007fPC',
+        'Desk\u009bPC',
+      ])
     } finally {
       fake.stop(true)
     }

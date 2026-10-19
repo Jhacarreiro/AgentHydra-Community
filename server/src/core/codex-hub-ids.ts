@@ -18,6 +18,17 @@ const PC_MAX = 63
 /** A control character (a line break, a tab, ESC): never in a PC's name, which the hub logs and the CLI prints. */
 export const CONTROL = /\p{Cc}/u
 
+/**
+ * `value` as JSON with DEL and the C1 controls escaped too, as \uXXXX (JSON.stringify escapes only C0): for a log
+ * line or a terminal, of a value a client sent. It is still JSON, and parses back to the same value.
+ */
+export function plainJson(value: unknown, space?: number): string {
+  return (JSON.stringify(value, null, space) ?? 'null').replace(
+    /[\u007f-\u009f]/g,
+    (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  )
+}
+
 /** A PC token: the first group is its id. */
 export const PC_TOKEN = /^chp_([0-9a-f]{16})_[0-9a-f]{64}$/
 

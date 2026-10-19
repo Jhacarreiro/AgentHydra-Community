@@ -790,6 +790,7 @@ test('with the window closed, a forget and a re-pair still claim: opening it aga
     }
     // The owner opens the window again, for another PC that was off.
     settings({ admin: ADMIN, legacy: LEGACY, until: iso(late + DAY) })
+    expect({ how, open: legacyWindow(root, late).open }).toEqual({ how, open: true })
     expect({ how, pending: pendingKeys(root, late) }).toEqual({ how, pending: [] })
     const t = newPcToken()
     expect({
@@ -799,12 +800,13 @@ test('with the window closed, a forget and a re-pair still claim: opening it aga
   }
 })
 
-test("a name with a control character is never a record's or a log line's: the key stands in for it", () => {
+test("a name with a control character is never a record's or a log line's: a space stands in for each run, or the key", () => {
   const root = newRoot()
   settings({ admin: ADMIN, legacy: LEGACY })
+  // Its name with spaces is another key's: the key stands in for it.
   const forged = 'Office\n[codex-hub] \u001b\u009b PC'
   folder(root, 'office-pc', { pc: forged, install: A, pushedAt: T0 })
-  folder(root, 'laptop', { pc: 'Laptop\u0085', install: B, pushedAt: T0 })
+  folder(root, 'lap-top', { pc: 'Lap\u0007\u0007top\u0085', install: B, pushedAt: T0 })
   const said = spyOn(console, 'log').mockImplementation(() => {})
   try {
     logCodexHubStart(root, T0)
@@ -814,13 +816,69 @@ test("a name with a control character is never a record's or a log line's: the k
       pc: 'office-pc',
     })
     expect(stored(root).pcs['office-pc'].pc).toBe('office-pc')
-    expect(revokePc('laptop', root, T0 + 2)).toMatchObject({ ok: true, pc: 'laptop' })
-    expect(stored(root).pcs.laptop.pc).toBe('laptop')
-    expect(forgetPc('laptop', root, T0 + 3)).toMatchObject({ ok: true, pc: 'laptop' })
+    expect(revokePc('lap-top', root, T0 + 2)).toMatchObject({ ok: true, pc: 'Lap top' })
+    expect(stored(root).pcs['lap-top'].pc).toBe('Lap top')
+    expect(forgetPc('lap-top', root, T0 + 3)).toMatchObject({ ok: true, pc: 'Lap top' })
     for (const [line] of said.mock.calls) expect(String(line)).not.toMatch(/\p{Cc}/u)
   } finally {
     said.mockRestore()
   }
+})
+
+test("a record's name is one whose key is its key, for a cut key that ends in a dash too", () => {
+  const root = newRoot()
+  settings({ admin: ADMIN, legacy: LEGACY })
+  const cut = `${'a'.repeat(62)}-`
+  // Pushed before control characters were refused: with a space for it, the name still makes the cut key.
+  folder(root, cut, { pc: `${'a'.repeat(62)}-\u0007b`, install: A, pushedAt: T0 })
+  // One whose name, with spaces, is another key's.
+  const other = `${'b'.repeat(62)}-`
+  folder(root, other, { pc: 'Other\u0007PC', install: B, pushedAt: T0 })
+  for (const [key, install] of [
+    [cut, A],
+    [other, B],
+  ] as const) {
+    const t = newPcToken()
+    expect(exchangeLegacy({ id: t.id, hash: t.hash, install }, root, T0 + 1)).toMatchObject({
+      ok: true,
+      key,
+    })
+    const pc: string = stored(root).pcs[key].pc
+    expect({ key, made: hubPcKey(pc) }).toEqual({ key, made: key })
+    expect(pc).not.toMatch(/\p{Cc}/u)
+  }
+  expect(stored(root).pcs[cut].pc).toBe(`${'a'.repeat(62)}- b`)
+  expect(stored(root).pcs[other].pc).toBe(`${other}0`)
+})
+
+test("a folder whose name is not a PC's key is left out: never pending, listed or paired, and the start log names it", () => {
+  const root = newRoot()
+  settings({ admin: ADMIN, legacy: LEGACY })
+  folder(root, 'office-pc.bak', { pc: 'Office-PC', install: A, pushedAt: T0 })
+  folder(root, 'Laptop', { pc: 'Laptop', install: B, pushedAt: T0 })
+  folder(root, 'mac', { pc: 'Mac', install: C, pushedAt: T0 })
+  expect(pendingKeys(root, T0)).toEqual(['mac'])
+  expect(hubPcRows(root, T0)?.pcs.map((r) => r.key)).toEqual(['mac'])
+  expect(pendingKeyFor(A, root, T0)).toBeNull()
+  const t = newPcToken()
+  expect(exchangeLegacy({ id: t.id, hash: t.hash, install: A }, root, T0 + 1)).toMatchObject({
+    status: 401,
+  })
+  const said = spyOn(console, 'log').mockImplementation(() => {})
+  try {
+    logCodexHubStart(root, T0)
+    expect(said.mock.calls.map(([line]) => String(line))).toContain(
+      `[codex-hub] 2 folder(s) left out, as their names are not a PC's key: "Laptop", "office-pc.bak": ` +
+        `move each out of ${root}, or give it its PC's key`,
+    )
+  } finally {
+    said.mockRestore()
+  }
+  // Nothing was written that the next start cannot read.
+  const again = newRoot()
+  mkdirSync(again, { recursive: true })
+  if (existsSync(storeFile(root))) copyFileSync(storeFile(root), storeFile(again))
+  expect(pcStoreReadable(again)).toBe(true)
 })
 
 test('a PC named __proto__ or constructor is a record like any other, and none before it is paired', () => {
@@ -828,6 +886,11 @@ test('a PC named __proto__ or constructor is a record like any other, and none b
   expect(pairTarget('constructor', root, T0)).toEqual({ state: 'free', replaces: null })
   expect(pairTarget('__proto__', root, T0)).toEqual({ state: 'free', replaces: null })
   const proto = pcIn(root, '__proto__')
+  // A store read back from disk, with no record for constructor: none there either.
+  const early = newRoot()
+  mkdirSync(early, { recursive: true })
+  copyFileSync(storeFile(root), storeFile(early))
+  expect(pairTarget('constructor', early, T0)).toEqual({ state: 'free', replaces: null })
   const ctor = pcIn(root, 'constructor', { install: B })
   expect(proto.r).toMatchObject({ ok: true, key: '__proto__' })
   expect(ctor.r).toMatchObject({ ok: true, key: 'constructor' })

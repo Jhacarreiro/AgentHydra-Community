@@ -30,7 +30,7 @@ import {
   pusherRelease,
   ROLLOUT_UNPACKED_MAX,
 } from '../core/codex-hub'
-import { CONTROL, pcTokenId } from '../core/codex-hub-ids'
+import { CONTROL, pcTokenId, plainJson } from '../core/codex-hub-ids'
 import {
   bindPcInstall,
   exchangeLegacy,
@@ -275,7 +275,7 @@ app.post('/api/codex-hub/push', async (c) => {
     if (named && pc !== named && !namedOther.has(key)) {
       namedOther.add(key)
       console.log(
-        `[codex-hub] ${record.pc}'s token pushed as ${JSON.stringify(named.slice(0, 64))}; kept as ${record.pc}`,
+        `[codex-hub] ${record.pc}'s token pushed as ${plainJson(named.slice(0, 64))}; kept as ${record.pc}`,
       )
     }
     result = acceptCodexHubPush(
@@ -283,7 +283,7 @@ app.post('/api/codex-hub/push', async (c) => {
       CODEX_HUB_DIR,
       ROLLOUT_UNPACKED_MAX,
       caller.install,
-      { hold: false },
+      { hold: false, key },
     )
   } else {
     const key = named ? hubPcKey(named) : null
