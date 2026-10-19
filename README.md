@@ -224,13 +224,15 @@ server, your proxy and sign-in, building and installing the tray, listing and re
   (for example `https://desk.example.com`). That name is then trusted like the machine itself, so never list one
   anyone can reach without the sign-in.
 
-Details: [docs/CODEX-HUB.md](docs/CODEX-HUB.md) for running a hub,
+Details: [the multi-PC getting-started steps](docs/GETTING-STARTED.md#b-see-codex-chats-from-several-pcs-in-one-place) for the recommended setup order, and [docs/CODEX-HUB.md](docs/CODEX-HUB.md) for running a hub,
 [Codex chats from other PCs](docs/REFERENCE.md#codex-chats-from-other-pcs-codex-hub) for its routes and variables, and
 the window's [ports and remote access](desk2/README.md#ports).
 
 </details>
 
 ## Install
+
+**New here?** Start with the [step-by-step installation guide](docs/GETTING-STARTED.md): one PC first, or a separate setup for a self-hosted multi-PC Codex hub. The normal app installer does not configure a hub or build a tray for your server.
 
 **Windows, one line** (no Administrator; the download's SHA-256 is checked before anything unpacks):
 
