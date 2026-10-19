@@ -1,15 +1,13 @@
 # Where AgentHydra Community comes from
 
 AgentHydra Community continues [AgentHydra](https://github.com/LunarWerxs/AgentHydra) from its last MIT-licensed
-commit. This page records how its history was built and how anyone can check that, using only facts that are
-public: the git history of both repositories and GitHub's public record of the upstream repository. Why the fork
-exists is in the [README](../README.md).
+commit. This file records the historical licence boundary, import commit and provenance checks. The original repository is no longer publicly accessible as of 19 October 2026; independent verification against its live GitHub pages is therefore no longer possible. Evidence was preserved privately when those records were public.
 
 **TL;DR**
 
 - The base is upstream's `3a65ba8e`, committed on 15 October 2026 at 16:10:12 UTC, under the MIT licence.
 - This history starts with one commit that imports that version unchanged: its tree has the same hash as
-  `3a65ba8e`'s, which anyone can check in a clone of upstream. Upstream's own history stays in upstream's repository.
+  `3a65ba8e`'s, verified against the original repository before it became inaccessible. The older history and supporting evidence were preserved separately.
 - Upstream's next commit, `aee9dfc4`, moved AgentHydra to PolyForm Noncommercial. It is not in this history, and the
   pre-push hook refuses any ref that contains it.
 - On top of the import there are only this fork's own commits: none of the code or text upstream wrote after the
@@ -126,8 +124,7 @@ git log -1 --format=%P aee9dfc4           # the relicensing commit's only parent
   or run `bun scripts/audit-public.mjs --no-local-names` to get the result anyone else gets.
 - The audit and the hook look at commit ancestry and object hashes only. Code copied or cherry-picked from upstream's
   later commits would make new commits with no upstream commit in their history, and neither would flag them. That
-  is kept out by the clean-room rule every contribution follows ([CONTRIBUTING.md](../CONTRIBUTING.md)), and anyone
-  can compare the code itself with upstream's.
+  is kept out by the clean-room rule every contribution follows ([CONTRIBUTING.md](../CONTRIBUTING.md)), and the maintainer retains contemporaneous provenance evidence.
 
 </details>
 

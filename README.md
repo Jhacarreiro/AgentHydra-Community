@@ -2,9 +2,9 @@
 
 # AgentHydra Community
 
-### Every AI coding chat on your PCs, and every Claude and Codex account, in one window
+### One dashboard. Multiple PCs. Your own server.
 
-[Download](https://github.com/Jhacarreiro/AgentHydra-Community/releases) &nbsp;·&nbsp; [Reference](docs/REFERENCE.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Why this fork](docs/FORK.md) &nbsp;·&nbsp; [Contributing](CONTRIBUTING.md)
+[Download](https://github.com/Jhacarreiro/AgentHydra-Community/releases) &nbsp;·&nbsp; [Reference](docs/REFERENCE.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Contributing](CONTRIBUTING.md)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Jhacarreiro/AgentHydra-Community/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Jhacarreiro/AgentHydra-Community/actions/workflows/ci.yml)
 [![Public audit](https://img.shields.io/github/actions/workflow/status/Jhacarreiro/AgentHydra-Community/audit-public.yml?branch=main&style=flat-square&label=public%20audit)](https://github.com/Jhacarreiro/AgentHydra-Community/actions/workflows/audit-public.yml)
@@ -15,13 +15,13 @@
 
 ---
 
-AgentHydra Community is a community fork of [AgentHydra](https://github.com/LunarWerxs/AgentHydra), continued from
-`3a65ba8e`, its last MIT-licensed commit, and it stays MIT. Its history starts with one commit that imports that
-version unchanged, and upstream's own history stays in upstream's repository. Like AgentHydra, it is one window over
-every AI coding chat and every Claude and Codex account you use, built on the files your tools already write: no
-sign-up and no hosted service.
+**AgentHydra Community** brings AI coding sessions, accounts and projects into one dashboard. Run it locally or use a self-hosted hub to work across multiple PCs, with individual device authentication and control over your infrastructure. No hosted account required.
 
-**What this fork adds first: one home server for several PCs.** Run AgentHydra on a home server, or any PC that
+**Available now:** support for Claude Code, Codex and OpenCode, plus a self-hosted multi-PC hub. **In development:** ChatGPT access in the same interface (not yet included in a release).
+
+[Get started](docs/GETTING-STARTED.md) · [Latest release](https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest) · [Contribute](CONTRIBUTING.md)
+
+**One home server for several PCs.** Run AgentHydra on a home server, or any PC that
 stays on, and let your other PCs report to it:
 
 - **Codex hub:** each PC pushes its Codex chats to that one AgentHydra, which lists, searches and opens them beside
@@ -37,18 +37,9 @@ stays on, and let your other PCs report to it:
 
 All of this is off until you set it up, and it is new: 2026.10.0 is the first release that has it. This
 repository's tests run the hub and the tray on Linux, including two PCs that pair, push and relay through the real
-daemon. Before the fork, the same hub and tray ran in the maintainer's own setup with Windows PCs and were tried on a
-Mac. See [One server, several PCs](#one-server-several-pcs).
+daemon. The hub and tray were also tested in a self-hosted setup before the first release. See [One server, several PCs](#one-server-several-pcs).
 
-**Why a fork.** On 15 October 2026 AgentHydra moved from the MIT licence to PolyForm Noncommercial. This fork's
-maintainer also disagrees with how outside contributions were credited there: on 17 October 2026 all of the
-maintainer's pull requests to AgentHydra, #8 to #24, were closed, and several were rebuilt in upstream commits that
-credit no outside author. Here a contribution keeps its author's name. The full provenance is in
-[docs/FORK.md](docs/FORK.md).
-
-AgentHydra Community is maintained independently by [@Jhacarreiro](https://github.com/Jhacarreiro) and its
-contributors. It is not affiliated with or endorsed by LunarWerx Studios, and it keeps the original copyright
-notices ([LICENSE](LICENSE)). [NOTICE](NOTICE) says where it comes from.
+Maintained independently by [@Jhacarreiro](https://github.com/Jhacarreiro) and contributors. The codebase originates from a previously MIT-licensed AgentHydra revision; original copyright notices are preserved in [LICENSE](LICENSE) and [NOTICE](NOTICE). [Provenance details](docs/FORK.md) are available for those who need them.
 
 ![The window: the sidebar lists every chat grouped by project, and the open chat shows its to-dos and a permission prompt](.github/screenshots/window.png)
 
@@ -68,8 +59,7 @@ where the repository link now is, and the window shots name a demo project "conn
 - **Where the time and money went:** cost by day, model, project and account, and what is wasting it
 - **Every Claude and Codex account in one table:** plan, 5-hour and weekly quota, open, quit, create
 - **For agents too:** the whole thing over MCP, including "which account am I, and how much is left"
-- **Nothing goes to the original project:** no LunarWerx service, and no install id except to a Codex hub you run
-  yourself; what does reach the network is listed under [Install](#install)
+- **No vendor-hosted backend required:** no install id except to a hub you operate; the network accesses are documented under [Install](#install)
 - **A public audit** checks every file, and every commit after the import, for secrets and personal data, and
   refuses any commit built on upstream's own history or on its relicensing commit
 
@@ -423,7 +413,7 @@ refuses what it objects to; CI runs it again on every push and pull request, aft
   from it; otherwise the audit cannot run (exit 2). It reads that commit's author, committer and message, and every
   line each later commit adds, but not the import's tree line by line: that is upstream's tree at `3a65ba8e`, fixed
   by its hash, and it still holds values the fork took out later (upstream's infrastructure ids, its maintainers'
-  email addresses and home-folder paths), all public in upstream's repository already.
+  email addresses and home-folder paths), historically published in the original MIT revision.
 - It also looks for your own git `user.name` and account name, so a `pii.local-name` finding can come from a
   one-word name that is also a folder name here. Check those, or run `bun scripts/audit-public.mjs --no-local-names`
   for the result anyone else gets.
@@ -439,7 +429,7 @@ refuses what it objects to; CI runs it again on every push and pull request, aft
   published `v*` tag being deleted or force-pushed onto another commit. A new branch, or a new `v*` tag made in
   GitHub's web page or through its API (which never meets the hook), gets past them and is left to the hook and to
   the rules in [docs/RELEASING.md](docs/RELEASING.md#what-github-itself-refuses).
-- [docs/FORK.md](docs/FORK.md) shows how to check the import against upstream yourself.
+- [docs/FORK.md](docs/FORK.md) records the original MIT licence boundary and the independently preserved provenance evidence.
 
 </details>
 
@@ -484,8 +474,7 @@ view.
 <summary><b>Can I switch to it from an AgentHydra install?</b></summary>
 
 It keeps AgentHydra's data folders (`~/.agenthydra`, `~/.hydra-desk-2`), file names and `AGENTHYDRA_*` variables.
-Copy those folders somewhere safe first: a newer release of the original project may have written data this
-fork's code does not know.
+Back up those folders before migration: existing installations may contain data this version does not recognise.
 
 </details>
 
@@ -499,4 +488,4 @@ still works. Update shortcuts and MCP configs that name `CCManagerUI.exe` when c
 
 [Reference](docs/REFERENCE.md) covers configuration, the MCP tools, auto-update and the checks.
 
-Based on [AgentHydra](https://github.com/LunarWerxs/AgentHydra) by LunarWerx Studios, used under the MIT licence.
+Original copyright and licensing information: [LICENSE](LICENSE) · [NOTICE](NOTICE).
