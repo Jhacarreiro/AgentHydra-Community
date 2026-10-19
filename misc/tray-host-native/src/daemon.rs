@@ -351,7 +351,10 @@ fn log_path(cfg: &Config) -> PathBuf {
 /// witness, never a dependency, so every failure here is swallowed deliberately.
 fn log_line(path: &Path, text: &str) {
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "[{}] {text}", crate::win::local_timestamp());
+        // One write for the whole line: writeln! on a File writes each piece on its own, so a reader
+        // (or another thread's line) could land between "[" and the rest.
+        let line = format!("[{}] {text}\n", crate::win::local_timestamp());
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
@@ -735,12 +738,12 @@ mod death_record_tests {
         p
     }
 
-    /// Wait for the watcher thread to land its line. Polling beats a flat sleep: a wait on a
+    /// Wait for the watcher thread to land its whole line. Polling beats a flat sleep: a wait on a
     /// process that has already exited returns in single-digit ms.
     fn wait_for_log(path: &PathBuf) -> String {
         for _ in 0..200 {
             if let Ok(s) = std::fs::read_to_string(path) {
-                if !s.trim().is_empty() {
+                if s.ends_with('\n') {
                     return s;
                 }
             }
