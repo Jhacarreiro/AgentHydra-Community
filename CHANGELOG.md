@@ -9,6 +9,10 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+- **The Docker hub starts with just `docker compose up -d`.** Each release now publishes a ready-made hub image, so
+  there is nothing to clone or build. Pin a release to stay on it or go back to it; the updater pulls new
+  releases and still puts back the previous one if a new one fails.
+
 ## [2026.10.1] - 2026-10-20
 
 **TL;DR**

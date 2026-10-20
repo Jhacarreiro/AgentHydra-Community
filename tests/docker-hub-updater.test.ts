@@ -19,6 +19,7 @@ import { REPO_ROOT } from './repo-root'
 
 const FROM = '2026.10.0'
 const TO = '2026.10.1'
+const REPO = 'ghcr.io/example/agenthydra-community-hub'
 
 // The fake Docker CLI. State is a JSON file; the volume is a real folder so backup and restore are real tars.
 const FAKE_DOCKER = String.raw`;(() => {
@@ -40,22 +41,29 @@ const step = (name) => {
   if (s.failAt && s.failAt.call === name + ':' + version && s.calls.filter(c => c === s.failAt.call).length === s.failAt.nth) fail('injected ' + name + ' failure')
 }
 const hub = s.hub
+const ref = s.repo + ':' + (version || 'latest')
 if (args[0] === 'compose') {
   const rest = args.slice(3)
   if (rest[0] === 'ps') return out(hub && (hub.running || rest.includes('-a')) ? hub.id : '')
+  if (rest[0] === 'config') return out(JSON.stringify({ services: { hub: { image: ref } } }))
+  if (rest[0] === 'pull') {
+    step('pull')
+    if (!s.registry?.[version]) fail('manifest unknown')
+    s.images[ref] = s.registry[version]
+    return save()
+  }
   if (rest[0] === 'build') {
     step('build')
-    s.images['agenthydra-community-hub:' + version] = 'sha256:' + version + '-' + (s.seq++)
-    if (s.repointOnBuild) s.images['agenthydra-community-hub:' + s.repointOnBuild] = 'sha256:rebuilt-elsewhere'
+    s.images[ref] = 'sha256:' + version + '-' + (s.seq++)
+    if (s.repointOnBuild) s.images[s.repo + ':' + s.repointOnBuild] = 'sha256:rebuilt-elsewhere'
     return save()
   }
   if (rest[0] === 'stop') { step('stop'); if (hub) hub.running = false; return save() }
   if (rest[0] === 'up') {
     step('up')
-    const ref = 'agenthydra-community-hub:' + version
     const imageId = s.images[ref]
     if (!imageId) fail('no such image ' + ref)
-    if (!hub || hub.imageId !== imageId || hub.image !== ref) s.hub = { id: 'c' + (s.seq++), image: ref, imageId, running: true }
+    if (!hub || hub.imageId !== imageId || hub.image !== ref) s.hub = { id: 'c' + (s.seq++), image: ref, imageId, label: version, running: true }
     else hub.running = true
     // A new release migrates the state it is given.
     if (version === s.migrates) {
@@ -72,10 +80,12 @@ if (args[0] === 'inspect') {
   if (format.includes('.Mounts')) return out('hub_state')
   if (format === '{{.Config.Image}}') return out(hub.image)
   if (format === '{{.Image}}') return out(hub.imageId)
+  if (format.includes('org.opencontainers.image.version')) return out(hub.label || '<no value>')
 }
+if (args[0] === 'exec') return hub && args[1] === hub.id && args[3] === '/etc/agenthydra-version' ? out(hub.resolved) : fail('no such file')
 if (args[0] === 'image' && args[1] === 'inspect') return s.images[args[4]] ? out(s.images[args[4]]) : fail('no such image')
 if (args[0] === 'image' && args[1] === 'rm') { delete s.images[args[2]]; return save() }
-if (args[0] === 'images') return out(Object.keys(s.images).map(x => x.split(':')[1]).join('\n'))
+if (args[0] === 'images') return out(Object.keys(s.images).filter(x => x.startsWith(args[1] + ':')).map(x => x.slice(args[1].length + 1)).join('\n'))
 if (args[0] === 'tag') { s.images[args[2]] = args[1]; return save() }
 if (args[0] === 'run') {
   const mounts = args.flatMap((x, i) => args[i - 1] === '-v' ? [x] : [])
@@ -95,8 +105,17 @@ fail('unexpected docker ' + args.join(' '))
 `
 
 type FakeState = {
-  hub: { id: string; image: string; imageId: string; running: boolean } | null
+  hub: {
+    id: string
+    image: string
+    imageId: string
+    label?: string
+    resolved?: string
+    running: boolean
+  } | null
+  repo: string
   images: Record<string, string>
+  registry?: Record<string, string>
   volume: string
   calls: string[]
   seq: number
@@ -158,11 +177,12 @@ describe.skipIf(process.platform === 'win32')('Docker Hub updater', () => {
     writeFileSync(join(volume, 'db'), `schema-${FROM}`)
     writeFileSync(join(volume, 'pairings'), 'pc-1')
     stateFile = join(dir, 'state.json')
-    const oldRef = `agenthydra-community-hub:${FROM}`
+    const oldRef = `${REPO}:${FROM}`
     writeFileSync(
       stateFile,
       JSON.stringify({
-        hub: { id: 'c0', image: oldRef, imageId: 'sha256:original', running: true },
+        hub: { id: 'c0', image: oldRef, imageId: 'sha256:original', label: FROM, running: true },
+        repo: REPO,
         images: { [oldRef]: 'sha256:original' },
         volume,
         calls: [],
@@ -192,8 +212,8 @@ describe.skipIf(process.platform === 'win32')('Docker Hub updater', () => {
     expect(r.status).toBe(0)
     expect(installed()).toBe(`COMPOSE_PROJECT_NAME=hub\nAGENTHYDRA_VERSION=${TO}\n`)
     const s = readState()
-    expect(s.hub?.image).toBe(`agenthydra-community-hub:${TO}`)
-    expect(s.images[`agenthydra-community-hub:${FROM}`]).toBe('sha256:original')
+    expect(s.hub?.image).toBe(`${REPO}:${TO}`)
+    expect(s.images[`${REPO}:${FROM}`]).toBe('sha256:original')
     expect(
       readdirSync(join(dir, '.hub-backups')).filter((f) => f.endsWith('.tar.gz')),
     ).toHaveLength(1)
@@ -209,12 +229,46 @@ describe.skipIf(process.platform === 'win32')('Docker Hub updater', () => {
     expect(s.calls).not.toContain(`stop:${FROM}`)
     expect(s.hub).toEqual({
       id: 'c0',
-      image: `agenthydra-community-hub:${FROM}`,
+      image: `${REPO}:${FROM}`,
       imageId: 'sha256:original',
+      label: FROM,
       running: true,
     })
     expect(installed()).toContain(`AGENTHYDRA_VERSION=${FROM}`)
     expect(existsSync(join(dir, '.hub-update.json'))).toBe(false)
+  })
+
+  test('a published release is pulled instead of built', async () => {
+    writeState({ registry: { [TO]: 'sha256:published' } })
+    const r = await updater('update')
+    expect(r.stderr).toBe('')
+    expect(r.status).toBe(0)
+    const s = readState()
+    expect(s.calls).toContain(`pull:${TO}`)
+    expect(s.calls.some((c) => c.startsWith('build'))).toBe(false)
+    expect(s.hub?.imageId).toBe('sha256:published')
+    expect(installed()).toContain(`AGENTHYDRA_VERSION=${TO}`)
+  })
+
+  test('a hub started without a pinned version is updated from the release its image carries', async () => {
+    // Plain `docker compose up -d` on a local build: no version in .env, the running image is :latest and
+    // labelled `latest`, and only the image's own record says which release it is.
+    writeFileSync(join(dir, '.env'), 'COMPOSE_PROJECT_NAME=hub\n')
+    const s0 = readState()
+    writeState({
+      hub: { ...s0.hub!, image: `${REPO}:latest`, label: 'latest', resolved: FROM },
+      images: { [`${REPO}:latest`]: 'sha256:original' },
+      unhealthy: [TO],
+    })
+    const before = volumeFiles()
+    const r = await updater('update')
+    expect(r.status).toBe(1)
+    expect(r.stdout).toContain('Rollback complete')
+    const s = readState()
+    expect(s.hub?.imageId).toBe('sha256:original')
+    expect(s.hub?.running).toBe(true)
+    expect(volumeFiles()).toEqual(before)
+    expect(installed()).toBe(`COMPOSE_PROJECT_NAME=hub\nAGENTHYDRA_VERSION=${FROM}\n`)
   })
 
   test('an unhealthy new release is rolled back to the exact previous image and state', async () => {

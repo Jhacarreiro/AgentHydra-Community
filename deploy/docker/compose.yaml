@@ -1,14 +1,17 @@
 # Portable local-only baseline. This is NOT a public HTTPS/authenticated ingress.
 services:
   hub:
+    # The published image of the newest release; AGENTHYDRA_VERSION (in .env) pins or reverts one.
+    # Without network access to the registry, `docker compose build` makes the same image locally.
+    image: ghcr.io/jhacarreiro/agenthydra-community-hub:${AGENTHYDRA_VERSION:-latest}
     build:
       context: .
       args:
-        VERSION: ${AGENTHYDRA_VERSION:-2026.10.0}
-    image: agenthydra-community-hub:${AGENTHYDRA_VERSION:-2026.10.0}
+        VERSION: ${AGENTHYDRA_VERSION:-latest}
     restart: unless-stopped
     env_file:
-      - ./hub.env
+      - path: ./hub.env
+        required: false
     environment:
       AGENTHYDRA_HOME: /srv/agenthydra-state/.agenthydra
       AGENTHYDRA_PORT_FIXED: "1"
