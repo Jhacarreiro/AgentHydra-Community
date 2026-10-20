@@ -6,16 +6,24 @@ A generic Linux-container deployment for people running Docker Engine or Docker 
 
 1. Install Docker Engine + Compose plugin or Docker Desktop.
 2. Copy `hub.env.example` to `hub.env`, generate a strong unique admin token using `openssl rand -hex 32`, and make the file readable only by you. Do not share the admin token with client PCs.
-3. Select a released version with `AGENTHYDRA_VERSION` (default is the initial release) and run `docker compose up -d --build` from this directory.
+3. Create a local `.env` containing `AGENTHYDRA_VERSION=2026.10.0` (or a newer verified release). Run `docker compose up -d --build` from this directory. The updater reads and changes only this version line. Keep `.env` and `hub.env` out of version control.
 4. Check `http://127.0.0.1:7788/api/health` on **the host**. Verify the bound port is loopback only; don't expose 7788 through router, firewall or reverse proxy without an explicit authentication layer.
 
 The Hub stores its configuration and PC pairings in the named volume `hub_state`. Back it up before upgrading. Never use `docker compose down -v` unless you intentionally want to delete all Hub state.
 
-## Updating
+## Product Docker updater (host-side, no cron)
 
-This installation starts from published release tarballs and Docker builds the image locally; it does not depend on the original upstream repository. Update only after a new Community release has been published. Docker images are immutable. **The in-process native self-updater must not replace container files.** Select a new tagged Community release (`AGENTHYDRA_VERSION`), verify its release checksums, run `docker compose build --pull`, then `docker compose up -d`. The Dockerfile verifies `SHA256SUMS.txt` during the build. Keep the previous tagged image and a volume backup for rollback; database migrations may not be backwards-compatible. No cron, direct Docker socket mount, or silent container self-replacement.
+`hub-updater.mjs` is the **AgentHydra Community Docker update manager**. It belongs to this repository and runs on the Docker **host**, not in the Hub container. It uses the host's Docker CLI; the Hub never receives the Docker socket. Node.js 20+ and Docker Compose are required.
 
-This is a deliberately conservative first-class Docker installation path, not automatic image updating. A future product-integrated container update experience should provide explicit confirmation, integrity checks and rollback through the supported host deployment mechanism.
+- `node hub-updater.mjs check` — read the latest stable Community GitHub release, compare with `AGENTHYDRA_VERSION` in the local `.env` (no writes).
+- `node hub-updater.mjs update` — build and checksum-verify the new image, stop the Hub for a consistent volume backup, bring up the new image, verify `http://127.0.0.1:7788/api/health`, and roll back the image and state archive on failure.
+- `node hub-updater.mjs watch` — keep running as a supervised host process, checking every six hours by default (`AGENTHYDRA_DOCKER_UPDATE_MINUTES`, minimum five minutes). Use the host's native service supervisor (systemd on Linux or launchd on macOS) for process lifetime; this is **not** a scheduled cron job. The manager is the implementation, not a custom per-server updater.
+
+For hosts with legacy `docker-compose` instead of the Compose plugin, set `AGENTHYDRA_DOCKER_COMPOSE=docker-compose`. The Docker CLI must be in the manager's `PATH`. Do not run two updater instances simultaneously; the lock directory prevents concurrent updates.
+
+The Dockerfile verifies each downloaded release archive against its published SHA256SUMS. The previous immutable image is retained, and backups are written under `.hub-backups/` with restrictive permissions. **Backups contain secrets and production state: protect them and exclude them from source control and published artifacts.** The backup and rollback require enough disk space for both images and the archive. A DB schema migration that cannot safely downgrade may require manual recovery from the backup; the manager reports a hard error if automated rollback fails.
+
+The manager currently assumes the Hub has already been installed and that its local health endpoint is available on 127.0.0.1:7788. The containerized native self-updater must not mutate the image. Do not deploy a second manager with the same Compose project name and volume.
 
 ## Browser integrations
 
