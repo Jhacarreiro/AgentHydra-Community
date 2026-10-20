@@ -1246,6 +1246,7 @@ const CREDIT_KEYS = new Set(['co-authored-by', 'signed-off-by', 'reviewed-by'])
 const GITHUB_NOREPLY = /^[^@\s<>]+@users\.noreply\.github\.com$/i
 // What .githooks/check-bundle-message.mjs reads as a bundle and as the heading of one of its lists:
 // scripts/save-bundle.ts ends a bundle's message with them, and git reads them as trailers.
+const GITHUB_PR_MERGE = /^Merge pull request #\d+ from \S+$/
 const BUNDLE_SUBJECT = /^wip: bundle\b/i
 const BUNDLE_LIST = /^(Mine|Swept):\s*$/
 // The key of a tool's trailer: capitalised words joined by hyphens (Generated-by, Change-Id, a
@@ -1354,6 +1355,11 @@ function commitTrailerFindings(c, globs) {
   })
 
   const bundle = BUNDLE_SUBJECT.test((lines.find((l) => l.trim()) || '').trim())
+  // GitHub's merge of a pull request writes the PR's title as the message's only other line, and git
+  // reads a title such as "Release: prepare 1.2.3" as a trailer. That one line is the title, not a
+  // tool's trailer, unless its shape is one (a hyphenated key, or a URL, address or id alone).
+  const text = lines.filter((l) => l.trim())
+  const prTitle = text.length === 2 && GITHUB_PR_MERGE.test(text[0].trim()) ? text[1] : null
   for (const { line, texts } of entries) {
     if (texts.some((t) => CHERRY_PICK.test(t))) continue // filed above, at its own line
     const key = TRAILER_KEY.exec(texts[0])
@@ -1370,6 +1376,7 @@ function commitTrailerFindings(c, globs) {
     // git reads any Word: text line of a last paragraph made of them as a trailer. One with a
     // one-word key and a sentence after it, as a Note: line has, is prose.
     if (!key[1].includes('-') && isSentence(value)) continue
+    if (texts.length === 1 && texts[0] === prTitle && !key[1].includes('-') && !namesOnly(value)) continue
     judge(line, texts, key[1], value)
   }
 

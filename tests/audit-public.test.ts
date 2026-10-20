@@ -1027,6 +1027,29 @@ describe('--history', () => {
   )
 
   test(
+    "GitHub's merge of a pull request may carry a title shaped like a trailer, but not a tool's trailer",
+    () => {
+      const dir = repo('pr-merge-title')
+      const base = commit(dir, {}, 'base')
+      commit(dir, {}, 'Merge pull request #24 from Example/release\n\nRelease: prepare 2026.10.2')
+      const tool = commit(dir, {}, 'Merge pull request #25 from Example/tool\n\nTool-Session: abc')
+      const link = commit(
+        dir,
+        {},
+        'Merge pull request #26 from Example/link\n\nSee: https://example.invalid/x',
+      )
+      const plain = commit(dir, {}, 'Not a merge\n\nRelease: prepare 2026.10.2')
+      const { findings } = auditHistory(dir, [`${base}..HEAD`], ctxWith())
+      expect(findings.map((f) => [f.rule, f.commit, f.note])).toEqual([
+        ['commit.trailer', plain, 'trailer Release'],
+        ['commit.trailer', link, 'trailer See'],
+        ['commit.trailer', tool, 'trailer Tool-Session'],
+      ])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'a last paragraph of Note: sentences is prose, though git reads it as trailers; a Fixes: #12 is not',
     () => {
       const dir = repo('note-lines')
