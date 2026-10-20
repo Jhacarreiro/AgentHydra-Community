@@ -18,8 +18,11 @@ jobs:
       - run: bun run build
       - run: which google-chrome || which chromium
       - run: bun run screenshots -- --keep
+      - run: cd desk2 && bun run screenshots -- --keep
       - uses: actions/upload-artifact@v4
         with:
           name: community-screenshots
-          path: tmp/screenshots/*.png
+          path: |
+            tmp/screenshots/*.png
+            tmp/screenshots-window/*.png
           if-no-files-found: error
