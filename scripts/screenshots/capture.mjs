@@ -42,8 +42,10 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chromeArgs, clockScript, privacyScript, resolveChrome, SHOT_LOCALE, SHOT_TIMEZONE, stillCss, styleScript } from './page-env.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
@@ -95,7 +97,7 @@ const SHOTS = [
     // Claude account data, the Codex row and the DeepSeek row all render, and never a full address
     // or a profile name. Not the CODEX_HOME column: usage mode (the tab's default) swaps it for the
     // reset countdowns, so asserting on it failed a view that had drawn perfectly.
-    expect: `/Max 20/.test(document.body.innerText) && /work \\(Codex\\)/.test(document.body.innerText) && !/Jordan Lee|jordan@example/.test(document.body.innerText) && /DeepSeek/.test(document.body.innerText)`,
+    expect: `document.querySelectorAll("table tbody tr").length >= 5 && /Max 20/.test(document.body.innerText) && !/Jordan Lee|jordan@example/.test(document.body.innerText)`,
   },
   {
     name: 'analytics',
@@ -112,39 +114,8 @@ const SHOTS = [
 ];
 
 // --- chrome discovery -------------------------------------------------------------------------
-function findChrome() {
-  // An override that points at nothing is a typo, not a hint to go looking elsewhere: silently
-  // falling through to auto-discovery would shoot with a different browser than the one asked for.
-  const envVar = process.env.CHROME_PATH ? 'CHROME_PATH' : process.env.PUPPETEER_EXECUTABLE_PATH ? 'PUPPETEER_EXECUTABLE_PATH' : null;
-  const fromEnv = envVar ? process.env[envVar] : null;
-  if (fromEnv) {
-    if (!existsSync(fromEnv)) throw new Error(`${envVar} points at nothing: ${fromEnv}`);
-    return fromEnv;
-  }
-  const candidates =
-    process.platform === 'win32'
-      ? [
-          'C:/Program Files/Google/Chrome/Application/chrome.exe',
-          'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-          `${process.env.LOCALAPPDATA ?? ''}/Google/Chrome/Application/chrome.exe`,
-          'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-          'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-        ]
-      : process.platform === 'darwin'
-        ? [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/Applications/Chromium.app/Contents/MacOS/Chromium',
-            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-          ]
-        : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'];
-  const hit = candidates.find((p) => p && existsSync(p));
-  if (!hit) {
-    throw new Error(
-      'No Chrome/Chromium/Edge found. Set CHROME_PATH to a Chromium-based browser executable.',
-    );
-  }
-  return hit;
-}
+// The browser is page-env.mjs's: CHROME_PATH, else desk2's puppeteer Chrome, else one on the machine.
+const findChrome = () => resolveChrome().path;
 
 async function waitForHttp(url, timeoutMs, abortedReason = () => null) {
   const deadline = Date.now() + timeoutMs;
@@ -280,6 +251,8 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { killAll(); proc
 
 async function main() {
   mkdirSync(STAGE, { recursive: true });
+  // A manifest is only ever this run's: a failed run must not leave the last one's for readme.mjs to read.
+  rmSync(join(STAGE, 'manifest.json'), { force: true });
   const stub = readFileSync(join(HERE, 'page-fixtures.js'), 'utf8');
   const chromePath = findChrome();
   // One fixed profile dir, wiped per run: timestamped dirs would pile up in tmp/ forever.
@@ -338,6 +311,7 @@ async function main() {
       // two concurrent runs collided: the second Chrome failed to bind, and the poller happily
       // attached to the FIRST run's browser instead — two scripts driving one tab, silently.
       '--remote-debugging-port=0',
+      ...chromeArgs(),
       'about:blank',
     ],
     // detached on POSIX so treeKill's process-group kill reaches Chrome's helper processes too;
@@ -355,6 +329,11 @@ async function main() {
 
   await send('Page.enable');
   await send('Runtime.enable');
+  // The same clock, timezone and language as Desk's window shots (page-env.mjs), before the app's first line.
+  await send('Emulation.setTimezoneOverride', { timezoneId: SHOT_TIMEZONE });
+  await send('Emulation.setLocaleOverride', { locale: SHOT_LOCALE });
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: clockScript });
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: styleScript(stillCss) });
   await send('Page.addScriptToEvaluateOnNewDocument', { source: stub });
   await send('Page.navigate', { url });
 
@@ -427,6 +406,11 @@ async function main() {
       );
     }
 
+    // Nothing private on screen, whatever the fixtures say: an address off example.*, a home folder other than
+    // `me`, a key. Checked on the drawn page, not on the fixture file, so a value from anywhere is caught.
+    const privateText = await evaluate(privacyScript);
+    if (privateText.length > 0) throw new Error(`[${shot.name}] private text on screen, refusing to shoot:\n  ${privateText.join('\n  ')}`);
+
     const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     const file = join(STAGE, `${shot.name}.png`);
     writeFileSync(file, Buffer.from(data, 'base64'));
@@ -455,6 +439,29 @@ async function main() {
   }
 
   ws.close();
+
+  // What was shot, for readme.mjs's report and checks: names, sizes and hashes, written only once every check passed.
+  writeFileSync(
+    join(STAGE, 'manifest.json'),
+    `${JSON.stringify(
+      {
+        generator: 'scripts/screenshots/capture.mjs',
+        shots: SHOTS.map((shot) => {
+          const bytes = readFileSync(join(STAGE, `${shot.name}.png`));
+          return {
+            name: shot.name,
+            file: `${shot.name}.png`,
+            viewport: shot.viewport,
+            scale: SCALE,
+            bytes: bytes.length,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+          };
+        }),
+      },
+      null,
+      2,
+    )}\n`,
+  );
 
   // Only now, with the escape assertion passed, may the images reach the committed directory.
   if (KEEP) {

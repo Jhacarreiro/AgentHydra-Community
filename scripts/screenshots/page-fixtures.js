@@ -335,8 +335,8 @@
       account: {
         status: 'live',
         authMode: 'chatgpt',
-        email: 'jordan@example.com',
-        name: 'Jordan Lee',
+        email: 'sample@example.invalid',
+        name: 'Sample User',
         planType: 'plus',
         planLabel: 'Plus',
         accountId: null,
@@ -377,6 +377,13 @@
   }
 
   const routes = [
+    // Background reads added since the last screenshot update: all synthetic and empty.
+    [
+      /\/api\/helpers(?:\?|$)/,
+      () => ({ paused: false, configPath: '', configError: null, helpers: [] }),
+    ],
+    [/\/api\/free\/stats(?:\?|$)/, () => ({ instances: [], jobs: [], ready: false })],
+    [/\/api\/analytics\/tokens-by-day(?:\?|$)/, () => ({ days: [] })],
     [
       /\/api\/sessions\/[^/]+\/tail/,
       () => ({

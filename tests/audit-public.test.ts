@@ -1181,6 +1181,43 @@ describe('--history', () => {
   )
 
   test(
+    "a regenerated picture's earlier bytes pass history only as its entry's previous bytes, and never the tree",
+    () => {
+      const dir = repo('regenerated')
+      const base = commit(dir, {}, 'base')
+      const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
+      const first = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0]), randomBytes(32)])
+      const second = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0]), randomBytes(32)])
+      commit(dir, { 'shot.png': first }, 'first picture')
+      const firstBlob = git(dir, NOREPLY, 'rev-parse', 'HEAD:shot.png')
+      commit(dir, { 'shot.png': second }, 'regenerated')
+      const current = {
+        path: 'shot.png',
+        blob: git(dir, NOREPLY, 'rev-parse', 'HEAD:shot.png'),
+        sha256: sha(second),
+        source: 's',
+        build: 'b',
+        license: 'l',
+      }
+
+      const without = auditHistory(dir, [`${base}..HEAD`], ctxWith({ provenance: [current] }))
+      expect(without.findings.map((f) => f.fp)).toEqual([sha(first).slice(0, 16)])
+
+      const recorded = { ...current, previous: [{ blob: firstBlob, sha256: sha(first) }] }
+      expect(
+        auditHistory(dir, [`${base}..HEAD`], ctxWith({ provenance: [recorded] })).findings,
+      ).toEqual([])
+
+      // The tree's picture must be the current one: previous bytes there are a change.
+      commit(dir, { 'shot.png': first }, 'back to the first')
+      expect(
+        auditTree(dir, 'HEAD', ctxWith({ provenance: [recorded] })).findings.map((f) => f.note),
+      ).toEqual(['changed since its provenance entry'])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'a path with a space is the same file in tree and history, so one allow entry clears it in both',
     () => {
       const dir = repo('spaces')

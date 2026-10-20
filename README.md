@@ -43,8 +43,7 @@ Maintained independently by [@Jhacarreiro](https://github.com/Jhacarreiro) and c
 
 ![The window: the sidebar lists every chat grouped by project, and the open chat shows its to-dos and a permission prompt](.github/screenshots/window.png)
 
-<sub>Screenshots use demo data and predate the fork: the analytics and instances shots still show a Discord button
-where the repository link now is, and the window shots name a demo project "connections".</sub>
+<sub>All screenshots use synthetic demo data, captured from the current Community UI. No personal sessions or accounts are included.</sub>
 
 ## TL;DR
 
@@ -164,6 +163,8 @@ you already have.
 Pick one AgentHydra as the hub, usually on a home server that stays on, and point each PC at it. Nothing below
 runs until you set its variables. [docs/CODEX-HUB.md](docs/CODEX-HUB.md) walks through running a hub of your own: the
 server, your proxy and sign-in, building and installing the tray, listing and revoking PCs, and changing the key.
+
+![The window with the Codex hub: Codex chats from two other PCs, Studio PC and Travel laptop, listed in their project folders beside this PC's chats with a cloud mark, and one of them open](.github/screenshots/hub.png)
 
 <details>
 <summary><b>Read more: the hub, each PC, the tray app, cloud sessions and the phone</b></summary>
