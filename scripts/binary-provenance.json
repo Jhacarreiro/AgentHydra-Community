@@ -1,5 +1,5 @@
 {
-  "//": "Every binary file this repository tracks: where it came from, how it is made and under what license. scripts/audit-public.mjs fails on a binary with no entry here, or whose blob or sha256 no longer matches its entry.",
+  "//": "Every binary file this repository tracks: where it came from, how it is made and under what license. scripts/audit-public.mjs fails on a binary with no entry here, or whose blob or sha256 no longer matches its entry. An entry's \"previous\" lists the exact bytes (blob and sha256) its path held before, which published commits still carry; history accepts those, the tree only the current ones.",
   "binaries": [
     {
       "path": ".github/og-image.png",
@@ -11,35 +11,67 @@
     },
     {
       "path": ".github/screenshots/analytics.png",
-      "blob": "5cd140faa429462428b7e9932a59df85cf362426",
-      "sha256": "3dd9ea357b78969830ef05fa9249109dc65a9afe3c669149c0b0817b1a98648f",
+      "blob": "a22164c5517aef9e9ac57c6afe18a8b9a813411e",
+      "sha256": "230ae289a6b02e4b6cc2a40f4f04ec5628255cf6a3369c59e563a0125c8d79f5",
       "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
-      "build": "bun run screenshots -- --keep (scripts/screenshots/capture.mjs) on isolated GitHub Actions runner; validated before copying into README.",
+      "build": "bun run screenshots:readme (scripts/screenshots/readme.mjs, running scripts/screenshots/capture.mjs) on synthetic fixtures only; checked for private text, escaped requests and size before install.",
+      "license": "AgentHydra Community MIT-licensed application screenshot.",
+      "previous": [
+        {
+          "blob": "5cd140faa429462428b7e9932a59df85cf362426",
+          "sha256": "3dd9ea357b78969830ef05fa9249109dc65a9afe3c669149c0b0817b1a98648f"
+        }
+      ]
+    },
+    {
+      "path": ".github/screenshots/hub.png",
+      "blob": "dda10b0e701c4616cba44b1498ae238db6f5aa1d",
+      "sha256": "f16c7284e295a6fa5b448285e242d6908b68ba874417f455ee98c3ddce045ff6",
+      "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
+      "build": "bun run screenshots:readme (scripts/screenshots/readme.mjs, running desk2/scripts/window-shots.ts) on synthetic fixtures only; checked for private text, escaped requests and size before install.",
       "license": "AgentHydra Community MIT-licensed application screenshot."
     },
     {
       "path": ".github/screenshots/instances.png",
-      "blob": "dd9114200b89faa35138700614983c8d2472f141",
-      "sha256": "873197df56ee7734e0c62bc68feba8e801fc954fc6637d750cf140f9bfcf43b5",
+      "blob": "f7a0a45b5839f4f846eceb9c9dfe7cc6275ba9f9",
+      "sha256": "ea4b7839c2b5a8e5697279360b58a9adf82553900cdf67cf55b704de7c2a6658",
       "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
-      "build": "bun run screenshots -- --keep (scripts/screenshots/capture.mjs) on isolated GitHub Actions runner; validated before copying into README.",
-      "license": "AgentHydra Community MIT-licensed application screenshot."
+      "build": "bun run screenshots:readme (scripts/screenshots/readme.mjs, running scripts/screenshots/capture.mjs) on synthetic fixtures only; checked for private text, escaped requests and size before install.",
+      "license": "AgentHydra Community MIT-licensed application screenshot.",
+      "previous": [
+        {
+          "blob": "dd9114200b89faa35138700614983c8d2472f141",
+          "sha256": "873197df56ee7734e0c62bc68feba8e801fc954fc6637d750cf140f9bfcf43b5"
+        }
+      ]
     },
     {
       "path": ".github/screenshots/new.png",
-      "blob": "2421b5f4f57af1ae13ad717831a140899c9ad492",
-      "sha256": "4e8fb767519f4a7a403421bd0680e923c5bdccdeca1d58de40f5804c0921653d",
+      "blob": "95efbe32a6a831d14a281fb5d6e315ef95890890",
+      "sha256": "c81a7c1cec2c8261f6b2ffb2b1556736c30087ed4986306d85fae5a9330f637d",
       "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
-      "build": "cd desk2 && bun run screenshots -- --keep (scripts/window-shots.ts) on isolated GitHub Actions runner; validated before copying into README.",
-      "license": "AgentHydra Community MIT-licensed application screenshot."
+      "build": "bun run screenshots:readme (scripts/screenshots/readme.mjs, running desk2/scripts/window-shots.ts) on synthetic fixtures only; checked for private text, escaped requests and size before install.",
+      "license": "AgentHydra Community MIT-licensed application screenshot.",
+      "previous": [
+        {
+          "blob": "2421b5f4f57af1ae13ad717831a140899c9ad492",
+          "sha256": "4e8fb767519f4a7a403421bd0680e923c5bdccdeca1d58de40f5804c0921653d"
+        }
+      ]
     },
     {
       "path": ".github/screenshots/window.png",
-      "blob": "9e2198cc0ef72f8d1cb73383335b99b462e20c9d",
-      "sha256": "50069a90e8694d36d3b9edfb5003c296bc43f7f58c0fdc56edff046469d6ee46",
+      "blob": "a0f3a236e70a08acc98b5176333df545f3a0d493",
+      "sha256": "e704795f19fd25baf331bd74b288f67a74111249356e40aa741382fc6f3304e2",
       "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
-      "build": "cd desk2 && bun run screenshots -- --keep (scripts/window-shots.ts) on isolated GitHub Actions runner; validated before copying into README.",
-      "license": "AgentHydra Community MIT-licensed application screenshot."
+      "build": "bun run screenshots:readme (scripts/screenshots/readme.mjs, running desk2/scripts/window-shots.ts) on synthetic fixtures only; checked for private text, escaped requests and size before install.",
+      "license": "AgentHydra Community MIT-licensed application screenshot.",
+      "previous": [
+        {
+          "blob": "9e2198cc0ef72f8d1cb73383335b99b462e20c9d",
+          "sha256": "50069a90e8694d36d3b9edfb5003c296bc43f7f58c0fdc56edff046469d6ee46"
+        }
+      ]
     },
     {
       "path": "desk2/hydra/public/favicon.ico",

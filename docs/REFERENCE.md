@@ -1216,30 +1216,42 @@ orchestrator/README.md, "Moving a machine off the standalone checkout".
 
 ## Screenshots
 
-The README's Instances and Analytics images are generated, not hand-taken:
+The README's images are generated, not hand-taken, by one command:
 
 ```
-bun run build                       # first: it shoots the built window
-bun run screenshots                 # shoot and install into .github/screenshots/
-bun run screenshots -- --keep       # write to tmp/screenshots/ instead, to eyeball first
-bun run screenshots -- --url <url>  # reuse a server you already have running
+bun run screenshots:readme                # build, shoot every view, check, install, update provenance, report
+bun run screenshots:readme -- --keep      # stop after the report: nothing in .github/ changes
+bun run screenshots:readme -- --no-build  # shoot the build already there
 ```
 
-It serves the build of AgentHydra 2.0's copy of the pages (`desk2/hydra/dist`, at `/ah/`) through
-the demo server (`scripts/sue-demo/serve.ts`) on a private port (5199, so an open dev session on
-5173 is neither disturbed nor photographed), drives headless Chrome over the DevTools protocol, and
-writes one PNG per view at a viewport sized to that view's max-width shell. Not vite's dev server:
-under it the Analytics tab's code never arrived, and the build is what people get.
+It runs the two generators that exist, with one browser, clock, timezone and type
+(`scripts/screenshots/page-env.mjs`), then checks what they made:
 
-**Nothing real is ever in frame.** These images are public, so instead of pointing a daemon at a
-synthetic home directory, `scripts/screenshots/page-fixtures.js` replaces `window.fetch` before the
-SPA boots: every `/api/` response is invented and no daemon runs at all. Any request that finds no
-fixture is recorded, and the run **fails** rather than keeping images that could contain live data.
-Adding a shot means adding an entry to `SHOTS` in `capture.mjs`; each one carries an `expect`
-predicate that must hold before the shutter fires, so a fixture that stops matching the UI fails
-the run instead of silently producing a screenshot of empty skeletons.
+| Generator | Views | Fixtures |
+| --- | --- | --- |
+| `scripts/screenshots/capture.mjs` | `instances`, `analytics` | `page-fixtures.js` replaces `window.fetch`, so every `/api/` answer is invented |
+| `desk2/scripts/window-shots.ts` | `window`, `new`, `hub` | Desk's demo window (`#/gallery/shell`, `desk2/web/src/components/shell/demo.ts`), served by a server that answers every `/api/` with a 503 |
 
-Requires a Chromium-based browser; set `CHROME_PATH` if it is not in a standard location.
+- **Nothing real is in frame.** No daemon runs. A request that escapes the fixtures fails the run, and so does
+  private text on the drawn page: an email address off the `example.*` domains, a home folder other than the
+  fixtures' `me`, or something shaped like a key.
+- **A view must draw.** Each shot has an `expect` predicate on the page that must hold before the shutter fires, so
+  a fixture that stops matching the UI fails the run instead of photographing skeletons or an error.
+- **The same input gives the same picture.** The clock starts at a fixed moment, the timezone is UTC, animations
+  stop at their last frame, and Desk's window is drawn in Inter (the face AgentHydra's pages ship), not the
+  machine's `system-ui`. The browser is `CHROME_PATH` when set, else the Chrome for Testing that desk2's puppeteer
+  installed, else one on the machine; the report names it.
+- **Checked, then installed.** Each generator writes a `manifest.json` in its staging folder (`tmp/screenshots`,
+  `tmp/screenshots-window`); every picture must be a PNG of exactly its viewport at 2x and match its hash. Only
+  then are they copied into `.github/screenshots`, and `scripts/binary-provenance.json` gets each picture's blob
+  and sha256 (a new picture gets an entry of its own), which the public audit checks.
+- **A report, no commit.** `tmp/screenshots-readme/report.md` (and `.json`) lists each generator and picture,
+  passed or failed, and whether it changed. Look at the pictures, then commit them yourself.
+
+To add a view, add an entry to one generator's `SHOTS`: a window view in `window-shots.ts` (a demo route, its
+viewport, an `expect`, and any `localStorage` it starts with), an AgentHydra page in `capture.mjs` (the steps to
+reach it and an `expect`). The run picks it up from the manifest; place it in README.md yourself. Each generator
+still runs alone (`bun run screenshots -- --keep`, at the root or in `desk2/`), without the report or provenance.
 
 ## Checks
 

@@ -9,6 +9,14 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+**TL;DR**
+
+- **README screenshots from one command, including the multi-PC hub**
+
+**Everything in Unreleased**
+
+- **README screenshots.** One command now regenerates every README picture with invented data, checks that each view drew and shows nothing private, and reports what changed. The README gains a picture of Codex chats from two other PCs through the hub.
+
 ## [2026.10.1] - 2026-10-19
 
 **TL;DR**

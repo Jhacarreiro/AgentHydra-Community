@@ -5,6 +5,7 @@ import TitleTips from '@/components/ui/tooltip/TitleTips.vue'
 import { SHELL_SOURCE } from '@/components/shell/source'
 import type { View } from '@/components/shell/logic'
 import { COMPOSER_API } from '@/components/composer/api'
+import { PANE_API } from '@/components/panes/api'
 
 // The gallery and the demo window (and the fixtures they draw) load only when their route is opened, so
 // the app itself never downloads or parses them.
@@ -15,8 +16,8 @@ const Lightbox = defineAsyncComponent(() => import('@/components/transcript/part
 
 // Routes: `#/gallery` is the component gallery, `#/gallery/shell` the whole window on fixtures (no
 // server needed; `/new` the new-session screen, `/accounts` the account popup open, `/collapsed` the
-// sidebar hidden, `/external` a session running elsewhere, `/settings` the Settings dialog open over a
-// chat), anything else the app.
+// sidebar hidden, `/external` a session running elsewhere, `/hub` two other PCs' Codex chats through the
+// Codex hub with one open, `/settings` the Settings dialog open over a chat), anything else the app.
 const hash = ref(window.location.hash.slice(1))
 const onHash = () => (hash.value = window.location.hash.slice(1))
 onMounted(() => window.addEventListener('hashchange', onHash))
@@ -25,7 +26,7 @@ onBeforeUnmount(() => window.removeEventListener('hashchange', onHash))
 const route = computed(() => (hash.value === '/chatgpt' ? 'chatgpt' : hash.value === '/gallery' ? 'gallery' : hash.value.startsWith('/gallery/shell') ? 'demo' : 'app'))
 
 const DemoFrame = defineAsyncComponent(async () => {
-  const { demoComposerApi, demoSource } = await import('@/components/shell/demo')
+  const { demoComposerApi, demoPaneApi, demoSource } = await import('@/components/shell/demo')
   return defineComponent({
     props: { start: { type: String, default: '' } },
     setup(props) {
@@ -34,11 +35,14 @@ const DemoFrame = defineAsyncComponent(async () => {
           ? { kind: 'new' }
           : props.start === 'external'
             ? { kind: 'external', id: 'x-run' }
-            : props.start === 'settings'
-              ? { kind: 'settings' }
-              : { kind: 'chat', id: 'ccd' }
-      provide(SHELL_SOURCE, demoSource(start))
+            : props.start === 'hub'
+              ? { kind: 'external', id: 'hub-sync' }
+              : props.start === 'settings'
+                ? { kind: 'settings' }
+                : { kind: 'chat', id: 'ccd' }
+      provide(SHELL_SOURCE, demoSource(start, { hub: props.start === 'hub' }))
       provide(COMPOSER_API, demoComposerApi)
+      provide(PANE_API, demoPaneApi)
       // Settings opens over the chat it was opened from.
       const history: View[] | undefined = start.kind === 'settings' ? [{ kind: 'chat', id: 'ccd' }] : undefined
       return () => h(DeskFrame, { demo: true, accountsOpen: props.start === 'accounts', sidebarHidden: props.start === 'collapsed', history })
