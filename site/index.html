@@ -137,6 +137,7 @@ section { padding-block: 88px; }
 .strands { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 .strand { position: relative; padding: 26px 24px 24px; border-radius: 16px; background: var(--deep); border: 1px solid var(--line); display: grid; gap: 12px; align-content: start; }
 .strand::before { content: ""; position: absolute; inset: 0 24px auto; height: 2px; background: var(--k); }
+.soon { display: inline-block; margin-left: 8px; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line-2); font: 500 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); vertical-align: middle; }
 .strand .tag { font: 500 11px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--k); }
 .strand h3 { font-size: 23px; line-height: 1.15; }
 .strand p { color: var(--muted); font-size: 15px; }
@@ -212,6 +213,7 @@ section { padding-block: 88px; }
 .step .n { font: 500 12px/1 var(--mono); color: var(--k); letter-spacing: 0.1em; }
 .step h3 { font-size: 20px; }
 .step p { color: var(--muted); font-size: 14.5px; }
+.step .note { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
 .cmd { display: flex; align-items: center; gap: 10px; background: var(--night); border: 1px solid var(--line); border-radius: 10px; padding: 10px 10px 10px 14px; min-width: 0; }
 .cmd code { font: 400 12.5px/1.5 var(--mono); color: var(--ink); overflow-x: auto; white-space: nowrap; flex: 1; min-width: 0; }
 .copybtn { flex: none; font: 500 11px/1 var(--mono); color: var(--muted); background: var(--panel); border: 1px solid var(--line-2); border-radius: 7px; padding: 7px 9px; cursor: pointer; }
@@ -299,7 +301,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
         <a href="#hub">How the Hub works →</a>
       </article>
       <article class="strand k-violet">
-        <span class="tag">ChatGPT</span>
+        <span class="tag">ChatGPT <span class="soon">Next release</span></span>
         <h3>Your ChatGPT, next to your code</h3>
         <p>Your real ChatGPT conversations appear in the same sidebar, searchable and open to reply, through your own signed-in browser on the Hub. No API key.</p>
         <a href="#chatgpt">How ChatGPT fits in →</a>
@@ -318,7 +320,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
         <li><span><b>Pair a PC with one click.</b> A small tray app on Windows, macOS or Linux pairs through a page behind your own sign-in, starts at login, and shows green when the PC is reporting.</span></li>
         <li><span><b>A token per PC.</b> Each PC gets its own credential, so you can revoke a lost laptop without touching the others.</span></li>
         <li><span><b>Continue on the right machine.</b> Reply to a chat from the Hub and the turn runs on its own PC, with its files, its account and its approval prompts.</span></li>
-        <li><span><b>Updates itself.</b> The Hub container keeps itself current, and the tray apps take only builds signed with your key.</span></li>
+        <li><span><b>Updates itself.</b> <span class="soon">Next release</span> The Hub container keeps itself current, and the tray apps take only builds signed with your key.</span></li>
       </ul>
     </div>
     <div class="diagram" role="img" aria-label="Three PCs send their chats to the Hub, which runs in Docker on a home server. The window on any PC and a phone read the Hub, and replies travel back to the PC each chat came from.">
@@ -373,7 +375,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
 <section id="chatgpt">
   <div class="wrap split flip k-violet">
     <div class="copy">
-      <span class="eyebrow" style="color:var(--violet)"><i></i>ChatGPT</span>
+      <span class="eyebrow" style="color:var(--violet)"><i></i>ChatGPT <span class="soon">Next release</span></span>
       <h2>The conversations you have in ChatGPT, beside the ones in your terminal.</h2>
       <p>Half the planning happens in ChatGPT and the work happens in Claude Code or Codex. AgentHydra puts both in the same list, so the idea and the branch that came out of it sit next to each other.</p>
       <ul class="points">
@@ -458,8 +460,9 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
       <div class="step k-blue">
         <span class="n">STEP 2 · OPTIONAL</span>
         <h3>Start a Hub</h3>
-        <p>On any machine with Docker. It keeps itself up to date from then on.</p>
-        <div class="cmd"><code id="cmd-hub">docker compose -f deploy/docker/compose.yaml up -d --build</code><button class="copybtn" type="button" data-copy="cmd-hub">Copy</button></div>
+        <p>On any machine with Docker: copy <span class="note">hub.env.example</span> to <span class="note">hub.env</span>, give it an admin token, and bring it up from the release's <span class="note">deploy/docker</span> folder.</p>
+        <div class="cmd"><code id="cmd-hub">docker compose up -d --build</code><button class="copybtn" type="button" data-copy="cmd-hub">Copy</button></div>
+        <a class="btn" href="https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/deploy/docker/README.md" style="justify-self:start">Docker guide</a>
       </div>
       <div class="step k-violet">
         <span class="n">STEP 3 · OPTIONAL</span>
