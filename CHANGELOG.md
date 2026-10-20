@@ -9,6 +9,21 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+## [2026.10.1] - 2026-10-19
+
+**TL;DR**
+
+- **A new colourful Community Hydra identity across the app and web views**
+- **Clearer first installation instructions, including the complete Windows package and checksum verification**
+- **A product-first README and links for contributors**
+
+**Everything in 2026.10.1**
+
+- **Community Hydra branding.** New application icon, browser favicons and social preview, with the same project name and MIT licence. The tray continues using meaningful runtime status colours.
+- **First-time installation.** The getting-started guide clearly separates standalone Windows downloads from the complete ZIP, explains the first-run network requirements, and shows how to verify a release file's published checksum. The optional multi-PC hub remains a separate setup path.
+- **Finding and contributing.** The README starts with what AgentHydra Community does, links to installation and contribution guidance, and labels ChatGPT access as under development, not yet included in a release.
+
+
 ## [2026.10.0] - 2026-10-19
 
 **TL;DR**
