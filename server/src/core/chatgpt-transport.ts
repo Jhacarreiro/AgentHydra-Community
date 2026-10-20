@@ -1,54 +1,55 @@
-import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { type ChatGptVisibleView, parseChatGptVisibleView } from './chatgpt-visible'
 
-/** Read from the local OpenCLI browser bridge on the Hub host.
- * No SSH, external executable configured by HTTP clients, or cookies in the Hub.
+const exec = promisify(execFile)
+
+const expression = `(() => {
+  const turns = [...document.querySelectorAll('[data-turn-key]')]
+  const messages = []
+  if (location.pathname.split('/')[1] !== 'c')
+    return JSON.stringify({ visibleTurnCount: 0, messages })
+  for (const turn of turns) {
+    for (const [role, selector] of [['user','[data-user-message-bubble]'], ['assistant','[data-conversation-role="assistant"]']]) {
+      const el = turn.querySelector(selector)
+      const text = (el?.innerText || el?.textContent || '').trim()
+      if (text) messages.push({ role, text })
+    }
+  }
+  return JSON.stringify({ visibleTurnCount: turns.length, messages })
+})()`
+
+/** Read through OpenCLI on the same host as the Hydra Hub, with no SSH or extra service.
+ * Commands are fixed and no browser credentials or client-provided code enter this module.
+ * Bundled into the server executable, so compiled releases need no separate reader script.
  */
-export async function readChatGptLocally(timeoutMs = 12_000): Promise<ChatGptVisibleView> {
-  const script = fileURLToPath(
-    new URL('../../../scripts/chatgpt-local-reader.mjs', import.meta.url),
-  )
-  return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [script], {
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        PATH: process.env.PATH || '/usr/bin:/bin',
-        AGENTHYDRA_CHATGPT_OPENCLI: process.env.AGENTHYDRA_CHATGPT_OPENCLI || '',
-        AGENTHYDRA_CHATGPT_BROWSER_SESSION:
-          process.env.AGENTHYDRA_CHATGPT_BROWSER_SESSION || 'chatgpt',
-      },
-    })
-    const chunks: Buffer[] = []
-    let size = 0
-    let expired = false
-    const timer = setTimeout(() => {
-      expired = true
-      child.kill('SIGKILL')
-    }, timeoutMs)
-    child.stdout.on('data', (part: Buffer) => {
-      size += part.length
-      if (size > 1024 * 1024) {
-        child.kill('SIGKILL')
-        return
-      }
-      chunks.push(part)
-    })
-    child.stderr.resume() // never log potentially sensitive output
-    child.on('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      if (expired || size > 1024 * 1024 || code !== 0)
-        return reject(new Error('ChatGPT reader unavailable'))
-      try {
-        resolve(parseChatGptVisibleView(JSON.parse(Buffer.concat(chunks).toString('utf8'))))
-      } catch {
-        reject(new Error('ChatGPT reader returned invalid data'))
-      }
-    })
-  })
+export async function readChatGptLocally(): Promise<ChatGptVisibleView> {
+  const cli = process.env.AGENTHYDRA_CHATGPT_OPENCLI || 'opencli'
+  const profile = process.env.AGENTHYDRA_CHATGPT_BROWSER_SESSION || 'chatgpt'
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(profile)) throw new Error('Invalid browser session')
+  const options = { timeout: 5_000, maxBuffer: 1024 * 1024 }
+  try {
+    const listing = await exec(cli, ['browser', profile, 'tab', 'list'], options)
+    const tabs: unknown = JSON.parse(listing.stdout)
+    if (!Array.isArray(tabs)) throw new Error('Invalid tab list')
+    const matches = tabs.filter(
+      (t) =>
+        t &&
+        typeof t.url === 'string' &&
+        t.url.startsWith('https://chatgpt.com/') &&
+        typeof t.page === 'string' &&
+        /^[0-9a-f]{32}$/i.test(t.page),
+    )
+    const tab = matches.find((t) => t.active) || matches[0]
+    if (!tab) throw new Error('No ChatGPT tab')
+    const result = await exec(
+      cli,
+      ['browser', profile, 'eval', '--tab', tab.page, expression],
+      options,
+    )
+    return parseChatGptVisibleView(JSON.parse(result.stdout))
+  } catch {
+    // Never log browser output, private conversation contents, or tool errors.
+    throw new Error('ChatGPT browser reader unavailable')
+  }
 }
