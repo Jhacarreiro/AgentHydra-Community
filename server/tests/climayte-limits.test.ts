@@ -22,6 +22,7 @@ import {
   startCliMayte,
 } from '../src/climayte'
 import { setSpendKit, workers } from '../src/climayte-core'
+import type { CliMayteWorker } from '../src/climayte-lib'
 import { waitsForHome } from '../src/climayte-placement'
 import { clearRemote, setRemote } from '../src/climayte-remote'
 import { isPidAlive } from '../src/core/process'
@@ -40,11 +41,27 @@ describe('sizing (owner, 2026-10-01): too big for a window is split, one that fi
   let factor = 1
   let resetAt = Date.now() + 2 * 3_600_000
 
+  // CI's `bun test` runs every file in one process, and the tasks other files finished stay in
+  // `workers`, where expectedCost blends them into every estimate below. When the file order put
+  // climayte-thrash.test.ts first, its debug task, done on Sonnet low with no tokens (0%), shared
+  // the big task's exact setting and took its estimate from 125 to 68, under the split line (three
+  // CI runs on 2026-10-20). So the record here is only what these tests ran: the finished workers
+  // already there are set aside, and put back in their place after.
+  const others: CliMayteWorker[] = []
+
   // A task waiting for room is looked at again on the quiet tick, 3 s apart in the daemon: 1 s here.
-  beforeAll(() => setCliMayteQuietTickForTests(1_000))
+  beforeAll(() => {
+    setCliMayteQuietTickForTests(1_000)
+    for (const w of workers.values())
+      if (w.status === 'done' || w.status === 'failed' || w.status === 'cancelled') others.push(w)
+    for (const w of others) workers.delete(w.id)
+  })
   afterAll(async () => {
     for (const group of groups) climayteCancel({ group })
     await killsLanded()
+    const all = [...others, ...workers.values()].sort((a, b) => a.createdAt - b.createdAt)
+    workers.clear()
+    for (const w of all) workers.set(w.id, w)
     setCliMayteQuietTickForTests()
     setCliMayteClaudeCommand(null)
     setCliMayteAccountsProvider(null)
