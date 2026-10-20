@@ -70,7 +70,7 @@ const server = Bun.serve({
 })
 const origin = `http://127.0.0.1:${PORT}`
 
-const browser = await puppeteer.launch({ headless: true, args: ['--hide-scrollbars', '--force-color-profile=srgb'] })
+const browser = await puppeteer.launch({ headless: true, args: ['--hide-scrollbars', '--force-color-profile=srgb', ...(process.env.CI ? ['--no-sandbox'] : [])] })
 let failed = false
 try {
   mkdirSync(STAGE, { recursive: true })
