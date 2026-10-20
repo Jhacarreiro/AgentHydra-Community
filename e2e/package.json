@@ -1,6 +1,17 @@
 {
   "name": "agenthydra-e2e",
   "private": true,
+  "description": "The black-box lane: the daemon, Desk 2 and the MCP server run as processes in temp homes.",
+  "license": "MIT",
+  "homepage": "https://github.com/Jhacarreiro/AgentHydra-Community/tree/main/e2e",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jhacarreiro/AgentHydra-Community.git",
+    "directory": "e2e"
+  },
+  "bugs": {
+    "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
+  },
   "//": "The black-box lane (README.md). Not a workspace: it installs nothing and imports nothing from the app; typecheck borrows the server workspace's TypeScript and Bun types. --todo runs the known-bug assertions (harness.ts knownBug).",
   "scripts": {
     "test": "bun test --todo --timeout 120000 ./*.e2e.ts",
