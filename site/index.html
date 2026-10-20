@@ -228,6 +228,16 @@ footer .links { display: flex; flex-wrap: wrap; gap: 18px; margin-left: auto; }
 footer .links a { text-decoration: none; color: var(--muted); }
 footer .links a:hover { color: var(--ink); }
 footer .legal { flex-basis: 100%; max-width: 70em; }
+
+/* Download menu */
+.dl { position: relative; }
+.dl summary { list-style: none; cursor: pointer; }
+.dl summary::-webkit-details-marker { display: none; }
+.dl .dl-menu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 4; display: grid; min-width: min(320px, calc(100vw - 32px)); padding: 6px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55); }
+.dl .dl-menu a { display: flex; justify-content: space-between; gap: 16px; padding: 10px 12px; border-radius: 9px; text-decoration: none; font-size: 14px; }
+.dl .dl-menu a span { white-space: nowrap; color: var(--faint); font: 400 12px/1.6 var(--mono); }
+.dl .dl-menu a:hover { background: rgba(255, 255, 255, 0.06); }
+.dl .dl-menu a:last-child { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 12px; }
 </style>
 </head>
 <body>
@@ -257,7 +267,18 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
         <h1 style="margin-top:18px">Your <span class="c">agents</span>,<br>your <span class="b">PCs</span>,<br>your <span class="v">ChatGPT</span>.<br>One window.</h1>
         <p class="lede">AgentHydra Community gathers Claude Code, Codex and OpenCode into a single live sidebar, and a Hub you run at home keeps every PC in it. ChatGPT joins them in the next release. Nothing goes through anyone's cloud but yours.</p>
         <div class="ctas">
-          <a class="btn primary" href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest">Download for Windows</a>
+          <details class="dl">
+            <summary class="btn primary">Download <span aria-hidden="true">▾</span></summary>
+            <div class="dl-menu">
+              <a href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest" data-asset="-windows-x64.exe"><b>Windows</b><span>Installer · .exe</span></a>
+              <a href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest" data-asset="-windows-x64.zip"><b>Windows</b><span>Portable · .zip</span></a>
+              <a href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest" data-asset="-darwin-arm64.tar.gz"><b>macOS</b><span>Apple silicon · .tar.gz</span></a>
+              <a href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest" data-asset="-darwin-x64.tar.gz"><b>macOS</b><span>Intel · .tar.gz</span></a>
+              <a href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest" data-asset="-linux-x64.tar.gz"><b>Linux</b><span>x64 · .tar.gz</span></a>
+              <a href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest" data-asset="-linux-arm64.tar.gz"><b>Linux</b><span>arm64 · .tar.gz</span></a>
+              <a href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest"><b>All downloads</b><span>Checksums and release notes</span></a>
+            </div>
+          </details>
           <a class="btn" href="#hub">Set up a Hub</a>
         </div>
         <div class="facts"><span>No account to create</span><span>No telemetry</span><span>Windows · macOS · Linux</span></div>
@@ -455,7 +476,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
       <div class="step k-cyan">
         <span class="n">STEP 1 · THE WINDOW</span>
         <h3>Install on your PC</h3>
-        <p>One line in PowerShell, no administrator. The download is checked against its SHA-256 before it unpacks.</p>
+        <p>On Windows, one line in PowerShell, no administrator. The download is checked against its SHA-256 before it unpacks. On macOS or Linux, take the <span class="note">.tar.gz</span> for your machine from the Download menu.</p>
         <div class="cmd"><code id="cmd-win">irm https://raw.githubusercontent.com/Jhacarreiro/AgentHydra-Community/main/install.ps1 | iex</code><button class="copybtn" type="button" data-copy="cmd-win">Copy</button></div>
       </div>
       <div class="step k-blue">
@@ -512,6 +533,22 @@ for (const b of document.querySelectorAll('.copybtn')) {
     }
   });
 }
+// Point each Download entry at the latest release's own file; without the API they open the release page.
+fetch('https://api.github.com/repos/Jhacarreiro/AgentHydra-Community/releases/latest')
+  .then((r) => (r.ok ? r.json() : null))
+  .then((rel) => {
+    if (!rel) return;
+    for (const a of document.querySelectorAll('.dl-menu a[data-asset]')) {
+      const hit = rel.assets.find((x) => x.name.endsWith(a.dataset.asset));
+      if (hit) a.href = hit.browser_download_url;
+    }
+  })
+  .catch(() => {});
+document.addEventListener('click', (e) => {
+  for (const d of document.querySelectorAll('details.dl[open]')) {
+    if (!d.contains(e.target)) d.open = false;
+  }
+});
 </script>
 
 </body>
