@@ -44,3 +44,11 @@ This requires **two separate installations**: one always-on AgentHydra hub, plus
 | Tray builds or updates are refused | Check that they were built for **your hub** and signed with **your signing key**, not the project's generic release. |
 
 For deeper technical details and platform-specific prerequisites, use [the operator guide](CODEX-HUB.md) and the [reference](REFERENCE.md). For an installation issue, open a [GitHub issue](https://github.com/Jhacarreiro/AgentHydra-Community/issues) with your operating system, release version, the exact error text and steps to reproduce. **Never attach tokens, sign-in data, private URLs or full configuration files.**
+
+## Managed macOS Hub (experimental)
+
+On the Mac that will host the Hub, first extract a Community macOS release archive into a stable directory. Verify the version with `./agenthydra --version`. The Hub uses its own built-in GitHub release updater; it is **not** updated by launchd or cron.
+
+From the source repository, run `scripts/install-hub-macos.sh /absolute/path/to/extracted/AgentHydra --dry-run` to check the intended service location, then run with `--enable-native-updates` to register a per-user launchd service and enable the product's own updater in Settings. The installer backs up an existing plist, validates the new one and logs to `~/Library/Logs/AgentHydraCommunity`. It does not provision authentication, reverse proxy, tokens, or DNS. Those require separate operator-specific setup.
+
+Do not install two daemons on the same data directory or port. Validate the new Mac Hub and clients before disabling an older installation. The current release might predate this script; use a release that contains this installer and the desired features.
