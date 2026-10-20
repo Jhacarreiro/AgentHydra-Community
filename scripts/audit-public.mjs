@@ -1193,17 +1193,18 @@ function readCommitMeta(cwd, revArgs) {
   const meta = gitText(cwd, [
     'log',
     '-z',
-    '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00%(trailers)',
+    '--format=%H%x00%P%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00%(trailers)',
     ...revArgs,
     '--',
   ]).split('\0')
   const commits = new Map()
   const order = []
-  for (let i = 0; i + 6 < meta.length; i += 7) {
-    const [sha, , authorEmail, , committerEmail, body, trailers] = meta.slice(i, i + 7)
+  for (let i = 0; i + 7 < meta.length; i += 8) {
+    const [sha, parentList, , authorEmail, , committerEmail, body, trailers] = meta.slice(i, i + 8)
     const id = sha.replace(/^\n/, '')
     if (!/^[0-9a-f]{40,64}$/.test(id)) continue
-    commits.set(id, { sha: id, authorEmail, committerEmail, body, trailers, files: new Map() })
+    const parents = parentList.split(/\s+/).filter(Boolean).length
+    commits.set(id, { sha: id, parents, authorEmail, committerEmail, body, trailers, files: new Map() })
     order.push(id)
   }
   return { commits, order }
@@ -1246,6 +1247,9 @@ const CREDIT_KEYS = new Set(['co-authored-by', 'signed-off-by', 'reviewed-by'])
 const GITHUB_NOREPLY = /^[^@\s<>]+@users\.noreply\.github\.com$/i
 // What .githooks/check-bundle-message.mjs reads as a bundle and as the heading of one of its lists:
 // scripts/save-bundle.ts ends a bundle's message with them, and git reads them as trailers.
+const GITHUB_PR_MERGE = /^Merge pull request #\d+ from \S+$/
+// The committer GitHub records on a pull request it merges.
+const GITHUB_COMMITTER = 'noreply@github.com'
 const BUNDLE_SUBJECT = /^wip: bundle\b/i
 const BUNDLE_LIST = /^(Mine|Swept):\s*$/
 // The key of a tool's trailer: capitalised words joined by hyphens (Generated-by, Change-Id, a
@@ -1354,6 +1358,17 @@ function commitTrailerFindings(c, globs) {
   })
 
   const bundle = BUNDLE_SUBJECT.test((lines.find((l) => l.trim()) || '').trim())
+  // GitHub's merge of a pull request writes the PR's title as the message's only other line, and git
+  // reads a title such as "Release: prepare 1.2.3" as a trailer. That one line is the title, not a
+  // tool's trailer, unless its shape is one (a hyphenated key, or a URL, address or id alone). Only a
+  // real merge (two parents or more) that GitHub committed is one; the message alone proves nothing.
+  const text = lines.filter((l) => l.trim())
+  const githubMerge =
+    c.parents >= 2 &&
+    String(c.committerEmail || '').toLowerCase() === GITHUB_COMMITTER &&
+    text.length === 2 &&
+    GITHUB_PR_MERGE.test(text[0].trim())
+  const prTitle = githubMerge ? text[1] : null
   for (const { line, texts } of entries) {
     if (texts.some((t) => CHERRY_PICK.test(t))) continue // filed above, at its own line
     const key = TRAILER_KEY.exec(texts[0])
@@ -1370,6 +1385,7 @@ function commitTrailerFindings(c, globs) {
     // git reads any Word: text line of a last paragraph made of them as a trailer. One with a
     // one-word key and a sentence after it, as a Note: line has, is prose.
     if (!key[1].includes('-') && isSentence(value)) continue
+    if (texts.length === 1 && texts[0] === prTitle && !key[1].includes('-') && !namesOnly(value)) continue
     judge(line, texts, key[1], value)
   }
 

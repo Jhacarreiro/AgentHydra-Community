@@ -1027,6 +1027,47 @@ describe('--history', () => {
   )
 
   test(
+    "GitHub's merge of a pull request may carry a title shaped like a trailer, but not a tool's trailer",
+    () => {
+      const dir = repo('pr-merge-title')
+      const base = commit(dir, {}, 'base')
+      // A real merge GitHub committed, with the given message.
+      const merge = (branch: string, message: string, email = 'noreply@github.com') => {
+        git(dir, NOREPLY, 'checkout', '-q', '-b', branch)
+        commit(dir, { [`${branch}.txt`]: branch }, `Work on ${branch}`)
+        git(dir, NOREPLY, 'checkout', '-q', 'main')
+        git(dir, email, 'merge', '-q', '--no-ff', '-m', message, branch)
+        return git(dir, NOREPLY, 'rev-parse', 'HEAD')
+      }
+      merge('release', 'Merge pull request #24 from Example/release\n\nRelease: prepare 2026.10.2')
+      const tool = merge('tool', 'Merge pull request #25 from Example/tool\n\nTool-Session: abc')
+      const link = merge(
+        'link',
+        'Merge pull request #26 from Example/link\n\nSee: https://example.invalid/x',
+      )
+      const local = merge(
+        'local',
+        'Merge pull request #27 from Example/local\n\nRelease: prepare 2026.10.3',
+        NOREPLY,
+      )
+      const plain = commit(
+        dir,
+        {},
+        'Merge pull request #28 from Example/plain\n\nRelease: prepare 2026.10.4',
+      )
+      const { findings } = auditHistory(dir, [`${base}..HEAD`], ctxWith())
+      const trailers = findings.filter((f) => f.rule === 'commit.trailer')
+      expect(trailers.map((f) => [f.commit, f.note])).toEqual([
+        [plain, 'trailer Release'],
+        [local, 'trailer Release'],
+        [link, 'trailer See'],
+        [tool, 'trailer Tool-Session'],
+      ])
+    },
+    GIT_TEST_TIMEOUT,
+  )
+
+  test(
     'a last paragraph of Note: sentences is prose, though git reads it as trailers; a Fixes: #12 is not',
     () => {
       const dir = repo('note-lines')
