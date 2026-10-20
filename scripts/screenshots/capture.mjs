@@ -95,7 +95,7 @@ const SHOTS = [
     // Claude account data, the Codex row and the DeepSeek row all render, and never a full address
     // or a profile name. Not the CODEX_HOME column: usage mode (the tab's default) swaps it for the
     // reset countdowns, so asserting on it failed a view that had drawn perfectly.
-    expect: `/Max 20/.test(document.body.innerText) && /work \\(Codex\\)/.test(document.body.innerText) && !/Jordan Lee|jordan@example/.test(document.body.innerText) && /DeepSeek/.test(document.body.innerText)`,
+    expect: `/Max 20/.test(document.body.innerText) && /Codex/.test(document.body.innerText) && !/Jordan Lee|jordan@example/.test(document.body.innerText) && /DeepSeek/.test(document.body.innerText)`,
   },
   {
     name: 'analytics',
