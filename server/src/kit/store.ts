@@ -119,11 +119,21 @@ const OPEN_STORES = new Set<KitStore>()
 const WAL_LIMIT_BYTES = 32 * 1024 * 1024
 /** The longest a writer waits for the worker to catch up with the WAL before it carries on. */
 const WAL_PAUSE_MAX_MS = 5000
-/** A persistent connection that only checkpoints (passive: it never blocks the writer) and reports the WAL it saw. */
+/**
+ * A persistent connection that only checkpoints (passive: it never blocks the writer) and reports the WAL it saw.
+ * Told to close, it closes that connection itself and stops listening, and the thread ends (see
+ * dropCheckpointWorker; a Bun 1.4.3 worker has no self.close()).
+ */
 const CHECKPOINT_WORKER_SOURCE = `
 const { Database } = require('bun:sqlite')
 let db = null
 self.onmessage = (e) => {
+  if (e.data.close) {
+    if (db) db.close()
+    db = null
+    self.onmessage = null
+    return
+  }
   try {
     if (!db) {
       db = new Database(e.data.path)
@@ -328,8 +338,7 @@ export class KitStore {
 
   close(): void {
     OPEN_STORES.delete(this)
-    this.ckptWorker?.terminate()
-    this.ckptWorker = null
+    this.dropCheckpointWorker(true)
     this.db.close()
   }
 
@@ -339,11 +348,15 @@ export class KitStore {
    * freed 80 MB of private memory (306 -> 226 MB), the next sweep took 3.2 s against 3.6 s kept, and a 7-day
    * query right after it took 46 ms (the OS still holds the file). The checkpoint worker stops too: idle
    * after one checkpoint it held 26.4-26.9 MB of private memory and a thread (three runs, 2026-10-12), and
-   * the next long write starts another within ckptEveryMs.
+   * the next long write starts another within ckptEveryMs, also after one that failed or that a pause gave
+   * up on (see waitForWalCatchUp): each run of long work tries a worker again, and one that never answers
+   * costs that run one pause.
    */
   idle(): void {
     this.db.exec('pragma shrink_memory')
     this.parkCheckpointWorker()
+    this.ckptOff = false
+    this.ckptRearmed = false
   }
 
   /**
@@ -358,23 +371,65 @@ export class KitStore {
       return
     }
     this.ckptParkWhenDone = false
-    this.ckptWorker.terminate()
-    this.ckptWorker = null
+    this.dropCheckpointWorker()
     this.db.exec('pragma wal_autocheckpoint = 1000')
   }
 
+  /**
+   * Lets the worker go, its handlers off first: what it may still send (a late answer, an error) must not
+   * re-arm or stop the next one. It is told to close its connection and end, and terminated only if it has
+   * not within walPauseMaxMs (a worker a pause gave up on may never read that), or at once by close(). The
+   * worker must close its connection itself before it stops listening: a connection still open when the
+   * thread ends, terminated or ended by itself, checkpoints as the thread goes down (the checkpoint lock and
+   * an fsync, 8 of 8 traced), and the writer's next commits after idle() threw SQLITE_BUSY for 1-18 ms, in
+   * 19 or 20 of 20 probes either way. Closed by the worker first, in none of 20 (Linux, 2026-10-20).
+   */
+  private dropCheckpointWorker(now = false): void {
+    const w = this.ckptWorker
+    if (!w) return
+    this.ckptWorker = null
+    this.ckptLate = false
+    w.onmessage = null
+    w.onerror = null
+    if (!now) {
+      try {
+        w.postMessage({ close: true })
+        setTimeout(() => w.terminate(), this.walPauseMaxMs).unref()
+        return
+      } catch {
+        // gone already: terminate() frees what is left
+      }
+    }
+    w.terminate()
+  }
+
   private ckptWorker: Worker | null = null
-  /** idle() came while a checkpoint ran: the worker stops when it reports, unless long work starts again first. */
+  /**
+   * idle() came while a checkpoint or a pause ran: the worker stops when it reports, or when that pause gives
+   * up on it, unless long work starts again first.
+   */
   private ckptParkWhenDone = false
   private ckptBusy = false
   private ckptAt = 0
+  /**
+   * The writer checkpoints for itself: the worker failed, or a pause gave up on it. Until idle(), or until a
+   * late answer gives the checkpoints back (rearmCheckpointWorker).
+   */
   private ckptOff = false
+  /** The last pause gave up with a request unanswered: the worker is late or gone (see waitForWalCatchUp). */
+  private ckptLate = false
+  /** A late answer already gave the worker back its checkpoints in this run of long work. */
+  private ckptRearmed = false
   /** Least time between two checkpoints asked for by checkpointSoon (a test shortens it). */
   ckptEveryMs = 1500
   /** The WAL size that makes a long writer wait for a restart (a test lowers it). */
   walLimitBytes = WAL_LIMIT_BYTES
+  /** The longest one such wait lasts, and how long a worker let go has to end itself (a test shortens it). */
+  walPauseMaxMs = WAL_PAUSE_MAX_MS
   /** Waits taken for a WAL restart (a counter for tests and the bench). */
   walPauses = 0
+  /** Of those, the waits that ended with the worker caught up, so the next write restarts the WAL. */
+  walCaughtUp = 0
   /** Frames the worker saw in the WAL at its last checkpoint, and how many of them were already in the database. */
   private walLog = 0
   private walDone = 0
@@ -416,6 +471,7 @@ export class KitStore {
           else {
             this.walLog = e.data.log ?? 0
             this.walDone = e.data.done ?? 0
+            if (this.ckptLate) this.rearmCheckpointWorker()
           }
           for (const w of this.ckptWaiters.splice(0)) w()
           if (this.ckptParkWhenDone) this.parkCheckpointWorker()
@@ -473,7 +529,7 @@ export class KitStore {
   }
 
   private async waitForWalCatchUp(): Promise<void> {
-    const until = Date.now() + WAL_PAUSE_MAX_MS
+    const until = Date.now() + this.walPauseMaxMs
     // Only a checkpoint posted by this wait counts: one already in flight began before the latest commits,
     // so its "caught up" leaves frames behind and the next write cannot restart the WAL.
     let posted = false
@@ -491,19 +547,55 @@ export class KitStore {
       }
       await new Promise<void>((r) => {
         this.ckptWaiters.push(r)
-        setTimeout(r, 1000)
+        setTimeout(r, Math.min(1000, Math.max(0, until - Date.now())))
       })
-      if (posted && !this.ckptBusy && this.walDone >= this.walLog) return
+      if (posted && !this.ckptBusy && this.walDone >= this.walLog) {
+        this.walCaughtUp++
+        return
+      }
     }
+    if (this.ckptOff || !this.ckptWorker) return
+    // Out of time, not caught up. Only an answer clears ckptBusy, so a request never answered stopped every
+    // checkpoint after it, and the writer waited out another whole pause each time the WAL file grew, its own
+    // checkpoint off. kit-store.test.ts's long write timed out at 30 s in three windows-latest CI runs (October
+    // 2026); it has not been reproduced on a Windows machine, but a worker made silent times the test out the
+    // same way on Linux. So the writer checkpoints for itself for the rest of this run, as before its first
+    // long write, until idle() or a late answer (see rearmCheckpointWorker). The worker stays: it may only be
+    // slow.
+    this.ckptLate = this.ckptBusy
+    this.ckptBusy = false
+    this.db.exec('pragma wal_autocheckpoint = 1000')
+    // Unless idle() came during this pause and left the park to it (the sweep ended while a sync asked for on
+    // /api/kit/sync waited here): then the worker goes as idle() lets one go, and the next checkpointSoon
+    // starts another. Turned off here instead, a silent worker stayed through the next run, which started no
+    // worker and took no pause, until the next idle() (a probe on Linux, 2026-10-20).
+    if (this.ckptParkWhenDone) {
+      this.ckptParkWhenDone = false
+      this.dropCheckpointWorker()
+      return
+    }
+    this.ckptOff = true
   }
 
-  /** The worker failed: the writer's automatic checkpoint is restored and no more are tried. */
+  /**
+   * The request a pause gave up on is answered after all: the worker was slow, not gone, and takes the
+   * checkpoints back. Once per run of long work: a worker slower than a pause every time would cost a pause
+   * per checkpoint, so after a second give-up the writer keeps its own checkpoint until idle().
+   */
+  private rearmCheckpointWorker(): void {
+    this.ckptLate = false
+    if (this.ckptRearmed) return
+    this.ckptRearmed = true
+    this.ckptOff = false
+    this.db.exec('pragma wal_autocheckpoint = 0')
+  }
+
+  /** The worker failed: the writer's automatic checkpoint is restored and no more are tried before idle(). */
   private stopCheckpointWorker(): void {
     this.ckptOff = true
     this.ckptBusy = false
     for (const w of this.ckptWaiters.splice(0)) w()
-    this.ckptWorker?.terminate()
-    this.ckptWorker = null
+    this.dropCheckpointWorker()
     try {
       this.db.exec('pragma wal_autocheckpoint = 1000')
     } catch {
