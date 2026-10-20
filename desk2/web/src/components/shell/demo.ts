@@ -6,6 +6,8 @@ import { cliMayteWorkerFixtures, settingsFixtures, transcriptFixtures } from '@/
 import type { ShellSource } from './source'
 import { chatViewOf, type View } from './logic'
 import type { ComposerApi } from '@/components/composer/api'
+import { httpPaneApi, type PaneApi } from '@/components/panes/api'
+import { buildTranscriptIndex } from '@shared/transcript-index'
 
 const MIN = 60_000
 
@@ -134,6 +136,39 @@ export function demoExternal(): ExternalSession[] {
   ]
 }
 
+/**
+ * Codex chats two other PCs push to the Codex hub (`#/gallery/shell/hub`): each names its PC and the hub's
+ * `hub:<pc>` account, so the sidebar lists them beside this PC's chats with the cloud mark of another PC.
+ */
+export function demoHubExternal(): ExternalSession[] {
+  const now = Date.now()
+  const hub = (id: string, title: string, cwd: string, pc: string, status: ExternalSession['status'], agoMin: number): ExternalSession => ({
+    id,
+    title,
+    cwd,
+    source: 'codex',
+    instance: null,
+    status,
+    activity: status === 'working' ? 'Run: cargo test' : null,
+    lastActivityAt: now - agoMin * MIN,
+    model: 'gpt-6-astra',
+    accountId: null,
+    codexAccountId: `hub:${pc}`,
+    canResume: status !== 'working',
+    fromPc: pc,
+    pinned: false,
+    archived: false,
+    unread: status === 'needs_you',
+    group: null
+  })
+  return [
+    hub('hub-render', 'Tile renderer frame pacing', N, 'Studio PC', 'working', 1.5),
+    hub('hub-sync', 'Save-game sync conflict', N, 'Travel laptop', 'needs_you', 4),
+    hub('hub-api', 'Checkout API rate limits', C, 'Studio PC', 'idle', 8),
+    hub('hub-mix', 'Stem mixer latency notes', P, 'Travel laptop', 'idle', 25)
+  ]
+}
+
 /** What AgentHydra's transcript search finds in the Gallery: one of our chats, a listed outside session, two unlisted. */
 export function demoSearchHits(): SearchHit[] {
   const now = Date.now()
@@ -206,13 +241,54 @@ export function demoHomeStats(range: HomeStatsRange): HomeStats {
   }
 }
 
+/** What the Travel laptop's Codex chat says, read through the Codex hub (`#/gallery/shell/hub`). */
+export function demoHubTranscript(): TranscriptItem[] {
+  const at = Date.now() - 6 * MIN
+  return [
+    { id: 'hub-u1', ts: at, kind: 'user', text: 'Two saves from the same slot conflict after the laptop was offline. Find out why the merge keeps the older one.' },
+    {
+      id: 'hub-a1',
+      ts: at + 40_000,
+      kind: 'assistant_text',
+      text: 'The merge compares `savedAt`, but the laptop writes it from its own clock, which was 9 minutes behind. I will compare the save counter first and fall back to the timestamp.',
+      streaming: false
+    },
+    {
+      id: 'hub-t1',
+      ts: at + 70_000,
+      kind: 'tool_use',
+      name: 'Bash',
+      input: { command: 'cargo test save_sync' },
+      status: 'done',
+      result: { text: 'test result: ok. 14 passed; 0 failed', isError: false },
+      startedAt: at + 70_000,
+      endedAt: at + 82_000
+    },
+    {
+      id: 'hub-a2',
+      ts: at + 90_000,
+      kind: 'assistant_text',
+      text: 'Fixed and tested. Should a conflict that the counter cannot settle keep both saves and ask the player, or keep the newer one silently?',
+      streaming: false
+    }
+  ]
+}
+
+/** The panes' reads for the Gallery: an outside session's transcript from fixtures, everything else as the live app asks. */
+export const demoPaneApi: PaneApi = {
+  ...httpPaneApi,
+  externalItems: async (sessionId) => ({ items: sessionId.startsWith('hub-') ? demoHubTranscript() : transcriptFixtures, olderBefore: 0 }),
+  externalOlder: async () => [],
+  externalIndex: async (sessionId) => buildTranscriptIndex(sessionId.startsWith('hub-') ? demoHubTranscript() : transcriptFixtures)
+}
+
 /** A ShellSource over local refs: select, rename, pin, archive and delete all work in the Gallery. */
-export function demoSource(start: View = { kind: 'chat', id: 'ccd' }): ShellSource {
+export function demoSource(start: View = { kind: 'chat', id: 'ccd' }, opts: { hub?: boolean } = {}): ShellSource {
   const chats = ref<ChatSummary[]>(demoChats())
   const items = ref(new Map<string, TranscriptItem[]>(chats.value.map((c) => [c.id, transcriptFixtures])))
   const selected = ref<View>(start)
   const settings = ref<DeskSettings>({ ...settingsFixtures, defaultAccountId: '68' })
-  const external = ref<ExternalSession[]>(demoExternal())
+  const external = ref<ExternalSession[]>(opts.hub ? [...demoHubExternal(), ...demoExternal()] : demoExternal())
   const patch = (id: string, p: Partial<ChatSummary>) => {
     chats.value = chats.value.map((c) => (c.id === id ? { ...c, ...p } : c))
   }

@@ -397,6 +397,15 @@ export function loadAuditFiles({ config, allow, provenance, notices } = {}) {
         throw new AuditError(`binary-provenance entry ${i + 1} has no "${key}"`)
       }
     }
+    // The bytes an entry's path held before its current ones, which history still carries.
+    if (b.previous !== undefined) {
+      if (!Array.isArray(b.previous)) throw new AuditError(`binary-provenance entry ${i + 1}: "previous" is not a list`)
+      for (const [j, p] of b.previous.entries()) {
+        if (!/^[0-9a-f]{40}$/.test(p?.blob ?? '') || !/^[0-9a-f]{64}$/.test(p?.sha256 ?? '')) {
+          throw new AuditError(`binary-provenance entry ${i + 1}, previous ${j + 1}: needs a 40-hex "blob" and a 64-hex "sha256"`)
+        }
+      }
+    }
   }
   return { config: cfg, allow: entries, provenance: binaries, notices: noticesText }
 }
@@ -785,7 +794,9 @@ export function generatedHeader(path, head) {
 
 /**
  * Provenance for one binary blob: null when its entry matches, else the finding. The tree needs an
- * entry for every path; history also accepts the same bytes recorded under another path (a move).
+ * entry for every path, with its current bytes; history also accepts the same bytes recorded under
+ * another path (a move), or as one of its path's `previous` bytes (a picture regenerated since, whose
+ * earlier version a published commit still holds). Each is an exact blob and sha256, never a pattern.
  */
 function binaryFinding(path, blob, sha256, provenance, { anyPath = false, ...extra } = {}) {
   const fp = sha256.slice(0, 16)
@@ -796,6 +807,7 @@ function binaryFinding(path, blob, sha256, provenance, { anyPath = false, ...ext
     return { ...base, note: 'no provenance entry' }
   }
   if (byPath.blob !== blob || byPath.sha256 !== sha256) {
+    if (anyPath && (byPath.previous ?? []).some((p) => p.blob === blob && p.sha256 === sha256)) return null
     return { ...base, note: 'changed since its provenance entry' }
   }
   return null
