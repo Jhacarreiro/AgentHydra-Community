@@ -17,8 +17,10 @@ services:
       AGENTHYDRA_PORT_FIXED: "1"
       AGENTHYDRA_CONTAINERIZED: "1"
       PORT: "7787"
-      # Browser automation is host-native and intentionally disabled in Docker.
-      AGENTHYDRA_CHATGPT_ENABLED: "0"
+      # ChatGPT stays in the host's own signed-in Chrome; the hub only talks to the OpenCLI Browser Bridge daemon
+      # there. Off unless .env sets AGENTHYDRA_CHATGPT_ENABLED=1 (README, "ChatGPT").
+      AGENTHYDRA_CHATGPT_ENABLED: ${AGENTHYDRA_CHATGPT_ENABLED:-0}
+      AGENTHYDRA_CHATGPT_BRIDGE_URL: ${AGENTHYDRA_CHATGPT_BRIDGE_URL:-http://host.docker.internal:19825}
     volumes:
       - hub_state:/srv/agenthydra-state/.agenthydra
     ports:

@@ -28,6 +28,9 @@ import { CAPTION_W } from '@/lib/host-window'
 // Restart to update (or, for a server the launcher did not start, how to restart it).
 defineProps<{ sidebarOpen: boolean; width: number; side?: SidebarSide; sliding?: boolean; hydraOpen?: boolean; cloudOn?: boolean; tasksOn?: boolean; devOn?: boolean; cleanOn?: boolean; compactOn?: boolean; update?: UpdateOffer | null }>()
 const emit = defineEmits<{ new: []; search: []; 'toggle-sidebar': []; settings: []; hydra: []; 'hydra-intent': []; cloud: []; tasks: []; dev: []; clean: []; compact: []; restart: [] }>()
+const openChatGpt = () => {
+  location.hash = '#/chatgpt'
+}
 
 // The colour is apart so the cloud's blue replaces it: two colour utilities on one button resolve by
 // stylesheet order, not by which came last.
@@ -66,6 +69,8 @@ const BTN = `${BTN_SHAPE} text-text`
         </DropdownMenuItem>
         <DropdownMenuSeparator :class="MENU_SEPARATOR" />
         <DropdownMenuItem :class="MENU_ITEM" @select="emit('settings')">Settings</DropdownMenuItem>
+        <!-- ChatGPT through the AgentHydra that holds the browser bridge (components/chatgpt). -->
+        <DropdownMenuItem :class="MENU_ITEM" @select="openChatGpt">ChatGPT</DropdownMenuItem>
         <template v-if="update">
           <DropdownMenuSeparator :class="MENU_SEPARATOR" />
           <DropdownMenuItem v-if="update.restartable" :class="MENU_ITEM" :disabled="update.restarting" @select="emit('restart')">

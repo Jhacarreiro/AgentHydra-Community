@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { Hono, type MiddlewareHandler } from 'hono'
 import type { ClientEvent, ServerEvent } from '@shared/protocol'
 import pkg from '../package.json'
+import { chatGptRoutes } from './chatgpt-proxy'
 import { type HelloEvent, type HelloProvider, type HostRoute, type Plugin, type ServerContext, setContext, type WsRoute } from './context'
 import { REAL_HOME } from './real-home'
 import { createSettingsStore, SettingsError } from './settings'
@@ -210,25 +211,8 @@ export async function createServer(opts: CreateServerOptions): Promise<DeskServe
   // First, so it covers every route the plugins add and the built window.
   app.use('*', localOnly)
 
-  // ChatGPT is read on demand through the existing local Hydra daemon, not from the browser.
-  // Never forward an arbitrary URL, SSH command or ChatGPT credentials from the Desk.
-  app.get('/api/chatgpt/visible', async (c) => {
-    const configured = process.env.HYDRA_URL || 'http://127.0.0.1:7787'
-    let base: URL
-    try {
-      base = new URL(configured)
-      if (base.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) throw Error('not loopback')
-    } catch { return c.json({ code: 'CHATGPT_TRANSPORT_UNAVAILABLE' }, 503) }
-    try {
-      const response = await fetch(new URL('/api/chatgpt/visible', base), {
-        signal: AbortSignal.timeout(12_000), headers: { Accept: 'application/json' }, cache: 'no-store',
-      })
-      c.header('Cache-Control', 'private, no-store')
-      if (!response.ok) return c.json({ code: 'CHATGPT_READER_UNAVAILABLE' }, 503)
-      const data: unknown = await response.json()
-      return c.json(data)
-    } catch { return c.json({ code: 'CHATGPT_READER_UNAVAILABLE' }, 503) }
-  })
+  // ChatGPT goes through the AgentHydra that holds the browser bridge (chatgpt-proxy.ts), never from the browser.
+  chatGptRoutes(app)
 
   app.get('/api/health', (c) => c.json({ ok: true, version: VERSION, startedAt: STARTED_AT }))
   app.get('/api/settings', (c) => c.json(settings.get()))

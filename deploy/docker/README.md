@@ -42,8 +42,27 @@ The manager assumes the Hub has already been installed with the steps above. The
 </details>
 
 <details>
-<summary><b>Browser integrations</b></summary>
+<summary><b>ChatGPT</b></summary>
 
-A logged-in headful browser belongs on its host OS, **not inside the Hub image**. The experimental ChatGPT OpenCLI adapter expects local browser access and is disabled in Docker. A safe, authorized host-to-container browser bridge has not yet been implemented; don't expose CDP or an arbitrary-command browser endpoint over the network.
+A signed-in headful browser belongs on its host OS, **not inside the Hub image**. The hub reaches ChatGPT through
+the [OpenCLI](https://github.com/jackwener/opencli) Browser Bridge daemon on the host, which drives a window of that
+host's own Chrome. In Desk, **Menu → ChatGPT** lists the account's conversations, shows each one with whether
+ChatGPT is still thinking or writing, and sends the messages you write there (and only those, when you press Send).
+
+To turn it on, run the Browser Bridge on the host with Chrome signed in to ChatGPT, then add to `.env`:
+
+```sh
+AGENTHYDRA_CHATGPT_ENABLED=1
+# Where the hub finds the daemon; this default is the host as Docker Desktop and Colima name it.
+# AGENTHYDRA_CHATGPT_BRIDGE_URL=http://host.docker.internal:19825
+```
+
+and `docker compose up -d`. The hub opens its own window in that Chrome the first time. On a hub with
+`AGENTHYDRA_CODEX_HUB_TOKEN`, the ChatGPT routes take that admin token only, and a Desk on another PC reaches them
+with `AGENTHYDRA_CHATGPT_HUB_URL` (the hub's address) and `AGENTHYDRA_CHATGPT_HUB_TOKEN` (or its Codex hub token).
+
+Nothing is copied: each read asks ChatGPT, and the page in the browser reads with its own sign-in, so no token or
+cookie reaches the hub. The daemon itself has no password; anything that can reach its port can drive that Chrome,
+so keep it on the host's loopback and never publish it.
 
 </details>
