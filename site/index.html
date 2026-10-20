@@ -39,7 +39,7 @@
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .mark .logo-clip, .diagram .flow { animation: none; } .btn { transition: none; } }
 body {
   margin: 0;
   background: var(--night);
@@ -144,11 +144,11 @@ section { padding-block: 88px; }
 @media (max-width: 880px) { .strands { grid-template-columns: minmax(0, 1fr); } }
 
 /* Split feature rows */
+.copy { display: grid; gap: 18px; min-width: 0; }
 .split { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 56px; align-items: center; }
 .split.flip { grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); }
 .split.flip .copy { order: 2; }
 @media (max-width: 960px) { .split, .split.flip { grid-template-columns: minmax(0, 1fr); gap: 36px; } .split.flip .copy { order: 0; } }
-.copy { display: grid; gap: 18px; min-width: 0; }
 .copy h2 { font-size: clamp(30px, 4vw, 44px); line-height: 1.05; }
 .copy > p { color: var(--muted); font-size: 17px; }
 .points { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 14px; }
@@ -168,11 +168,11 @@ section { padding-block: 88px; }
 @keyframes dash { to { stroke-dashoffset: -24; } }
 
 /* ChatGPT mock */
-.mock { min-width: 0; border-radius: 18px; border: 1px solid var(--line-2); background: var(--night); overflow: hidden; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+.mock { margin: 0; min-width: 0; border-radius: 18px; border: 1px solid var(--line-2); background: var(--night); overflow: hidden; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
 .mock .side { border-right: 1px solid var(--line); padding: 14px 10px; display: grid; gap: 4px; align-content: start; background: var(--deep); }
 .mock .group { font: 500 10px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); padding: 12px 8px 6px; }
 .row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-.row span { overflow: hidden; text-overflow: ellipsis; }
+.mock .row span { overflow: hidden; text-overflow: ellipsis; }
 .row.on { background: var(--panel-2); color: var(--ink); }
 .pill { margin-left: auto; flex: none; font: 500 9.5px/1 var(--mono); padding: 4px 6px; border-radius: 5px; border: 1px solid currentColor; }
 .pill.cl { color: var(--cyan); } .pill.cx { color: var(--blue); } .pill.gp { color: var(--violet); }
@@ -183,7 +183,7 @@ section { padding-block: 88px; }
 .msg.me { justify-self: end; background: var(--panel-2); }
 .msg.ai { background: transparent; border: 1px solid var(--line); color: var(--muted); }
 .composer { margin-top: 4px; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-2); font-size: 13px; color: var(--faint); }
-.composer b { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--violet); }
+.mock .composer b { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--violet); }
 @media (max-width: 620px) { .mock { grid-template-columns: minmax(0, 1fr); } .mock .side { border-right: 0; border-bottom: 1px solid var(--line); } .mock .side .row:nth-child(n+6) { display: none; } }
 
 /* Everything else */
@@ -383,7 +383,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
         <li><span><b>Off until you turn it on.</b> Nothing talks to ChatGPT unless you enable it and sign in yourself.</span></li>
       </ul>
     </div>
-    <div class="mock" aria-label="An example sidebar mixing Claude Code, Codex and ChatGPT chats, with a ChatGPT conversation open">
+    <figure class="mock" aria-label="An example sidebar mixing Claude Code, Codex and ChatGPT chats, with a ChatGPT conversation open">
       <div class="side">
         <div class="group">Waiting on you</div>
         <div class="row"><span>Fix flaky upload test</span><b class="pill cl">CLAUDE</b></div>
@@ -402,7 +402,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
         <div class="msg me">Good. Can you list the copy changes for the pricing component?</div>
         <div class="composer">Reply, or send to Claude Code on Desktop…<b>⏎ ChatGPT</b></div>
       </div>
-    </div>
+    </figure>
   </div>
 </section>
 
@@ -480,21 +480,34 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
       <a href="https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/CONTRIBUTING.md">Contributing</a>
     </div>
-    <p class="legal">AgentHydra Community is an independent open-source project maintained by João Carreiro and contributors. It grew from an earlier MIT-licensed revision of AgentHydra, whose copyright notices are kept in the repository's <a href="https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/NOTICE">NOTICE</a>. Claude, Codex, ChatGPT and OpenCode are trademarks of their owners; this project is not affiliated with them.</p>
+    <p class="legal">AgentHydra Community is an independent open-source project maintained by <a href="https://github.com/Jhacarreiro">@Jhacarreiro</a> and contributors. It grew from an earlier MIT-licensed revision of AgentHydra, whose copyright notices are kept in the repository's <a href="https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/NOTICE">NOTICE</a>. Claude, Codex, ChatGPT and OpenCode are trademarks of their owners; this project is not affiliated with them.</p>
   </div>
 </footer>
 
 <script>
-document.querySelectorAll('.copybtn').forEach(function (b) {
-  b.addEventListener('click', function () {
-    var el = document.getElementById(b.dataset.copy);
-    var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1600); };
+const selectText = (el) => {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+};
+for (const b of document.querySelectorAll('.copybtn')) {
+  b.addEventListener('click', () => {
+    const el = document.getElementById(b.dataset.copy);
+    const done = () => {
+      b.textContent = 'Copied';
+      setTimeout(() => {
+        b.textContent = 'Copy';
+      }, 1600);
+    };
     try {
-      navigator.clipboard.writeText(el.textContent).then(done, function () { select(el); });
-    } catch (e) { select(el); }
+      navigator.clipboard.writeText(el.textContent).then(done, () => selectText(el));
+    } catch {
+      selectText(el);
+    }
   });
-});
-function select(el) { var r = document.createRange(); r.selectNodeContents(el); var s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+}
 </script>
 
 </body>
