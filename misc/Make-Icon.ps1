@@ -1,5 +1,5 @@
-# Generates misc\AgentHydra.ico — the AgentHydra Community brand icon (three-headed teal/blue/purple hydra +
-# white three-headed hydra). Emits a proper MULTI-SIZE icon: 16/24/32/48 (true 32bpp DIB) + 256
+# Generates misc\AgentHydra.ico — the AgentHydra Community brand icon (five-headed electric-blue hydra on a
+# navy rounded tile). Emits a proper MULTI-SIZE icon: 16/24/32/48 (true 32bpp DIB) + 256
 # (PNG). The Windows system tray needs small frames; a 256-only icon renders BLANK or fuzzy there.
 #
 # Source art is misc\AgentHydra-icon.png (a committed 1024x1024 render of the brand icon) so

@@ -1,6 +1,6 @@
 name: Website
 
-# The project's website (site/index.html, with its vector logo site/logo.svg) on GitHub Pages, at
+# The project's website (site/index.html) on GitHub Pages, at
 # https://jhacarreiro.github.io/AgentHydra-Community/. The page carries no images of its own: this job
 # copies the logo, the favicon, the social card and the README screenshots from where the repository
 # already keeps them into the published folder, so each picture has one source and the site follows
@@ -11,6 +11,7 @@ on:
     paths:
       - site/**
       - misc/AgentHydra-icon.png
+      - misc/brand/emblem.png
       - desk2/web/public/favicon.*
       - .github/og-image.png
       - .github/screenshots/**
@@ -34,8 +35,9 @@ jobs:
       - name: Assemble the published folder
         run: |
           mkdir -p _site/assets
-          cp site/index.html site/logo.svg _site/
+          cp site/index.html _site/
           cp misc/AgentHydra-icon.png _site/assets/icon.png
+          cp misc/brand/emblem.png _site/assets/emblem.png
           cp desk2/web/public/favicon.svg desk2/web/public/favicon.png _site/assets/
           cp .github/og-image.png _site/assets/og-image.png
           cp .github/screenshots/window.png .github/screenshots/new.png .github/screenshots/analytics.png _site/assets/
