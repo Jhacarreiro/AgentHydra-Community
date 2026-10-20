@@ -19,7 +19,7 @@ Manage Claude Code, Codex and OpenCode workflows across multiple PCs from one se
 
 **AgentHydra Community** brings AI coding sessions, accounts and projects into one dashboard. Run it locally or use a self-hosted hub to work across multiple PCs, with individual device authentication and control over your infrastructure. No hosted account required.
 
-**Available now:** support for Claude Code, Codex and OpenCode, plus a self-hosted multi-PC hub. **In development:** ChatGPT access in the same interface (not yet included in a release).
+**Available now:** support for Claude Code, Codex and OpenCode, a self-hosted multi-PC hub, and your ChatGPT conversations in the same window through the hub's own browser (opt-in, see [the Docker hub's README](deploy/docker/README.md)).
 
 [Get started](docs/GETTING-STARTED.md) · [Latest release](https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest) · [Contribute](CONTRIBUTING.md)
 
