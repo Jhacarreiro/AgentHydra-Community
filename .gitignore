@@ -100,5 +100,6 @@ hswarm/native/zscan-rs/build.log
 
 # Docker hub host-side updater state (contains credentials and backups)
 /deploy/docker/.hub-backups/
-/deploy/docker/.hub-update.lock/
+/deploy/docker/.hub-update.lock
+/deploy/docker/.hub-update.json*
 /deploy/docker/.env.new
