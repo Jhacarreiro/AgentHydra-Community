@@ -208,15 +208,45 @@ describe('release notes', () => {
 })
 
 describe("the page's links", () => {
-  test("the icon is the release channel's repository's copy at the release's tag", () => {
+  test("the icon is the release channel's repository's current one, on every page", () => {
     const body = formatReleaseBody(
       changelog(LONG.replace('## [2.0.0]', '## [2026.10.0]')),
       '2026.10.0',
     )
     expect(body).toContain(
-      `https://raw.githubusercontent.com/${RELEASE_CHANNEL.repo}/v2026.10.0/misc/AgentHydra-icon.png`,
+      `https://raw.githubusercontent.com/${RELEASE_CHANNEL.repo}/main/misc/AgentHydra-icon.png`,
     )
     expect(body.toLowerCase()).not.toContain('lunarwerxs/agenthydra')
+  })
+
+  test('the page opens with a download link for Windows, macOS and Linux', () => {
+    const page = (updates: 'off' | 'auto') =>
+      formatReleaseBody(changelog(LONG.replace('## [2.0.0]', '## [2026.10.0]')), '2026.10.0', {
+        updates,
+      })
+    const base = `https://github.com/${RELEASE_CHANNEL.repo}/releases/download/v2026.10.0/AgentHydra-2026.10.0-`
+    const body = page('auto')
+    for (const name of [
+      'windows-x64.zip',
+      'windows-x64.exe',
+      'darwin-arm64.tar.gz',
+      'darwin-x64.tar.gz',
+      'linux-x64.tar.gz',
+      'linux-arm64.tar.gz',
+    ])
+      expect(body).toContain(`(${base}${name})`)
+    expect(body.indexOf('**Download 2026.10.0:**')).toBeLessThan(body.indexOf('## TL;DR'))
+    // A build with updates off publishes no lone .exe, so the page links none; nor does a past page, which
+    // cannot tell how its own build was set.
+    expect(page('off')).not.toContain(`${base}windows-x64.exe`)
+    const past = changelog(LONG.replace('## [2.0.0]', '## [2026.10.0]'))
+    expect(formatReleaseBody(past, '2026.10.0', { history: true })).not.toContain(
+      `${base}windows-x64.exe`,
+    )
+    // A page that folds a month's patches opens with the same line.
+    const folded = formatLineBody(past, '2026.10.0', [], { history: true })
+    expect(folded.indexOf(`(${base}windows-x64.zip)`)).toBeLessThan(folded.indexOf('## TL;DR'))
+    expect(folded.indexOf(`(${base}windows-x64.zip)`)).toBeGreaterThan(-1)
   })
 
   test("the closing line sends questions to the channel repository's issues, on both kinds of page", () => {

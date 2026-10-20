@@ -41,9 +41,11 @@ import { readReleaseChannel } from './release-channel.mjs'
 /** The lowest version AgentHydra may release: 2.0 is the AgentHydra window that was Hydra Desk 2. */
 export const MIN_RELEASE = '2.0.0'
 
-// The page's icon is this repository's own copy at the release's tag: the release channel names the repository.
+// The page's icon is this repository's current one, on its default branch, so every release page, an older one
+// too, shows the project's logo as it is now. The release channel names the repository.
 const CHANNEL = readReleaseChannel()
 const REPO = CHANNEL.repo
+const ICON = `<img src="https://raw.githubusercontent.com/${REPO}/main/misc/AgentHydra-icon.png" width="96" alt="AgentHydra logo">`
 // Where a reader takes a question or a bug: that same repository's issues.
 const ISSUES = `https://github.com/${REPO}/issues`
 const HEADING_EMOJI = {
@@ -241,7 +243,8 @@ export function formatLineBody(changelog, keptVersion, patchVersions, options = 
   // Format the body
   const out = [
     '<div align="center">',
-    `<img src="https://raw.githubusercontent.com/${REPO}/v${keptVersion}/misc/AgentHydra-icon.png" width="96" alt="AgentHydra logo">`,
+    ICON,
+    ...downloadBar(keptVersion, updates, history),
     '</div>',
     '',
   ]
@@ -293,8 +296,24 @@ function downloadLines(version, updates = CHANNEL.updates) {
       : `- **Windows:** \`AgentHydra-${version}-windows-x64.zip\` is the app with its tray icon and the orchestrator tools. The \`.exe\` is a small launcher: it downloads the rest (Bun and the app) the first time you run it.`
   return [
     windows,
-    '- **Linux and macOS:** the `.tar.gz` for your system. Its `agenthydra` launcher downloads Bun the first time you run it.',
+    '- **macOS:** the `.tar.gz` for Apple silicon (`darwin-arm64`) or Intel (`darwin-x64`). Its `agenthydra` launcher downloads Bun the first time you run it.',
+    '- **Linux:** the `.tar.gz` for x64 or arm64. Its `agenthydra` launcher downloads Bun the first time you run it.',
     checksums,
+  ]
+}
+
+/** One line under the icon, in its centred block, with a link to each download, so a page opens with Windows, macOS and Linux side by side.
+ *  Pages before 2.0.0 keep the layout they shipped with. */
+function downloadBar(version, updates = CHANNEL.updates, history = false) {
+  if (compareVersions(version, '2.0.0') < 0) return []
+  const file = (name) => `https://github.com/${REPO}/releases/download/v${version}/AgentHydra-${version}-${name}`
+  const windows = [`[zip](${file('windows-x64.zip')})`]
+  // A past page cannot tell whether its own build had updates off (and so no lone .exe): it links the zip only.
+  if (updates !== 'off' && !history) windows.push(`[.exe](${file('windows-x64.exe')})`)
+  return [
+    '',
+    `**Download ${version}:** Windows ${windows.join(' · ')} · macOS [Apple silicon](${file('darwin-arm64.tar.gz')}) · [Intel](${file('darwin-x64.tar.gz')}) · Linux [x64](${file('linux-x64.tar.gz')}) · [arm64](${file('linux-arm64.tar.gz')})`,
+    '',
   ]
 }
 
@@ -313,7 +332,8 @@ export function formatReleaseBody(changelog, version, options = {}) {
 
   const out = [
     '<div align="center">',
-    `<img src="https://raw.githubusercontent.com/${REPO}/v${version}/misc/AgentHydra-icon.png" width="96" alt="AgentHydra logo">`,
+    ICON,
+    ...downloadBar(version, updates, history),
     '</div>',
     '',
   ]
