@@ -9,27 +9,23 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
-**TL;DR**
-
-- **README screenshots from one command, including the multi-PC hub**
-
-**Everything in Unreleased**
-
-- **README screenshots.** One command now regenerates every README picture with invented data, checks that each view drew and shows nothing private, and reports what changed. The README gains a picture of Codex chats from two other PCs through the hub.
-
-## [2026.10.1] - 2026-10-19
+## [2026.10.1] - 2026-10-20
 
 **TL;DR**
 
 - **A new colourful Community Hydra identity across the app and web views**
 - **Clearer first installation instructions, including the complete Windows package and checksum verification**
 - **A product-first README and links for contributors**
+- **The hub can run in Docker and update itself to new releases, going back to the previous one if the new one fails**
+- **README screenshots from one command, including the multi-PC hub**
 
 **Everything in 2026.10.1**
 
 - **Community Hydra branding.** New application icon, browser favicons and social preview, with the same project name and MIT licence. The tray continues using meaningful runtime status colours.
 - **First-time installation.** The getting-started guide clearly separates standalone Windows downloads from the complete ZIP, explains the first-run network requirements, and shows how to verify a release file's published checksum. The optional multi-PC hub remains a separate setup path.
 - **Finding and contributing.** The README starts with what AgentHydra Community does, links to installation and contribution guidance, and labels ChatGPT access as under development, not yet included in a release.
+- **A hub in Docker that updates itself.** The Docker setup builds the hub from a published release, checking its checksum, and keeps it on your machine's loopback only. Its updater runs beside Docker, installs each new stable release, and if the new version does not start healthy, or the update is interrupted, puts back the previous version and its data.
+- **README screenshots.** One command now regenerates every README picture with invented data, checks that each view drew and shows nothing private, and reports what changed. The README gains a picture of Codex chats from two other PCs through the hub.
 
 
 ## [2026.10.0] - 2026-10-19
