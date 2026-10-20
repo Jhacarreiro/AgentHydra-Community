@@ -1,21 +1,24 @@
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { type ChatGptVisibleView, parseChatGptVisibleView } from './chatgpt-visible'
 
-/** Optional operator-owned executable: stdout must be one JSON visible-conversation view.
- * This never accepts browser commands or caller-controlled shell input. The executable and
- * its credentials are private deployment configuration, never part of the public repo.
+/** Read from the local OpenCLI browser bridge on the Hub host.
+ * No SSH, external executable configured by HTTP clients, or cookies in the Hub.
  */
-export async function readChatGptViaOperatorRunner(
-  executable: string | undefined = process.env.AGENTHYDRA_CHATGPT_READ_RUNNER,
-  timeoutMs = 8000,
-): Promise<ChatGptVisibleView> {
-  if (!executable || !executable.startsWith('/') || executable.includes('\0'))
-    throw new Error('ChatGPT reader not configured')
+export async function readChatGptLocally(timeoutMs = 12_000): Promise<ChatGptVisibleView> {
+  const script = fileURLToPath(
+    new URL('../../../scripts/chatgpt-local-reader.mjs', import.meta.url),
+  )
   return await new Promise((resolve, reject) => {
-    const child = spawn(executable, [], {
+    const child = spawn(process.execPath, [script], {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PATH: process.env.PATH || '/usr/bin:/bin' },
+      env: {
+        PATH: process.env.PATH || '/usr/bin:/bin',
+        AGENTHYDRA_CHATGPT_OPENCLI: process.env.AGENTHYDRA_CHATGPT_OPENCLI || '',
+        AGENTHYDRA_CHATGPT_BROWSER_SESSION:
+          process.env.AGENTHYDRA_CHATGPT_BROWSER_SESSION || 'chatgpt',
+      },
     })
     const chunks: Buffer[] = []
     let size = 0

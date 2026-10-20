@@ -1,4 +1,4 @@
-import { readChatGptViaOperatorRunner } from '../core/chatgpt-transport'
+import { readChatGptLocally } from '../core/chatgpt-transport'
 import { app } from '../http-app'
 
 /** Opt-in operator-provided reader. Only the fixed read operation is supported.
@@ -13,7 +13,7 @@ app.get('/api/chatgpt/visible', async (c) => {
     )
   }
   try {
-    const view = await readChatGptViaOperatorRunner()
+    const view = await readChatGptLocally()
     c.header('Cache-Control', 'no-store, private')
     c.header('Pragma', 'no-cache')
     c.header('X-Content-Type-Options', 'nosniff')
