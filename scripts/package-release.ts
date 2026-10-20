@@ -321,6 +321,11 @@ if (isWindows) {
 } else {
   writePosixLauncher({ outfile: launcher, version: VERSION })
 }
+// Ship the managed-Hub installer in each macOS release so operators need no source checkout.
+if (target.startsWith('darwin-')) {
+  copyFileSync(join(ROOT, 'scripts/install-hub-macos.sh'), join(stage, 'install-hub-macos.sh'))
+}
+
 if (target === hostTarget) {
   const v = spawnSync(launcher, ['--version'], { cwd: ROOT, encoding: 'utf8' })
   const printed = (v.stdout ?? '').trim()
