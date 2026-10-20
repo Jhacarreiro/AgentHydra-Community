@@ -119,7 +119,12 @@ export function turnState(path: Record<string, unknown>[], now = Date.now()): Ch
   const finalAnswer = after.find(
     (m) => record(m.author)?.role === 'assistant' && m.end_turn === true && m.recipient === 'all',
   )
-  if (finalAnswer) return finalAnswer.status === 'finished_partial_completion' ? 'stopped' : 'idle'
+  if (finalAnswer) {
+    const finish = record(record(finalAnswer.metadata)?.finish_details)?.type
+    return finalAnswer.status === 'finished_partial_completion' || finish === 'interrupted'
+      ? 'stopped'
+      : 'idle'
+  }
   if (last.status === 'in_progress') {
     const type = record(last.content)?.content_type
     return type === 'thoughts' || type === 'reasoning_recap' || last.recipient !== 'all'

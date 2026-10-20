@@ -76,7 +76,8 @@ const trimConversation = `
       recipient: m.recipient, create_time: m.create_time,
       content: m.content && { content_type: m.content.content_type,
         parts: Array.isArray(m.content.parts) ? m.content.parts.filter(p => typeof p === "string") : undefined },
-      metadata: { is_visually_hidden_from_conversation: !!(m.metadata && m.metadata.is_visually_hidden_from_conversation) } } }
+      metadata: { is_visually_hidden_from_conversation: !!(m.metadata && m.metadata.is_visually_hidden_from_conversation),
+        finish_details: m.metadata && m.metadata.finish_details ? { type: m.metadata.finish_details.type } : undefined } } }
     k = n.parent
   }
   ${STOP_SELECTOR}

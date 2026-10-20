@@ -90,6 +90,18 @@ describe('ChatGPT conversations', () => {
       ),
     ).toBe('stopped')
     expect(turnState([], now)).toBe('idle')
+    expect(
+      turnState(
+        [
+          user,
+          msg('a', 'assistant', {
+            end_turn: true,
+            metadata: { finish_details: { type: 'interrupted' } },
+          }),
+        ],
+        now,
+      ),
+    ).toBe('stopped')
   })
 
   test('rejects a conversation without a real id', () => {
