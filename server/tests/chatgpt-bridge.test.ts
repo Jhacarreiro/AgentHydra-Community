@@ -180,6 +180,14 @@ describe('ChatGPT browser bridge', () => {
     expect((await bridge.read(ID)).state).toBe('generating')
   })
 
+  test('a long turn still running in the window does not read as stopped', async () => {
+    const old = msg('u1', 'user', { create_time: Date.now() / 1000 - 3600 })
+    const { bridge } = fakeDaemon((b) =>
+      b.action === 'tabs' ? tabs : JSON.stringify({ body: { ...conversation([old]), busy: true } }),
+    )
+    expect((await bridge.read(ID)).state).toBe('generating')
+  })
+
   test('reports a signed-out window and refuses ids that are not conversation ids', async () => {
     const { sent, bridge } = fakeDaemon((b) =>
       b.action === 'tabs' ? tabs : JSON.stringify({ signedOut: true }),

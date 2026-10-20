@@ -80,9 +80,10 @@ async function send() {
       body: JSON.stringify({ text }),
     })
     draft.value = ''
-    sentAt.value = Date.now()
+    // open() starts a new conversation's view afresh, so the send time is set after it.
     if (!id && result.id) open(result.id)
-    else if (id) void read(id)
+    sentAt.value = Date.now()
+    if (id) void read(id)
     void loadList()
   } catch (e) {
     sendError.value = (e as Error).message

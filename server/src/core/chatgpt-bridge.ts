@@ -219,7 +219,11 @@ export function createChatGptBridge(fetcher: BridgeFetch = fetch, base = () => b
         return {
           ...conversation,
           busy,
-          state: busy && conversation.state === 'idle' ? 'generating' : conversation.state,
+          // ChatGPT's own Stop button on screen outranks what the saved conversation says.
+          state:
+            busy && conversation.state !== 'thinking' && conversation.state !== 'generating'
+              ? 'generating'
+              : conversation.state,
         }
       }),
 
