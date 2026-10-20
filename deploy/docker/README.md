@@ -2,6 +2,13 @@
 
 A generic Linux-container deployment for people running Docker Engine or Docker Desktop on Linux, macOS or Windows. The **Hub remains loopback-only inside its container**. A small gateway in the *same network namespace* forwards it to a port bound to **127.0.0.1 on the host only**. This does **not** publish a Hub to the internet or replace an authenticated reverse proxy.
 
+**TL;DR**
+
+- Runs the AgentHydra Community hub in Docker, built from a published release whose checksum is checked.
+- The hub answers only on `127.0.0.1:7788` of the host; put your own authenticated proxy in front to reach it from elsewhere.
+- `hub-updater.mjs watch`, run beside Docker, installs new stable releases and puts back the previous version and its data if one fails.
+- The hub never gets the Docker socket, and the browser for ChatGPT stays on the host.
+
 ## Getting started
 
 1. Install Docker Engine + Compose plugin or Docker Desktop.
@@ -11,7 +18,8 @@ A generic Linux-container deployment for people running Docker Engine or Docker 
 
 The Hub stores its configuration and PC pairings in the named volume `hub_state`. Back it up before upgrading. Never use `docker compose down -v` unless you intentionally want to delete all Hub state.
 
-## Product Docker updater (host-side, no cron)
+<details>
+<summary><b>Product Docker updater (host-side, no cron)</b></summary>
 
 `hub-updater.mjs` is the **AgentHydra Community Docker update manager**. It belongs to this repository and runs on the Docker **host**, not in the Hub container. It uses the host's Docker CLI; the Hub never receives the Docker socket. Node.js 20+ and Docker Compose are required.
 
@@ -27,6 +35,11 @@ The Dockerfile verifies each downloaded release archive against its published SH
 
 The manager assumes the Hub has already been installed with the steps above. The containerized native self-updater must not mutate the image. Do not deploy a second manager with the same Compose project name and volume.
 
-## Browser integrations
+</details>
+
+<details>
+<summary><b>Browser integrations</b></summary>
 
 A logged-in headful browser belongs on its host OS, **not inside the Hub image**. The experimental ChatGPT OpenCLI adapter expects local browser access and is disabled in Docker. A safe, authorized host-to-container browser bridge has not yet been implemented; don't expose CDP or an arbitrary-command browser endpoint over the network.
+
+</details>

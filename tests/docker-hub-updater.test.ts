@@ -37,6 +37,7 @@ const step = (name) => {
   save()
   if (process.env.FAKE_KILL_AT === name + ':' + version) process.kill(process.ppid, 'SIGKILL')
   if (s.fail === name + ':' + version) fail('injected ' + name + ' failure')
+  if (s.failAt && s.failAt.call === name + ':' + version && s.calls.filter(c => c === s.failAt.call).length === s.failAt.nth) fail('injected ' + name + ' failure')
 }
 const hub = s.hub
 if (args[0] === 'compose') {
@@ -100,6 +101,7 @@ type FakeState = {
   calls: string[]
   seq: number
   fail?: string
+  failAt?: { call: string; nth: number }
   migrates?: string
   repointOnBuild?: string
   unhealthy?: string[]
@@ -248,6 +250,16 @@ describe.skipIf(process.platform === 'win32')('Docker Hub updater', () => {
     expect(installed()).toContain(`AGENTHYDRA_VERSION=${FROM}`)
     expect(existsSync(join(dir, '.hub-update.json'))).toBe(false)
     expect(existsSync(join(dir, '.hub-update.lock'))).toBe(false)
+  })
+
+  test('a rollback never restores state under a Hub that did not stop', async () => {
+    // The candidate is unhealthy, then refuses to stop when the rollback asks it to.
+    writeState({ unhealthy: [TO], failAt: { call: `stop:${FROM}`, nth: 2 } })
+    const r = await updater('update')
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('Hub did not stop')
+    expect(readState().calls).not.toContain('restore')
+    expect(JSON.parse(readFileSync(join(dir, '.hub-update.json'), 'utf8')).phase).toBe('failed')
   })
 
   test('a failed rollback stops further automatic updates', async () => {

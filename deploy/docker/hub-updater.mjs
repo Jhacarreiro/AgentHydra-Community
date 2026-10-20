@@ -160,7 +160,9 @@ async function healthy(version, imageId) {
 async function rollback(journal) {
   text(`Rolling back to ${journal.from}`)
   try {
-    try { compose(journal.from, ['stop', 'hub'], { timeout: 60_000 }) } catch { /* may already be gone */ }
+    try { compose(journal.from, ['stop', 'hub'], { timeout: 60_000 }) } catch { /* checked below */ }
+    // Never rewrite the state volume under a Hub that is still running.
+    if (hubContainer(journal.from, { running: true })) throw new Error('Hub did not stop')
     if (journal.phase === 'started' && journal.backup) restoreBackup(journal)
     docker(['tag', journal.fromImage, tag(journal.from)])
     compose(journal.from, ['up', '-d', '--no-build'], { timeout: 180_000 })
