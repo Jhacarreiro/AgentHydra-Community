@@ -149,8 +149,11 @@ describe('findStalledOwner: a frozen daemon is not "nothing running"', () => {
   })
 
   test('a crashed daemon (its pid gone) or a closed port is no owner: the boot goes on', async () => {
-    const { server, port } = await silentPort()
+    // Spawn BEFORE listening. A child spawned after it starts with a copy of the listen socket and
+    // drops it (CLOEXEC) only as its exec finishes, which on a loaded box lands after
+    // server.close() below: the port still accepts and the closed-port probe sees an owner.
     const other = otherProcess()
+    const { server, port } = await silentPort()
     try {
       const url = `http://127.0.0.1:${port}`
       writeForeignPointer(url, 99_999_999)
