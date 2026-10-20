@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Claude Code, Codex, OpenCode and ChatGPT in one live window, with a self-hosted Hub that keeps every PC in it. Open source, MIT.">
+<meta name="description" content="Claude Code, Codex and OpenCode in one live window, with a self-hosted Hub that keeps every PC in it, and ChatGPT joining in the next release. Open source, MIT.">
 <meta property="og:title" content="AgentHydra Community">
-<meta property="og:description" content="Your agents, your PCs, your ChatGPT. One window.">
+<meta property="og:description" content="Every coding agent on every PC you own, in one window.">
 <meta property="og:image" content="https://jhacarreiro.github.io/AgentHydra-Community/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -254,7 +254,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
       <div>
         <span class="eyebrow">Open source · MIT · self-hosted</span>
         <h1 style="margin-top:18px">Your <span class="c">agents</span>,<br>your <span class="b">PCs</span>,<br>your <span class="v">ChatGPT</span>.<br>One window.</h1>
-        <p class="lede">AgentHydra Community gathers Claude Code, Codex, OpenCode and ChatGPT into a single live sidebar, and a Hub you run at home keeps every PC in it. Nothing goes through anyone's cloud but yours.</p>
+        <p class="lede">AgentHydra Community gathers Claude Code, Codex and OpenCode into a single live sidebar, and a Hub you run at home keeps every PC in it. ChatGPT joins them in the next release. Nothing goes through anyone's cloud but yours.</p>
         <div class="ctas">
           <a class="btn primary" href="https://github.com/Jhacarreiro/AgentHydra-Community/releases/latest">Download for Windows</a>
           <a class="btn" href="#hub">Set up a Hub</a>
@@ -266,7 +266,7 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
         <div class="heads" aria-hidden="true">
           <div class="head"><i style="background:var(--cyan)"></i>12 sessions live</div>
           <div class="head"><i style="background:var(--blue)"></i>3 PCs on the Hub</div>
-          <div class="head"><i style="background:var(--violet)"></i>ChatGPT synced</div>
+          <div class="head"><i style="background:var(--violet)"></i>ChatGPT · next release</div>
         </div>
       </div>
     </div>
@@ -460,8 +460,8 @@ footer .legal { flex-basis: 100%; max-width: 70em; }
       <div class="step k-blue">
         <span class="n">STEP 2 · OPTIONAL</span>
         <h3>Start a Hub</h3>
-        <p>On any machine with Docker: copy <span class="note">hub.env.example</span> to <span class="note">hub.env</span>, give it an admin token, and bring it up from the release's <span class="note">deploy/docker</span> folder.</p>
-        <div class="cmd"><code id="cmd-hub">docker compose up -d --build</code><button class="copybtn" type="button" data-copy="cmd-hub">Copy</button></div>
+        <p>On any machine with Docker, get the Hub's files, copy <span class="note">hub.env.example</span> to <span class="note">hub.env</span> with an admin token, then run <span class="note">docker compose up -d --build</span>.</p>
+        <div class="cmd"><code id="cmd-hub">git clone --depth 1 https://github.com/Jhacarreiro/AgentHydra-Community &amp;&amp; cd AgentHydra-Community/deploy/docker</code><button class="copybtn" type="button" data-copy="cmd-hub">Copy</button></div>
         <a class="btn" href="https://github.com/Jhacarreiro/AgentHydra-Community/blob/main/deploy/docker/README.md" style="justify-self:start">Docker guide</a>
       </div>
       <div class="step k-violet">
