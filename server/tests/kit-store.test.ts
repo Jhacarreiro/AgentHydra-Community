@@ -407,12 +407,247 @@ describe('settled calls, the raw cut and the hour rollup', () => {
       expect(pausesAtIdle).toBeGreaterThan(0)
       expect(s.walPauses).toBeGreaterThan(pausesAtIdle)
       expect(peak).toBeLessThan(20_000_000)
+      // and the worker's checkpoints kept it so, not only the writer's own after a pause gave up on the worker;
+      // counted over both workers, so one that never answers costs a pause, not the test
+      expect(s.walCaughtUp).toBeGreaterThan(0)
     } finally {
       s.close()
       try {
         rmSync(dir, { recursive: true, force: true })
       } catch {
         // the terminated checkpoint worker can still hold the files on Windows; the test temp dir is wiped
+      }
+    }
+  }, 30_000)
+
+  const walBatch = (b: number) =>
+    Array.from({ length: 1500 }, (_, i) => ({
+      id: `w${b}-${i}`,
+      ts: T0 + b * 1500 + i,
+      source: 'cli',
+      session: `s${i % 50}`,
+      model: 'm',
+      input: i,
+    }))
+  const workerOf = (s: KitStore) => (s as unknown as { ckptWorker: Worker | null }).ckptWorker
+  const busyOf = (s: KitStore) => (s as unknown as { ckptBusy: boolean }).ckptBusy
+  const autocheckpoint = (s: KitStore) =>
+    (s.db.query('pragma wal_autocheckpoint').get() as { wal_autocheckpoint: number })
+      .wal_autocheckpoint
+
+  test('a checkpoint worker that never answers costs a long write one pause, not one per slice, and the next long write starts another', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kit-wal-'))
+    const path = join(dir, 'kit.db')
+    const s = new KitStore(path, { now: T0 })
+    try {
+      s.walLimitBytes = 1_000_000
+      s.walPauseMaxMs = 100
+      // the first write only starts the worker (a slow one could ask it a checkpoint too, under load)
+      s.ckptEveryMs = 60_000
+      await s.upsertEventsAsync([{ id: 'warm', ts: T0, source: 'cli' }])
+      // a worker that did not start, or a request lost on its way: nothing ever answers
+      const silent = workerOf(s) as Worker
+      silent.postMessage = () => {}
+      s.ckptEveryMs = 10
+      let ended = false
+      silent.addEventListener('close', () => (ended = true))
+      let peak = 0
+      for (let b = 0; b < 20; b++) {
+        await s.upsertEventsAsync(walBatch(b))
+        peak = Math.max(peak, statSync(`${path}-wal`).size)
+      }
+      // the writer used to wait out another pause each time the WAL file had grown (14-21 here, 5 s each in
+      // the daemon), with its own checkpoint off
+      expect(s.walPauses).toBe(1)
+      expect(peak).toBeLessThan(20_000_000)
+      s.idle()
+      for (let b = 20; b < 30; b++) await s.upsertEventsAsync(walBatch(b))
+      // its request still open, the silent worker was let go all the same, and ended: it never reads the
+      // close it was told, so it is terminated
+      expect(workerOf(s)).not.toBe(silent)
+      expect(s.walPauses).toBeGreaterThan(1)
+      for (let i = 0; i < 100 && !ended; i++) await Bun.sleep(10)
+      expect(ended).toBe(true)
+    } finally {
+      s.close()
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // the terminated checkpoint worker can still hold the files on Windows; the test temp dir is wiped
+      }
+    }
+  }, 30_000)
+
+  test('idle() during a pause that then gives up on a silent worker lets it go all the same, and the long work after it starts another', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kit-wal-'))
+    const path = join(dir, 'kit.db')
+    const s = new KitStore(path, { now: T0 })
+    try {
+      s.walLimitBytes = 1_000_000
+      s.walPauseMaxMs = 100
+      s.ckptEveryMs = 60_000
+      await s.upsertEventsAsync([{ id: 'warm', ts: T0, source: 'cli' }])
+      const silent = workerOf(s) as Worker
+      silent.postMessage = () => {}
+      s.ckptEveryMs = 10
+      // the sweep ends (idle()) while a sync asked for on /api/kit/sync waits in a pause: idle() leaves the
+      // park to that pause, which then gives up on the worker
+      let idled = false
+      const walPause = s.walPause.bind(s)
+      s.walPause = () => {
+        const p = walPause()
+        if (p && !idled) {
+          idled = true
+          s.idle()
+        }
+        return p
+      }
+      for (let b = 0; b < 10; b++) await s.upsertEventsAsync(walBatch(b))
+      expect(idled).toBe(true)
+      for (let b = 10; b < 20; b++) await s.upsertEventsAsync(walBatch(b))
+      // the give-up used to turn the worker off again after idle() had cleared that: the silent worker
+      // stayed, and the writer started no other and took no pause after that one until the next idle().
+      // Counted from the give-up, not from the second write: the next worker may itself be slow
+      expect(workerOf(s)).not.toBe(silent)
+      expect(s.walPauses).toBeGreaterThan(1)
+    } finally {
+      s.close()
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // the terminated checkpoint worker can still hold the files on Windows; the test temp dir is wiped
+      }
+    }
+  }, 30_000)
+
+  test('a checkpoint worker that answers after its pause gave up takes the checkpoints back, once per run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kit-wal-'))
+    const path = join(dir, 'kit.db')
+    const s = new KitStore(path, { now: T0 })
+    try {
+      s.walLimitBytes = 1_000_000
+      s.ckptEveryMs = 60_000
+      await s.upsertEventsAsync([{ id: 'warm', ts: T0, source: 'cli' }])
+      s.ckptEveryMs = 10
+      const w = workerOf(s) as Worker
+      const post = w.postMessage.bind(w)
+      const pauseMax = s.walPauseMaxMs
+      let asked = 0
+      // a slow worker: nothing it is asked is answered in time, and a pause (100 ms here) gives up on it
+      const slow = (worker: Worker) => {
+        s.walPauseMaxMs = 100
+        worker.postMessage = () => {}
+      }
+      // then the answer comes after all, as the worker's would
+      const answerLate = (worker: Worker) =>
+        worker.dispatchEvent(new MessageEvent('message', { data: { log: 0, done: 0 } }))
+      const quick = () => {
+        s.walPauseMaxMs = pauseMax
+        w.postMessage = (m: unknown) => {
+          asked++
+          post(m)
+        }
+      }
+      slow(w)
+      for (let b = 0; b < 5; b++) await s.upsertEventsAsync(walBatch(b))
+      expect(s.walPauses).toBe(1)
+      expect(autocheckpoint(s)).toBe(1000)
+      answerLate(w)
+      expect(autocheckpoint(s)).toBe(0)
+      // quick again: the same worker is asked for checkpoints, and the writer waits for them again
+      quick()
+      const pauses = s.walPauses
+      for (let b = 5; b < 15; b++) await s.upsertEventsAsync(walBatch(b))
+      expect(workerOf(s)).toBe(w)
+      expect(asked).toBeGreaterThan(0)
+      expect(s.walPauses).toBeGreaterThan(pauses)
+      // slow again: a second give-up holds until idle(), late answer or not
+      slow(w)
+      for (let b = 15; b < 30 && autocheckpoint(s) === 0; b++)
+        await s.upsertEventsAsync(walBatch(b))
+      expect(autocheckpoint(s)).toBe(1000)
+      answerLate(w)
+      expect(autocheckpoint(s)).toBe(1000)
+      const given = s.walPauses
+      for (let b = 30; b < 35; b++) await s.upsertEventsAsync(walBatch(b))
+      expect(s.walPauses).toBe(given)
+      // once per run, not once per store: idle() lets the worker go, the next long write starts another, and
+      // that one's late answer gives the checkpoints back again. Quick again first, the worker reads the close
+      // it is told and closes its connection itself, not terminated while the next run writes (see
+      // dropCheckpointWorker)
+      quick()
+      s.idle()
+      for (let b = 35; b < 45 && !workerOf(s); b++) await s.upsertEventsAsync(walBatch(b))
+      const next = workerOf(s) as Worker
+      expect(next).toBeInstanceOf(Worker)
+      expect(next).not.toBe(w)
+      for (let i = 0; i < 500 && busyOf(s); i++) await Bun.sleep(10)
+      slow(next)
+      for (let b = 45; b < 60 && autocheckpoint(s) === 0; b++)
+        await s.upsertEventsAsync(walBatch(b))
+      expect(autocheckpoint(s)).toBe(1000)
+      answerLate(next)
+      expect(autocheckpoint(s)).toBe(0)
+    } finally {
+      s.close()
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // the terminated checkpoint worker can still hold the files on Windows; the test temp dir is wiped
+      }
+    }
+  }, 30_000)
+
+  test('idle() lets a worker that has answered close its own connection and end, not be terminated, and the writes right after it go through', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kit-wal-'))
+    const path = join(dir, 'kit.db')
+    const s = new KitStore(path, { now: T0 })
+    try {
+      s.walLimitBytes = 1_000_000
+      s.ckptEveryMs = 60_000
+      await s.upsertEventsAsync([{ id: 'warm', ts: T0, source: 'cli' }])
+      const w = workerOf(s) as Worker
+      let answers = 0
+      w.addEventListener('message', () => answers++)
+      s.ckptEveryMs = 10
+      for (let b = 0; b < 3; b++) await s.upsertEventsAsync(walBatch(b))
+      for (let i = 0; i < 500 && (answers === 0 || busyOf(s)); i++) await Bun.sleep(10)
+      expect(answers).toBeGreaterThan(0)
+      // a connection still open when the worker's thread ends, terminated or not, checkpoints as the thread goes
+      // down, and the writer's next commits threw SQLITE_BUSY (see dropCheckpointWorker): this worker must close
+      // its connection itself, before its thread ends and before the terminate() that follows walPauseMaxMs later
+      s.walPauseMaxMs = 60_000
+      let terminated = false
+      const terminate = w.terminate.bind(w)
+      w.terminate = () => {
+        terminated = true
+        terminate()
+      }
+      let ended = false
+      w.addEventListener('close', () => (ended = true))
+      // frames the worker has not checkpointed yet, as at the end of a sweep, then writes right after idle()
+      s.upsertEvents(walBatch(9).slice(0, 500))
+      s.idle()
+      expect(workerOf(s)).toBeNull()
+      let busy = 0
+      for (let n = 0; n < 100; n++) {
+        try {
+          s.setMeta('x', String(n))
+        } catch {
+          busy++
+        }
+        await Bun.sleep(1)
+      }
+      expect(busy).toBe(0)
+      for (let i = 0; i < 500 && !ended; i++) await Bun.sleep(10)
+      expect(ended).toBe(true)
+      expect(terminated).toBe(false)
+    } finally {
+      s.close()
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // a checkpoint worker not ended yet can still hold the files on Windows; the test temp dir is wiped
       }
     }
   }, 30_000)

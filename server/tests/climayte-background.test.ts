@@ -32,14 +32,14 @@ afterEach(() => {
   for (const pid of spawned.splice(0)) killProcessTree(pid)
 })
 
-function spawnBash(line: string): number {
+function spawnBash(line: string): Bun.Subprocess {
   const proc = Bun.spawn([GIT_BASH, '-c', line], {
     stdout: 'ignore',
     stderr: 'ignore',
     windowsHide: true,
   })
   spawned.push(proc.pid)
-  return proc.pid
+  return proc
 }
 
 function runningWorker(id: string): CliMayteWorker {
@@ -61,14 +61,23 @@ function runningWorker(id: string): CliMayteWorker {
 describe.skipIf(!canSpawn)('the Stop hook and background runs', () => {
   test(
     'a live Bash-tool run holds the stop and names the command; once it is gone, the stop goes through',
-    () => {
+    async () => {
       const w = runningWorker('w-bg-1')
       try {
-        const pid = spawnBash(bashToolLine('sleep 30'))
+        const bash = spawnBash(bashToolLine('sleep 30'))
         const held = climayteStopHook(w.id, {}) as { decision?: string; reason?: string }
         expect(held.decision).toBe('block')
-        expect(held.reason).toContain(`pid ${pid}: sleep 30`)
-        killProcessTree(pid)
+        expect(held.reason).toContain(`pid ${bash.pid}: sleep 30`)
+        killProcessTree(bash.pid)
+        // Gone is the shell's exit, not taskkill's return. taskkill /F is TerminateProcess, which only
+        // starts the end: until the shell's last thread is down Windows still lists it, its command
+        // line readable, and a stop asked at once was held for the `sleep 30` just killed (Windows
+        // CI, 2026-10-20). Bounded, so a kill that never lands fails here and not as a hold.
+        const gone = await Promise.race([
+          bash.exited.then(() => true),
+          Bun.sleep(5_000).then(() => false),
+        ])
+        expect(gone).toBe(true)
         expect(climayteStopHook(w.id, { stop_hook_active: true })).toEqual({})
       } finally {
         workers.delete(w.id)

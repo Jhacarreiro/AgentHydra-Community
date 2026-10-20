@@ -239,7 +239,12 @@ describe('an index from before Codex text was read', () => {
     expect(candidateKeys('quokka')).toEqual(
       new Set([dedupeKey({ source: 'codex', session_id: 'codex-old', path: '' })]),
     )
-  })
+    // 40 s: on windows-latest (2026-10-20) this test took 16.25 s for its eight commits, and "indexes
+    // sessions and finds them by word and by phrase" 15.77 s for its five, while the refresh tests just
+    // after them took 120-330 ms. Both bodies ran to the end and passed: bun times a timed-out test until
+    // the afterEach above has waited for it, and a late failed expect is printed between tests, which
+    // that run did not print. Eight commits at the worst rate seen there, 3.15 s each, come to 25 s.
+  }, 40_000)
 })
 
 /** The file change counter in a database's header (offset 24, big-endian): SQLite adds one for each
@@ -298,7 +303,14 @@ describe('refresh and query', () => {
     expect(candidateKeys('rate limit')).toEqual(new Set([claudeKey('b')]))
     // Out of order is not the phrase, but both words are present, so the all-words rung finds it.
     expect(candidateKeys('limit rate')).toEqual(new Set([claudeKey('b')]))
-  })
+
+    // The 40 s below would let a new commit slip in unnoticed, so the header counts them: one sets the
+    // index up, one holds each transcript and one stamps the pass.
+    setSearchIndexPathForTests(searchIndexPath()) // let go of the file before reading its header
+    expect(writesTo(searchIndexPath())).toBe(5)
+    // 40 s: 15.77 s for these five commits on windows-latest (2026-10-20, see "reads its Codex sessions
+    // again").
+  }, 40_000)
 
   test('matching is case-insensitive, so the index over-selects and never under-selects', async () => {
     await refreshSearchIndex([session('a', [turn('user', 'WindowsHide must be set')])])
