@@ -335,8 +335,8 @@
       account: {
         status: 'live',
         authMode: 'chatgpt',
-        email: 'jordan@example.com',
-        name: 'Jordan Lee',
+        email: 'sample@example.invalid',
+        name: 'Sample User',
         planType: 'plus',
         planLabel: 'Plus',
         accountId: null,
