@@ -11,35 +11,35 @@
     },
     {
       "path": ".github/screenshots/analytics.png",
-      "blob": "aa243fb80e7a4472e20311a4491bf94da4b9409c",
-      "sha256": "5ef6fab80f2b7a60f15d19d88d2415c37467bb1f06f646201988944ec5ccabd9",
-      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (last changed in upstream commit 2c6cc887).",
-      "build": "scripts/screenshots/capture.mjs (bun run screenshots) shoots the built window with every /api/ response replaced by invented data from scripts/screenshots/page-fixtures.js.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "5cd140faa429462428b7e9932a59df85cf362426",
+      "sha256": "3dd9ea357b78969830ef05fa9249109dc65a9afe3c669149c0b0817b1a98648f",
+      "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
+      "build": "bun run screenshots -- --keep (scripts/screenshots/capture.mjs) on isolated GitHub Actions runner; validated before copying into README.",
+      "license": "AgentHydra Community MIT-licensed application screenshot."
     },
     {
       "path": ".github/screenshots/instances.png",
-      "blob": "b6af231bfb3cc9fe7604b218ce66d661fd070b03",
-      "sha256": "c7384143fc9b3fca426ca712981aac7b1ab0915366222a7a7a75a42329141761",
-      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (last changed in upstream commit 2c6cc887).",
-      "build": "scripts/screenshots/capture.mjs (bun run screenshots) shoots the built window with every /api/ response replaced by invented data from scripts/screenshots/page-fixtures.js.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "dd9114200b89faa35138700614983c8d2472f141",
+      "sha256": "873197df56ee7734e0c62bc68feba8e801fc954fc6637d750cf140f9bfcf43b5",
+      "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
+      "build": "bun run screenshots -- --keep (scripts/screenshots/capture.mjs) on isolated GitHub Actions runner; validated before copying into README.",
+      "license": "AgentHydra Community MIT-licensed application screenshot."
     },
     {
       "path": ".github/screenshots/new.png",
-      "blob": "1b42c637b4d835ef3b497b16abedcce158718d01",
-      "sha256": "23af7d33f489f6e3b6a4445ee77cb2f08c6d42d01bfb49026cd3fde8a0723202",
-      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit d9502d15).",
-      "build": "desk2/scripts/window-shots.ts (bun run screenshots in desk2/) shoots the window's demo world (#/gallery/shell) from a server that answers no /api/ request.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "2421b5f4f57af1ae13ad717831a140899c9ad492",
+      "sha256": "4e8fb767519f4a7a403421bd0680e923c5bdccdeca1d58de40f5804c0921653d",
+      "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
+      "build": "cd desk2 && bun run screenshots -- --keep (scripts/window-shots.ts) on isolated GitHub Actions runner; validated before copying into README.",
+      "license": "AgentHydra Community MIT-licensed application screenshot."
     },
     {
       "path": ".github/screenshots/window.png",
-      "blob": "9b2601bb9eb9fa52f4d211e654d8957919e868ee",
-      "sha256": "1ce03a8124880f825616b452ba8c638e947b7220c3b55e5f7fa384fb5d00e8ae",
-      "source": "A README screenshot, inherited from LunarWerxs/AgentHydra at 3a65ba8e (added in upstream commit d9502d15).",
-      "build": "desk2/scripts/window-shots.ts (bun run screenshots in desk2/) shoots the window's demo world (#/gallery/shell) from a server that answers no /api/ request.",
-      "license": "MIT, as part of the repository at 3a65ba8e."
+      "blob": "9e2198cc0ef72f8d1cb73383335b99b462e20c9d",
+      "sha256": "50069a90e8694d36d3b9edfb5003c296bc43f7f58c0fdc56edff046469d6ee46",
+      "source": "AgentHydra Community screenshot generated from current UI with wholly synthetic demo fixtures.",
+      "build": "cd desk2 && bun run screenshots -- --keep (scripts/window-shots.ts) on isolated GitHub Actions runner; validated before copying into README.",
+      "license": "AgentHydra Community MIT-licensed application screenshot."
     },
     {
       "path": "desk2/hydra/public/favicon.ico",
