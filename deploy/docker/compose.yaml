@@ -1,0 +1,35 @@
+# Portable local-only baseline. This is NOT a public HTTPS/authenticated ingress.
+services:
+  hub:
+    build:
+      context: .
+      args:
+        VERSION: ${AGENTHYDRA_VERSION:-2026.10.0}
+    image: agenthydra-community-hub:${AGENTHYDRA_VERSION:-2026.10.0}
+    restart: unless-stopped
+    env_file:
+      - ./hub.env
+    environment:
+      AGENTHYDRA_HOME: /srv/agenthydra-state/.agenthydra
+      AGENTHYDRA_PORT_FIXED: "1"
+      AGENTHYDRA_CONTAINERIZED: "1"
+      PORT: "7787"
+      # Browser automation is host-native and intentionally disabled in Docker.
+      AGENTHYDRA_CHATGPT_ENABLED: "0"
+    volumes:
+      - hub_state:/srv/agenthydra-state/.agenthydra
+    ports:
+      - "127.0.0.1:7788:7788"
+    security_opt:
+      - no-new-privileges:true
+  local-gateway:
+    image: alpine/socat:1.8.0.3
+    network_mode: service:hub
+    depends_on:
+      - hub
+    restart: unless-stopped
+    command: ["TCP-LISTEN:7788,fork,reuseaddr,bind=0.0.0.0", "TCP:127.0.0.1:7787"]
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  hub_state:

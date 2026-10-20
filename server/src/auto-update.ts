@@ -136,7 +136,7 @@ export const AUTO_UPDATE_MAX_DEFER_S = 3600
 let lastCheck: { status: UpdateStatus; at: number } | null = null
 
 export function autoUpdateEnabled(): boolean {
-  return enabled
+  return process.env.AGENTHYDRA_CONTAINERIZED === '1' ? false : enabled
 }
 export function getAutoUpdateIntervalSecs(): number {
   return intervalSecs
@@ -181,6 +181,9 @@ export interface AutoUpdateRunResult {
  * relaunch. Exported + returns a result so the timer AND the test can drive it identically.
  */
 export async function runAutoUpdateOnce(now = Date.now()): Promise<AutoUpdateRunResult> {
+  // Immutable image releases are replaced by the deployment system, never from inside a container.
+  if (process.env.AGENTHYDRA_CONTAINERIZED === '1')
+    return { checked: false, applied: false, relaunched: false, reason: 'container-managed' }
   if (applying) return { checked: false, applied: false, relaunched: false, reason: 'busy' }
   let status: Awaited<ReturnType<typeof checkForUpdate>>
   try {
@@ -309,6 +312,7 @@ function retime(): void {
  *  out (never in the boot stampede, so a fresh launch is never interrupted by an immediate restart,
  *  and a cold boot never spends a network round trip it was not asked for). */
 export function startAutoUpdate(): void {
+  if (process.env.AGENTHYDRA_CONTAINERIZED === '1') return
   started = true
   reconcile()
 }
@@ -325,6 +329,10 @@ export function stopAutoUpdate(): void {
  *  regardless); this only changes whether a found update is installed, and at which cadence the
  *  loop ticks — so re-time rather than merely reconcile. */
 export function setAutoUpdateEnabled(value: boolean): void {
+  if (process.env.AGENTHYDRA_CONTAINERIZED === '1') {
+    if (value) throw new Error('Container installations update through their deployment images')
+    return
+  }
   enabled = value
   setSetting(SETTING_ENABLED, value ? '1' : '0')
   retime()
