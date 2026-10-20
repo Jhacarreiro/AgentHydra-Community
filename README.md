@@ -222,7 +222,7 @@ the window's [ports and remote access](desk2/README.md#ports).
 
 ## Install
 
-**New here?** Start with the [step-by-step installation guide](docs/GETTING-STARTED.md): one PC first, or a separate setup for a self-hosted multi-PC Codex hub. The normal app installer does not configure a hub or build a tray for your server.
+**New here?** Start with the [step-by-step installation guide](docs/GETTING-STARTED.md). For a self-hosted server on Linux, macOS or Windows with Docker, see the [Docker Hub installation](deploy/docker/README.md) (experimental, local access only). The desktop installer does not configure a Hub or build a tray.
 
 **Windows, one line** (no Administrator; the download's SHA-256 is checked before anything unpacks):
 
