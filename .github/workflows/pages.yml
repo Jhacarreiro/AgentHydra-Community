@@ -1,0 +1,64 @@
+name: Website
+
+# The project's website (site/index.html) on GitHub Pages, at
+# https://jhacarreiro.github.io/AgentHydra-Community/. The page carries no images of its own: this job
+# copies the logo, the favicon, the social card and the README screenshots from where the repository
+# already keeps them into the published folder, so each picture has one source and the site follows
+# the README when the screenshots are refreshed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - misc/AgentHydra-icon.png
+      - desk2/web/public/favicon.*
+      - .github/og-image.png
+      - .github/screenshots/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Assemble the published folder
+        run: |
+          mkdir -p _site/assets
+          cp site/index.html _site/
+          cp misc/AgentHydra-icon.png _site/assets/icon.png
+          cp desk2/web/public/favicon.svg desk2/web/public/favicon.png _site/assets/
+          cp .github/og-image.png _site/assets/og-image.png
+          cp .github/screenshots/window.png .github/screenshots/new.png .github/screenshots/analytics.png _site/assets/
+          # Every asset the page names must be in the folder, or the job fails here and not on the live page.
+          for f in $(grep -oE 'assets/[A-Za-z0-9._-]+' site/index.html | sort -u); do
+            test -f "_site/$f" || { echo "site/index.html names $f, which is not in the published folder"; exit 1; }
+          done
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: _site
+
+  deploy:
+    name: Publish to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
