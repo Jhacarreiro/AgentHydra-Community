@@ -25,7 +25,7 @@ const lockFile = join(dir, '.hub-update.lock')
 const journalFile = join(dir, '.hub-update.json')
 const backupDir = join(dir, '.hub-backups')
 const keepBackups = 3
-const imageName = 'agenthydra-community-hub'
+const versionLabel = 'org.opencontainers.image.version'
 const stateMount = '/srv/agenthydra-state/.agenthydra'
 const validVersion = /^20\d\d\.\d{1,2}\.\d{1,3}$/
 const text = (message) => process.stdout.write(`${message}\n`)
@@ -43,21 +43,37 @@ const docker = (args, opts) => run(dockerExecutable, args, opts)
 // The version is passed in the environment, which takes precedence over .env in Compose interpolation,
 // so building or starting a candidate never rewrites the installed version.
 const compose = (version, args, opts) => run(composeExecutable, [...composePrefix, '-f', 'compose.yaml', ...args], { ...opts, version })
-const tag = (version) => `${imageName}:${version}`
+// The hub's image for a version, as compose.yaml names it (the published image, or a local one).
+const imageRef = (version) => JSON.parse(compose(version, ['config', '--format', 'json'])).services.hub.image
+const imageRepo = (ref) => ref.slice(0, ref.lastIndexOf(':') > ref.lastIndexOf('/') ? ref.lastIndexOf(':') : undefined)
 
-function currentVersion() {
-  if (!existsSync(versionFile)) throw new Error('Missing deploy/docker/.env; set AGENTHYDRA_VERSION to the installed release')
+function pinnedVersion() {
+  if (!existsSync(versionFile)) return null
   const line = readFileSync(versionFile, 'utf8').split(/\r?\n/).find(x => x.startsWith('AGENTHYDRA_VERSION='))
-  const version = line?.slice('AGENTHYDRA_VERSION='.length)
-  if (!validVersion.test(version || '')) throw new Error('Invalid installed release version')
+  if (!line) return null
+  const version = line.slice('AGENTHYDRA_VERSION='.length)
+  if (!validVersion.test(version)) throw new Error('Invalid AGENTHYDRA_VERSION in .env')
+  return version
+}
+/** The installed release: .env's pin, or, for a hub started with plain `docker compose up -d`, the release
+ * its running image was built from. `update` then records that as the pin. */
+function currentVersion({ record = false } = {}) {
+  const pinned = pinnedVersion()
+  if (pinned) return pinned
+  const container = hubContainer(undefined, { running: true })
+  const version = container && docker(['inspect', '-f', `{{index .Config.Labels "${versionLabel}"}}`, container])
+  if (!validVersion.test(version || '')) throw new Error('Set AGENTHYDRA_VERSION in deploy/docker/.env to the installed release')
+  if (record) saveVersion(version)
   return version
 }
 function saveVersion(version) {
   if (!validVersion.test(version)) throw new Error('Invalid release version')
-  const body = readFileSync(versionFile, 'utf8')
-  if (!/^AGENTHYDRA_VERSION=/m.test(body)) throw new Error('Missing AGENTHYDRA_VERSION in .env')
+  const body = existsSync(versionFile) ? readFileSync(versionFile, 'utf8') : ''
+  const next = /^AGENTHYDRA_VERSION=/m.test(body)
+    ? body.replace(/^AGENTHYDRA_VERSION=.*$/m, `AGENTHYDRA_VERSION=${version}`)
+    : `${body}${body && !body.endsWith('\n') ? '\n' : ''}AGENTHYDRA_VERSION=${version}\n`
   const file = `${versionFile}.new`
-  writeFileSync(file, body.replace(/^AGENTHYDRA_VERSION=.*$/m, `AGENTHYDRA_VERSION=${version}`), { mode: 0o600 })
+  writeFileSync(file, next, { mode: 0o600 })
   renameSync(file, versionFile)
 }
 async function latest() {
@@ -135,10 +151,10 @@ function pruneBackups() {
   for (const name of backups.slice(0, -keepBackups)) rmSync(join(backupDir, name), { force: true })
   for (const name of readdirSync(backupDir).filter(name => name.endsWith('.partial'))) rmSync(join(backupDir, name), { force: true })
 }
-function pruneImages(keep) {
-  const tags = docker(['images', imageName, '--format', '{{.Tag}}']).split(/\s+/).filter(Boolean)
-  for (const old of tags.filter(x => !keep.includes(x))) {
-    try { docker(['image', 'rm', tag(old)]) } catch { /* still referenced; keep it */ }
+function pruneImages(repo, keep) {
+  const tags = docker(['images', repo, '--format', '{{.Tag}}']).split(/\s+/).filter(Boolean)
+  for (const old of tags.filter(x => x !== 'latest' && !keep.includes(x))) {
+    try { docker(['image', 'rm', `${repo}:${old}`]) } catch { /* still referenced; keep it */ }
   }
 }
 async function healthy(version, imageId) {
@@ -164,7 +180,7 @@ async function rollback(journal) {
     // Never rewrite the state volume under a Hub that is still running.
     if (hubContainer(journal.from, { running: true })) throw new Error('Hub did not stop')
     if (journal.phase === 'started' && journal.backup) restoreBackup(journal)
-    docker(['tag', journal.fromImage, tag(journal.from)])
+    docker(['tag', journal.fromImage, journal.fromRef])
     compose(journal.from, ['up', '-d', '--no-build'], { timeout: 180_000 })
     if (!await healthy(journal.from, journal.fromImage)) throw new Error('Rollback healthcheck failed')
   } catch (error) {
@@ -194,19 +210,26 @@ async function update() {
   const unlock = lock()
   try {
     await recover()
-    const from = currentVersion()
+    const from = currentVersion({ record: true })
     const to = await check()
     if (!to) return
     const container = hubContainer(from, { running: true })
     if (!container) throw new Error('Hub is not running; start it with the Docker installation instructions first')
-    if (docker(['inspect', '-f', '{{.Config.Image}}', container]) !== tag(from)) throw new Error('Running image does not match the installed release; manual reconciliation required')
-    const journal = { phase: 'building', from, to, fromImage: docker(['inspect', '-f', '{{.Image}}', container]), volume: stateVolume(container) }
+    const fromRef = imageRef(from), toRef = imageRef(to)
+    const runningRef = docker(['inspect', '-f', '{{.Config.Image}}', container])
+    const runningVersion = docker(['inspect', '-f', `{{index .Config.Labels "${versionLabel}"}}`, container])
+    if (runningRef !== fromRef && runningVersion !== from) throw new Error('Running image does not match the installed release; manual reconciliation required')
+    const journal = { phase: 'building', from, to, fromRef, toRef, fromImage: docker(['inspect', '-f', '{{.Image}}', container]), volume: stateVolume(container) }
     writeJournal(journal)
     try {
-      // Build and checksum-verify BEFORE stopping the running service.
-      compose(to, ['build', 'hub'], { timeout: 1_800_000 })
-      journal.toImage = docker(['image', 'inspect', '-f', '{{.Id}}', tag(to)])
-      if (journal.toImage === journal.fromImage) throw new Error('New release built to the running image')
+      // Fetch (or, without the registry, build and checksum-verify) BEFORE stopping the running service.
+      try { compose(to, ['pull', 'hub'], { timeout: 900_000 }) }
+      catch (error) {
+        text(`Pulling ${toRef} failed (${error.message}); building it locally`)
+        compose(to, ['build', 'hub'], { timeout: 1_800_000 })
+      }
+      journal.toImage = docker(['image', 'inspect', '-f', '{{.Id}}', toRef])
+      if (journal.toImage === journal.fromImage) throw new Error('The new release resolved to the running image')
       journal.phase = 'stopping'
       writeJournal(journal)
       compose(from, ['stop', 'hub'], { timeout: 60_000 })
@@ -227,7 +250,7 @@ async function update() {
     saveVersion(to)
     rmSync(journalFile, { force: true })
     pruneBackups()
-    pruneImages([to, from])
+    pruneImages(imageRepo(toRef), [to, from])
     text(`updated=${to} backup=${journal.backup}`)
   } finally { unlock() }
 }

@@ -1,11 +1,14 @@
 # Release artifact, not a checkout of upstream source. No credentials or host-specific paths.
 FROM debian:bookworm-slim
 ARG VERSION=2026.10.0
+LABEL org.opencontainers.image.version=$VERSION
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar unzip coreutils && rm -rf /var/lib/apt/lists/*
 # TARGETARCH is only set by BuildKit; the legacy builder falls back to the build machine's architecture.
 RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; case "$arch" in amd64) platform=x64;; arm64) platform=arm64;; *) echo "Unsupported architecture: $arch" >&2; exit 1;; esac; \
-    base="https://github.com/Jhacarreiro/AgentHydra-Community/releases/download/v${VERSION}"; \
+    repo="https://github.com/Jhacarreiro/AgentHydra-Community"; \
+    if [ "$VERSION" = latest ]; then VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$repo/releases/latest"); VERSION=${VERSION##*/v}; fi; \
+    base="$repo/releases/download/v${VERSION}"; \
     artifact="AgentHydra-${VERSION}-linux-${platform}.tar.gz"; \
     curl -fsSL --retry 3 -o /tmp/SHA256SUMS.txt "$base/SHA256SUMS.txt"; \
     curl -fsSL --retry 3 -o "/tmp/$artifact" "$base/$artifact"; \
