@@ -9,7 +9,14 @@ usage() { echo "usage: $0 /absolute/path/to/extracted/AgentHydra [--dry-run|--en
 case "$1" in /*) ;; *) usage ;; esac
 DIR=$(cd "$1" && pwd -P) || usage
 [ -x "$DIR/agenthydra" ] || { echo 'Missing executable agenthydra launcher in install directory' >&2; exit 2; }
-case "$DIR" in *'&'*|*'<'*|*'>'*|*'"'*|*"'"*) echo 'Install directory contains characters unsupported in plist XML' >&2; exit 2;; esac
+# Optional browser adapter executable for the ChatGPT experiment, supplied by the operator.
+# It is a path only, never a browser profile or credential.
+OPENCLI=${AGENTHYDRA_CHATGPT_OPENCLI:-}
+if [ -n "$OPENCLI" ]; then
+  case "$OPENCLI" in /*) ;; *) echo 'AGENTHYDRA_CHATGPT_OPENCLI must be an absolute path' >&2; exit 2 ;; esac
+  [ -x "$OPENCLI" ] || { echo 'OpenCLI executable not found or not executable' >&2; exit 2; }
+fi
+case "$DIR$OPENCLI$HOME" in *'&'*|*'<'*|*'>'*|*'"'*|*"'"*) echo 'Install path contains characters unsupported in plist XML' >&2; exit 2;; esac
 case "${2-}" in ''|'--dry-run'|'--enable-native-updates') ;; *) usage ;; esac
 LABEL=biz.agenthydra.community.hub
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -25,6 +32,8 @@ if [ -e "$PLIST" ]; then
 fi
 TMP="$PLIST.tmp.$$"
 trap 'rm -f "$TMP"' EXIT
+# Homebrew's shell PATH is not inherited by launchd; carry a safe executable search path.
+# The selected OpenCLI executable is private runtime configuration, not a public repo path.
 cat > "$TMP" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,6 +41,14 @@ cat > "$TMP" <<EOF
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array><string>$DIR/agenthydra</string></array>
   <key>WorkingDirectory</key><string>$DIR</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/opt/node@22/bin</string>
+EOF
+if [ -n "$OPENCLI" ]; then
+  printf '    <key>AGENTHYDRA_CHATGPT_OPENCLI</key><string>%s</string>\n' "$OPENCLI" >> "$TMP"
+fi
+cat >> "$TMP" <<EOF
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>StandardOutPath</key><string>$LOGS/hub.out.log</string>
