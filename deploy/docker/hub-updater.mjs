@@ -61,10 +61,16 @@ function currentVersion({ record = false } = {}) {
   const pinned = pinnedVersion()
   if (pinned) return pinned
   const container = hubContainer(undefined, { running: true })
-  const version = container && docker(['inspect', '-f', `{{index .Config.Labels "${versionLabel}"}}`, container])
+  const version = container && runningVersion(container)
   if (!validVersion.test(version || '')) throw new Error('Set AGENTHYDRA_VERSION in deploy/docker/.env to the installed release')
   if (record) saveVersion(version)
   return version
+}
+/** The release a running hub container is: its image's version label, or, for a local build of `latest`
+ * (labelled `latest`), the release the image recorded when it resolved that. */
+function runningVersion(container) {
+  const label = docker(['inspect', '-f', `{{index .Config.Labels "${versionLabel}"}}`, container])
+  return validVersion.test(label) ? label : docker(['exec', container, 'cat', '/etc/agenthydra-version'])
 }
 function saveVersion(version) {
   if (!validVersion.test(version)) throw new Error('Invalid release version')
@@ -217,8 +223,7 @@ async function update() {
     if (!container) throw new Error('Hub is not running; start it with the Docker installation instructions first')
     const fromRef = imageRef(from), toRef = imageRef(to)
     const runningRef = docker(['inspect', '-f', '{{.Config.Image}}', container])
-    const runningVersion = docker(['inspect', '-f', `{{index .Config.Labels "${versionLabel}"}}`, container])
-    if (runningRef !== fromRef && runningVersion !== from) throw new Error('Running image does not match the installed release; manual reconciliation required')
+    if (runningRef !== fromRef && runningVersion(container) !== from) throw new Error('Running image does not match the installed release; manual reconciliation required')
     const journal = { phase: 'building', from, to, fromRef, toRef, fromImage: docker(['inspect', '-f', '{{.Image}}', container]), volume: stateVolume(container) }
     writeJournal(journal)
     try {

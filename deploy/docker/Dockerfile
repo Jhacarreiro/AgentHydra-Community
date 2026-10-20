@@ -1,6 +1,7 @@
 # Release artifact, not a checkout of upstream source. No credentials or host-specific paths.
 FROM debian:bookworm-slim
 ARG VERSION=2026.10.0
+# A label cannot hold the release that `latest` resolves to below; /etc/agenthydra-version always does.
 LABEL org.opencontainers.image.version=$VERSION
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar unzip coreutils && rm -rf /var/lib/apt/lists/*
@@ -16,7 +17,8 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; case "$arch" in
     [ "$(printf '%s\n' "$sum" | grep -c -E '^[0-9a-f]{64}$')" = 1 ] || { echo "No single checksum for $artifact" >&2; exit 1; }; \
     cd /tmp && printf '%s  %s\n' "$sum" "$artifact" | sha256sum -c -; \
     mkdir -p /opt/agenthydra && tar -xzf "$artifact" -C /opt/agenthydra --strip-components=1; \
-    rm -f "/tmp/$artifact" /tmp/SHA256SUMS.txt
+    rm -f "/tmp/$artifact" /tmp/SHA256SUMS.txt; \
+    printf '%s\n' "$VERSION" > /etc/agenthydra-version
 # The state folder exists in the image so a new named volume starts owned by the Hub's user.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin hydra && mkdir -p /srv/agenthydra-state/.agenthydra \
     && chown -R hydra:hydra /opt/agenthydra /srv/agenthydra-state

@@ -82,6 +82,7 @@ if (args[0] === 'inspect') {
   if (format === '{{.Image}}') return out(hub.imageId)
   if (format.includes('org.opencontainers.image.version')) return out(hub.label || '<no value>')
 }
+if (args[0] === 'exec') return hub && args[1] === hub.id && args[3] === '/etc/agenthydra-version' ? out(hub.resolved) : fail('no such file')
 if (args[0] === 'image' && args[1] === 'inspect') return s.images[args[4]] ? out(s.images[args[4]]) : fail('no such image')
 if (args[0] === 'image' && args[1] === 'rm') { delete s.images[args[2]]; return save() }
 if (args[0] === 'images') return out(Object.keys(s.images).filter(x => x.startsWith(args[1] + ':')).map(x => x.slice(args[1].length + 1)).join('\n'))
@@ -104,7 +105,14 @@ fail('unexpected docker ' + args.join(' '))
 `
 
 type FakeState = {
-  hub: { id: string; image: string; imageId: string; label?: string; running: boolean } | null
+  hub: {
+    id: string
+    image: string
+    imageId: string
+    label?: string
+    resolved?: string
+    running: boolean
+  } | null
   repo: string
   images: Record<string, string>
   registry?: Record<string, string>
@@ -243,11 +251,12 @@ describe.skipIf(process.platform === 'win32')('Docker Hub updater', () => {
   })
 
   test('a hub started without a pinned version is updated from the release its image carries', async () => {
-    // Plain `docker compose up -d`: no version in .env, the running image is :latest.
+    // Plain `docker compose up -d` on a local build: no version in .env, the running image is :latest and
+    // labelled `latest`, and only the image's own record says which release it is.
     writeFileSync(join(dir, '.env'), 'COMPOSE_PROJECT_NAME=hub\n')
     const s0 = readState()
     writeState({
-      hub: { ...s0.hub!, image: `${REPO}:latest` },
+      hub: { ...s0.hub!, image: `${REPO}:latest`, label: 'latest', resolved: FROM },
       images: { [`${REPO}:latest`]: 'sha256:original' },
       unhealthy: [TO],
     })
