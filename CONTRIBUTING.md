@@ -45,14 +45,15 @@ Tests never touch your real agent homes: the root suite's preload refuses a writ
 | Codex hub tray app (Go) | `cd codex-hub-tray && go test ./...` |
 | Hydra Core's hooks and the managers' router (Node) | `node --test hydra-core/test/*.test.mjs managers/test/*.test.mjs` |
 | Windows programs: tray host, window host, CliMayte's runner (Rust, on Windows) | `bun scripts/build-natives.ts --test` |
+| Black-box lane: the daemon, Desk 2 and the MCP server as processes (Linux; `strace` for its egress check) | `cd e2e && bun run test` ([e2e/README.md](e2e/README.md)) |
 | The root lanes in one go (Biome, typecheck, tests and the orchestrator toolbox) | `bun run check:deep` |
 
-`check:deep` does not cover the window, HSwarm, the Free instances harness, the tray app, the Node suites or the
-Windows programs; run their rows on their own. Run at least the lanes your change belongs to. Some tests need
-Windows or a real Chrome or Edge; CI runs those on `windows-latest`, so a few failures on Linux or macOS for those
-reasons are expected. On Windows, the tests that start the tray host or CliMayte's runner skip until you build them
-(`bun scripts/build-natives.ts tray runner`, which needs Rust and Visual Studio's C++ build tools); CI builds both
-first. A behaviour change comes with a test that fails without it.
+`check:deep` does not cover the window, HSwarm, the Free instances harness, the tray app, the Node suites, the
+Windows programs or the black-box lane; run their rows on their own. Run at least the lanes your change belongs to.
+Some tests need Windows or a real Chrome or Edge; CI runs those on `windows-latest`, so a few failures on Linux or
+macOS for those reasons are expected. On Windows, the tests that start the tray host or CliMayte's runner skip until
+you build them (`bun scripts/build-natives.ts tray runner`, which needs Rust and Visual Studio's C++ build tools); CI
+builds both first. A behaviour change comes with a test that fails without it.
 
 </details>
 
