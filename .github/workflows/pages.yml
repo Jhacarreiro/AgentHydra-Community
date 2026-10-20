@@ -11,6 +11,7 @@ on:
     paths:
       - site/**
       - misc/AgentHydra-icon.png
+      - misc/brand/emblem.png
       - desk2/web/public/favicon.*
       - .github/og-image.png
       - .github/screenshots/**
@@ -36,6 +37,7 @@ jobs:
           mkdir -p _site/assets
           cp site/index.html _site/
           cp misc/AgentHydra-icon.png _site/assets/icon.png
+          cp misc/brand/emblem.png _site/assets/emblem.png
           cp desk2/web/public/favicon.svg desk2/web/public/favicon.png _site/assets/
           cp .github/og-image.png _site/assets/og-image.png
           cp .github/screenshots/window.png .github/screenshots/new.png .github/screenshots/analytics.png _site/assets/

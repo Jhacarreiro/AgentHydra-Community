@@ -3,11 +3,17 @@
   "binaries": [
     {
       "path": ".github/og-image.png",
-      "blob": "1302068e88f54966e5c0e6060730e811fb1c3e6d",
-      "sha256": "cf053a05baf4f010765b1c18bdebacb093517dfb14844bdea4c5a597e68d66ac",
-      "source": "AgentHydra Community social preview, created for this fork with the new hydra logo and independent project description.",
-      "build": "Rendered locally with ImageMagick from the new community hydra logo.",
-      "license": "Original artwork for AgentHydra Community, MIT."
+      "blob": "fe1f9c84394b7f8808c8e12234b8cfe47b465033",
+      "sha256": "af72649318c70b91d5f6d4a4828d438c7bd377c45c0e3e70810c8ccfa980ddd3",
+      "source": "AgentHydra Community social preview with the five-headed hydra emblem and independent project description.",
+      "build": "Rendered by scripts/og-image/render.mjs (bun run og-image) from scripts/og-image/card.html.",
+      "license": "Original artwork for AgentHydra Community, MIT.",
+      "previous": [
+        {
+          "blob": "1302068e88f54966e5c0e6060730e811fb1c3e6d",
+          "sha256": "cf053a05baf4f010765b1c18bdebacb093517dfb14844bdea4c5a597e68d66ac"
+        }
+      ]
     },
     {
       "path": ".github/screenshots/analytics.png",
@@ -75,19 +81,35 @@
     },
     {
       "path": "desk2/hydra/public/favicon.ico",
-      "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
-      "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810",
-      "source": "New community hydra favicon for the Hydra desktop UI.",
+      "blob": "65d28cdab98f8c0bcb5e4ef52dcb1196d53ba8a8",
+      "sha256": "d0e3da125a76c320cc0f79f562eefe1928874855a19572159e3f8745f8ab3fe5",
+      "source": "AgentHydra Community five-headed hydra emblem, created for this fork by its maintainer with an image generator.",
       "build": "Copy of misc/AgentHydra.ico.",
-      "license": "Original artwork for AgentHydra Community, MIT."
+      "license": "Original artwork for AgentHydra Community, MIT.",
+      "previous": [
+        {
+          "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
+          "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810"
+        },
+        {
+          "blob": "b56e9f00b0b56c2e9ec3681a8561275e7dc89a81",
+          "sha256": "80cd3c76a9cbfc7fd233d6410c98283e894c0c3ecd6276bee036767c51a3ee08"
+        }
+      ]
     },
     {
       "path": "desk2/hydra/public/favicon.png",
-      "blob": "9e85db727562e5753fb50742969078272e16d8c0",
-      "sha256": "0e38a9cd2989a07bbc2b27e7c72b42faa71bb51f396bf7207894a6186e139358",
-      "source": "New community hydra favicon PNG.",
-      "build": "Derived from the approved community hydra artwork.",
-      "license": "Original artwork for AgentHydra Community, MIT."
+      "blob": "e40ba211386e02a779836d46c083869c0f9cdd01",
+      "sha256": "db4425dbc9704f0236dfe29a7115a68ab0454c1dfe2094f30e668ff5b278239c",
+      "source": "AgentHydra Community five-headed hydra emblem, created for this fork by its maintainer with an image generator.",
+      "build": "misc/AgentHydra-icon.png downscaled to 64 pixels with Pillow.",
+      "license": "Original artwork for AgentHydra Community, MIT.",
+      "previous": [
+        {
+          "blob": "9e85db727562e5753fb50742969078272e16d8c0",
+          "sha256": "0e38a9cd2989a07bbc2b27e7c72b42faa71bb51f396bf7207894a6186e139358"
+        }
+      ]
     },
     {
       "path": "desk2/hydra/public/fonts/inter-latin-ext.woff2",
@@ -107,34 +129,74 @@
     },
     {
       "path": "desk2/web/public/favicon.ico",
-      "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
-      "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810",
-      "source": "New community hydra favicon for the web UI.",
+      "blob": "65d28cdab98f8c0bcb5e4ef52dcb1196d53ba8a8",
+      "sha256": "d0e3da125a76c320cc0f79f562eefe1928874855a19572159e3f8745f8ab3fe5",
+      "source": "AgentHydra Community five-headed hydra emblem, created for this fork by its maintainer with an image generator.",
       "build": "Copy of misc/AgentHydra.ico.",
-      "license": "Original artwork for AgentHydra Community, MIT."
+      "license": "Original artwork for AgentHydra Community, MIT.",
+      "previous": [
+        {
+          "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
+          "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810"
+        },
+        {
+          "blob": "b56e9f00b0b56c2e9ec3681a8561275e7dc89a81",
+          "sha256": "80cd3c76a9cbfc7fd233d6410c98283e894c0c3ecd6276bee036767c51a3ee08"
+        }
+      ]
     },
     {
       "path": "desk2/web/public/favicon.png",
-      "blob": "9e85db727562e5753fb50742969078272e16d8c0",
-      "sha256": "0e38a9cd2989a07bbc2b27e7c72b42faa71bb51f396bf7207894a6186e139358",
-      "source": "New community hydra favicon PNG.",
-      "build": "Derived from the approved community hydra artwork.",
-      "license": "Original artwork for AgentHydra Community, MIT."
+      "blob": "e40ba211386e02a779836d46c083869c0f9cdd01",
+      "sha256": "db4425dbc9704f0236dfe29a7115a68ab0454c1dfe2094f30e668ff5b278239c",
+      "source": "AgentHydra Community five-headed hydra emblem, created for this fork by its maintainer with an image generator.",
+      "build": "misc/AgentHydra-icon.png downscaled to 64 pixels with Pillow.",
+      "license": "Original artwork for AgentHydra Community, MIT.",
+      "previous": [
+        {
+          "blob": "9e85db727562e5753fb50742969078272e16d8c0",
+          "sha256": "0e38a9cd2989a07bbc2b27e7c72b42faa71bb51f396bf7207894a6186e139358"
+        }
+      ]
     },
     {
       "path": "misc/AgentHydra-icon.png",
-      "blob": "f84da4626976e1f895da19cb4d428ac0dbfa3a9d",
-      "sha256": "bc26d3948a9d491f27e6f8ab83fa44dea0f6cfbe88a1bfe9dfe2597053ad75e9",
-      "source": "New AgentHydra Community hydra icon, independently generated for this fork, derived from concept 3; original standalone symbol is maintained at misc/brand/icon.svg.",
-      "build": "Resized to 1024 pixels from the original approved graphic using ImageMagick.",
-      "license": "Original artwork for AgentHydra Community, MIT."
+      "blob": "dca74dd1e6379fa331e6caadab01e47cb54fc75b",
+      "sha256": "cecf368a59df40476ab3579b71fef22aec1676c0a59febbd8b17dab077a505e6",
+      "source": "AgentHydra Community five-headed hydra emblem, created for this fork by its maintainer with an image generator.",
+      "build": "The emblem centred on a navy rounded tile at 1024 pixels with Pillow.",
+      "license": "Original artwork for AgentHydra Community, MIT.",
+      "previous": [
+        {
+          "blob": "f84da4626976e1f895da19cb4d428ac0dbfa3a9d",
+          "sha256": "bc26d3948a9d491f27e6f8ab83fa44dea0f6cfbe88a1bfe9dfe2597053ad75e9"
+        }
+      ]
     },
     {
       "path": "misc/AgentHydra.ico",
-      "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
-      "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810",
-      "source": "New community hydra icon for Windows shortcuts and launchers.",
-      "build": "Generated using ImageMagick from the approved community hydra artwork, at multiple ICO sizes.",
+      "blob": "65d28cdab98f8c0bcb5e4ef52dcb1196d53ba8a8",
+      "sha256": "d0e3da125a76c320cc0f79f562eefe1928874855a19572159e3f8745f8ab3fe5",
+      "source": "AgentHydra Community five-headed hydra emblem, created for this fork by its maintainer with an image generator.",
+      "build": "Built from misc/AgentHydra-icon.png at 16, 24, 32, 48, 64 and 128 pixels as 32bpp DIB frames and 256 pixels as PNG, the layout misc/Make-Icon.ps1 makes.",
+      "license": "Original artwork for AgentHydra Community, MIT.",
+      "previous": [
+        {
+          "blob": "a9f55009846b990f644c978c31f5d5f796dadd9c",
+          "sha256": "07e6b755e9bf9d888d3e282df8a951163e9f3e21221519964e984d127d9e6810"
+        },
+        {
+          "blob": "b56e9f00b0b56c2e9ec3681a8561275e7dc89a81",
+          "sha256": "80cd3c76a9cbfc7fd233d6410c98283e894c0c3ecd6276bee036767c51a3ee08"
+        }
+      ]
+    },
+    {
+      "path": "misc/brand/emblem.png",
+      "blob": "f6f46f340834ae5c4e13212104326fe94d21b099",
+      "sha256": "3b9d4b0d4d9ce2689691d96a83b91ca2e7c0a677926ee5e097741acbb81b7f72",
+      "source": "AgentHydra Community five-headed hydra emblem, created for this fork by its maintainer with an image generator.",
+      "build": "The emblem on a transparent background, trimmed and resized to 768 pixels with Pillow; the website's hero image.",
       "license": "Original artwork for AgentHydra Community, MIT."
     }
   ]
