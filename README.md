@@ -4,6 +4,8 @@
 
 ### One dashboard. Multiple PCs. Your own server.
 
+Manage Claude Code, Codex and OpenCode workflows across multiple PCs from one self-hosted dashboard. Start with the download and setup links below; each workstation stays under your control.
+
 [Download](https://github.com/Jhacarreiro/AgentHydra-Community/releases) &nbsp;·&nbsp; [Reference](docs/REFERENCE.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Contributing](CONTRIBUTING.md)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Jhacarreiro/AgentHydra-Community/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Jhacarreiro/AgentHydra-Community/actions/workflows/ci.yml)
