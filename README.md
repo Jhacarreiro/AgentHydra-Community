@@ -43,8 +43,7 @@ Maintained independently by [@Jhacarreiro](https://github.com/Jhacarreiro) and c
 
 ![The window: the sidebar lists every chat grouped by project, and the open chat shows its to-dos and a permission prompt](.github/screenshots/window.png)
 
-<sub>Screenshots use demo data and predate the fork: the analytics and instances shots still show a Discord button
-where the repository link now is, and the window shots name a demo project "connections".</sub>
+<sub>All screenshots use synthetic demo data, captured from the current Community UI. No personal sessions or accounts are included.</sub>
 
 ## TL;DR
 
