@@ -9,6 +9,14 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+**TL;DR**
+
+- **ChatGPT in Desk: your conversations, whether an answer is still coming, and replies you send from Desk**
+
+**Everything unreleased**
+
+- **ChatGPT in Desk.** Menu → ChatGPT lists your ChatGPT conversations and opens each one, showing whether ChatGPT is thinking, writing or done, with a Stop button while it works. You can reply or start a new conversation from Desk; nothing is sent until you press Send. It works through the OpenCLI Browser Bridge in the hub machine's own signed-in Chrome, keeps no copy of your conversations, and is off unless you turn it on.
+
 ## [2026.10.1] - 2026-10-20
 
 **TL;DR**
