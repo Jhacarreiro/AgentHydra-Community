@@ -236,8 +236,17 @@ describe("the page's links", () => {
     ])
       expect(body).toContain(`(${base}${name})`)
     expect(body.indexOf('**Download 2026.10.0:**')).toBeLessThan(body.indexOf('## TL;DR'))
-    // A build with updates off publishes no lone .exe, so the page links none.
+    // A build with updates off publishes no lone .exe, so the page links none; nor does a past page, which
+    // cannot tell how its own build was set.
     expect(page('off')).not.toContain(`${base}windows-x64.exe`)
+    const past = changelog(LONG.replace('## [2.0.0]', '## [2026.10.0]'))
+    expect(formatReleaseBody(past, '2026.10.0', { history: true })).not.toContain(
+      `${base}windows-x64.exe`,
+    )
+    // A page that folds a month's patches opens with the same line.
+    const folded = formatLineBody(past, '2026.10.0', [], { history: true })
+    expect(folded.indexOf(`(${base}windows-x64.zip)`)).toBeLessThan(folded.indexOf('## TL;DR'))
+    expect(folded.indexOf(`(${base}windows-x64.zip)`)).toBeGreaterThan(-1)
   })
 
   test("the closing line sends questions to the channel repository's issues, on both kinds of page", () => {

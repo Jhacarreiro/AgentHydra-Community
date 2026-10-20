@@ -244,6 +244,7 @@ export function formatLineBody(changelog, keptVersion, patchVersions, options = 
   const out = [
     '<div align="center">',
     ICON,
+    ...downloadBar(keptVersion, updates, history),
     '</div>',
     '',
   ]
@@ -303,11 +304,12 @@ function downloadLines(version, updates = CHANNEL.updates) {
 
 /** One line under the icon, in its centred block, with a link to each download, so a page opens with Windows, macOS and Linux side by side.
  *  Pages before 2.0.0 keep the layout they shipped with. */
-function downloadBar(version, updates = CHANNEL.updates) {
+function downloadBar(version, updates = CHANNEL.updates, history = false) {
   if (compareVersions(version, '2.0.0') < 0) return []
   const file = (name) => `https://github.com/${REPO}/releases/download/v${version}/AgentHydra-${version}-${name}`
   const windows = [`[zip](${file('windows-x64.zip')})`]
-  if (updates !== 'off') windows.push(`[.exe](${file('windows-x64.exe')})`)
+  // A past page cannot tell whether its own build had updates off (and so no lone .exe): it links the zip only.
+  if (updates !== 'off' && !history) windows.push(`[.exe](${file('windows-x64.exe')})`)
   return [
     '',
     `**Download ${version}:** Windows ${windows.join(' · ')} · macOS [Apple silicon](${file('darwin-arm64.tar.gz')}) · [Intel](${file('darwin-x64.tar.gz')}) · Linux [x64](${file('linux-x64.tar.gz')}) · [arm64](${file('linux-arm64.tar.gz')})`,
@@ -331,7 +333,7 @@ export function formatReleaseBody(changelog, version, options = {}) {
   const out = [
     '<div align="center">',
     ICON,
-    ...downloadBar(version, updates),
+    ...downloadBar(version, updates, history),
     '</div>',
     '',
   ]
