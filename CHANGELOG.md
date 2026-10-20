@@ -9,13 +9,17 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+## [2026.10.2] - 2026-10-20
+
 **TL;DR**
 
 - **ChatGPT in Desk: your conversations, whether an answer is still coming, and replies you send from Desk**
+- **No more long stalls when the local store gets busy on Windows**
 
-**Everything unreleased**
+**Everything in 2026.10.2**
 
 - **ChatGPT in Desk.** Menu → ChatGPT lists your ChatGPT conversations and opens each one, showing whether ChatGPT is thinking, writing or done, with a Stop button while it works. You can reply or start a new conversation from Desk; nothing is sent until you press Send. It works through the OpenCLI Browser Bridge in the hub machine's own signed-in Chrome, keeps no copy of your conversations, and is off unless you turn it on.
+- **No stalls from the local store.** When the store's background tidy-up stopped answering, every large write afterwards paused for seconds. It now carries on without it, and the helper shuts down cleanly.
 
 ## [2026.10.1] - 2026-10-20
 
