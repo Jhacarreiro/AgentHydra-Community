@@ -17,6 +17,7 @@ import type {
   SlashCommandInfo
 } from '@shared/protocol'
 import { useDesk } from '@/stores/desk'
+import { inboxHold, inboxHolds } from '@/components/inbox/hold'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1017,6 +1018,8 @@ function errText(e: unknown) {
 }
 
 let sentAt = 0
+/** False once the box is gone: a send that waited for Undo then puts its text back in the chat's saved draft. */
+let alive = true
 /** The Stop button or Esc. `click`: the button, which sits where Send was, so the second click of a send is not a Stop. */
 function stop(click = false) {
   if (click && Date.now() - sentAt < STOP_GUARD_MS) return
@@ -1060,12 +1063,15 @@ async function createNewChat(body: string, refs: ImageRef[], enqueue: boolean, s
   saveDraftImages(sentSlot, [])
 }
 
-async function deliver(body: string, refs: ImageRef[], enqueue: boolean, sentSlot: string | null) {
-  if (props.chat && props.into) {
-    await props.into.send(body)
-    lastSent.set(props.chat.id, body)
-    saveDraft(storage, props.chat.id, '')
-  } else if (props.chat) await sendToChat(props.chat.id, body, refs, enqueue)
+/** Where a send goes: taken when it is sent, since a send that waits for Undo goes after the box moved on. */
+type SendTarget = { chat: ChatSummary | null; into: (typeof props)['into'] }
+
+async function deliver(body: string, refs: ImageRef[], enqueue: boolean, sentSlot: string | null, to: SendTarget) {
+  if (to.chat && to.into) {
+    await to.into.send(body)
+    lastSent.set(to.chat.id, body)
+    saveDraft(storage, to.chat.id, '')
+  } else if (to.chat) await sendToChat(to.chat.id, body, refs, enqueue)
   else await createNewChat(body, refs, enqueue, sentSlot)
 }
 
@@ -1089,19 +1095,39 @@ async function submit(ctrl = false) {
   files.value = []
   // Enter brings the chat to its bottom at once, even scrolled up, and the reply is followed from there.
   if (props.chat) window.dispatchEvent(new CustomEvent<ChatSentDetail>(CHAT_SENT_EVENT, { detail: { chatId: props.chat.id, sessionId: props.chat.sessionId ?? null } }))
-  try {
-    await deliver(body, refs, enqueue, sentSlot)
-  } catch (e) {
-    if (slot.value === sentSlot) {
+  const to: SendTarget = { chat: props.chat, into: props.into }
+  const putBack = () => {
+    if (alive && slot.value === sentSlot) {
       text.value = keptText
       images.value = keptImages
       files.value = keptFiles
     } else {
-      // The user moved to another chat meanwhile: the failed text goes back to its own draft, not over this one.
+      // The user moved to another chat meanwhile: the text goes back to its own draft, not over this one.
       saveDraft(storage, sentSlot, keptText)
       saveDraftImages(sentSlot, keptImages)
       fileDrafts.set(sentSlot, keptFiles)
     }
+  }
+  // Waiting on you holds a send to the conversation on screen for Undo and moves on to the next meanwhile
+  // (components/inbox): the box is free at once, and Undo puts the text back in this chat's box.
+  if (to.chat && inboxHolds(to.chat.id)) {
+    sending.value = false
+    const chatId = to.chat.id
+    void (async () => {
+      if (!(await inboxHold(chatId, 'message'))) return putBack()
+      try {
+        await deliver(body, refs, enqueue, sentSlot, to)
+      } catch (e) {
+        putBack()
+        showNotice(`Not sent: ${errText(e)}`)
+      }
+    })()
+    return
+  }
+  try {
+    await deliver(body, refs, enqueue, sentSlot, to)
+  } catch (e) {
+    putBack()
     showNotice(`Not sent: ${errText(e)}`)
   } finally {
     sending.value = false
@@ -1165,6 +1191,7 @@ onMounted(async () => {
 defineExpose({ focus: () => textarea.value && holdFocus(textarea.value, document) })
 
 onBeforeUnmount(() => {
+  alive = false
   if (gitTimer) clearInterval(gitTimer)
   gitRun?.abort()
   commandsRun?.abort()

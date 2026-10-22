@@ -63,6 +63,7 @@ import { readCache, readListCache, writeCache } from '@/lib/list-cache'
 import { wantsDesktopNotice } from './notify'
 import { reportAtPaint, reportTiming } from '@/lib/timing'
 import { applyHeadlessAudio, loadHeadlessAudio } from '@/lib/chat-audio'
+import { inboxHold } from '@/components/inbox/hold'
 
 const BASE_URL = '/api'
 
@@ -1249,6 +1250,8 @@ export function useDesk() {
       requestId: string,
       decision: PermissionDecision
     ): Promise<{ ok: boolean }> {
+      // Waiting on you holds it for Undo (components/inbox/hold.ts); undone, the card is still there to answer.
+      if (!(await inboxHold(chatId, 'permission'))) return { ok: false }
       return fetchJson(`/chats/${chatId}/permission/${requestId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1261,6 +1264,8 @@ export function useDesk() {
       requestId: string,
       answer: QuestionAnswer
     ): Promise<{ ok: boolean }> {
+      // Waiting on you holds it for Undo (components/inbox/hold.ts); undone, the card is still there to answer.
+      if (!(await inboxHold(chatId, 'question'))) return { ok: false }
       return fetchJson(`/chats/${chatId}/question/${requestId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1273,6 +1278,8 @@ export function useDesk() {
       requestId: string,
       decision: PlanDecision
     ): Promise<{ ok: boolean }> {
+      // Waiting on you holds it for Undo (components/inbox/hold.ts); undone, the card is still there to answer.
+      if (!(await inboxHold(chatId, 'plan'))) return { ok: false }
       return fetchJson(`/chats/${chatId}/plan/${requestId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
