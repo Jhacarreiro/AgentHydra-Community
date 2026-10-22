@@ -26,6 +26,8 @@ export interface CloudSessionRow {
   parent_id?: string
   /** The claude.ai Project a thread or a Project's own chat belongs to, by name; absent when unknown. */
   project?: string
+  /** The thread's Project chat is archived or gone: the Project was closed, so nothing in it waits on anyone. */
+  project_archived?: true
 }
 
 export function cloudSessionsRoot(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
@@ -70,6 +72,30 @@ export function writeProjectNames(
   const tmp = join(dir, 'projects.json.tmp')
   writeFileSync(tmp, JSON.stringify(names))
   renameSync(tmp, join(dir, 'projects.json'))
+}
+
+/** Project chat id -> whether it is archived (or gone), for the chats that left the list and were looked up. */
+export function readArchivedProjects(root: string, accountKey: string): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(join(root, accountKey, 'projects-archived.json'), 'utf8'),
+    )
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function writeArchivedProjects(
+  root: string,
+  accountKey: string,
+  archived: Record<string, boolean>,
+): void {
+  const dir = join(root, accountKey)
+  mkdirSync(dir, { recursive: true })
+  const tmp = join(dir, 'projects-archived.json.tmp')
+  writeFileSync(tmp, JSON.stringify(archived))
+  renameSync(tmp, join(dir, 'projects-archived.json'))
 }
 
 export function readCloudSnapshot(dir: string): CloudSessionRow[] {
