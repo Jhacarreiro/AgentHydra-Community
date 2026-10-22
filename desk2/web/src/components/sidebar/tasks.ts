@@ -717,7 +717,6 @@ export function addRemoteToDeskGroups(groups: readonly ChatGroup[], sessions: re
   for (const s of sessions)
     if (s.cloudProject) {
       const key = `group:${s.cloudProject.toLowerCase()}`
-      if (o.hidden.has(key) && !o.showHidden) continue
       byProject.set(key, [...(byProject.get(key) ?? []), toEntry(s)])
     }
   const entries = sessions.filter((s) => !s.cloudProject).map(toEntry)
@@ -750,7 +749,8 @@ export function addRemoteToDeskGroups(groups: readonly ChatGroup[], sessions: re
   for (const key of home.keys()) byProject.delete(key)
   // A hidden folder group of the Project's name is not among the groups, but its Project rows stay hidden with it.
   const hiddenNames = new Set([...o.hidden].map((k) => k.slice(k.lastIndexOf('/') + 1)))
-  if (!o.showHidden) for (const key of [...byProject.keys()]) if (hiddenNames.has(key.slice('group:'.length))) byProject.delete(key)
+  // So does one whose own group was hidden; a visible group that holds it (above) wins over either.
+  if (!o.showHidden) for (const key of [...byProject.keys()]) if (o.hidden.has(key) || hiddenNames.has(key.slice('group:'.length))) byProject.delete(key)
   for (const [key, list] of byProject) {
     const rows = list.sort(newest)
     const label = rows[0]!.kind === 'external' ? (rows[0]!.session.cloudProject ?? NO_FOLDER) : NO_FOLDER
