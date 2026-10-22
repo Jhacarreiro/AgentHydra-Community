@@ -15,7 +15,7 @@ import { type CoreFixture, coreFixture } from '../../fixtures/hydra-core'
 const SETTINGS = {
   defaultModel: null, defaultEffort: null, defaultPermissionMode: 'default', defaultAccountId: 'auto', delegateToCliMayte: false,
   idleCloseMinutes: 30, browserIdleMinutes: 15, notifications: true, projectFolders: [], projectRoots: [], hiddenProjects: [],
-  pinnedProjects: [], babysitter: true, instanceManager: true, orchestrator: false, orchestratorModel: 'opus', routines: true, collapseMode: 'off', coreEngine: false,
+  pinnedProjects: [], babysitter: true, instanceManager: true, orchestrator: false, orchestratorModel: 'opus', routines: true, collapseMode: 'off', forgetWaits: false, forgetWaitsDays: 7, coreEngine: false,
 } as DeskSettings
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/

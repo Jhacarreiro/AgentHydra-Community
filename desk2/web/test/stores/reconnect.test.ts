@@ -96,7 +96,7 @@ const hello = (chats: ChatSummary[]): ServerEvent => ({
   type: 'hello',
   version: 'test',
   chats,
-  settings: { defaultModel: null, defaultEffort: null, defaultPermissionMode: 'bypassPermissions', defaultAccountId: 'auto', delegateToCliMayte: false, idleCloseMinutes: 30, browserIdleMinutes: 15, notifications: true, projectFolders: [], projectRoots: [], hiddenProjects: [], pinnedProjects: [], babysitter: true, instanceManager: true, orchestrator: false, orchestratorModel: 'opus', routines: true, collapseMode: 'off', coreEngine: false },
+  settings: { defaultModel: null, defaultEffort: null, defaultPermissionMode: 'bypassPermissions', defaultAccountId: 'auto', delegateToCliMayte: false, idleCloseMinutes: 30, browserIdleMinutes: 15, notifications: true, projectFolders: [], projectRoots: [], hiddenProjects: [], pinnedProjects: [], babysitter: true, instanceManager: true, orchestrator: false, orchestratorModel: 'opus', routines: true, collapseMode: 'off', forgetWaits: false, forgetWaitsDays: 7, coreEngine: false },
 })
 
 async function until(cond: () => boolean): Promise<void> {

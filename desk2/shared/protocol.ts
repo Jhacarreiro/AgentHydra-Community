@@ -708,6 +708,9 @@ export interface DeskSettings {
   routines: boolean
   /** The window folds to the screen's right edge, showing only the chats (web/src/components/sidebar/collapse.ts). Off by default. */
   collapseMode: CollapseMode
+  /** Outside conversations waiting longer than forgetWaitsDays stop counting in Waiting on you (web/src/components/inbox/logic.ts). Off by default. */
+  forgetWaits: boolean
+  forgetWaitsDays: number
   /** New chats run on the new core (core/, server/src/plugins/19-core.ts); chats made before stay where they are. */
   coreEngine: boolean
 }

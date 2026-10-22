@@ -27,6 +27,8 @@ export interface InboxDeps {
   select: (view: View) => void
   markRead: (chatId: string) => void
   storage: Pick<Storage, 'getItem' | 'setItem'> | null
+  /** Outside conversations quiet for longer than this, ms, leave the queue (Settings → Forget old waits). */
+  forgetAfterMs?: () => number | null
   now?: () => number
   timers?: { set: (fn: () => void, ms: number) => unknown; clear: (t: unknown) => void }
 }
@@ -80,7 +82,7 @@ export function createInbox(deps: InboxDeps) {
   let quiet: string | null = null
 
   const entriesFor = (hold: ReadonlyMap<string, number>): InboxEntry[] =>
-    inboxEntries({ chats: deps.chats(), external: deps.external(), seen: seen.value, done: doneAt.value, later: later.value, answered: answered.value, held: hold, now: now() })
+    inboxEntries({ chats: deps.chats(), external: deps.external(), seen: seen.value, done: doneAt.value, later: later.value, answered: answered.value, held: hold, forgetAfterMs: deps.forgetAfterMs?.() ?? null, now: now() })
   /** Everything the queue holds and everything that waits; a conversation that is only on screen is not in it. */
   const entries = computed(() => entriesFor(held.value))
   /** What waits now, before the queue holds it. */

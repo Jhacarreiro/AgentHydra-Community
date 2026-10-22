@@ -63,6 +63,14 @@ describe('what waits on the owner, in which order', () => {
     expect(keys({ external })).toEqual(['today'])
   })
 
+  test('Forget old waits leaves out outside sessions quiet for longer than its days, but not Desk chats', () => {
+    const DAY = 24 * 60 * MIN
+    const external = [session('recent', { status: 'needs_you', lastActivityAt: NOW - 2 * DAY }), session('weeks', { status: 'needs_you', lastActivityAt: NOW - 15 * DAY })]
+    const chats = [chat('desk-old', { status: 'needs_you', lastActionAt: NOW - 30 * DAY })]
+    expect(keys({ chats, external })).toEqual(['desk-old', 'weeks', 'recent'])
+    expect(keys({ chats, external, forgetAfterMs: 7 * DAY })).toEqual(['desk-old', 'recent'])
+  })
+
   test('a session Desk runs as one of its own chats is listed once, as that chat', () => {
     expect(keys({ chats: [chat('desk', { sessionId: 's1', unread: true })], external: [session('s1')] })).toEqual(['desk'])
   })

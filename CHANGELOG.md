@@ -14,6 +14,7 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **A Claude Code cloud session says so, not "Another app"**
 - **The view menu shows what is on with a tick, and compact mode is on by default**
 - **Done in Waiting on you clears a conversation stuck as waiting**
+- **Settings can forget waits older than a number of days**
 
 **Everything in Unreleased**
 
@@ -21,6 +22,7 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Clear view switches.** The ⋮ menu by the sidebar said "Disable cloud sessions" with a tick, which read as neither on nor off. Its items are now Cloud sessions, CliMayte tasks, More details and Compact mode, each ticked while on.
 - **Compact mode by default.** The compact sidebar is on unless you turn it off.
 - **Done clears a stuck wait.** claude.ai does not tell AgentHydra that a Project thread was resolved, so such a thread could wait on you for weeks. Done in Waiting on you now takes any outside conversation out until it writes again, even one that still reads as waiting.
+- **Forget old waits.** Settings → General → Forget old waits takes conversations from other apps that have waited longer than the days you pick out of Waiting on you. It is off unless you turn it on.
 
 ## [2026.10.5] - 2026-10-22
 

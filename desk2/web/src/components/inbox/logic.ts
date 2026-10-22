@@ -100,6 +100,8 @@ export interface InboxInputs {
   /** Conversations the queue already holds, each with when it took it (a running number): kept while they are not
    *  running again, though opening one marked it read and Later or Next moved past it. */
   held: ReadonlyMap<string, number>
+  /** Outside conversations quiet for longer than this, ms, wait on no one; null keeps them all. */
+  forgetAfterMs?: number | null
   now: number
 }
 
@@ -117,6 +119,7 @@ export function inboxEntries(i: InboxInputs): InboxEntry[] {
   for (const s of i.external) {
     // A session Desk runs as one of its own chats is that chat.
     if (desk.has(s.id) || i.answered.has(s.id)) continue
+    if (i.forgetAfterMs != null && s.lastActivityAt !== null && i.now - s.lastActivityAt > i.forgetAfterMs) continue
     if (externalWaits(s, i.seen, i.done ?? NONE, i.now) || (i.held.has(s.id) && s.status !== 'working' && !s.archived)) out.push(externalEntry(s))
   }
   return out.sort((a, b) => {

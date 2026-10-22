@@ -255,7 +255,7 @@ describe('a chat without the binary', () => {
     projectRoots: [],
     hiddenProjects: [],
     pinnedProjects: [],
-    babysitter: true, instanceManager: true, orchestrator: false, orchestratorModel: 'opus', routines: true, collapseMode: 'off', coreEngine: false,
+    babysitter: true, instanceManager: true, orchestrator: false, orchestratorModel: 'opus', routines: true, collapseMode: 'off', forgetWaits: false, forgetWaitsDays: 7, coreEngine: false,
   }
 
   /** A Query that does nothing until it is closed. */

@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS: DeskSettings = {
   orchestratorModel: 'opus',
   routines: true,
   collapseMode: 'off',
+  forgetWaits: false,
+  forgetWaitsDays: 7,
   coreEngine: false,
 }
 
@@ -52,6 +54,8 @@ const CHECKS: { [K in keyof DeskSettings]: [Check, string] } = {
   orchestratorModel: [isOrchestratorModel, "'opus', 'sonnet', 'haiku' or a full model id such as claude-opus-5-5"],
   routines: [(v) => typeof v === 'boolean', 'true or false'],
   collapseMode: [(v) => COLLAPSE_MODES.includes(v as CollapseMode), `one of ${COLLAPSE_MODES.join(', ')}`],
+  forgetWaits: [(v) => typeof v === 'boolean', 'true or false'],
+  forgetWaitsDays: [(v) => typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 365, 'a whole number of days, 1 to 365'],
   coreEngine: [(v) => typeof v === 'boolean', 'true or false'],
 }
 
