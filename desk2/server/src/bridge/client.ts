@@ -138,6 +138,8 @@ export interface AhSessionRow {
   tool?: string
   title: string
   cwd: string
+  /** The store's own key for its folder; a claude.ai Project's session has `claude-projects/<name>` (cloudProjectOf). */
+  project?: string
   last_activity_at: number
   last_role: 'user' | 'assistant' | null
   instance: string | null

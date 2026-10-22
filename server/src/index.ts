@@ -32,7 +32,14 @@ import { registerAskMcpRoute, registerStopHookRoute } from './climayte-ask-mcp'
 import { workers as climayteWorkers, preloadDone, storeLoaded } from './climayte-core'
 import { registerManagerMcpRoute } from './climayte-manager-mcp'
 import { flushCliMayteStore } from './climayte-store-writer'
-import { cloudAccounts, cloudSessionsEnabled, startCloudSessions } from './cloud-sessions'
+import {
+  CLOUD_SESSIONS_SETTING,
+  cloudAccounts,
+  cloudSessionsEnabled,
+  cloudSessionsRunning,
+  startCloudSessions,
+  stopCloudSessions,
+} from './cloud-sessions'
 import { CLOUD_SESSIONS_DIR_ENV, cloudSessionsRoot } from './cloud-sessions-cache'
 import {
   APP_ROOT,
@@ -624,10 +631,33 @@ app.post('/api/update/settings', async (c) => {
   return c.json({ enabled: autoUpdateEnabled(), intervalSecs: getAutoUpdateIntervalSecs() })
 })
 
+// --- cloud sessions (server/src/cloud-sessions.ts) ------------------------------------------------
+
+/** On by the variable (which the switch cannot turn off) or by the switch. */
+const cloudSessionsOn = () => cloudSessionsEnabled() || getSetting(CLOUD_SESSIONS_SETTING) === '1'
+
+/** Starts or stops the poller to match cloudSessionsOn(), at boot and when the switch is flipped. */
+function applyCloudSessions(): void {
+  process.env[CLOUD_SESSIONS_DIR_ENV] ||= join(CONFIG_DIR, 'cloud-sessions')
+  if (cloudSessionsOn() === cloudSessionsRunning()) return
+  if (!cloudSessionsOn()) {
+    stopCloudSessions({ forget: true })
+    return
+  }
+  startCloudSessions({
+    root: cloudSessionsRoot(),
+    accounts: () => cloudAccounts(listCliInstances().map((i) => i.configDir)),
+    log: (line) => console.log(line),
+  })
+}
+
 // --- app settings (hide tray icon, usage auto-refresh; see server/src/db.ts) ------
 const appSettings = () => ({
   hideTrayIcon: hideTrayIconEnabled(),
   desktopCliPairing: getSetting('desktop_cli_pairing') === '1',
+  cloudSessions: cloudSessionsOn(),
+  /** AGENTHYDRA_CLOUD_SESSIONS=1 holds it on whatever the switch says. */
+  cloudSessionsFromEnv: cloudSessionsEnabled(),
   transcriptEditor: getSetting('transcript_editor'),
   transcriptEditorResolved: resolveEditor(
     process.platform,
@@ -692,6 +722,10 @@ app.post('/api/settings', async (c) => {
   }
   if (typeof body.transcriptEditor === 'string')
     setSetting('transcript_editor', body.transcriptEditor.trim())
+  if (typeof body.cloudSessions === 'boolean') {
+    setSetting(CLOUD_SESSIONS_SETTING, body.cloudSessions ? '1' : '0')
+    applyCloudSessions()
+  }
   // setUsageSettings re-arms the background timer, so flipping autoRefresh takes effect immediately
   // (no daemon restart).
   setUsageSettings({
@@ -1493,16 +1527,10 @@ startVersionDriftWatch()
 // nothing. See box-doctor.ts.
 startBoxDoctorWatch()
 
-// Opt-in (AGENTHYDRA_CLOUD_SESSIONS=1): every minute, Claude Code's cloud and Remote Control sessions
-// from claude.ai's own list, plus a live socket for each one that is working. See cloud-sessions.ts.
-if (cloudSessionsEnabled()) {
-  process.env[CLOUD_SESSIONS_DIR_ENV] ||= join(CONFIG_DIR, 'cloud-sessions')
-  startCloudSessions({
-    root: cloudSessionsRoot(),
-    accounts: () => cloudAccounts(listCliInstances().map((i) => i.configDir)),
-    log: (line) => console.log(line),
-  })
-}
+// Opt-in (AGENTHYDRA_CLOUD_SESSIONS=1, or Settings → Connections → Cloud sessions and Projects): every
+// minute, Claude Code's cloud and Remote Control sessions and claude.ai Projects' threads from
+// claude.ai's own list, plus a live socket for each one that is working. See cloud-sessions.ts.
+applyCloudSessions()
 
 // Every minute: builds the managed Claude copy as soon as a new Claude build is installed, so the
 // first Open after an update does not copy 600 MB first. See claude-native-prewarm.ts.

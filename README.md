@@ -208,9 +208,11 @@ server, your proxy and sign-in, building and installing the tray, listing and re
   only `go vet` and a build, the macOS one has not run, and no real proxy or sign-in is under test. Before the
   fork, the hub and tray, then on one shared token, ran in the maintainer's own setup with Windows PCs and were
   tried on a Mac.
-- **Claude Code cloud sessions:** set `AGENTHYDRA_CLOUD_SESSIONS=1`. AgentHydra then asks Anthropic's API, with
+- **Claude Code cloud sessions:** on by default (Settings → Connections → Cloud sessions and Projects turns it off;
+  `AGENTHYDRA_CLOUD_SESSIONS=1` holds it on). AgentHydra asks Anthropic's API, with
   each Claude Code CLI login it finds (or a `claude setup-token` token in `CLAUDE_CODE_OAUTH_TOKEN`), for that
-  account's cloud and Remote Control sessions, and lists them with your local chats. The token needs the
+  account's cloud and Remote Control sessions, and lists them with your local chats; the threads of each claude.ai
+  Project sit in a group named after the Project, with the Project's own chat. The token needs the
   `user:sessions:claude_code` scope; it is never stored, logged or refreshed by AgentHydra.
 - **From a phone:** put a reverse proxy that signs you in first (Cloudflare Access, oauth2-proxy, or a name only
   your VPN resolves) in front of the window, and list its address in `HYDRA_DESK_PUBLIC_ORIGINS`

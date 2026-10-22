@@ -134,8 +134,10 @@ export const CHATGPT_GROUP = 'ChatGPT'
 /** A group holding ChatGPT's conversations (not Pinned or Archived): its header starts a new one. */
 export const holdsChatGpt = (g: Pick<ChatGroup, 'key' | 'entries'>): boolean =>
   g.key !== 'pinned' && g.key !== 'archived' && g.entries.some((e) => e.kind === 'external' && e.session.source === 'chatgpt')
+/** A claude.ai Project's threads and its Project chat have no folder either: unless moved, they sit in their Project's group. */
 const groupOf = (e: SidebarEntry): string | null =>
-  marksOf(e).group ?? (e.kind === 'external' && e.session.source === 'chatgpt' ? CHATGPT_GROUP : null)
+  marksOf(e).group ??
+  (e.kind === 'external' ? (e.session.source === 'chatgpt' ? CHATGPT_GROUP : (e.session.cloudProject ?? null)) : null)
 
 /**
  * Active: Pinned first (its own group, newest first), then one group per folder, and one per group a

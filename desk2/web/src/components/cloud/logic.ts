@@ -323,7 +323,7 @@ export interface DeskPlace {
 }
 
 type DeskChat = Pick<ChatSummary, 'id' | 'sessionId' | 'title' | 'cwd' | 'group' | 'archived' | 'createdAt' | 'updatedAt' | 'model' | 'effort' | 'account'>
-type DeskExternal = Pick<ExternalSession, 'id' | 'title' | 'cwd' | 'group' | 'source' | 'instance' | 'archived' | 'lastActivityAt' | 'model' | 'fromPc'>
+type DeskExternal = Pick<ExternalSession, 'id' | 'title' | 'cwd' | 'group' | 'source' | 'instance' | 'archived' | 'lastActivityAt' | 'model' | 'fromPc' | 'cloudProject'>
 
 /** A cloud row of what the desk knows of a session; what only AgentHydra counts (messages, queued work) is left at nothing. */
 const deskRow = (r: Omit<CloudSession, 'lastCwd' | 'messageCount' | 'dispatched'>): CloudSession => ({ ...r, lastCwd: null, messageCount: 0, dispatched: false })
@@ -373,7 +373,8 @@ export function deskPlaces(chats: DeskChat[], external: DeskExternal[]): Map<str
       effort: null,
       instanceNum: num ? Number(num[1]) : null
     })
-    out.set(s.id, { cwd: s.cwd ?? '', group: s.group, key: s.id, row })
+    // A claude.ai Project's session sits in its Project's group unless it was moved, as in the desk list.
+    out.set(s.id, { cwd: s.cwd ?? '', group: s.group ?? s.cloudProject ?? null, key: s.id, row })
   }
   return out
 }
@@ -477,7 +478,8 @@ export function groupCloud(rows: CloudSession[], s: CloudScopes, thisPc: string,
   for (const r of [...shown].sort(newestFirst)) {
     const place = desk.get(r.id)
     // Moved-to groups ignore case, like folders.
-    if (place?.group) add(byGroup, `group:${place.group.toLowerCase()}`, place.group, null, r)
+    const group = place ? place.group : (r.cloudProject ?? null)
+    if (group) add(byGroup, `group:${group.toLowerCase()}`, group, null, r)
     else {
       const cwd = place ? place.cwd || null : r.cwd
       add(byFolder, cwd ? folderKey(cwd) : '', cwd ? folderLabel(cwd) : NO_FOLDER, cwd, r)
