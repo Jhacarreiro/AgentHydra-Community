@@ -539,6 +539,8 @@ test("another PC's claude.ai Project session goes in its Project's group, not No
   // A folder group of the Project's name already took this PC's Project rows: the other PC's join it too.
   const folder: ChatGroup = { key: 'C:/Users/me/Example', label: 'Example', cwd: 'C:/Users/me/Example', entries: [deskRow('s-b', 30, 'C:/Users/me/Example')] }
   expect(addRemoteToDeskGroups([folder], [thread('r-1', 50)], placing).map((g) => [g.key, g.entries.map((e) => e.id)])).toEqual([['C:/Users/me/Example', ['s-b', 'r-1']]])
+  // Hidden, that folder group is left out, and the other PC's Project rows with it.
+  expect(addRemoteToDeskGroups([], [thread('r-1', 50)], { ...placing, hidden: new Set(['c:/users/me/example']) })).toEqual([])
   expect(addRemoteToDeskGroups([], [thread('r-1', 50)], placing).map((g) => [g.key, g.label, g.entries.map((e) => e.id)])).toEqual([['group:example', 'Example', ['r-1']]])
 })
 
