@@ -298,11 +298,15 @@ describe('sync', () => {
         return new Response('{}', { status: 404 })
       },
     }
-    await syncCloudSessions(opts)
+    const state = new Map()
+    await syncCloudSessions(opts, state)
     const listed = () =>
       Object.fromEntries(
         listForeignSessions('claude-cloud', root).map((s) => [s.session_id, [s.title, s.project]]),
       )
+    // The listed Project chat names its threads at once; the look-ups run behind the pass.
+    expect(listed().cse_t1?.[1]).toBe('claude-projects/Example project')
+    await state.get(account.key)?.naming
     expect(listed()).toEqual({
       cse_chat: ['Project chat', 'claude-projects/Example project'],
       cse_t1: ['Example thread cse_t1', 'claude-projects/Example project'],
@@ -313,7 +317,7 @@ describe('sync', () => {
     expect(getAgentStatus('cse_chat')).toMatchObject({ state: 'blocked', waiting: 'input' })
     // What a look-up found is kept: the next pass asks nothing.
     lookedUp.length = 0
-    await syncCloudSessions(opts)
+    await syncCloudSessions(opts, state)
     expect(lookedUp).toEqual([])
     expect(listed().cse_t2?.[1]).toBe('claude-projects/Example older project')
   })

@@ -415,7 +415,7 @@ export async function getCloudSession(
   try {
     const res = await fetchFn(`${base}/v1/code/sessions/${encodeURIComponent(id)}`, {
       headers: headers(a),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(5_000),
     })
     if (res.status === 404) return { session: null, gone: true }
     if (!res.ok) return { session: null, gone: false }
@@ -428,17 +428,19 @@ export async function getCloudSession(
   }
 }
 
-/** Names the Projects of `rows` in place, looking up the Project chats that are no longer listed. */
-async function nameProjects(
+/**
+ * Looks up the Project chats `unknown` names that are no longer listed, and answers whether anything
+ * was learned (then kept in projects.json). Run behind the discovery pass, never in it: a look-up that
+ * stalls must not hold back the list, the statuses or the sockets.
+ */
+async function lookUpProjects(
   a: CloudAccount,
   base: string,
   root: string,
-  rows: CloudSessionRow[],
+  unknown: string[],
   fetchFn: Fetch,
-): Promise<void> {
+): Promise<boolean> {
   const known = readProjectNames(root, a.key)
-  const unknown = assignProjects(rows, known)
-  if (unknown.length === 0) return
   let learned = false
   const now = Date.now()
   const todo = unknown.filter((id) => (lookupRetryAt.get(id) ?? 0) <= now)
@@ -456,9 +458,37 @@ async function nameProjects(
     }
     learned = true
   }
-  if (!learned) return
-  writeProjectNames(root, a.key, known)
-  assignProjects(rows, known)
+  if (learned) writeProjectNames(root, a.key, known)
+  return learned
+}
+
+/** Names what it can from what is kept, writes the snapshot, and starts the look-ups for the rest. */
+function writeWithProjects(
+  a: CloudAccount,
+  s: AccountState,
+  root: string,
+  rows: CloudSessionRow[],
+  fetchFn: Fetch,
+): void {
+  const unknown = assignProjects(rows, readProjectNames(root, a.key))
+  writeCloudSnapshot(root, a.key, rows)
+  s.rows = rows
+  if (unknown.length === 0 || s.naming || !s.base) return
+  const base = s.base
+  s.naming = (async () => {
+    try {
+      // The newest rows, not the ones this pass started with: a pass may have run meanwhile.
+      // Stopped meanwhile (base cleared): its cache may be gone, and must stay gone.
+      if ((await lookUpProjects(a, base, root, unknown, fetchFn)) && s.base) {
+        assignProjects(s.rows, readProjectNames(root, a.key))
+        writeCloudSnapshot(root, a.key, s.rows)
+      }
+    } catch {
+      // Names only: the rows stand without them.
+    } finally {
+      s.naming = null
+    }
+  })()
 }
 
 // --- live: one WebSocket per working session ---------------------------------
@@ -636,6 +666,10 @@ interface AccountState {
   /** Per session: the last_event_at its history was last replayed for. */
   replayed: Map<string, string>
   backfilling: boolean
+  /** The rows last written, for the Project look-ups to name once they come back. */
+  rows: CloudSessionRow[]
+  /** The Project look-ups running behind the list, if any. */
+  naming: Promise<void> | null
 }
 
 export interface CloudPollerOptions {
@@ -670,6 +704,8 @@ export async function syncCloudSessions(
         nextWatchTry: 0,
         replayed: new Map(),
         backfilling: false,
+        rows: [],
+        naming: null,
       }
       state.set(a.key, s)
     }
@@ -681,8 +717,7 @@ export async function syncCloudSessions(
       continue
     }
     s.base = res.base
-    await nameProjects(a, res.base, opts.root, res.rows, opts.fetchFn ?? fetch)
-    writeCloudSnapshot(opts.root, a.key, res.rows)
+    writeWithProjects(a, s, opts.root, res.rows, opts.fetchFn ?? fetch)
     for (const r of res.rows) recordAgentStatus(cloudStatusEvent(r))
     written.set(a.key, res.rows)
     if (opts.live !== false) {
@@ -818,7 +853,10 @@ export function stopCloudSessions(opts: { forget?: boolean } = {}): void {
   const root = pollerOpts?.root
   if (timer) clearTimeout(timer)
   timer = null
-  for (const s of pollerState.values()) for (const sock of s.sockets.values()) sock.close()
+  for (const s of pollerState.values()) {
+    for (const sock of s.sockets.values()) sock.close()
+    s.base = null
+  }
   pollerState.clear()
   pollerOpts = null
   if (!opts.forget || !root) return
