@@ -360,12 +360,12 @@ export const CONTINUED_LINE = 'Continued in a fresh session'
 
 // Things Hydra Desk watches through AgentHydra (the daemon on 127.0.0.1:7787)
 
-/** A Claude Code session NOT run by Hydra Desk: a Claude Desktop chat, a terminal CLI, a CliMayte worker, Codex. */
+/** A Claude Code session NOT run by Hydra Desk: a Claude Desktop chat, a terminal CLI, a CliMayte worker, Codex; also a ChatGPT conversation (`chatgpt:<id>`, server bridge/chatgpt.ts). */
 export interface ExternalSession {
   id: string // the session id AgentHydra knows it by
   title: string
   cwd: string | null
-  source: 'desktop' | 'cli' | 'climayte' | 'codex' | 'other'
+  source: 'desktop' | 'cli' | 'climayte' | 'codex' | 'chatgpt' | 'other'
   /** The app the Apps filter counts it as when its source does not say: 'claude' for a cloud Claude Code session. */
   app?: string
   instance: string | null // which desktop/CLI instance (label or number) it runs under

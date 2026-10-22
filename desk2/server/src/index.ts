@@ -6,7 +6,6 @@ import { pathToFileURL } from 'node:url'
 import { Hono, type MiddlewareHandler } from 'hono'
 import type { ClientEvent, ServerEvent } from '@shared/protocol'
 import pkg from '../package.json'
-import { chatGptRoutes } from './chatgpt-proxy'
 import { type HelloEvent, type HelloProvider, type HostRoute, type Plugin, type ServerContext, setContext, type WsRoute } from './context'
 import { REAL_HOME } from './real-home'
 import { createSettingsStore, SettingsError } from './settings'
@@ -210,9 +209,6 @@ export async function createServer(opts: CreateServerOptions): Promise<DeskServe
   })
   // First, so it covers every route the plugins add and the built window.
   app.use('*', localOnly)
-
-  // ChatGPT goes through the AgentHydra that holds the browser bridge (chatgpt-proxy.ts), never from the browser.
-  chatGptRoutes(app)
 
   app.get('/api/health', (c) => c.json({ ok: true, version: VERSION, startedAt: STARTED_AT }))
   app.get('/api/settings', (c) => c.json(settings.get()))

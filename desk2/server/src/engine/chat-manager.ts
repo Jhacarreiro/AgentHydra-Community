@@ -184,7 +184,7 @@ const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
 const IMPORT_TITLE = 'Claude Code session'
 /** Outside sessions that cannot be continued here, as their refusal names them. */
-const READ_ONLY_SOURCES: Record<'climayte' | 'other', string> = { climayte: 'CliMayte worker', other: 'outside' }
+const READ_ONLY_SOURCES: Record<'climayte' | 'chatgpt' | 'other', string> = { climayte: 'CliMayte worker', chatgpt: 'ChatGPT', other: 'outside' }
 /** The CliMayte group Hydra Desk's chats run in. */
 export const WORKER_GROUP = 'hydra-desk'
 /** What a worker chat shows as its model: AgentHydra's chat mode launches it on Opus (xhigh), and Desk forces nothing. */

@@ -10,7 +10,6 @@ import { PANE_API } from '@/components/panes/api'
 // The gallery and the demo window (and the fixtures they draw) load only when their route is opened, so
 // the app itself never downloads or parses them.
 const Gallery = defineAsyncComponent(() => import('@/dev/Gallery.vue'))
-const ChatGptView = defineAsyncComponent(() => import('@/components/chatgpt/ChatGptView.vue'))
 // The picture viewer loads after the first paint, out of the files the window needs to draw.
 const Lightbox = defineAsyncComponent(() => import('@/components/transcript/parts/Lightbox.vue'))
 
@@ -23,7 +22,7 @@ const onHash = () => (hash.value = window.location.hash.slice(1))
 onMounted(() => window.addEventListener('hashchange', onHash))
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHash))
 
-const route = computed(() => (hash.value === '/chatgpt' ? 'chatgpt' : hash.value === '/gallery' ? 'gallery' : hash.value.startsWith('/gallery/shell') ? 'demo' : 'app'))
+const route = computed(() => (hash.value === '/gallery' ? 'gallery' : hash.value.startsWith('/gallery/shell') ? 'demo' : 'app'))
 
 const DemoFrame = defineAsyncComponent(async () => {
   const { demoComposerApi, demoPaneApi, demoSource } = await import('@/components/shell/demo')
@@ -52,8 +51,7 @@ const DemoFrame = defineAsyncComponent(async () => {
 </script>
 
 <template>
-  <ChatGptView v-if="route === 'chatgpt'" />
-  <Gallery v-else-if="route === 'gallery'" />
+  <Gallery v-if="route === 'gallery'" />
   <div v-else class="size-full">
     <DemoFrame v-if="route === 'demo'" :key="hash" :start="hash.split('/')[3] ?? ''" />
     <DeskFrame v-else />

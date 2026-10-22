@@ -14,11 +14,14 @@ export function modelName(m: string | null | undefined): string | null {
   return hit ? `${hit[1]!.charAt(0).toUpperCase()}${hit[1]!.slice(1)} ${hit[2]}.${hit[3]}` : (m ?? null)
 }
 
-export const SOURCE_VALUES = ['claude', 'codex', 'opencode', 'hermes', 'dsh', 'zswarm'] as const
+export const SOURCE_VALUES = ['claude', 'codex', 'chatgpt', 'opencode', 'hermes', 'dsh', 'zswarm'] as const
 export type CloudSource = (typeof SOURCE_VALUES)[number]
+/** The apps AgentHydra lists: ChatGPT's conversations come from its hub (server bridge/chatgpt.ts), never from AgentHydra's sessions. */
+const AH_SOURCES = SOURCE_VALUES.filter((v) => v !== 'chatgpt')
 export const SOURCE_LABELS: Record<CloudSource, string> = {
   claude: 'Claude',
   codex: 'Codex',
+  chatgpt: 'ChatGPT',
   opencode: 'OpenCode',
   hermes: 'Hermes',
   dsh: 'DSH',
@@ -77,9 +80,10 @@ export interface CloudScopes {
 
 /** What the list shows until its owner picks otherwise: Claude alone (owner, 2026-10-05: "I don't
  *  necessarily want to see open code or ChatGPT in my sidebar by default, but I want to be able to"),
- *  live sessions only, the last 24 hours, both PCs. */
+ *  live sessions only, the last 24 hours, both PCs. ChatGPT is listed too: it is there only once its hub turned it on
+ *  (owner, 2026-10-22: ChatGPT "devia ter sido integrado como qualquer outra fonte"). */
 export const DEFAULT_SCOPES: CloudScopes = {
-  apps: ['claude'],
+  apps: ['claude', 'chatgpt'],
   instance: null,
   dispatched: [...DISPATCHED_VALUES],
   rateLimit: [...RATE_LIMIT_VALUES],
@@ -164,8 +168,9 @@ export function cloudQuery(s: CloudScopes, search: string): string {
   const claude = s.apps.includes('claude')
   q.set('period', s.period)
   q.set('archived', s.archived.length ? s.archived.join(',') : 'none')
-  const nonHswarm = SOURCE_VALUES.filter((v) => v !== 'zswarm')
-  const source = allOf(s.apps, nonHswarm) && s.apps.length === nonHswarm.length ? '-zswarm' : scope(s.apps, SOURCE_VALUES)
+  const apps = s.apps.filter((a) => a !== 'chatgpt')
+  const nonHswarm = AH_SOURCES.filter((v) => v !== 'zswarm')
+  const source = allOf(apps, nonHswarm) && apps.length === nonHswarm.length ? '-zswarm' : scope(apps, AH_SOURCES)
   if (source) q.set('source', source)
   if (claude && s.instance) q.set('instance', s.instance.length ? s.instance.join(',') : 'none')
   const dispatched = claude ? scope(s.dispatched, DISPATCHED_VALUES) : undefined
@@ -225,7 +230,9 @@ export function rowLead(r: Pick<CloudSession, 'source' | 'fromPc'>, thisPc: stri
 
 /** The muted mark of a chat on this PC from an app that is not Claude, in both lists (the desk list's ExternalRow too); null for Claude's. */
 export function appLead(source: string): RowLead {
-  return source === 'claude' ? null : { kind: 'app', app: source, label: `${sourceName(source)} chat on this PC` }
+  if (source === 'claude') return null
+  // ChatGPT's conversations are the account's, read through its hub, on no PC of their own.
+  return { kind: 'app', app: source, label: source === 'chatgpt' ? 'ChatGPT chat' : `${sourceName(source)} chat on this PC` }
 }
 
 /**
@@ -233,7 +240,7 @@ export function appLead(source: string): RowLead {
  * ('other') only with every app but HSwarm ticked, the way the cloud list treats a session it cannot name.
  */
 export function appShown(app: string, apps: readonly string[]): boolean {
-  return (SOURCE_VALUES as readonly string[]).includes(app) ? apps.includes(app) : allOf(apps, SOURCE_VALUES.filter((v) => v !== 'zswarm'))
+  return (SOURCE_VALUES as readonly string[]).includes(app) ? apps.includes(app) : allOf(apps, AH_SOURCES.filter((v) => v !== 'zswarm'))
 }
 
 /** Every PC the rows name, this one first. */
@@ -322,7 +329,7 @@ type DeskExternal = Pick<ExternalSession, 'id' | 'title' | 'cwd' | 'group' | 'so
 const deskRow = (r: Omit<CloudSession, 'lastCwd' | 'messageCount' | 'dispatched'>): CloudSession => ({ ...r, lastCwd: null, messageCount: 0, dispatched: false })
 
 /** An outside session's source in AgentHydra's spelling (the app it is of); 'other' is a tool the desk does not name. */
-export const ahSource = (s: ExternalSession['source']): string => (s === 'codex' ? 'codex' : s === 'other' ? 'other' : 'claude')
+export const ahSource = (s: ExternalSession['source']): string => (s === 'codex' || s === 'chatgpt' || s === 'other' ? s : 'claude')
 
 /**
  * Every session the desk list lists, by session id: a Desk chat by its session, and the outside sessions

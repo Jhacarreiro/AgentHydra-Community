@@ -131,7 +131,7 @@ const ticked = (k: SubKey): readonly string[] => s.value[k]
 function flip(k: SubKey, universe: readonly string[], v: string) {
   set({ [k]: toggle(ticked(k), universe, v) } as Partial<CloudScopes>)
 }
-const APP_TIPS: Record<string, string> = { claude: 'Claude chats', codex: "Codex (ChatGPT's coding app) chats", opencode: 'OpenCode chats' }
+const APP_TIPS: Record<string, string> = { claude: 'Claude chats', codex: "Codex (ChatGPT's coding app) chats", chatgpt: 'ChatGPT chats', opencode: 'OpenCode chats' }
 const appTip = (v: string, on: boolean) => `${on ? 'Hide' : 'Show'} ${APP_TIPS[v] ?? `${SOURCE_LABELS[v as keyof typeof SOURCE_LABELS]} sessions`}`
 
 const FILTER_TIPS: Record<SidebarFilter, string> = {

@@ -68,15 +68,25 @@ const holdsHere = computed(() => {
   const s = session.value
   return !!s && (s.source === 'cli' || (s.source === 'codex' && !!s.codexAccountId))
 })
+// A ChatGPT conversation keeps its composer whether ChatGPT is answering or not: a message goes into ChatGPT's own
+// composer once, when the person sends it (server bridge/chatgpt.ts), and its Stop stops ChatGPT's answer.
+const chatGpt = computed(() => session.value?.source === 'chatgpt')
 const workingChat = computed(() => {
   const s = session.value
-  if (standIn.value || !s || !isWorking.value || !(s.source === 'desktop' || holdsHere.value)) return null
+  if (standIn.value || !s) return null
+  if (chatGpt.value) return { ...externalChat(s, src.accounts.value), service: 'chatgpt' as const }
+  if (!isWorking.value || !(s.source === 'desktop' || holdsHere.value)) return null
   return externalChat(s, src.accounts.value)
 })
 const INTO_WHY = 'Text only: a message into a working Claude Desktop chat has no pictures or voice.'
+const CHATGPT_WHY = 'Text only: a message for ChatGPT goes in as text, with no pictures or voice.'
 const HOLD_WHY = 'Text only: a message for a chat at work elsewhere is sent when its turn ends, with no pictures or voice.'
 const into = computed(() =>
-  holdsHere.value ? { send: (text: string) => desk.holdFor(props.sessionId, text), why: HOLD_WHY } : { send: sendInto, why: INTO_WHY, stop: stopInto }
+  chatGpt.value
+    ? { send: sendInto, why: CHATGPT_WHY, ...(isWorking.value ? { stop: stopInto } : {}) }
+    : holdsHere.value
+      ? { send: (text: string) => desk.holdFor(props.sessionId, text), why: HOLD_WHY }
+      : { send: sendInto, why: INTO_WHY, stop: stopInto }
 )
 const queuedLines = computed(() => (holdsHere.value ? desk.heldFor(props.sessionId) : queued.value))
 const heldError = computed(() => desk.heldError(props.sessionId))
@@ -86,7 +96,7 @@ const liveChat = computed<ChatSummary | null>(() =>
   workingChat.value
     ? {
         ...workingChat.value,
-        status: session.value?.status === 'needs_you' ? 'needs_you' : 'working',
+        status: session.value?.status === 'needs_you' ? 'needs_you' : isWorking.value ? 'working' : 'idle',
         activity: session.value?.activity ?? null,
         turnStartedAt: doing.value.since ?? null,
         queuedCount: queuedLines.value.length
@@ -98,11 +108,14 @@ let queuedId = 0
 async function sendInto(text: string): Promise<void> {
   const res = await fetch(`/api/external/sessions/${encodeURIComponent(props.sessionId)}/message`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // The window's own send: ChatGPT takes a message only from a person in the window.
+    headers: { 'Content-Type': 'application/json', 'X-Desk-Caller': 'window' },
     body: JSON.stringify({ text } satisfies DesktopMessageRequest)
   })
   const body = (await res.json().catch(() => null)) as (Partial<DesktopMessageResult> & { error?: string }) | null
   if (!res.ok || !body?.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`)
+  // ChatGPT has the message once the send answers: the transcript shows it at once, never as queued.
+  if (chatGpt.value) return void loadItems(true)
   queued.value = [...queued.value, { id: ++queuedId, text }]
 }
 // Stop: Claude Desktop's own Stop for the turn, through AgentHydra's native stop (owner, 2026-10-14: a running chat showed

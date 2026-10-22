@@ -66,7 +66,7 @@ export function fromChat(c: ChatSummary): Subject {
 /** An outside session reports only working, needs you, idle or stale; stale reads as closed. */
 export function fromExternal(s: ExternalSession): Subject {
   return {
-    id: s.id, session: s.id, title: s.title, cwd: s.cwd ?? '', account: s.instance ?? '', source: s.source, status: s.status === 'stale' ? 'closed' : s.status,
+    id: s.id, session: s.id, title: s.title, cwd: s.cwd ?? '', account: s.instance ?? '', source: s.source === 'chatgpt' ? 'other' : s.source, status: s.status === 'stale' ? 'closed' : s.status,
     updatedAt: s.lastActivityAt ?? 0, activity: s.activity, queuedCount: 0, accountAuto: false, limitResetsAt: null, lastError: null
   }
 }

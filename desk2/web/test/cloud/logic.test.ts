@@ -17,6 +17,10 @@ describe('cloudQuery', () => {
     expect(params({ ...DEFAULT_SCOPES, apps: ['claude', 'codex', 'opencode', 'hermes', 'dsh'] })).toMatchObject({ source: '-zswarm' })
   })
 
+  test("ChatGPT's tick never reaches AgentHydra's query: its conversations come from the ChatGPT hub", () => {
+    expect(params({ ...DEFAULT_SCOPES, apps: ['chatgpt'] })).toMatchObject({ source: 'none' })
+  })
+
   test('nothing ticked is AgentHydra\'s none, not "no narrowing"', () => {
     expect(params({ ...DEFAULT_SCOPES, apps: [], archived: [] })).toMatchObject({ source: 'none', archived: 'none' })
   })
@@ -50,7 +54,7 @@ describe('pickApp', () => {
 describe('parseScopes', () => {
   test('an old stored `source` list is dropped for the Apps default, the period kept', () => {
     const stored = JSON.stringify({ source: ['claude', 'codex', 'opencode', 'hermes', 'dsh'], period: '7d' })
-    expect(parseScopes(stored)).toMatchObject({ apps: ['claude'], period: '7d' })
+    expect(parseScopes(stored)).toMatchObject({ apps: ['claude', 'chatgpt'], period: '7d' })
   })
 })
 
@@ -82,6 +86,16 @@ describe("the desk list's Apps scope", () => {
   })
   test('ticking Codex shows them', () => {
     expect(listed(['claude', 'codex'])).toEqual(['claude-cli', 'claude-desktop', 'codex-1'])
+  })
+  test('ChatGPT has a tick of its own', () => {
+    const withGpt = [...external, session('chatgpt:1', 'chatgpt')]
+    const shown = (apps: string[]) => groupChats([], { external: withGpt, showApp: (s) => appShown(ahSource(s.source), apps) }).folders.flatMap((f) => f.entries.map((e) => e.id))
+    expect(shown(['claude'])).not.toContain('chatgpt:1')
+    expect(shown(['claude', 'chatgpt'])).toContain('chatgpt:1')
+    // No folder of its own: a ChatGPT group of its own.
+    const gpt = { ...session('chatgpt:2', 'chatgpt'), cwd: null }
+    const groups = groupChats([], { external: [gpt] }).folders
+    expect(groups.map((g) => [g.label, g.entries.map((e) => e.id)])).toEqual([['ChatGPT', ['chatgpt:2']]])
   })
   test('the unnamed one needs every app but HSwarm', () => {
     expect(listed(['claude', 'codex', 'opencode', 'hermes', 'dsh'])).toContain('unnamed')

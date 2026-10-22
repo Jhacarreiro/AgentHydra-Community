@@ -234,7 +234,8 @@ export default function plugin(app: Hono, ctx: ServerContext): void {
     const [own, others] = await Promise.all([get<ChatSummary[]>('/api/chats'), outside ? get<ExternalSession[]>('/api/external/sessions') : null])
     const subjects = [
       ...(own ?? []).filter((ch) => !ch.archived).map((ch) => ({ s: fromChat(ch), items: `/api/chats/${encodeURIComponent(ch.id)}/items` })),
-      ...(others ?? []).filter((x) => !x.archived && x.status !== 'stale').map((x) => ({ s: fromExternal(x), items: `/api/external/sessions/${encodeURIComponent(x.id)}/items` }))
+      // ChatGPT's conversations are a person's alone: nothing here ever writes to them.
+      ...(others ?? []).filter((x) => !x.archived && x.status !== 'stale' && x.source !== 'chatgpt').map((x) => ({ s: fromExternal(x), items: `/api/external/sessions/${encodeURIComponent(x.id)}/items` }))
     ]
       .filter(({ s }) => now - s.updatedAt < days * 86_400_000)
       .sort((a, b) => b.s.updatedAt - a.s.updatedAt)
