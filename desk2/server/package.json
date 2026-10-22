@@ -1,6 +1,6 @@
 {
   "name": "@hydra-desk/server",
-  "version": "2026.10.4",
+  "version": "2026.10.5",
   "private": true,
   "description": "The server of AgentHydra's window: chats, connectors, dev servers and the bridge to AgentHydra's daemon.",
   "license": "MIT",

@@ -1230,6 +1230,56 @@ fn enable_non_client_regions(view: &wry::WebView) -> bool {
     unsafe { s9.SetIsNonClientRegionSupportEnabled(true) }.is_ok()
 }
 
+/// Lets Desk's own page (`origin`) show notifications. WebView2 never prompts for them: a request nobody handles is
+/// denied, so `Notification.requestPermission()` answered "denied" and no chat-finished notification ever showed.
+/// The profile's grant also overrides a denial a past run saved; the request handler covers a runtime too old for
+/// it. Page tabs (other sites) are never granted.
+fn allow_notifications(view: &wry::WebView, origin: &str) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile4, ICoreWebView2_13, COREWEBVIEW2_PERMISSION_KIND,
+        COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+    };
+    use webview2_com::{PermissionRequestedEventHandler, SetPermissionStateCompletedHandler};
+    use windows::core::{Interface, HSTRING, PWSTR};
+    use wry::WebViewExtWindows;
+    let Ok(core) = (unsafe { view.controller().CoreWebView2() }) else {
+        return;
+    };
+    if let Some(p4) = core
+        .cast::<ICoreWebView2_13>()
+        .ok()
+        .and_then(|c| unsafe { c.Profile() }.ok())
+        .and_then(|p| p.cast::<ICoreWebView2Profile4>().ok())
+    {
+        let done = SetPermissionStateCompletedHandler::create(Box::new(|_| Ok(())));
+        let _ = unsafe {
+            p4.SetPermissionState(
+                COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+                &HSTRING::from(origin),
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                &done,
+            )
+        };
+    }
+    let origin = origin.to_string();
+    let handler = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = args else { return Ok(()) };
+        let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+        unsafe { args.PermissionKind(&mut kind)? };
+        if kind != COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
+            return Ok(());
+        }
+        let mut uri = PWSTR::null();
+        unsafe { args.Uri(&mut uri)? };
+        if origin_of(&webview2_com::take_pwstr(uri)) == origin {
+            unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)? };
+        }
+        Ok(())
+    }));
+    let mut token = Default::default();
+    let _ = unsafe { core.add_PermissionRequested(&handler, &mut token) };
+}
+
 /// A view's (playing, muted) as the runtime reports them now.
 fn audio_state(
     wv: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8,
@@ -1727,6 +1777,7 @@ fn build_webview(
         .build(window)
         .expect("webview");
     let regions = main && enable_non_client_regions(&view);
+    allow_notifications(&view, origin);
     if main {
         let _ = view.load_url(url);
     }

@@ -295,7 +295,8 @@ export function useAgentHydraSettings(api: PaneApi) {
     const u = update.value
     const lines = [applyNote.value, applyError.value].filter((l): l is string => !!l)
     if (updateState.value === 'blocked') lines.push(`An update is waiting but cannot be applied: ${(u?.reason ?? 'blocked').replace(/[.\s]+$/, '')}.`)
-    if (updateState.value === 'available') lines.push('An update is waiting. Click the number to install it; AgentHydra restarts.')
+    if (updateState.value === 'available') lines.push('An update is ready. Install update restarts AgentHydra.')
+    if (updateState.value === 'up-to-date' && !lines.length) lines.push('You have the latest version.')
     // A release build with updates off, or a checkout whose remote is another repository: the daemon says why.
     if (updateState.value === 'no-source') lines.push(u?.reason ? asSentence(u.reason) : 'This install is not linked to a Git remote, so there is nowhere to pull new versions from.')
     return lines
