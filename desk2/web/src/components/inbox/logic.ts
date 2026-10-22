@@ -15,7 +15,7 @@
 // screen. Later puts one at the very end, behind everything that waits, in the order Later was pressed.
 import type { ChatStatus, ChatSummary, ExternalSession } from '@shared/protocol'
 import type { View } from '@/components/shell/logic'
-import { sourceLabel } from '@/components/sidebar/logic'
+import { sessionSourceLabel } from '@/components/sidebar/logic'
 import { isExternalChatId, NEW_CHATGPT, sessionOfChatId } from '@/components/external/logic'
 
 /** An outside session never opened here counts as waiting only when it wrote this recently. */
@@ -60,7 +60,7 @@ function externalEntry(s: ExternalSession): InboxEntry {
     key: s.id,
     view: { kind: 'external', id: s.id },
     title: s.title,
-    source: sourceLabel(s.source),
+    source: sessionSourceLabel(s),
     blocking: s.status === 'needs_you',
     since: s.lastActivityAt ?? 0,
     busy: s.status === 'working'

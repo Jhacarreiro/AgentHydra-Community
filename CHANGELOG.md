@@ -9,6 +9,14 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+**TL;DR**
+
+- **A Claude Code cloud session says so, not "Another app"**
+
+**Everything in Unreleased**
+
+- **Cloud sessions named.** A Claude Code cloud session or claude.ai Project thread said "Running in Another app" in its chat view, its row and Waiting on you. It now says Claude Code cloud, or the claude.ai Project it belongs to.
+
 ## [2026.10.5] - 2026-10-22
 
 **TL;DR**

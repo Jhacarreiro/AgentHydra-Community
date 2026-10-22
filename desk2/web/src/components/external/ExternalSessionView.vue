@@ -3,7 +3,7 @@ import { computed, ref, shallowRef, watch, onUnmounted } from 'vue'
 import type { ChatSummary, DesktopMessageRequest, DesktopMessageResult, DesktopStopResult, TranscriptItem } from '@shared/protocol'
 import { useShellSource } from '@/components/shell/source'
 import { usePaneApi } from '@/components/panes/api'
-import { externalGlyph, glyphDotClass, sourceLabel } from '@/components/sidebar/logic'
+import { externalGlyph, glyphDotClass, sessionSourceLabel } from '@/components/sidebar/logic'
 import { useDesk } from '@/stores/desk'
 import { outsideTasks } from '@/components/tasks/api'
 import TranscriptView from '@/components/transcript/TranscriptView.vue'
@@ -163,7 +163,7 @@ const glyph = computed(() => (session.value ? externalGlyph(session.value) : nul
 const where = computed(() => {
   const s = session.value
   if (!s) return ''
-  return `${sourceLabel(s.source)}${s.instance ? ` ${s.instance}` : ''}`
+  return `${sessionSourceLabel(s)}${s.instance ? ` ${s.instance}` : ''}`
 })
 const dotClass = computed(() => glyphDotClass(glyph.value ?? { shape: 'ring', tone: 'muted', motion: 'none' }))
 // Working there, the window's orange working mark stands in for the blinking dot (owner, 2026-10-08: "a fun ...
