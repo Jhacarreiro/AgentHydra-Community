@@ -214,8 +214,9 @@ describe('the queue moving on', () => {
     expect(inbox.entries.value.map((e) => e.key)).toEqual(['b', 'a'])
   })
 
-  test('Done takes an outside session out until it writes again', async () => {
-    const { world, inbox, tick } = setup([], [session('s1', { lastActivityAt: NOW - 2 * MIN }), session('s2', { lastActivityAt: NOW - MIN })])
+  test('Done takes an outside session out until it writes again, though it still reads as waiting', async () => {
+    // A claude.ai Project thread resolved there can read blocked for weeks: Done is how it stops waiting here.
+    const { world, inbox, tick } = setup([], [session('s1', { status: 'needs_you', lastActivityAt: NOW - 2 * MIN }), session('s2', { lastActivityAt: NOW - MIN })])
     inbox.start()
     await nextTick()
     expect(world.selected).toEqual({ kind: 'external', id: 's1' })
@@ -226,7 +227,8 @@ describe('the queue moving on', () => {
     expect(inbox.waiting.value.map((e) => e.key)).toEqual(['s2'])
     world.external[0]!.lastActivityAt = NOW + 5 * MIN
     await nextTick()
-    expect(inbox.waiting.value.map((e) => e.key)).toEqual(['s2', 's1'])
+    // Written again, it waits again, first as a stopped agent.
+    expect(inbox.waiting.value.map((e) => e.key)).toEqual(['s1', 's2'])
   })
 
   test('a conversation answered from somewhere else moves the queue on', async () => {

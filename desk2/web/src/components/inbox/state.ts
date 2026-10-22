@@ -18,6 +18,7 @@ export const SEEN_MAX = 500
 const ON_KEY = 'hydra-desk.inbox.on'
 const AUTO_KEY = 'hydra-desk.inbox.auto'
 const SEEN_KEY = 'hydra-desk.inbox.seen'
+const DONE_KEY = 'hydra-desk.inbox.done'
 
 export interface InboxDeps {
   chats: () => readonly ChatSummary[]
@@ -39,9 +40,9 @@ export interface PendingSend {
   place: number | undefined
 }
 
-function readSeen(storage: InboxDeps['storage']): Map<string, number> {
+function readSeen(storage: InboxDeps['storage'], key = SEEN_KEY): Map<string, number> {
   try {
-    const raw = JSON.parse(storage?.getItem(SEEN_KEY) ?? '[]')
+    const raw = JSON.parse(storage?.getItem(key) ?? '[]')
     if (Array.isArray(raw)) return new Map(raw.filter((p): p is [string, number] => Array.isArray(p) && typeof p[0] === 'string' && typeof p[1] === 'number'))
   } catch {
     // a broken value is nothing seen
@@ -63,6 +64,7 @@ export function createInbox(deps: InboxDeps) {
   const on = ref(deps.storage?.getItem(ON_KEY) === '1')
   const auto = ref(deps.storage?.getItem(AUTO_KEY) !== '0')
   const seen = shallowRef(readSeen(deps.storage))
+  const doneAt = shallowRef(readSeen(deps.storage, DONE_KEY))
   const later = shallowRef(new Map<string, number>())
   const answered = shallowRef(new Set<string>())
   /** What the queue holds, each with its place (when the queue took it): everything that waited while it was on, until
@@ -78,7 +80,7 @@ export function createInbox(deps: InboxDeps) {
   let quiet: string | null = null
 
   const entriesFor = (hold: ReadonlyMap<string, number>): InboxEntry[] =>
-    inboxEntries({ chats: deps.chats(), external: deps.external(), seen: seen.value, later: later.value, answered: answered.value, held: hold, now: now() })
+    inboxEntries({ chats: deps.chats(), external: deps.external(), seen: seen.value, done: doneAt.value, later: later.value, answered: answered.value, held: hold, now: now() })
   /** Everything the queue holds and everything that waits; a conversation that is only on screen is not in it. */
   const entries = computed(() => entriesFor(held.value))
   /** What waits now, before the queue holds it. */
@@ -109,6 +111,17 @@ export function createInbox(deps: InboxDeps) {
     while (next.size > SEEN_MAX) next.delete(next.keys().next().value!)
     seen.value = next
     store(SEEN_KEY, JSON.stringify([...next]))
+  }
+
+  /** Done on an outside session: out of what waits until it writes again, whatever its status says. */
+  function markDone(key: string) {
+    if (!deps.external().some((s) => s.id === key)) return
+    const next = new Map(doneAt.value)
+    next.delete(key)
+    next.set(key, now())
+    while (next.size > SEEN_MAX) next.delete(next.keys().next().value!)
+    doneAt.value = next
+    store(DONE_KEY, JSON.stringify([...next]))
   }
 
   function go(entry: InboxEntry | null) {
@@ -233,7 +246,10 @@ export function createInbox(deps: InboxDeps) {
     const key = keep.value
     if (!key) return
     if (deps.chats().some((c) => c.id === key)) deps.markRead(key)
-    else markSeen(key)
+    else {
+      markSeen(key)
+      markDone(key)
+    }
     drop(key)
     go(firstOther(entries.value, key))
   }
