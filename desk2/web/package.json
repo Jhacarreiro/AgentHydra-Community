@@ -1,6 +1,6 @@
 {
   "name": "@hydra-desk/web",
-  "version": "2026.10.3",
+  "version": "2026.10.4",
   "private": true,
   "description": "AgentHydra's window: the web app its native host shows.",
   "license": "MIT",
