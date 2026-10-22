@@ -94,21 +94,12 @@ const versionColor = computed(() => {
       return 'text-text-2'
   }
 })
-const versionTitle = computed(() => {
-  switch (props.ah.updateState.value) {
-    case 'checking':
-      return 'Checking for updates…'
-    case 'available':
-      return 'Update available. Click to install it and restart AgentHydra.'
-    case 'blocked':
-      return 'An update is waiting but blocked. Click to check again.'
-    case 'no-source':
-      return "Updates can't be checked from this install."
-    default:
-      return 'Up to date. Click to check again.'
-  }
+const updateLabel = computed(() => {
+  if (props.ah.applying.value) return 'Updating…'
+  if (props.ah.checking.value) return 'Checking…'
+  return props.ah.updateState.value === 'available' ? 'Install update' : 'Check for updates'
 })
-function onVersion() {
+function onUpdateButton() {
   if (props.ah.checking.value || props.ah.applying.value) return
   if (props.ah.updateState.value === 'available') void props.ah.applyUpdate()
   else void props.ah.checkUpdate()
@@ -133,20 +124,22 @@ function onVersion() {
     <span class="text-ui leading-4.75 text-text-muted">AgentHydra is not answering</span>
   </Tip>
 
-  <template v-else-if="id === 'ahVersion'">
-    <Tip :label="versionTitle">
-      <button
-        type="button"
-        class="flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-(--radius-6) px-2 font-mono text-ui leading-4.75 transition-colors duration-60 hover:bg-fill-hover focus-visible:shadow-(--focus-ring) focus-visible:outline-none disabled:opacity-70"
-        :disabled="ah.applying.value"
-        @click="onVersion"
-      >
-        <RefreshCw v-if="ah.checking.value || ah.applying.value" class="size-3.5 animate-spin" :class="versionColor" />
-        <span :class="versionColor">{{ ah.update.value?.currentVersion ? `v${ah.update.value.currentVersion}` : '…' }}</span>
-        <span v-if="ah.update.value?.currentCommit" class="text-text-muted">· {{ ah.update.value.currentCommit.slice(0, 7) }}</span>
-      </button>
-    </Tip>
-  </template>
+  <div v-else-if="id === 'ahVersion'" class="flex shrink-0 items-center gap-3">
+    <span class="font-mono text-ui leading-4.75">
+      <span :class="versionColor">{{ ah.update.value?.currentVersion ? `v${ah.update.value.currentVersion}` : '…' }}</span>
+      <span v-if="ah.update.value?.currentCommit" class="text-text-muted"> · {{ ah.update.value.currentCommit.slice(0, 7) }}</span>
+    </span>
+    <button
+      type="button"
+      :class="BUTTON"
+      class="gap-1.5"
+      :disabled="ah.checking.value || ah.applying.value || ah.updateState.value === 'no-source'"
+      @click="onUpdateButton"
+    >
+      <RefreshCw v-if="ah.checking.value || ah.applying.value" class="size-3.5 animate-spin" />
+      {{ updateLabel }}
+    </button>
+  </div>
 
   <PaneSwitch
     v-else-if="id === 'ahAutoUpdate'"

@@ -367,7 +367,7 @@ export const SETTINGS_ROWS: SettingsRow[] = [
     section: 'updates',
     group: 'AgentHydra',
     label: 'Version',
-    description: 'The AgentHydra engine behind every account page. Click the number to check again, or to install a waiting update.'
+    description: 'The AgentHydra engine behind every account page.'
   },
   {
     id: 'ahAutoUpdate',

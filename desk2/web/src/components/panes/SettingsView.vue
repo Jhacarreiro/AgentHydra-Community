@@ -171,7 +171,12 @@ async function testNotification() {
   let perm = Notification.permission
   if (perm === 'default') perm = await Notification.requestPermission()
   if (perm !== 'granted') {
-    notifyNote.value = 'Notifications are blocked for this window.'
+    // AgentHydra's own window grants them to Desk (launcher/host, allow_notifications); a window from before that
+    // change refuses them until it is reopened. A browser keeps the choice in its site settings.
+    notifyNote.value =
+      'agentHydraHost' in window
+        ? 'This window refused notifications. Close AgentHydra and open it again to allow them.'
+        : "Notifications are blocked for this page. Allow them in the browser's site settings and test again."
     return
   }
   new Notification('AgentHydra', { body: 'Notifications work. You will see one when a chat finishes or needs you.' })

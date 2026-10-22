@@ -12,10 +12,14 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 **TL;DR**
 
 - **Waiting on you: answer every waiting conversation in a row, moving to the next as you answer**
+- **Notifications now show in AgentHydra's window on Windows**
+- **A Check for updates button in Settings → Updates**
 
 **Everything in Unreleased**
 
 - **Waiting on you.** A new inbox button in the title bar shows how many conversations wait on you, from Desk, Claude Desktop, the CLI, claude.ai, Codex and ChatGPT, and walks them one by one: stopped agents first, then the oldest. Answer one and the next opens at once; your answer goes after 5 seconds, so Undo can still take it back. Done, Later and Next handle the rest.
+- **Notifications work in the window.** AgentHydra's own window on Windows refused every notification, so Settings' Test said they were blocked and a finished chat never showed one. The window now allows them; close and reopen AgentHydra once after updating.
+- **Check for updates button.** Settings → Updates has a normal Check for updates button next to the version, which turns into Install update when a newer AgentHydra is ready, instead of asking you to click the version number.
 
 ## [2026.10.4] - 2026-10-22
 
