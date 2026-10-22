@@ -8,6 +8,8 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { type CloudList, type DesktopMessageRequest, type DesktopMessageResult, type DesktopStopResult, type ExternalBranchRequest, type ExternalBranchResult, OLDER_BEFORE_HEADER, OLDER_END_HEADER } from '@shared/protocol'
 import type { ServerContext } from '../context'
 import { type Bridge, BridgeError, bridge, configureBridge } from '../bridge'
+import { isChatGptId } from '../bridge/chatgpt'
+import { callerKind } from '../caller'
 import { type AhCloudRow, CLOUD_TIMEOUT_MS, cloudQuery, toCloudInstance, toCloudSession } from '../bridge/cloud'
 import { createPoller } from '../bridge/poller'
 import { SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, SEARCH_MIN_CHARS } from '../bridge/search'
@@ -50,9 +52,34 @@ async function desktopMessage(c: Context, b: Bridge): Promise<Response> {
   const holdSecs = typeof req?.holdSecs === 'number' && req.holdSecs > 0 ? req.holdSecs : undefined
   try {
     const id = c.req.param('id') ?? ''
+    // A ChatGPT conversation: the person's message, typed into ChatGPT once (bridge/chatgpt.ts). Only the window sends
+    // there, as a person presses Send: an agent, the orchestrator or a script is refused.
+    if (isChatGptId(id)) {
+      if (callerKind(c.req.raw.headers) !== 'window') return c.json({ error: 'Only a person sends to ChatGPT, from its chat in the window.' }, 403)
+      await b.chatGptSend(id, text.trim())
+      return c.json({ ok: true, route: 'chatgpt', delivered: true, detail: '' } satisfies DesktopMessageResult)
+    }
     const r = await b.client.sendToDesktopChat(id, text.trim(), holdSecs)
     if (!r.ok || !r.delivered) return c.json({ error: r.detail || `AgentHydra did not deliver the message to ${id}` }, 422)
     return c.json({ ok: true, route: r.route ?? 'peer', delivered: true, detail: r.detail ?? '' } satisfies DesktopMessageResult)
+  } catch (err) {
+    return fail(c, b, err)
+  }
+}
+
+// A new ChatGPT conversation, from the person's first message in the window (only there, as for any ChatGPT send).
+async function chatGptNew(c: Context, b: Bridge): Promise<Response> {
+  if (callerKind(c.req.raw.headers) !== 'window') return c.json({ error: 'Only a person sends to ChatGPT, from its chat in the window.' }, 403)
+  let req: Partial<DesktopMessageRequest> | null
+  try {
+    req = (await c.req.json()) as Partial<DesktopMessageRequest> | null
+  } catch {
+    return c.json({ error: 'the body must be JSON: { "text": "..." }' }, 400)
+  }
+  const text = req?.text
+  if (typeof text !== 'string' || !text.trim()) return c.json({ error: 'text is required' }, 400)
+  try {
+    return c.json({ ok: true, id: await b.chatGptStart(text.trim()) })
   } catch (err) {
     return fail(c, b, err)
   }
@@ -62,6 +89,10 @@ async function desktopMessage(c: Context, b: Bridge): Promise<Response> {
 async function desktopStop(c: Context, b: Bridge): Promise<Response> {
   const id = c.req.param('id') ?? ''
   try {
+    if (isChatGptId(id)) {
+      if (!(await b.chatGptStop(id))) return c.json({ error: 'ChatGPT had no answer to stop' }, 422)
+      return c.json({ ok: true } satisfies DesktopStopResult)
+    }
     const r = await b.client.stopDesktopChat(id)
     if (!r.ok || r.verified !== true) return c.json({ error: `AgentHydra did not stop ${id}` }, 422)
     return c.json({ ok: true } satisfies DesktopStopResult)
@@ -214,6 +245,7 @@ export default function plugin(app: Hono, ctx: ServerContext): void {
       return item ? c.json(item) : c.json({ error: 'no such item' }, 404)
     }),
   )
+  app.post('/api/external/chatgpt/new', (c) => chatGptNew(c, b))
   app.post('/api/external/sessions/:id/message', (c) => desktopMessage(c, b))
   app.post('/api/external/sessions/:id/stop', (c) => desktopStop(c, b))
   app.post('/api/external/sessions/:id/branch', (c) => branchSession(c, b))

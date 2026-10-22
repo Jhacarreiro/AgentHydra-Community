@@ -19,7 +19,7 @@ import SessionHeader from '@/components/session-header/SessionHeader.vue'
 import { displayItems, type FindHit } from '@/components/session-header/logic'
 import { displayPrefs } from '@/components/session-header/state'
 import { advanceCursor, cursorMoved, EXTERNAL_PAGE, externalIndexBySession, mergeRecent, prependPage, startCursor, unloadedCount, type OlderCursor } from './paging'
-import { continueLine, externalChat, holderOf, knownResumeAccount, resumable, whereLabel } from './logic'
+import { continueLine, externalChat, holderOf, knownResumeAccount, NEW_CHATGPT, newChatGptSession, resumable, whereLabel } from './logic'
 
 // A session running outside Hydra Desk, in the same column as a chat. A Claude Code session from Claude
 // Desktop or a terminal opens like one of its own chats: idle there, the live composer, whose first
@@ -50,7 +50,8 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 let pollInterval: ReturnType<typeof setInterval> | null = null
 
-const session = computed(() => src.external.value.find((s) => s.id === props.sessionId))
+const isNew = computed(() => props.sessionId === NEW_CHATGPT)
+const session = computed(() => (isNew.value ? newChatGptSession() : src.external.value.find((s) => s.id === props.sessionId)))
 const isWorking = computed(() => session.value?.status === 'working' || session.value?.status === 'needs_you')
 const usable = computed(() => !!session.value && resumable(session.value))
 const shown = computed(() => displayItems(items.value, displayPrefs.value))
@@ -68,15 +69,25 @@ const holdsHere = computed(() => {
   const s = session.value
   return !!s && (s.source === 'cli' || (s.source === 'codex' && !!s.codexAccountId))
 })
+// A ChatGPT conversation keeps its composer whether ChatGPT is answering or not: a message goes into ChatGPT's own
+// composer once, when the person sends it (server bridge/chatgpt.ts), and its Stop stops ChatGPT's answer.
+const chatGpt = computed(() => session.value?.source === 'chatgpt')
 const workingChat = computed(() => {
   const s = session.value
-  if (standIn.value || !s || !isWorking.value || !(s.source === 'desktop' || holdsHere.value)) return null
+  if (standIn.value || !s) return null
+  if (chatGpt.value) return { ...externalChat(s, src.accounts.value), service: 'chatgpt' as const }
+  if (!isWorking.value || !(s.source === 'desktop' || holdsHere.value)) return null
   return externalChat(s, src.accounts.value)
 })
 const INTO_WHY = 'Text only: a message into a working Claude Desktop chat has no pictures or voice.'
+const CHATGPT_WHY = 'Text only: a message for ChatGPT goes in as text, with no pictures or voice.'
 const HOLD_WHY = 'Text only: a message for a chat at work elsewhere is sent when its turn ends, with no pictures or voice.'
 const into = computed(() =>
-  holdsHere.value ? { send: (text: string) => desk.holdFor(props.sessionId, text), why: HOLD_WHY } : { send: sendInto, why: INTO_WHY, stop: stopInto }
+  chatGpt.value
+    ? { send: sendInto, why: CHATGPT_WHY, ...(isWorking.value ? { stop: stopInto } : {}) }
+    : holdsHere.value
+      ? { send: (text: string) => desk.holdFor(props.sessionId, text), why: HOLD_WHY }
+      : { send: sendInto, why: INTO_WHY, stop: stopInto }
 )
 const queuedLines = computed(() => (holdsHere.value ? desk.heldFor(props.sessionId) : queued.value))
 const heldError = computed(() => desk.heldError(props.sessionId))
@@ -86,7 +97,7 @@ const liveChat = computed<ChatSummary | null>(() =>
   workingChat.value
     ? {
         ...workingChat.value,
-        status: session.value?.status === 'needs_you' ? 'needs_you' : 'working',
+        status: session.value?.status === 'needs_you' ? 'needs_you' : isWorking.value ? 'working' : 'idle',
         activity: session.value?.activity ?? null,
         turnStartedAt: doing.value.since ?? null,
         queuedCount: queuedLines.value.length
@@ -95,14 +106,32 @@ const liveChat = computed<ChatSummary | null>(() =>
 )
 const queued = ref<{ id: number; text: string }[]>([])
 let queuedId = 0
+/** Said under a new ChatGPT chat whose message went in but whose conversation ChatGPT had not shown yet. */
+const startedNote = ref('')
+// A new ChatGPT chat's first message starts the conversation, which then opens in its place.
+async function startChatGpt(text: string): Promise<void> {
+  const res = await fetch('/api/external/chatgpt/new', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Desk-Caller': 'window' },
+    body: JSON.stringify({ text } satisfies DesktopMessageRequest)
+  })
+  const body = (await res.json().catch(() => null)) as { ok?: boolean; id?: string | null; error?: string } | null
+  if (!res.ok || !body?.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`)
+  if (body.id) src.select({ kind: 'external', id: body.id })
+  else startedNote.value = 'Sent. ChatGPT has not shown the new conversation yet; it will appear in the sidebar.'
+}
 async function sendInto(text: string): Promise<void> {
+  if (isNew.value) return startChatGpt(text)
   const res = await fetch(`/api/external/sessions/${encodeURIComponent(props.sessionId)}/message`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // The window's own send: ChatGPT takes a message only from a person in the window.
+    headers: { 'Content-Type': 'application/json', 'X-Desk-Caller': 'window' },
     body: JSON.stringify({ text } satisfies DesktopMessageRequest)
   })
   const body = (await res.json().catch(() => null)) as (Partial<DesktopMessageResult> & { error?: string }) | null
   if (!res.ok || !body?.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`)
+  // ChatGPT has the message once the send answers: the transcript shows it at once, never as queued.
+  if (chatGpt.value) return void loadItems(true)
   queued.value = [...queued.value, { id: ++queuedId, text }]
 }
 // Stop: Claude Desktop's own Stop for the turn, through AgentHydra's native stop (owner, 2026-10-14: a running chat showed
@@ -123,7 +152,13 @@ watch(items, (list) => {
     return false
   })
 })
-watch(() => props.sessionId, () => (queued.value = []))
+watch(
+  () => props.sessionId,
+  () => {
+    queued.value = []
+    startedNote.value = ''
+  }
+)
 const glyph = computed(() => (session.value ? externalGlyph(session.value) : null))
 const where = computed(() => {
   const s = session.value
@@ -179,6 +214,11 @@ function sameItems(a: TranscriptItem[], b: TranscriptItem[]): boolean {
 }
 
 async function loadItems(quiet = false) {
+  if (isNew.value) {
+    recent.value = []
+    loading.value = false
+    return
+  }
   try {
     if (!quiet) loading.value = true
     error.value = null
@@ -388,6 +428,7 @@ onUnmounted(() => {
         Not sent: {{ heldError }} It is back in the box.
       </p>
       <!-- Idle: in place or as a copy, and on which account (the info mark in the composer's toolbar says it on hover). -->
+      <p v-if="isNew && startedNote" class="mx-auto w-full max-w-3xl px-6 pb-1 text-ui-sm text-(--text-muted)" role="status">{{ startedNote }}</p>
       <Composer :key="composerChat.id" :chat="composerChat" :note="standIn ? continueNote || undefined : undefined" :into="standIn ? undefined : into" />
     </template>
 

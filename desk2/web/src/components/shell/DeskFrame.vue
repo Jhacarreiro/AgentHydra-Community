@@ -59,6 +59,7 @@ import { useElementSize } from '@vueuse/core'
 import { rememberScreen, restoreScreen, type ScreenMemory } from '@/lib/view-memory'
 import { useShellSource } from './source'
 import { externalIndexBySession } from '@/components/external/paging'
+import { NEW_CHATGPT, NEW_CHATGPT_TITLE } from '@/components/external/logic'
 import { restartServer, updateOffer } from '@/lib/server-update'
 import { lazyPanel, prefetchPanels } from '@/lib/lazy-panel'
 import { waitForNextPaint } from '@/lib/wait-for-next-paint'
@@ -186,7 +187,7 @@ watch(
     return v.kind === 'external' ? v.id : null
   },
   async (id) => {
-    if (!id || !src.ensureExternal || src.external.value.some((s) => s.id === id)) return
+    if (!id || id === NEW_CHATGPT || !src.ensureExternal || src.external.value.some((s) => s.id === id)) return
     fetchingSession.value = id
     try {
       await src.ensureExternal(id)
@@ -201,6 +202,7 @@ watch(
 
 const viewTitle = computed(() => {
   const v = view.value
+  if (v.kind === 'external' && v.id === NEW_CHATGPT) return NEW_CHATGPT_TITLE
   if (v.kind === 'external') return src.external.value.find((s) => s.id === v.id)?.title ?? (fetchingSession.value === v.id ? 'Loading session…' : 'Session')
   return ''
 })

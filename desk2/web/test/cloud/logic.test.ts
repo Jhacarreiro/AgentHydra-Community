@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { CloudSession, ExternalSession } from '@shared/protocol'
 import { DEFAULT_SCOPES, type CloudScopes, cloudOnlyKeys, cloudQuery, deskOnPcs, deskPlaces, effectiveScopes, groupCloud, hitsOnThisPc, localOnly, parseScopes, pcKept, pickApp, remoteSessions, type RowLead, rowLead, ahSource, appShown } from '../../src/components/cloud/logic'
-import { dropHidden, groupChats, groupOrderKey, recordCloudOrder, recordDeskOrder, type SidebarOrder } from '../../src/components/sidebar/logic'
+import { dropHidden, groupChats, groupOrderKey, holdsChatGpt, recordCloudOrder, recordDeskOrder, type SidebarOrder } from '../../src/components/sidebar/logic'
 
 // The cloud list asks AgentHydra's GET /api/sessions (through Desk's /api/cloud/sessions) in AgentHydra's
 // own scope spelling. A wrong spelling does not fail loudly there: an unknown value falls back to a
@@ -15,6 +15,10 @@ describe('cloudQuery', () => {
 
   test('every app but HSwarm is the -zswarm shorthand', () => {
     expect(params({ ...DEFAULT_SCOPES, apps: ['claude', 'codex', 'opencode', 'hermes', 'dsh'] })).toMatchObject({ source: '-zswarm' })
+  })
+
+  test("ChatGPT's tick never reaches AgentHydra's query: its conversations come from the ChatGPT hub", () => {
+    expect(params({ ...DEFAULT_SCOPES, apps: ['chatgpt'] })).toMatchObject({ source: 'none' })
   })
 
   test('nothing ticked is AgentHydra\'s none, not "no narrowing"', () => {
@@ -50,7 +54,7 @@ describe('pickApp', () => {
 describe('parseScopes', () => {
   test('an old stored `source` list is dropped for the Apps default, the period kept', () => {
     const stored = JSON.stringify({ source: ['claude', 'codex', 'opencode', 'hermes', 'dsh'], period: '7d' })
-    expect(parseScopes(stored)).toMatchObject({ apps: ['claude'], period: '7d' })
+    expect(parseScopes(stored)).toMatchObject({ apps: ['claude', 'chatgpt'], period: '7d' })
   })
 })
 
@@ -82,6 +86,20 @@ describe("the desk list's Apps scope", () => {
   })
   test('ticking Codex shows them', () => {
     expect(listed(['claude', 'codex'])).toEqual(['claude-cli', 'claude-desktop', 'codex-1'])
+  })
+  test('ChatGPT has a tick of its own', () => {
+    const withGpt = [...external, session('chatgpt:1', 'chatgpt')]
+    const shown = (apps: string[]) => groupChats([], { external: withGpt, showApp: (s) => appShown(ahSource(s.source), apps) }).folders.flatMap((f) => f.entries.map((e) => e.id))
+    expect(shown(['claude'])).not.toContain('chatgpt:1')
+    expect(shown(['claude', 'chatgpt'])).toContain('chatgpt:1')
+    // No folder of its own: a ChatGPT group of its own.
+    const gpt = { ...session('chatgpt:2', 'chatgpt'), cwd: null }
+    const groups = groupChats([], { external: [gpt] }).folders
+    expect(groups.map((g) => [g.label, g.entries.map((e) => e.id)])).toEqual([['ChatGPT', ['chatgpt:2']]])
+    // Its header starts a new ChatGPT conversation; a folder without one does not.
+    expect(holdsChatGpt(groups[0]!)).toBe(true)
+    expect(holdsChatGpt({ ...groups[0]!, key: 'pinned' })).toBe(false)
+    expect(holdsChatGpt({ key: 'D:/work/app', entries: [] })).toBe(false)
   })
   test('the unnamed one needs every app but HSwarm', () => {
     expect(listed(['claude', 'codex', 'opencode', 'hermes', 'dsh'])).toContain('unnamed')
@@ -151,6 +169,15 @@ describe('groupCloud', () => {
 
   test("a search's answer keeps AgentHydra's best-match order", () => {
     expect(groupCloud(rows, all, 'PC', { ranked: true }).map((g) => g.rows.map((r) => r.id))).toEqual([['old-match', 'new-match', 'mid-match']])
+  })
+
+  test("a search's answer has the desk list's ChatGPT chats whose title matches, after AgentHydra's", () => {
+    const desk = deskPlaces([], [
+      outside('chatgpt:1', { source: 'chatgpt', title: 'Quarterly match notes', cwd: null }),
+      outside('chatgpt:2', { source: 'chatgpt', title: 'Something else', cwd: null }),
+      outside('codex-1', { source: 'codex', title: 'match in codex' })
+    ])
+    expect(groupCloud(rows, all, 'PC', { ranked: true, search: 'MATCH', desk }).map((g) => g.rows.map((r) => r.id))).toEqual([['old-match', 'new-match', 'mid-match', 'chatgpt:1']])
   })
 
   // Turning the cloud on must not move a chat to another group: a session the desk list shows sits where

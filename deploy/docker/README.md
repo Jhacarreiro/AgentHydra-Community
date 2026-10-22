@@ -46,8 +46,9 @@ The manager assumes the Hub has already been installed with the steps above. The
 
 A signed-in headful browser belongs on its host OS, **not inside the Hub image**. The hub reaches ChatGPT through
 the [OpenCLI](https://github.com/jackwener/opencli) Browser Bridge daemon on the host, which drives a window of that
-host's own Chrome. In Desk, **Menu → ChatGPT** lists the account's conversations, shows each one with whether
-ChatGPT is still thinking or writing, and sends the messages you write there (and only those, when you press Send).
+host's own Chrome. In Desk, the account's newest conversations are in the sidebar with the other chats (in a
+ChatGPT group, with a tick of their own in the Apps filter). Each opens like any outside chat, shows whether ChatGPT
+is still thinking or writing, and sends the messages you write there (and only those, when you press Send). The + on the ChatGPT group starts a new conversation.
 
 To turn it on, run the Browser Bridge on the host with Chrome signed in to ChatGPT, then add to `.env`:
 

@@ -8,7 +8,7 @@ import { useShellSource } from '@/components/shell/source'
 import { dropHidden, recordCloudOrder } from '@/components/sidebar/logic'
 import { useHiddenGroups } from '@/components/sidebar/hidden'
 import { useSidebarOrder } from '@/components/sidebar/order'
-import { cloudOnlyKeys, cloudQuery, deskPlaces, effectiveScopes, groupCloud, parseScopes, pcsIn, rowOrderKey, type CloudScopes } from './logic'
+import { cloudOnlyKeys, cloudQuery, deskPlaces, effectiveScopes, groupCloud, parseScopes, pcsIn, rowOrderKey, SOURCE_VALUES, type CloudScopes } from './logic'
 
 /** The last plain (unsearched) answer and the query it answered, for the next reload (lib/list-cache.ts). */
 interface CachedCloud {
@@ -31,9 +31,20 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/** ChatGPT joined the Apps filter on 2026-10-22, ticked: filters saved before then get its tick once. */
+const CHATGPT_OFFERED_KEY = 'hydra-desk.cloud.apps.chatgpt'
+function withChatGpt(s: CloudScopes): CloudScopes {
+  if (!storage || storage.getItem(CHATGPT_OFFERED_KEY)) return s
+  const next = s.apps.includes('chatgpt') ? s : { ...s, apps: SOURCE_VALUES.filter((v) => v === 'chatgpt' || s.apps.includes(v)) }
+  // Saved before it is marked offered, so a reload keeps the tick (the scopes' watcher writes only on a change).
+  storage.setItem(SCOPES_KEY, JSON.stringify(next))
+  storage.setItem(CHATGPT_OFFERED_KEY, '1')
+  return next
+}
+
 function createCloud() {
   const on = ref(storage?.getItem(ON_KEY) === '1')
-  const scopes = ref<CloudScopes>(parseScopes(storage?.getItem(SCOPES_KEY)))
+  const scopes = ref<CloudScopes>(withChatGpt(parseScopes(storage?.getItem(SCOPES_KEY))))
   const search = ref('')
   // The search the rows answer, not what the box says now: until a search's answer arrives the rows are
   // still the plain list, and they keep their folder groups.
@@ -153,6 +164,7 @@ ${rows}`
     dropHidden(
       groupCloud(sessions.value, effectiveScopes(scopes.value, answered.value), thisPc.value, {
         ranked: searching.value,
+        search: answered.value,
         desk: placed.value,
         order: order.value
       }),

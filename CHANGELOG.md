@@ -9,6 +9,14 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+**TL;DR**
+
+- **ChatGPT's conversations are in the sidebar with your other chats, not on a page of their own**
+
+**Everything in Unreleased**
+
+- **ChatGPT in the sidebar.** ChatGPT's newest conversations are listed with Claude's and Codex's, in a ChatGPT group, and the Apps filter has a tick for them. Each opens in the normal chat view with its composer: you can reply, see whether ChatGPT is thinking or writing, and stop it. The + on the ChatGPT group starts a new conversation. The separate ChatGPT page, which hid the window's minimise, maximise and close buttons, is gone.
+
 ## [2026.10.2] - 2026-10-20
 
 **TL;DR**

@@ -44,6 +44,7 @@ import { mapSearch, searchResults } from './search'
 import { buildTranscriptIndex } from '@shared/transcript-index'
 import { codexTurnOpen, findCodexRollout, lastCodexContext } from './codex-rollout'
 import { claudeProjectRoots, findSessionJsonlAsync, lastContextTokens, sessionJsonlItems, sessionJsonlOlder, sessionJsonlStart, workerJsonlItems } from './session-jsonl'
+import { type ChatGptSource, createChatGptSource, isChatGptId } from './chatgpt'
 import { createHomeStats } from './stats'
 import { createWorkerTokens } from './worker-tokens'
 import { resumeAccount, type ResumeData } from './resume'
@@ -64,6 +65,9 @@ export interface BridgeOptions extends HydraClientOptions {
   home?: string
   /** Where outside sessions' .jsonl files are looked for (default: claudeProjectRoots with AgentHydra's CLI instances). */
   projectRoots?: () => string[] | Promise<string[]>
+  /** ChatGPT's conversations (chatgpt.ts); null for none. Default: the process's own, unless `url` names another
+   *  AgentHydra (a test's), whose bridge lists none. */
+  chatgpt?: ChatGptSource | null
 }
 
 /** How long activeWorkersFor() reuses the last worker list (the poller refreshes it every 3 s). */
@@ -118,6 +122,7 @@ const isUnder = (file: string, dir: string): boolean => {
 export function createBridge(opts: BridgeOptions = {}) {
   const client: HydraClient = createClient(opts)
   const now = opts.now ?? Date.now
+  const chatgpt = opts.chatgpt !== undefined ? opts.chatgpt : opts.url === undefined ? createChatGptSource() : null
   function keepLast<T>(): Kept<T> {
     let last: { at: number; value: T } | null = null
     return {
@@ -546,7 +551,7 @@ export function createBridge(opts: BridgeOptions = {}) {
     const withPinned: ExternalInputs = byId.length
       ? { ...inp, sessions: [...inp.sessions, ...extra], ...(pinned.length ? { wanted: new Set(pinned) } : {}) }
       : inp
-    const mapped = mapExternal({ ...withPinned, knownTitle }, exclude, now(), (q) => resumeAccount(q, who))
+    const mapped = [...mapExternal({ ...withPinned, knownTitle }, exclude, now(), (q) => resumeAccount(q, who)), ...(chatgpt?.sessions() ?? [])]
     const list = o.throwaway ? mapped : mapped.filter((s) => !isThrowawayCwd(s.cwd))
     rememberTitles(list)
     return sessionMeta(list, onAccountIds(inp))
@@ -570,6 +575,11 @@ export function createBridge(opts: BridgeOptions = {}) {
    * does not know it. Hydra Desk's own chats are not left out here: the window asked for this id.
    */
   async function externalSession(id: string): Promise<ExternalSession> {
+    if (isChatGptId(id)) {
+      const found = chatgpt?.sessions().find((s) => s.id === id)
+      if (!found) throw new BridgeError('http', `No ChatGPT conversation ${id}`, 404)
+      return sessionMeta([found])[0] ?? found
+    }
     const [inp, row] = await Promise.all([
       externalInputs(),
       client.session(id).catch((err) => {
@@ -624,6 +634,7 @@ export function createBridge(opts: BridgeOptions = {}) {
    *  the daemon's tail. The open never waits on the daemon for the folders (the refresh lands behind it), and a session with
    *  no file is not searched for again for a while, so its polls go straight to the tail. */
   async function externalItems(sessionId: string, cwd: string | null = null, open: ExternalOpen = { find: 0, daemon: 0, parse: 0, cold: false }): Promise<TranscriptItem[]> {
+    if (isChatGptId(sessionId)) return chatGptItems(sessionId)
     // A Claude Code session's own .jsonl keeps every newline, list and code fence; the tail flattens them.
     const known = foundAt.get(sessionId)
     const items = known ? readItems(known) : null
@@ -667,9 +678,27 @@ export function createBridge(opts: BridgeOptions = {}) {
     }
   }
 
+  /** A ChatGPT conversation as the hub reads it now; its answers become BridgeErrors with the hub's status. */
+  async function chatGptItems(sessionId: string): Promise<TranscriptItem[]> {
+    return chatGpt((c) => c.items(sessionId))
+  }
+
+  /** A message for a ChatGPT conversation, typed into ChatGPT once; then its Stop. */
+  async function chatGpt<T>(run: (c: ChatGptSource) => Promise<T>): Promise<T> {
+    if (!chatgpt) throw new BridgeError('http', 'ChatGPT is not available here', 404)
+    try {
+      return await run(chatgpt)
+    } catch (err) {
+      throw new BridgeError('http', err instanceof Error ? err.message : String(err), (err as { status?: number }).status ?? 502, err instanceof Error ? err.message : undefined)
+    }
+  }
+  const chatGptSend = (sessionId: string, text: string): Promise<void> => chatGpt((c) => c.send(sessionId, text))
+  const chatGptStop = (sessionId: string): Promise<boolean> => chatGpt((c) => c.stop(sessionId))
+  const chatGptStart = (text: string): Promise<string | null> => chatGpt((c) => c.start(text))
+
   /** What an outside session's file holds before byte `before` (the start externalItems reported); [] when its file is not known. */
   async function externalOlder(sessionId: string, before: number, cwd: string | null = null): Promise<TranscriptItem[]> {
-    if (!(before > 0)) return []
+    if (!(before > 0) || isChatGptId(sessionId)) return []
     let file = foundAt.get(sessionId) ?? null
     if (!file) {
       file = await findSessionJsonlAsync(sessionId, opts.projectRoots ? await projectRoots() : sessionRoots(), cwd)
@@ -753,7 +782,7 @@ export function createBridge(opts: BridgeOptions = {}) {
       if (key && file) {
         const tokens = lastContextTokens(file)
         context = tokens === null ? null : { tokens, window: null }
-      } else {
+      } else if (!isChatGptId(sessionId)) {
         const rollout = await codexRollout(sessionId)
         context = rollout ? lastCodexContext(rollout) : null
       }
@@ -1092,6 +1121,9 @@ export function createBridge(opts: BridgeOptions = {}) {
     listAccounts,
     pickAccount,
     externalSessions,
+    chatGptSend,
+    chatGptStop,
+    chatGptStart,
     externalSession,
     externalItems,
     externalOlder,

@@ -113,6 +113,7 @@ import {
   runningSessionIds,
   deskGlyphs,
   deskNewFolder,
+  holdsChatGpt,
   rowMenu,
   runPulse,
   SWARM_RUNNING,
@@ -135,6 +136,7 @@ import { MENU_CONTENT, MENU_ITEM, focusFirstItem } from './menuClasses'
 import { useRowDrag } from './rowDrag'
 import { NO_PICKS, pickClick, prunePicks, type Picks } from './picked'
 import { leaveUnlessFiltered } from '@/lib/row-leave'
+import { NEW_CHATGPT, NEW_CHATGPT_TITLE } from '@/components/external/logic'
 
 // The real sidebar: 288 wide on #111111, 36px left free at the top for the chrome bar, the New row (the
 // real app's Projects, Artifacts, Customize and More rows are left out on purpose), then Pinned and one
@@ -1342,6 +1344,11 @@ const HEADER_BTN = 'flex size-6 shrink-0 items-center justify-center rounded-[va
           <GroupDashboardButton :folder="menuFolderOf(group)" :label="group.label" />
           <Tip v-if="deskNewFolder(group)" :label="`New session in ${group.label}`">
             <button type="button" :class="HEADER_BTN" :aria-label="`New session in ${group.label}`" @click="src.select({ kind: 'new', cwd: deskNewFolder(group)! })">
+              <component :is="shellGlyphs.groupNew" class="size-4" />
+            </button>
+          </Tip>
+          <Tip v-if="holdsChatGpt(group)" :label="NEW_CHATGPT_TITLE">
+            <button type="button" :class="HEADER_BTN" :aria-label="NEW_CHATGPT_TITLE" @click="src.select({ kind: 'external', id: NEW_CHATGPT })">
               <component :is="shellGlyphs.groupNew" class="size-4" />
             </button>
           </Tip>

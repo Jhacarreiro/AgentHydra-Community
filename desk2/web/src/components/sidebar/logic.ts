@@ -129,6 +129,13 @@ const marksOf = (e: SidebarEntry) => (e.kind === 'chat' ? e.chat : e.session)
 const entryCwd = (e: SidebarEntry) => (e.kind === 'chat' ? e.chat.cwd : (e.session.cwd ?? ''))
 /** On no account, in the Unassigned holding area (ExternalSession.unassigned): only an outside session can be. */
 const parkedOf = (e: SidebarEntry) => e.kind === 'external' && e.session.unassigned === true
+/** ChatGPT's conversations have no folder: unless moved to a group, they sit in a ChatGPT group of their own. */
+export const CHATGPT_GROUP = 'ChatGPT'
+/** A group holding ChatGPT's conversations (not Pinned or Archived): its header starts a new one. */
+export const holdsChatGpt = (g: Pick<ChatGroup, 'key' | 'entries'>): boolean =>
+  g.key !== 'pinned' && g.key !== 'archived' && g.entries.some((e) => e.kind === 'external' && e.session.source === 'chatgpt')
+const groupOf = (e: SidebarEntry): string | null =>
+  marksOf(e).group ?? (e.kind === 'external' && e.session.source === 'chatgpt' ? CHATGPT_GROUP : null)
 
 /**
  * Active: Pinned first (its own group, newest first), then one group per folder, and one per group a
@@ -178,7 +185,7 @@ export function groupChats(
   // Unassigned rows wait in their own group, whatever folder or moved-to group they had; Archived groups them by folder.
   const parked: SidebarEntry[] = []
   for (const e of inGroups) {
-    const group = marksOf(e).group
+    const group = groupOf(e)
     if (filter !== 'archived' && parkedOf(e)) parked.push(e)
     else if (group) add(byGroup, group.toLowerCase(), e)
     else add(byFolder, folderKey(entryCwd(e)), e)
@@ -190,7 +197,7 @@ export function groupChats(
   for (const [name, list] of byGroup) {
     const folder = namesakeFolder(groups, name)
     if (folder) folder.entries.push(...list)
-    else groups.push({ key: `group:${name}`, label: marksOf(list.sort(newestFirst)[0]!).group!, cwd: null, entries: list })
+    else groups.push({ key: `group:${name}`, label: groupOf(list.sort(newestFirst)[0]!)!, cwd: null, entries: list })
   }
   for (const g of groups) g.entries.sort(newestFirst)
   const archived = filter === 'all' ? archivedRows.sort(newestFirst) : []
@@ -522,7 +529,7 @@ export function externalGlyph(s: Pick<ExternalSession, 'status' | 'unread'>): St
 
 /** "Claude Desktop", "Claude Code CLI", ... for the source glyph's tooltip. */
 export function sourceLabel(source: ExternalSession['source']): string {
-  return { desktop: 'Claude Desktop', cli: 'Claude Code CLI', climayte: 'CliMayte', codex: 'Codex', other: 'Another app' }[source]
+  return { desktop: 'Claude Desktop', cli: 'Claude Code CLI', climayte: 'CliMayte', codex: 'Codex', chatgpt: 'ChatGPT', other: 'Another app' }[source]
 }
 
 /**
