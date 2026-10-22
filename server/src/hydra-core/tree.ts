@@ -328,7 +328,7 @@ function end(
   state.step = 'done'
   const reply: Reply = { verdict, ...body, report: REPORT_ASK }
   if (verdict === 'go') {
-    const lead = takeLeadOwed(ctx.files.sent, ctx.cat)
+    const lead = takeLeadOwed(ctx.files.sent, ctx.cat, ctx.now)
     if (lead) reply.lead = lead
   }
   if (doc && write) {
