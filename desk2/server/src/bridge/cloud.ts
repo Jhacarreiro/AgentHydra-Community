@@ -30,6 +30,22 @@ export interface AhCloudRow {
   effort?: string | null
   /** Claude Code's project folder name: the slug of the folder the session started in (projectSlug). */
   project?: string
+  /** A foreign row's adapter (claude-cloud, ...). */
+  tool?: string
+}
+
+/** Where a claude.ai Project's session whose Project AgentHydra could not name is grouped. */
+export const UNNAMED_PROJECT = 'Claude Projects'
+
+/**
+ * The claude.ai Project a cloud Claude Code session is a thread (or the Project chat) of; null for any other session.
+ * AgentHydra's claude-cloud reader keys a Project's sessions `claude-projects/<name>`, `claude-projects` alone when it
+ * could not name the Project (server/src/foreign-sessions.ts).
+ */
+export function cloudProjectOf(row: { source: string; tool?: string; project?: string } | undefined): string | null {
+  if (row?.source !== 'foreign' || row.tool !== 'claude-cloud' || !row.project) return null
+  if (row.project === 'claude-projects') return UNNAMED_PROJECT
+  return row.project.startsWith('claude-projects/') ? row.project.slice('claude-projects/'.length).trim() || UNNAMED_PROJECT : null
 }
 
 /** Claude Code's project folder name for a working folder: every character but a letter or digit becomes '-'. */
@@ -73,7 +89,9 @@ export function cloudQuery(asked: (key: string) => string | undefined): string {
 }
 
 export function toCloudSession(r: AhCloudRow): CloudSession {
-  const last = r.cwd || null
+  const cloudProject = cloudProjectOf(r)
+  // A Project's session has no folder: AgentHydra's cwd for it is its key read as a path.
+  const last = cloudProject ? null : r.cwd || null
   const cwd = startFolder(last, r.project)
   return {
     id: r.session_id,
@@ -91,6 +109,7 @@ export function toCloudSession(r: AhCloudRow): CloudSession {
     model: r.model ?? null,
     effort: r.effort ?? null,
     instanceNum: typeof r.instance_num === 'number' ? r.instance_num : null,
+    ...(cloudProject ? { cloudProject } : {}),
   }
 }
 

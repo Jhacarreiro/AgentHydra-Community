@@ -312,6 +312,17 @@ describe('external sessions', () => {
     expect(rows.find((x) => x.id === sid(902))!.app).toBeUndefined()
   })
 
+  test("a claude.ai Project's session carries its Project's name and no folder; one it could not name, the catch-all", () => {
+    const base = { ...inputs.sessions.find((r) => r.session_id === sid(4))!, source: 'foreign', tool: 'claude-cloud', last_activity_at: NOW - 5_000 }
+    const named = { ...base, session_id: sid(903), project: 'claude-projects/Example project', cwd: 'claude/projects/Example project' }
+    const unnamed = { ...base, session_id: sid(904), project: 'claude-projects', cwd: 'claude/projects' }
+    const plain = { ...base, session_id: sid(905), project: 'claude-cloud', cwd: 'claude/cloud' }
+    const by = new Map(mapExternal({ ...inputs, sessions: [...inputs.sessions, named, unnamed, plain] }, new Set(), NOW).map((x) => [x.id, x]))
+    expect(by.get(sid(903))).toMatchObject({ cloudProject: 'Example project', cwd: null })
+    expect(by.get(sid(904))).toMatchObject({ cloudProject: 'Claude Projects', cwd: null })
+    expect(by.get(sid(905))!.cloudProject).toBeUndefined()
+  })
+
   // The desk list's cloud icon (ExternalRow) is drawn from this: nothing else carries AgentHydra's mark there.
   test("a Desktop chat the chat sync brought from another PC carries that PC's name; this PC's and workers carry none", () => {
     const synced = { ...inputs, sessions: inputs.sessions.map((r) => (r.session_id === sid(3) ? { ...r, from_pc: 'OTHER-PC' } : r)) }

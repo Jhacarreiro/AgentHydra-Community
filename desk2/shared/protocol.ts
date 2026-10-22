@@ -394,6 +394,8 @@ export interface ExternalSession {
   note?: string | null
   /** In the sidebar's Unassigned holding area: taken off its account, not archived, on no account now (SessionMeta.unassigned). */
   unassigned?: boolean
+  /** A claude.ai Project's thread or Project chat: the Project's name, the sidebar group it sits in unless moved (server bridge/external.ts cloudProjectOf). */
+  cloudProject?: string
 }
 
 /** The usage limit an outside session still sits at. */
@@ -498,6 +500,8 @@ export interface CloudSession {
   model: string | null
   effort: string | null
   instanceNum: number | null // AgentHydra's instance number, the #37 its rows show
+  /** A claude.ai Project's thread or Project chat: the Project's name, the group it sits in (ExternalSession.cloudProject). */
+  cloudProject?: string
 }
 
 export interface CloudList {

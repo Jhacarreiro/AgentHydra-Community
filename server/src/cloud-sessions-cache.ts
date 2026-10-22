@@ -22,6 +22,10 @@ export interface CloudSessionRow {
   last_event_at: string
   /** The session's tags; `hearth-thread` marks a thread of a claude.ai Project. Absent in older caches. */
   tags?: string[]
+  /** The session that started this one: a Project thread's is its Project's chat. */
+  parent_id?: string
+  /** The claude.ai Project a thread or a Project's own chat belongs to, by name; absent when unknown. */
+  project?: string
 }
 
 export function cloudSessionsRoot(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
@@ -39,6 +43,33 @@ export function writeCloudSnapshot(
   const tmp = join(dir, 'sessions.json.tmp')
   writeFileSync(tmp, JSON.stringify({ written_at: new Date().toISOString(), sessions: rows }))
   renameSync(tmp, join(dir, 'sessions.json'))
+}
+
+/**
+ * What each session a Project thread names as its parent turned out to be: the Project's name for a
+ * Project's chat, null for any other session. A Project's chat is started over from time to time, so
+ * an older thread names one that is no longer listed; this keeps the answer of the one look-up that
+ * found out across restarts.
+ */
+export function readProjectNames(root: string, accountKey: string): Record<string, string | null> {
+  try {
+    const parsed = JSON.parse(readFileSync(join(root, accountKey, 'projects.json'), 'utf8'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function writeProjectNames(
+  root: string,
+  accountKey: string,
+  names: Record<string, string | null>,
+): void {
+  const dir = join(root, accountKey)
+  mkdirSync(dir, { recursive: true })
+  const tmp = join(dir, 'projects.json.tmp')
+  writeFileSync(tmp, JSON.stringify(names))
+  renameSync(tmp, join(dir, 'projects.json'))
 }
 
 export function readCloudSnapshot(dir: string): CloudSessionRow[] {

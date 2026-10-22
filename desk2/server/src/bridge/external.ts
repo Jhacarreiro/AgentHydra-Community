@@ -30,6 +30,7 @@ import type { ExternalSession, TranscriptItem } from '@shared/protocol'
 import { MAX_TOOL_RESULT_CHARS } from '@shared/protocol'
 import type { AhAgentStatus, AhChatRow, AhCodexChatRow, AhLiveSession, AhSessionRow, AhTail, AhWorker, AhWorkerDetail } from './client'
 import { isActiveWorkerStatus, workerAccountLabel } from './climayte'
+import { cloudProjectOf } from './cloud'
 import { canResume, configRootOf, type ResumeQuery } from './resume'
 import { classifyUserText, taskItemFrom, userTurns } from '../engine/system-text'
 import { mediaCache } from '../media/cache'
@@ -188,6 +189,7 @@ export function mapExternal(
   ) => {
     const row = index.get(id)
     const h = hooks.get(id)
+    const cloudProject = cloudProjectOf(row)
     const last = maxOf(base.last, row?.last_activity_at, iso(h?.at))
     const status = hookStatus(h, last, now) ?? (source === 'codex' ? turnStatus(inp.codexTurns?.get(id), last, now) : null) ?? recencyStatus(last, now)
     const accountId = resume({
@@ -201,7 +203,8 @@ export function mapExternal(
       // The id only when nothing ever titled it: a chat whose record is untitled for a moment (a move to another
       // account) or missing from one read showed its id in place of the title it had (owner, 2026-10-09).
       title: base.title || row?.title || inp.knownTitle?.(id) || id.slice(0, 8),
-      cwd: base.cwd || row?.cwd || h?.cwd || null,
+      // A Project's session has no folder: AgentHydra's cwd for it is its key read as a path.
+      cwd: cloudProject ? null : base.cwd || row?.cwd || h?.cwd || null,
       source,
       // A cloud Claude Code session comes through AgentHydra's foreign reader, but the Apps filter counts it as Claude's.
       ...(row?.source === 'foreign' && row.tool === 'claude-cloud' ? { app: 'claude' } : {}),
@@ -218,6 +221,7 @@ export function mapExternal(
       // The chat sync's mark on its index row: the row draws a cloud for another PC's chat, as the cloud list does.
       fromPc: base.fromPc || row?.from_pc || null,
       ...(base.parentId ? { parentId: base.parentId } : {}),
+      ...(cloudProject ? { cloudProject } : {}),
       ...limitOf(row),
       ...UNMARKED,
       unread: base.unread ?? false,
