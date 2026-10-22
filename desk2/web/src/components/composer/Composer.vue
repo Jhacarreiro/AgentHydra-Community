@@ -64,6 +64,7 @@ import { holdFocus } from '@/lib/hold-focus'
 import { warmChat } from '@/lib/timing'
 import { isExternalChatId } from '@/components/external/logic'
 import { draftImages, draftImagesReady, PUT_BACK_EVENT, saveDraftImages, type DraftImage, type PutBack } from './draft-images'
+import { fileDrafts, type PendingFile } from './file-drafts'
 import { BOX_ICON, HEADER, ITEM, MENU, MENU_GLYPH, SEPARATOR, SHORTCUT, SUB_TRIGGER, TOOL_ICON, TOOL_VALUE } from './menu'
 import SendSplit from './SendSplit.vue'
 import SusSwitch from './SusSwitch.vue'
@@ -101,16 +102,6 @@ const X = icons.dismiss
 const FolderIcon = icons.folder
 
 type PendingImage = DraftImage
-/** A file the composer attaches by path: uploaded on attach, sent as a `[File: source: …]` line. */
-interface PendingFile {
-  id: string
-  name: string
-  bytes: number
-  mediaType: string
-  path?: string
-  /** The file's bytes, kept to show it in the viewer and to draw a PDF's first page. */
-  blob?: Blob
-}
 
 type MenuName = 'plus' | 'mode' | 'model' | 'effort'
 
@@ -142,7 +133,6 @@ const text = ref('')
 // Shallow: the pictures hold large base64 strings, so they are replaced, never changed in place, and never walked.
 const images = shallowRef<PendingImage[]>([])
 const files = shallowRef<PendingFile[]>([])
-const fileDrafts = new Map<string | null, PendingFile[]>()
 const uploading = computed(() => files.value.some((f) => !f.path))
 const notice = ref<string | null>(null)
 const sending = ref(false)
@@ -1205,6 +1195,7 @@ onBeforeUnmount(() => {
     clearTimeout(draftTimer)
     if (!props.demo) saveDraft(storage, slot.value, text.value)
   }
+  if (!props.demo) fileDrafts.set(slot.value, files.value)
   recognition?.stop()
   window.removeEventListener('resize', autoGrow)
   window.removeEventListener(PUT_BACK_EVENT, onPutBack)

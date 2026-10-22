@@ -39,6 +39,10 @@ describe('what waits on the owner, in which order', () => {
     expect(keys({ chats, external })).toEqual(['cli-blocked', 'permission', 'old-reply', 'codex-question', 'new-reply'])
   })
 
+  test('a chat stopped at a usage limit with something unread waits', () => {
+    expect(keys({ chats: [chat('limited', { status: 'limited', unread: true })] })).toEqual(['limited'])
+  })
+
   test('running, read, or archived conversations do not wait', () => {
     const chats = [chat('working', { status: 'working', unread: true }), chat('read'), chat('archived', { unread: true, archived: true })]
     const external = [session('busy', { status: 'working' }), session('gone', { archived: true })]

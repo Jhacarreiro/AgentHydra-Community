@@ -38,7 +38,7 @@ export interface InboxEntry {
 
 const BUSY: readonly ChatStatus[] = ['starting', 'working']
 /** A Desk chat whose turn ended: an unread one waits for the owner. */
-const ENDED: readonly ChatStatus[] = ['idle', 'stopped', 'error', 'closed']
+const ENDED: readonly ChatStatus[] = ['idle', 'stopped', 'error', 'closed', 'limited']
 
 /** The entry key a composer's or a card's chat id stands for: an outside session's stand-in chat is that session. */
 export const keyOfChatId = (chatId: string): string => (isExternalChatId(chatId) ? sessionOfChatId(chatId) : chatId)
