@@ -709,8 +709,19 @@ export function addToDeskGroups(groups: readonly ChatGroup[], rows: readonly Add
  */
 export function addRemoteToDeskGroups(groups: readonly ChatGroup[], sessions: readonly ExternalSession[], o: AddedPlacing): ChatGroup[] {
   const remote = new Set(sessions.map((s) => s.id))
-  const entries = sessions.map((session): SidebarEntry => ({ kind: 'external', id: session.id, at: session.lastActivityAt ?? 0, session }))
-  return placeAdded<ChatGroup, SidebarEntry>(groups, entries, {
+  const toEntry = (session: ExternalSession): SidebarEntry => ({ kind: 'external', id: session.id, at: session.lastActivityAt ?? 0, session })
+  const sort = (list: SidebarEntry[]) => stableOrder(list, (e) => e.id, o.order.rows, (e) => remote.has(e.id))
+  const newest = (a: SidebarEntry, b: SidebarEntry) => b.at - a.at
+  // A claude.ai Project's session has no folder: it sits in its Project's group, as this PC's do (logic.ts groupOf).
+  const byProject = new Map<string, SidebarEntry[]>()
+  for (const s of sessions)
+    if (s.cloudProject) {
+      const key = `group:${s.cloudProject.toLowerCase()}`
+      if (o.hidden.has(key) && !o.showHidden) continue
+      byProject.set(key, [...(byProject.get(key) ?? []), toEntry(s)])
+    }
+  const entries = sessions.filter((s) => !s.cloudProject).map(toEntry)
+  const placed = placeAdded<ChatGroup, SidebarEntry>(groups, entries, {
     order: o.order,
     hidden: o.hidden,
     showHidden: o.showHidden,
@@ -719,10 +730,23 @@ export function addRemoteToDeskGroups(groups: readonly ChatGroup[], sessions: re
     cwdOf: () => null,
     nameOf: (e) => (e.kind === 'external' && e.session.cwd ? folderLabel(e.session.cwd) : null),
     at: (e) => e.at,
-    sort: (list) => stableOrder(list, (e) => e.id, o.order.rows, (e) => remote.has(e.id)),
+    sort,
     withRows: (g, list) => ({ ...g, entries: list }),
     make: (folder, cwd, label, list, hidden) => ({ key: cwd ?? folder, label, cwd, entries: list, ...(hidden ? { hidden } : {}) })
   })
+  if (!byProject.size) return placed
+  const out = placed.map((g) => {
+    const mine = byProject.get(g.key)
+    if (!mine) return g
+    byProject.delete(g.key)
+    return { ...g, entries: sort([...g.entries, ...mine].sort(newest)) }
+  })
+  for (const [key, list] of byProject) {
+    const rows = list.sort(newest)
+    const label = rows[0]!.kind === 'external' ? (rows[0]!.session.cloudProject ?? NO_FOLDER) : NO_FOLDER
+    out.push({ key, label, cwd: null, entries: sort(rows), ...(o.hidden.has(key) ? { hidden: true } : {}) })
+  }
+  return sortFolders(out)
 }
 
 /** How many of these lists' CliMayte tasks run: a folded group's heading shows it (RunningBadge.vue), as it does the jobs'. */
