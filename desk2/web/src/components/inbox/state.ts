@@ -65,6 +65,7 @@ export function createInbox(deps: InboxDeps) {
   const answered = shallowRef(new Set<string>())
   /** What the queue holds: everything that waited while it was on, until it is answered, Done, or runs again. */
   const held = shallowRef(new Set<string>())
+  /** The conversation on screen; it is the queue's current one only while the queue holds it. */
   const keep = ref<string | null>(keyOfView(deps.selected()))
   const pending = shallowRef<PendingSend | null>(null)
   let pendingDone: ((send: boolean) => void) | null = null
@@ -74,11 +75,11 @@ export function createInbox(deps: InboxDeps) {
 
   const entriesFor = (hold: ReadonlySet<string>): InboxEntry[] =>
     inboxEntries({ chats: deps.chats(), external: deps.external(), seen: seen.value, later: later.value, answered: answered.value, held: hold, now: now() })
-  const entries = computed(() => entriesFor(keep.value ? new Set(held.value).add(keep.value) : held.value))
+  /** Everything the queue holds and everything that waits; a conversation that is only on screen is not in it. */
+  const entries = computed(() => entriesFor(held.value))
   /** What waits now, before the queue holds it. */
   const fresh = computed(() => entriesFor(new Set()))
-  /** What the queue counts: everything it holds and everything that waits, not the conversation that is only on screen. */
-  const waiting = computed(() => entriesFor(held.value))
+  const waiting = entries
   const current = computed(() => entries.value.find((e) => e.key === keep.value) ?? null)
 
   const drop = (key: string) => {
@@ -189,13 +190,14 @@ export function createInbox(deps: InboxDeps) {
     if (!p) return
     settle(false)
     held.value = new Set(held.value).add(p.key)
-    const entry = entriesFor(held.value).find((e) => e.key === p.key)
-    if (entry) go(entry)
+    // Back to it only once the undone send put its text back in the chat's saved draft, so the box shown there reads it.
+    timers.set(() => go(entries.value.find((e) => e.key === p.key) ?? null), 0)
   }
 
   function start() {
     on.value = true
     store(ON_KEY, '1')
+    held.value = new Set([...held.value, ...fresh.value.map((e) => e.key)])
     if (!current.value) go(entries.value[0] ?? null)
   }
 

@@ -146,7 +146,7 @@ describe('the queue moving on', () => {
   })
 
   test('Undo never sends, and goes back to that conversation', async () => {
-    const { world, inbox } = setup([chat('a', { unread: true, lastActionAt: 1 }), chat('b', { unread: true, lastActionAt: 2 })])
+    const { world, inbox, tick } = setup([chat('a', { unread: true, lastActionAt: 1 }), chat('b', { unread: true, lastActionAt: 2 })])
     inbox.start()
     await nextTick()
     const sent = inboxHold('a', 'message')
@@ -154,6 +154,8 @@ describe('the queue moving on', () => {
     expect(world.selected).toEqual({ kind: 'chat', id: 'b' })
     inbox.undo()
     expect(await sent).toBe(false)
+    expect(world.selected).toEqual({ kind: 'chat', id: 'b' }) // the undone text lands in a's draft first
+    await tick(0)
     expect(world.selected).toEqual({ kind: 'chat', id: 'a' })
     expect(inbox.entries.value.map((e) => e.key)).toEqual(['a', 'b'])
   })
@@ -214,6 +216,21 @@ describe('the queue moving on', () => {
     await nextTick()
     await nextTick()
     expect(world.selected).toEqual({ kind: 'chat', id: 'b' })
+  })
+
+  test('turning it on over a read conversation opens the first that waits; Done on the last one leaves nothing', async () => {
+    const { world, inbox } = setup([chat('read'), chat('a', { unread: true })])
+    world.selected = { kind: 'chat', id: 'read' }
+    await nextTick()
+    inbox.start()
+    await nextTick()
+    expect(world.selected).toEqual({ kind: 'chat', id: 'a' })
+    expect(inbox.entries.value.map((e) => e.key)).toEqual(['a'])
+    world.chats[1]!.unread = false
+    inbox.done()
+    await nextTick()
+    expect(inbox.entries.value).toEqual([])
+    expect(inbox.current.value).toBeNull()
   })
 
   test('with Auto-advance off, an answer stays on the conversation', async () => {
