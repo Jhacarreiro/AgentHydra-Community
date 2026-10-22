@@ -10,7 +10,7 @@
 // other things ... inline identical"). Pure, so the window and the tests share it.
 import { ref, watch } from 'vue'
 import type { CliMayteWorker, ExternalSession, SwarmJob } from '@shared/protocol'
-import { folderKey, folderLabel, NO_FOLDER, sortFolders, stableOrder, type ChatGroup, type SidebarEntry, type SidebarOrder } from './logic'
+import { folderKey, folderLabel, NO_FOLDER, namesakeFolder, sortFolders, stableOrder, type ChatGroup, type SidebarEntry, type SidebarOrder } from './logic'
 
 const KEY = 'hydra-desk.sidebar.tasks'
 const storage = typeof localStorage === 'undefined' ? null : localStorage
@@ -735,12 +735,19 @@ export function addRemoteToDeskGroups(groups: readonly ChatGroup[], sessions: re
     make: (folder, cwd, label, list, hidden) => ({ key: cwd ?? folder, label, cwd, entries: list, ...(hidden ? { hidden } : {}) })
   })
   if (!byProject.size) return placed
+  // The group that already holds the Project: its own, or the folder group of the same name it joined (groupChats).
+  const home = new Map<string, ChatGroup>()
+  for (const key of byProject.keys()) {
+    const name = key.slice('group:'.length)
+    const g = placed.find((p) => p.key === key) ?? namesakeFolder(placed, name)
+    if (g) home.set(key, g)
+  }
   const out = placed.map((g) => {
-    const mine = byProject.get(g.key)
-    if (!mine) return g
-    byProject.delete(g.key)
+    const mine = [...home].flatMap(([key, h]) => (h === g ? (byProject.get(key) ?? []) : []))
+    if (!mine.length) return g
     return { ...g, entries: sort([...g.entries, ...mine].sort(newest)) }
   })
+  for (const key of home.keys()) byProject.delete(key)
   for (const [key, list] of byProject) {
     const rows = list.sort(newest)
     const label = rows[0]!.kind === 'external' ? (rows[0]!.session.cloudProject ?? NO_FOLDER) : NO_FOLDER
