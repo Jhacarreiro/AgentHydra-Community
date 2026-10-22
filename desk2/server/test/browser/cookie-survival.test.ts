@@ -1,10 +1,10 @@
 // A persistent cookie set in a profile folder survives a clean close and a relaunch of the same Chrome binary and folder.
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { findChrome, LIVE_CHROME_FLAGS } from '../../src/browser/cdp'
+import { findChrome, LIVE_CHROME_FLAGS, readPortFile } from '../../src/browser/cdp'
 
 setDefaultTimeout(60_000)
 
@@ -28,14 +28,10 @@ async function launch(dir: string): Promise<{ proc: Bun.Subprocess; wsUrl: strin
   )
   started.push(proc)
   const until = Date.now() + 20_000
-  const file = join(dir, 'DevToolsActivePort')
   while (Date.now() < until) {
-    if (existsSync(file)) {
-      const [port, wsPath] = readFileSync(file, 'utf8').split('\n')
-      if (/^\d+$/.test(port?.trim() ?? '') && wsPath?.trim()) {
-        return { proc, wsUrl: `ws://127.0.0.1:${port.trim()}${wsPath.trim()}` }
-      }
-    }
+    // On Windows Chrome holds the file locked while it writes it (EBUSY): readPortFile answers null until it is there.
+    const port = readPortFile(dir)
+    if (port?.wsPath) return { proc, wsUrl: `ws://127.0.0.1:${port.port}${port.wsPath}` }
     await Bun.sleep(100)
   }
   proc.kill()
@@ -95,7 +91,7 @@ describe.skipIf(!chrome)('cookie survival across a clean close and relaunch', ()
     value = `v${crypto.randomUUID()}`
   })
 
-  afterAll(() => {
+  afterAll(async () => {
     for (const p of started) {
       try {
         p.kill()
@@ -103,7 +99,16 @@ describe.skipIf(!chrome)('cookie survival across a clean close and relaunch', ()
         // floor-ok: already exited
       }
     }
-    if (root) rmSync(root, { recursive: true, force: true })
+    await Promise.race([Promise.all(started.map((p) => p.exited)), Bun.sleep(10_000)])
+    // Windows keeps the profile's files locked a moment after Chrome exits.
+    for (let i = 0; i < 20 && root; i++) {
+      try {
+        rmSync(root, { recursive: true, force: true })
+        break
+      } catch {
+        await Bun.sleep(250)
+      }
+    }
   })
 
   test('a persistent cookie is present after close and relaunch with the same binary and folder', async () => {

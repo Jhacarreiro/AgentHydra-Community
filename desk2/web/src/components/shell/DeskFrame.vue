@@ -66,6 +66,8 @@ import { waitForNextPaint } from '@/lib/wait-for-next-paint'
 import { requestedSection } from '@/components/panes/settings-request'
 import type { SettingsSection } from '@/components/panes/settings'
 import { actionError } from '@/lib/action-error'
+import InboxBar from '@/components/inbox/InboxBar.vue'
+import { useInbox } from '@/components/inbox/store'
 
 // The whole window: sidebar (294, resizable from 200 to 420), the chrome bar over its top, and the pane with the
 // title bar, the view, the composer and an optional right pane.
@@ -465,6 +467,19 @@ watch(
   { immediate: true }
 )
 watch(() => cloud.on.value, (on) => on && devServers.setOn(false))
+// Waiting on you (components/inbox): its bar over the conversation, and the chrome bar's button with its count. The gallery
+// draws none of it: the queue reads the real store.
+const inbox = props.demo ? null : useInbox()
+const inboxOn = computed(() => !!inbox?.on.value)
+const inboxCount = computed(() => inbox?.waiting.value.length ?? 0)
+function toggleInbox() {
+  if (!inbox) return
+  if (inbox.on.value) return inbox.stop()
+  // The conversations are in the chat's place: AgentHydra and the Dev servers page step aside.
+  toggleHydra(false)
+  devServers.closePage()
+  inbox.start()
+}
 function toggleDev() {
   if (devServers.on.value && devServers.page.value) return devServers.setOn(false)
   devServers.setOn(true)
@@ -982,6 +997,8 @@ function moveSidebar(side: SidebarSide) {
       :dev-on="devServers.on.value"
       :clean-on="cleanSidebar"
       :compact-on="compactSidebar"
+      :inbox-on="inboxOn"
+      :inbox-count="inboxCount"
       :update="demo ? null : updateOffer"
       @restart="restartServer"
       @hydra="toggleHydra()"
@@ -991,6 +1008,7 @@ function moveSidebar(side: SidebarSide) {
       @dev="toggleDev"
       @clean="toggleClean"
       @compact="toggleCompact"
+      @inbox="toggleInbox"
       @new="src.select({ kind: 'new' })"
       @search="openSearch"
       @toggle-sidebar="toggleSidebar()"
@@ -1103,6 +1121,7 @@ function moveSidebar(side: SidebarSide) {
           >
             <!-- data-file-drop: a file dropped anywhere on the chat attaches to its composer -->
             <div v-show="!tasks?.expanded" class="flex min-w-0 flex-1 flex-col" data-file-drop>
+              <InboxBar v-if="inboxOn" />
               <NewSessionScreen v-if="isNew" :name="greetingName" :chats="src.chats.value" />
               <div v-else-if="chat" class="min-h-0 flex-1 overflow-hidden">
                 <TranscriptView :key="`${chat.id}:${showThinking}`" :chat-id="chat.id" :items="items" :chat="chat" :read-only="!!lockedChild" :expanded-ids="openThinking" :unfold-thinking="showThinking" :loading="!src.itemsByChat.value.has(chat.id)" :load-error="src.itemsError?.value.get(chat.id) ?? null" :older-count="olderCount" :loading-older="loadingOlder" :index="src.indexByChat?.value.get(chat.id) ?? null" :fetch-item="fetchChatItem" @load-older="loadOlder" />

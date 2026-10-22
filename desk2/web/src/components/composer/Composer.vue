@@ -17,6 +17,7 @@ import type {
   SlashCommandInfo
 } from '@shared/protocol'
 import { useDesk } from '@/stores/desk'
+import { inboxHold, inboxHolds } from '@/components/inbox/hold'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -63,6 +64,7 @@ import { holdFocus } from '@/lib/hold-focus'
 import { warmChat } from '@/lib/timing'
 import { isExternalChatId } from '@/components/external/logic'
 import { draftImages, draftImagesReady, PUT_BACK_EVENT, saveDraftImages, type DraftImage, type PutBack } from './draft-images'
+import { fileDrafts, type PendingFile } from './file-drafts'
 import { BOX_ICON, HEADER, ITEM, MENU, MENU_GLYPH, SEPARATOR, SHORTCUT, SUB_TRIGGER, TOOL_ICON, TOOL_VALUE } from './menu'
 import SendSplit from './SendSplit.vue'
 import SusSwitch from './SusSwitch.vue'
@@ -100,16 +102,6 @@ const X = icons.dismiss
 const FolderIcon = icons.folder
 
 type PendingImage = DraftImage
-/** A file the composer attaches by path: uploaded on attach, sent as a `[File: source: …]` line. */
-interface PendingFile {
-  id: string
-  name: string
-  bytes: number
-  mediaType: string
-  path?: string
-  /** The file's bytes, kept to show it in the viewer and to draw a PDF's first page. */
-  blob?: Blob
-}
 
 type MenuName = 'plus' | 'mode' | 'model' | 'effort'
 
@@ -141,7 +133,6 @@ const text = ref('')
 // Shallow: the pictures hold large base64 strings, so they are replaced, never changed in place, and never walked.
 const images = shallowRef<PendingImage[]>([])
 const files = shallowRef<PendingFile[]>([])
-const fileDrafts = new Map<string | null, PendingFile[]>()
 const uploading = computed(() => files.value.some((f) => !f.path))
 const notice = ref<string | null>(null)
 const sending = ref(false)
@@ -1017,6 +1008,8 @@ function errText(e: unknown) {
 }
 
 let sentAt = 0
+/** False once the box is gone: a send that waited for Undo then puts its text back in the chat's saved draft. */
+let alive = true
 /** The Stop button or Esc. `click`: the button, which sits where Send was, so the second click of a send is not a Stop. */
 function stop(click = false) {
   if (click && Date.now() - sentAt < STOP_GUARD_MS) return
@@ -1025,12 +1018,14 @@ function stop(click = false) {
   else if (props.chat) desk.interrupt(props.chat.id).catch(fail)
 }
 
-async function sendToChat(id: string, body: string, refs: ImageRef[], enqueue: boolean) {
+/** `clear`: empty the chat's saved draft; a send that waited for Undo leaves it, as it may hold what was typed since. */
+async function sendToChat(id: string, body: string, refs: ImageRef[], enqueue: boolean, clear: boolean) {
   const message = { text: body, ...(refs.length ? { images: refs } : {}) }
   if (enqueue) await shell.queueAdd?.({ kind: 'message', chatId: id, ...message })
   else if (isExternalChatId(id)) desk.send(id, message).catch((e) => showNotice(`Not sent: ${errText(e)}`))
   else void desk.send(id, message)
   lastSent.set(id, body)
+  if (!clear) return
   saveDraft(storage, id, '')
   saveDraftImages(id, [])
 }
@@ -1060,12 +1055,15 @@ async function createNewChat(body: string, refs: ImageRef[], enqueue: boolean, s
   saveDraftImages(sentSlot, [])
 }
 
-async function deliver(body: string, refs: ImageRef[], enqueue: boolean, sentSlot: string | null) {
-  if (props.chat && props.into) {
-    await props.into.send(body)
-    lastSent.set(props.chat.id, body)
-    saveDraft(storage, props.chat.id, '')
-  } else if (props.chat) await sendToChat(props.chat.id, body, refs, enqueue)
+/** Where a send goes: taken when it is sent, since a send that waits for Undo goes after the box moved on. */
+type SendTarget = { chat: ChatSummary | null; into: (typeof props)['into'] }
+
+async function deliver(body: string, refs: ImageRef[], enqueue: boolean, sentSlot: string | null, to: SendTarget, clear = true) {
+  if (to.chat && to.into) {
+    await to.into.send(body)
+    lastSent.set(to.chat.id, body)
+    if (clear) saveDraft(storage, to.chat.id, '')
+  } else if (to.chat) await sendToChat(to.chat.id, body, refs, enqueue, clear)
   else await createNewChat(body, refs, enqueue, sentSlot)
 }
 
@@ -1089,19 +1087,40 @@ async function submit(ctrl = false) {
   files.value = []
   // Enter brings the chat to its bottom at once, even scrolled up, and the reply is followed from there.
   if (props.chat) window.dispatchEvent(new CustomEvent<ChatSentDetail>(CHAT_SENT_EVENT, { detail: { chatId: props.chat.id, sessionId: props.chat.sessionId ?? null } }))
-  try {
-    await deliver(body, refs, enqueue, sentSlot)
-  } catch (e) {
-    if (slot.value === sentSlot) {
-      text.value = keptText
-      images.value = keptImages
-      files.value = keptFiles
+  const to: SendTarget = { chat: props.chat, into: props.into }
+  // It comes back above whatever was typed since (a send that waited for Undo frees the box at once), like onPutBack.
+  const putBack = () => {
+    if (alive && slot.value === sentSlot) {
+      text.value = putBackDraft(keptText, text.value)
+      images.value = [...keptImages, ...images.value]
+      files.value = [...keptFiles, ...files.value]
     } else {
-      // The user moved to another chat meanwhile: the failed text goes back to its own draft, not over this one.
-      saveDraft(storage, sentSlot, keptText)
-      saveDraftImages(sentSlot, keptImages)
-      fileDrafts.set(sentSlot, keptFiles)
+      // The user moved to another chat meanwhile: the text goes back to its own draft, not over this one.
+      saveDraft(storage, sentSlot, putBackDraft(keptText, loadDraft(storage, sentSlot)))
+      saveDraftImages(sentSlot, [...keptImages, ...draftImages(sentSlot)])
+      fileDrafts.set(sentSlot, [...keptFiles, ...(fileDrafts.get(sentSlot) ?? [])])
     }
+  }
+  // Waiting on you holds a send to the conversation on screen for Undo and moves on to the next meanwhile
+  // (components/inbox): the box is free at once, and Undo puts the text back in this chat's box.
+  if (to.chat && inboxHolds(to.chat.id)) {
+    sending.value = false
+    const chatId = to.chat.id
+    void (async () => {
+      if (!(await inboxHold(chatId, 'message'))) return putBack()
+      try {
+        await deliver(body, refs, enqueue, sentSlot, to, false)
+      } catch (e) {
+        putBack()
+        showNotice(`Not sent: ${errText(e)}`)
+      }
+    })()
+    return
+  }
+  try {
+    await deliver(body, refs, enqueue, sentSlot, to)
+  } catch (e) {
+    putBack()
     showNotice(`Not sent: ${errText(e)}`)
   } finally {
     sending.value = false
@@ -1165,6 +1184,7 @@ onMounted(async () => {
 defineExpose({ focus: () => textarea.value && holdFocus(textarea.value, document) })
 
 onBeforeUnmount(() => {
+  alive = false
   if (gitTimer) clearInterval(gitTimer)
   gitRun?.abort()
   commandsRun?.abort()
@@ -1175,6 +1195,7 @@ onBeforeUnmount(() => {
     clearTimeout(draftTimer)
     if (!props.demo) saveDraft(storage, slot.value, text.value)
   }
+  if (!props.demo) fileDrafts.set(slot.value, files.value)
   recognition?.stop()
   window.removeEventListener('resize', autoGrow)
   window.removeEventListener(PUT_BACK_EVENT, onPutBack)

@@ -9,6 +9,14 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+**TL;DR**
+
+- **Waiting on you: answer every waiting conversation in a row, moving to the next as you answer**
+
+**Everything in Unreleased**
+
+- **Waiting on you.** A new inbox button in the title bar shows how many conversations wait on you, from Desk, Claude Desktop, the CLI, claude.ai, Codex and ChatGPT, and walks them one by one: stopped agents first, then the oldest. Answer one and the next opens at once; your answer goes after 5 seconds, so Undo can still take it back. Done, Later and Next handle the rest.
+
 ## [2026.10.4] - 2026-10-22
 
 **TL;DR**

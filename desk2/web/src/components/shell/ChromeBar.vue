@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Cloud, EllipsisVertical, Rows3, Server } from '@lucide/vue'
+import { Cloud, EllipsisVertical, Inbox, Rows3, Server } from '@lucide/vue'
 import { agentHydraIcon, shellGlyphs, shellIcons } from '@/lib/icons'
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
@@ -17,6 +17,8 @@ import { CAPTION_W } from '@/lib/host-window'
 // sidebar/tasks.ts), Dev servers (the sidebar lists the projects and servers AgentHydra runs, servers/DevServersList.vue),
 // Clean sidebar (rows without their account number and times, sidebar/clean.ts) and Compact sidebar (no project
 // headers, each chat shows its project's icon in a ring, sidebar/compact.ts; owner, 2026-10-10).
+// Waiting on you (components/inbox) sits after More options with how many conversations wait on the owner, blue while its
+// queue is on.
 // Each shows when it is on: AgentHydra pressed and Dev servers blue. Cloud, CliMayte tasks, the details and Compact sidebar
 // are items of one More options menu (owner, 2026-10-12), each with a check mark while on; the details item is checked while
 // the rows show their details (owner, 2026-10-08: "invert this. Make it default on. not blue and blue is off"). A thin
@@ -26,8 +28,8 @@ import { CAPTION_W } from '@/lib/host-window'
 // own title bar (lib/host-window.ts) its gaps drag the window, as Claude Desktop's do.
 // `update`: the server's code changed after it started (lib/server-update.ts): a blue dot on Menu, and Menu has
 // Restart to update (or, for a server the launcher did not start, how to restart it).
-defineProps<{ sidebarOpen: boolean; width: number; side?: SidebarSide; sliding?: boolean; hydraOpen?: boolean; cloudOn?: boolean; tasksOn?: boolean; devOn?: boolean; cleanOn?: boolean; compactOn?: boolean; update?: UpdateOffer | null }>()
-const emit = defineEmits<{ new: []; search: []; 'toggle-sidebar': []; settings: []; hydra: []; 'hydra-intent': []; cloud: []; tasks: []; dev: []; clean: []; compact: []; restart: [] }>()
+defineProps<{ sidebarOpen: boolean; width: number; side?: SidebarSide; sliding?: boolean; hydraOpen?: boolean; cloudOn?: boolean; tasksOn?: boolean; devOn?: boolean; cleanOn?: boolean; compactOn?: boolean; inboxOn?: boolean; inboxCount?: number; update?: UpdateOffer | null }>()
+const emit = defineEmits<{ new: []; search: []; 'toggle-sidebar': []; settings: []; hydra: []; 'hydra-intent': []; cloud: []; tasks: []; dev: []; clean: []; compact: []; inbox: []; restart: [] }>()
 
 // The colour is apart so the cloud's blue replaces it: two colour utilities on one button resolve by
 // stylesheet order, not by which came last.
@@ -35,9 +37,9 @@ const BTN_SHAPE =
   'flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-7)] transition-colors duration-[60ms] hover:bg-fill-hover disabled:opacity-50 disabled:hover:bg-transparent aria-expanded:bg-fill-hover'
 const BTN = `${BTN_SHAPE} text-text`
 /**
- * Hidden, the bar is just its buttons: 12 + 5 buttons of 28 + 6 gaps of 4 + two 1px dividers + 12 of divider margins
- * (the More options divider's 4px each side, the right divider's 4px on its right) + 4 = 194 (sidebar/width.ts CHROME_COLLAPSED).
- * Open, it is the sidebar's width, and never less than this less the 4px right padding plus 8px more (CHROME_OPEN, 198):
+ * Hidden, the bar is just its buttons: 12 + 6 buttons of 28 + 7 gaps of 4 + two 1px dividers + 12 of divider margins
+ * (the More options divider's 4px each side, the right divider's 4px on its right) + 4 = 226 (sidebar/width.ts CHROME_COLLAPSED).
+ * Open, it is the sidebar's width, and never less than this less the 4px right padding plus 8px more (CHROME_OPEN, 230):
  * over a narrower sidebar it reaches past its edge, and the title bar starts after it (DeskFrame titlePad).
  */
 </script>
@@ -116,6 +118,18 @@ const BTN = `${BTN_SHAPE} text-text`
         </DropdownMenuContent>
       </DropdownMenu>
       </span>
+    </Tip>
+    <Tip :label="inboxOn ? 'Close Waiting on you' : inboxCount ? `Waiting on you: ${inboxCount}` : 'Waiting on you'">
+      <button
+        type="button"
+        :class="[BTN_SHAPE, 'relative no-drag', inboxOn ? 'text-accent-text' : 'text-text']"
+        :aria-label="inboxCount ? `Waiting on you (${inboxCount})` : 'Waiting on you'"
+        :aria-pressed="!!inboxOn"
+        @click="emit('inbox')"
+      >
+        <Inbox class="size-4" />
+        <span v-if="inboxCount" class="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-warning px-0.5 text-3xs font-semibold leading-none text-bg-page" aria-hidden="true">{{ inboxCount > 99 ? '99+' : inboxCount }}</span>
+      </button>
     </Tip>
     <!-- AgentHydra and Dev servers sit at the bar's right end, after a thin divider (owner, 2026-10-07), with 8px on its right (owner, 2026-10-10). -->
     <span class="ms-auto me-1 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
