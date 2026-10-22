@@ -81,6 +81,7 @@ export type SettingsRowId =
   | 'ahShowCli'
   | 'ahKeepalive'
   | 'ahKeepAwake'
+  | 'ahCloudSessions'
   | 'ahKeepaliveFloor'
   | 'ahShowDesktop'
   | 'ahShowCodexDesktop'
@@ -352,6 +353,14 @@ export const SETTINGS_ROWS: SettingsRow[] = [
     label: 'Repair install',
     description: 'Re-applies the current version, which restores the folders a release ships beside the executable.',
     when: ['missing']
+  },
+  {
+    id: 'ahCloudSessions',
+    section: 'connections',
+    group: 'Claude cloud',
+    label: 'Cloud sessions and Projects',
+    description:
+      "On by default. Lists your Claude Code cloud and Remote Control sessions and your claude.ai Projects' threads with your other chats, each Project in a group of its own, read with this PC's Claude Code login. Off removes them from the lists."
   },
   {
     id: 'ahVersion',

@@ -29,6 +29,7 @@ const SWITCHES: Partial<Record<SettingsRowId, BoolKey>> = {
   ahShowCli: 'showCliInstances',
   ahKeepalive: 'keepaliveEnabled',
   ahKeepAwake: 'keepAwakeWhileWorking',
+  ahCloudSessions: 'cloudSessions',
   ahShowDesktop: 'showDesktopInstances',
   ahShowCodexDesktop: 'codexDesktopEnabled',
   ahShowCodexCli: 'codexCliEnabled',

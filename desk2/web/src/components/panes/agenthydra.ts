@@ -51,6 +51,8 @@ export interface AhSettings {
   allowExtraUsage: boolean
   /** Hold the PC awake while a worker runs or a session reports working (server/src/keep-awake.ts). */
   keepAwakeWhileWorking: boolean
+  /** List Claude Code's cloud and Remote Control sessions and claude.ai Projects' threads (server/src/cloud-sessions.ts). */
+  cloudSessions: boolean
 }
 
 type ReadOnly =

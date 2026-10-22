@@ -2,7 +2,7 @@
 // session list, what a listed session means for "waiting on you", and that one sync pass leaves a
 // cache the adapter reads back and status rows the session list shows.
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // db.ts opens the file on import, so the scratch home has to be in place first.
@@ -11,8 +11,15 @@ process.env.AGENTHYDRA_HOME = scratch
 
 const { db } = await import('../src/db')
 const { getAgentStatus } = await import('../src/agent-status')
-const { cliCloudAccount, cloudAccounts, cloudStatusEvent, syncCloudSessions, toCloudRow } =
-  await import('../src/cloud-sessions')
+const {
+  cliCloudAccount,
+  cloudAccounts,
+  cloudStatusEvent,
+  startCloudSessions,
+  stopCloudSessions,
+  syncCloudSessions,
+  toCloudRow,
+} = await import('../src/cloud-sessions')
 const { readForeignSession, listForeignSessions } = await import('../src/foreign-sessions')
 
 const NOW = Date.parse('2026-01-01T12:00:00.000Z')
@@ -309,6 +316,23 @@ describe('sync', () => {
     await syncCloudSessions(opts)
     expect(lookedUp).toEqual([])
     expect(listed().cse_t2?.[1]).toBe('claude-projects/Example older project')
+  })
+
+  test('switched off, the poller forgets what it listed: cache and status rows', async () => {
+    const root = join(scratch, 'cache-6')
+    startCloudSessions({
+      accounts: () => [account],
+      root,
+      bases: ['https://ok.example.test'],
+      fetchFn: async () => page(sessions),
+      live: false,
+    })
+    for (let i = 0; i < 50 && !getAgentStatus('cse_waiting'); i++) await Bun.sleep(20)
+    expect(getAgentStatus('cse_waiting')?.state).toBe('blocked')
+    stopCloudSessions({ forget: true })
+    for (let i = 0; i < 50 && existsSync(root); i++) await Bun.sleep(20)
+    expect(existsSync(root)).toBe(false)
+    expect(getAgentStatus('cse_waiting')).toBeNull()
   })
 
   test('a session that left the list loses its status row', async () => {

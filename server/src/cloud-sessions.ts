@@ -31,7 +31,8 @@
 // `user:sessions:claude_code` scope; a `claude setup-token` token can be given in
 // CLAUDE_CODE_OAUTH_TOKEN for a machine that never runs the CLI interactively.
 //
-// OPT-IN. Nothing here runs unless AGENTHYDRA_CLOUD_SESSIONS=1.
+// ON BY DEFAULT, with a switch: the `cloud_sessions` setting (Desk's Settings → Connections), which
+// AGENTHYDRA_CLOUD_SESSIONS=1 holds on. With no login that has the sessions scope nothing is asked.
 
 import {
   existsSync,
@@ -58,6 +59,8 @@ export { cloudSessionsRoot } from './cloud-sessions-cache'
 export type { CloudSessionRow }
 
 export const CLOUD_SESSIONS_ENV = 'AGENTHYDRA_CLOUD_SESSIONS'
+/** The settings switch (Desk's Settings → Connections) that turns this on without the variable. */
+export const CLOUD_SESSIONS_SETTING = 'cloud_sessions'
 /** The scope the sessions endpoints require. A token without it is skipped, not retried. */
 export const SESSIONS_SCOPE = 'user:sessions:claude_code'
 
@@ -807,10 +810,27 @@ export function startCloudSessions(opts: CloudPollerOptions): void {
   schedule(0)
 }
 
-export function stopCloudSessions(): void {
+/**
+ * Stops the poller. `forget` also drops what it learned, the cache and the status rows, once a pass
+ * still running has finished: switched off, the sessions leave the lists instead of waiting there.
+ */
+export function stopCloudSessions(opts: { forget?: boolean } = {}): void {
+  const root = pollerOpts?.root
   if (timer) clearTimeout(timer)
   timer = null
   for (const s of pollerState.values()) for (const sock of s.sockets.values()) sock.close()
   pollerState.clear()
   pollerOpts = null
+  if (!opts.forget || !root) return
+  const forget = () => {
+    if (pollerOpts) return // switched back on meanwhile
+    releaseCloudStatus([])
+    rmSync(root, { recursive: true, force: true })
+  }
+  if (running) void running.then(forget)
+  else forget()
+}
+
+export function cloudSessionsRunning(): boolean {
+  return pollerOpts !== null
 }
