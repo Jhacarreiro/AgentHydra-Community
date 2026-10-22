@@ -13,14 +13,12 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 - **A Claude Code cloud session says so, not "Another app"**
 - **The view menu shows what is on with a tick, and compact mode is on by default**
-- **Threads of an archived claude.ai Project no longer wait on you**
 
 **Everything in Unreleased**
 
 - **Cloud sessions named.** A Claude Code cloud session or claude.ai Project thread said "Running in Another app" in its chat view, its row and Waiting on you. It now says Claude Code cloud, or the claude.ai Project it belongs to.
 - **Clear view switches.** The ⋮ menu by the sidebar said "Disable cloud sessions" with a tick, which read as neither on nor off. Its items are now Cloud sessions, CliMayte tasks, More details and Compact mode, each ticked while on.
 - **Compact mode by default.** The compact sidebar is on unless you turn it off.
-- **Archived Projects stay quiet.** A thread of a claude.ai Project whose chat was archived or deleted kept the state it had then, so it could read "Waiting for you" for weeks. Such threads are now listed as done.
 
 ## [2026.10.5] - 2026-10-22
 

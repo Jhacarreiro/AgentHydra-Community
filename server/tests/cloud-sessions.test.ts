@@ -288,7 +288,6 @@ describe('sync', () => {
                 thread('cse_t1', 'cse_chat'),
                 thread('cse_t2', 'cse_old_chat'),
                 thread('cse_t3', 'cse_gone'),
-                thread('cse_t4', 'cse_archived_chat'),
               ])
             : page([])
         lookedUp.push(u.pathname)
@@ -296,14 +295,6 @@ describe('sync', () => {
           return new Response(JSON.stringify(chat('cse_old_chat', 'Example older project')), {
             status: 200,
           })
-        if (u.pathname.endsWith('/cse_archived_chat'))
-          return new Response(
-            JSON.stringify({
-              ...chat('cse_archived_chat', 'Example closed project'),
-              status: 'archived',
-            }),
-            { status: 200 },
-          )
         return new Response('{}', { status: 404 })
       },
     }
@@ -321,14 +312,9 @@ describe('sync', () => {
       cse_t1: ['Example thread cse_t1', 'claude-projects/Example project'],
       cse_t2: ['Example thread cse_t2', 'claude-projects/Example older project'],
       cse_t3: ['Example thread cse_t3', 'claude-projects'],
-      cse_t4: ['Example thread cse_t4', 'claude-projects/Example closed project'],
     })
     // The Project chat waits on its bucket, like a thread.
     expect(getAgentStatus('cse_chat')).toMatchObject({ state: 'blocked', waiting: 'input' })
-    expect(getAgentStatus('cse_t2')).toMatchObject({ state: 'blocked', waiting: 'review' })
-    // A thread of an archived or deleted Project chat keeps its old bucket, yet waits on no one.
-    expect(getAgentStatus('cse_t3')?.state).not.toBe('blocked')
-    expect(getAgentStatus('cse_t4')?.state).not.toBe('blocked')
     // What a look-up found is kept: the next pass asks nothing.
     lookedUp.length = 0
     await syncCloudSessions(opts, state)

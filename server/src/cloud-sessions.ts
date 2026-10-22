@@ -49,9 +49,7 @@ import type { AgentStatusEvent } from './agent-status'
 import { recordAgentStatus, releaseCloudStatus } from './agent-status'
 import {
   type CloudSessionRow,
-  readArchivedProjects,
   readProjectNames,
-  writeArchivedProjects,
   writeCloudSnapshot,
   writeProjectNames,
 } from './cloud-sessions-cache'
@@ -157,14 +155,11 @@ export function projectNameOf(title: string): string {
  * Names the Project of every Project chat and thread in `rows`, in place. A thread's parent is its
  * Project's chat; a thread started by another thread is followed up to its chat. A chat that is not
  * listed is looked up in `known` (parent id -> name, or null for a parent that is not a Project's
- * chat) and in `archived` (parent id -> whether it is archived or gone, which marks the thread
- * `project_archived`; a listed chat is active). Answers the parents either leaves unknown, for the
- * caller to look up.
+ * chat). Answers the parents neither the rows nor `known` can name, for the caller to look up.
  */
 export function assignProjects(
   rows: CloudSessionRow[],
   known: Record<string, string | null>,
-  archived: Record<string, boolean> = {},
 ): string[] {
   const byId = new Map(rows.map((r) => [r.id, r]))
   const unknown = new Set<string>()
@@ -172,7 +167,6 @@ export function assignProjects(
     if (!inProject(r)) continue
     let at: CloudSessionRow | undefined = r
     let name: string | null | undefined
-    let closed = false
     for (let hops = 0; at && hops < 8; hops++) {
       if (isProjectChat(at)) {
         name = projectNameOf(at.title)
@@ -183,16 +177,13 @@ export function assignProjects(
       const next = byId.get(parent)
       if (!next) {
         name = known[parent]
-        closed = archived[parent] === true
-        if (name === undefined || archived[parent] === undefined) unknown.add(parent)
+        if (name === undefined) unknown.add(parent)
         break
       }
       at = next
     }
     if (name) r.project = name
     else delete r.project
-    if (closed) r.project_archived = true
-    else delete r.project_archived
   }
   return [...unknown]
 }
@@ -212,10 +203,6 @@ export function cloudStatusEvent(r: CloudSessionRow): AgentStatusEvent {
   const running = r.worker_status !== 'idle' && r.worker_status !== 'unknown'
   const base = { sessionId: r.id, source: 'claude-cloud' as const, at: r.last_event_at }
   if (running || r.status_bucket === 'working') return { ...base, event: 'cloud-working' }
-  // A thread of a Project whose chat is archived keeps the bucket it had then ("review_ready" for a
-  // year), though claude.ai shows that Project closed (owner, 2026-10-22: a thread of an archived
-  // Project read "Waiting for you" 351 hours on).
-  if (r.project_archived) return { ...base, event: 'cloud-done' }
   if (r.status_bucket === 'blocked')
     return { ...base, event: 'cloud-blocked', notificationType: 'input' }
   if (inProject(r)) {
@@ -415,11 +402,6 @@ const PROJECT_LOOKUPS_PER_PASS = 10
 const LOOKUP_RETRY_MS = 60 * 60_000
 const lookupRetryAt = new Map<string, number>()
 
-/** The single-session read names its state `status` ('archived') or `session_status` ('SESSION_STATUS_ARCHIVED'). */
-function isArchived(s: ApiCloudSession & { session_status?: string | null }): boolean {
-  return /archived/i.test(`${s.status ?? ''} ${s.session_status ?? ''}`)
-}
-
 /**
  * One session by id, for the Project chat an older thread names after that chat was started over and
  * left the list. Null when it could not be read; `gone` when the server says there is no such session.
@@ -459,7 +441,6 @@ async function lookUpProjects(
   fetchFn: Fetch,
 ): Promise<boolean> {
   const known = readProjectNames(root, a.key)
-  const archived = readArchivedProjects(root, a.key)
   let learned = false
   const now = Date.now()
   const todo = unknown.filter((id) => (lookupRetryAt.get(id) ?? 0) <= now)
@@ -470,20 +451,14 @@ async function lookUpProjects(
       known[id] = tags.includes(PROJECT_CHAT_TAG)
         ? projectNameOf(session.title?.trim() || '') || null
         : null
-      archived[id] = isArchived(session)
-    } else if (gone) {
-      known[id] = null
-      archived[id] = true
-    } else {
+    } else if (gone) known[id] = null
+    else {
       lookupRetryAt.set(id, now + LOOKUP_RETRY_MS)
       continue
     }
     learned = true
   }
-  if (learned) {
-    writeProjectNames(root, a.key, known)
-    writeArchivedProjects(root, a.key, archived)
-  }
+  if (learned) writeProjectNames(root, a.key, known)
   return learned
 }
 
@@ -495,11 +470,7 @@ function writeWithProjects(
   rows: CloudSessionRow[],
   fetchFn: Fetch,
 ): void {
-  const unknown = assignProjects(
-    rows,
-    readProjectNames(root, a.key),
-    readArchivedProjects(root, a.key),
-  )
+  const unknown = assignProjects(rows, readProjectNames(root, a.key))
   writeCloudSnapshot(root, a.key, rows)
   s.rows = rows
   if (unknown.length === 0 || s.naming || !s.base) return
@@ -509,10 +480,8 @@ function writeWithProjects(
       // The newest rows, not the ones this pass started with: a pass may have run meanwhile.
       // Stopped meanwhile (base cleared): its cache may be gone, and must stay gone.
       if ((await lookUpProjects(a, base, root, unknown, fetchFn)) && s.base) {
-        assignProjects(s.rows, readProjectNames(root, a.key), readArchivedProjects(root, a.key))
+        assignProjects(s.rows, readProjectNames(root, a.key))
         writeCloudSnapshot(root, a.key, s.rows)
-        // A thread whose Project turned out archived stops waiting now, not at the next pass.
-        for (const r of s.rows) if (r.project_archived) recordAgentStatus(cloudStatusEvent(r))
       }
     } catch {
       // Names only: the rows stand without them.
