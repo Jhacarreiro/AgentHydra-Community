@@ -67,6 +67,24 @@ async function desktopMessage(c: Context, b: Bridge): Promise<Response> {
   }
 }
 
+// A new ChatGPT conversation, from the person's first message in the window (only there, as for any ChatGPT send).
+async function chatGptNew(c: Context, b: Bridge): Promise<Response> {
+  if (callerKind(c.req.raw.headers) !== 'window') return c.json({ error: 'Only a person sends to ChatGPT, from its chat in the window.' }, 403)
+  let req: Partial<DesktopMessageRequest> | null
+  try {
+    req = (await c.req.json()) as Partial<DesktopMessageRequest> | null
+  } catch {
+    return c.json({ error: 'the body must be JSON: { "text": "..." }' }, 400)
+  }
+  const text = req?.text
+  if (typeof text !== 'string' || !text.trim()) return c.json({ error: 'text is required' }, 400)
+  try {
+    return c.json({ ok: true, id: await b.chatGptStart(text.trim()) })
+  } catch (err) {
+    return fail(c, b, err)
+  }
+}
+
 // Claude Desktop's own Stop for a working chat, through AgentHydra's native stop. Only a verified stop answers 200.
 async function desktopStop(c: Context, b: Bridge): Promise<Response> {
   const id = c.req.param('id') ?? ''
@@ -227,6 +245,7 @@ export default function plugin(app: Hono, ctx: ServerContext): void {
       return item ? c.json(item) : c.json({ error: 'no such item' }, 404)
     }),
   )
+  app.post('/api/external/chatgpt/new', (c) => chatGptNew(c, b))
   app.post('/api/external/sessions/:id/message', (c) => desktopMessage(c, b))
   app.post('/api/external/sessions/:id/stop', (c) => desktopStop(c, b))
   app.post('/api/external/sessions/:id/branch', (c) => branchSession(c, b))

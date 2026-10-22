@@ -694,6 +694,7 @@ export function createBridge(opts: BridgeOptions = {}) {
   }
   const chatGptSend = (sessionId: string, text: string): Promise<void> => chatGpt((c) => c.send(sessionId, text))
   const chatGptStop = (sessionId: string): Promise<boolean> => chatGpt((c) => c.stop(sessionId))
+  const chatGptStart = (text: string): Promise<string | null> => chatGpt((c) => c.start(text))
 
   /** What an outside session's file holds before byte `before` (the start externalItems reported); [] when its file is not known. */
   async function externalOlder(sessionId: string, before: number, cwd: string | null = null): Promise<TranscriptItem[]> {
@@ -1122,6 +1123,7 @@ export function createBridge(opts: BridgeOptions = {}) {
     externalSessions,
     chatGptSend,
     chatGptStop,
+    chatGptStart,
     externalSession,
     externalItems,
     externalOlder,

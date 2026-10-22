@@ -131,6 +131,9 @@ const entryCwd = (e: SidebarEntry) => (e.kind === 'chat' ? e.chat.cwd : (e.sessi
 const parkedOf = (e: SidebarEntry) => e.kind === 'external' && e.session.unassigned === true
 /** ChatGPT's conversations have no folder: unless moved to a group, they sit in a ChatGPT group of their own. */
 export const CHATGPT_GROUP = 'ChatGPT'
+/** A group holding ChatGPT's conversations (not Pinned or Archived): its header starts a new one. */
+export const holdsChatGpt = (g: Pick<ChatGroup, 'key' | 'entries'>): boolean =>
+  g.key !== 'pinned' && g.key !== 'archived' && g.entries.some((e) => e.kind === 'external' && e.session.source === 'chatgpt')
 const groupOf = (e: SidebarEntry): string | null =>
   marksOf(e).group ?? (e.kind === 'external' && e.session.source === 'chatgpt' ? CHATGPT_GROUP : null)
 

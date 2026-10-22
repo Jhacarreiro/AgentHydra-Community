@@ -14,6 +14,29 @@ export const isExternalChatId = (id: string): boolean => id.startsWith(EXTERNAL_
 export const externalChatId = (sessionId: string): string => `${EXTERNAL_CHAT_PREFIX}${sessionId}`
 export const sessionOfChatId = (id: string): string => id.slice(EXTERNAL_CHAT_PREFIX.length)
 
+/** The view of a ChatGPT conversation not started yet: its first message, sent from its composer, starts it. */
+export const NEW_CHATGPT = 'chatgpt:new'
+export const NEW_CHATGPT_TITLE = 'New ChatGPT chat'
+export const newChatGptSession = (): ExternalSession => ({
+  id: NEW_CHATGPT,
+  title: NEW_CHATGPT_TITLE,
+  cwd: null,
+  source: 'chatgpt',
+  app: 'chatgpt',
+  instance: null,
+  status: 'idle',
+  activity: null,
+  lastActivityAt: null,
+  model: null,
+  accountId: null,
+  canResume: false,
+  fromPc: null,
+  pinned: false,
+  archived: false,
+  unread: false,
+  group: null
+})
+
 /** A Claude Code session from Claude Desktop or a terminal, or a Codex chat whose account is known: one Hydra Desk can carry on once it is idle. */
 export function resumable(s: Pick<ExternalSession, 'source' | 'codexAccountId'>): boolean {
   return s.source === 'desktop' || s.source === 'cli' || (s.source === 'codex' && !!s.codexAccountId)

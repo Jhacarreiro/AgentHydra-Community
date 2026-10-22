@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { CloudSession, ExternalSession } from '@shared/protocol'
 import { DEFAULT_SCOPES, type CloudScopes, cloudOnlyKeys, cloudQuery, deskOnPcs, deskPlaces, effectiveScopes, groupCloud, hitsOnThisPc, localOnly, parseScopes, pcKept, pickApp, remoteSessions, type RowLead, rowLead, ahSource, appShown } from '../../src/components/cloud/logic'
-import { dropHidden, groupChats, groupOrderKey, recordCloudOrder, recordDeskOrder, type SidebarOrder } from '../../src/components/sidebar/logic'
+import { dropHidden, groupChats, groupOrderKey, holdsChatGpt, recordCloudOrder, recordDeskOrder, type SidebarOrder } from '../../src/components/sidebar/logic'
 
 // The cloud list asks AgentHydra's GET /api/sessions (through Desk's /api/cloud/sessions) in AgentHydra's
 // own scope spelling. A wrong spelling does not fail loudly there: an unknown value falls back to a
@@ -96,6 +96,10 @@ describe("the desk list's Apps scope", () => {
     const gpt = { ...session('chatgpt:2', 'chatgpt'), cwd: null }
     const groups = groupChats([], { external: [gpt] }).folders
     expect(groups.map((g) => [g.label, g.entries.map((e) => e.id)])).toEqual([['ChatGPT', ['chatgpt:2']]])
+    // Its header starts a new ChatGPT conversation; a folder without one does not.
+    expect(holdsChatGpt(groups[0]!)).toBe(true)
+    expect(holdsChatGpt({ ...groups[0]!, key: 'pinned' })).toBe(false)
+    expect(holdsChatGpt({ key: 'D:/work/app', entries: [] })).toBe(false)
   })
   test('the unnamed one needs every app but HSwarm', () => {
     expect(listed(['claude', 'codex', 'opencode', 'hermes', 'dsh'])).toContain('unnamed')

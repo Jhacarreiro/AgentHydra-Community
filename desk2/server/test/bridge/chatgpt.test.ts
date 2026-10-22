@@ -38,6 +38,7 @@ function fakeHub() {
       const url = new URL(req.url)
       seen.push({ method: req.method, path: url.pathname + url.search, auth: req.headers.get('authorization'), body: await req.text() })
       if (!listing) return Response.json({ error: 'ChatGPT in Desk is turned off on this hub', code: 'CHATGPT_DISABLED' }, { status: 503 })
+      if (url.pathname === '/api/chatgpt/conversations' && req.method === 'POST') return Response.json({ id: OTHER }, { status: 202 })
       if (url.pathname === '/api/chatgpt/conversations') return Response.json({ conversations: [{ id: ID, title: 'Example question', updatedAt: '2026-10-20T10:00:00.000Z' }] })
       if (url.pathname.endsWith('/messages')) {
         state = 'thinking'
@@ -185,6 +186,14 @@ describe('ChatGPT through the bridge routes', () => {
     expect(sent.status).toBe(200)
     expect(await sent.json()).toMatchObject({ ok: true, route: 'chatgpt' })
     expect(hub.seen.at(-1)).toMatchObject({ method: 'POST', path: `/api/chatgpt/conversations/${ID}/messages` })
+
+    // A new conversation starts only from the window too, and is listed at once under its first message.
+    expect((await send('/api/external/chatgpt/new')).status).toBe(403)
+    const started = await send('/api/external/chatgpt/new', { 'X-Desk-Caller': 'window' })
+    expect(await started.json()).toEqual({ ok: true, id: `chatgpt:${OTHER}` })
+    expect(hub.seen.at(-1)).toMatchObject({ method: 'POST', path: '/api/chatgpt/conversations', body: JSON.stringify({ text: 'Hello' }) })
+    const after = (await get('/api/external/sessions')) as { id: string; title: string; status: string }[]
+    expect(after.find((s) => s.id === `chatgpt:${OTHER}`)).toMatchObject({ title: 'Hello', status: 'working' })
 
     const stopped = await fetch(`${desk.url}/api/external/sessions/${encodeURIComponent(SID)}/stop`, { method: 'POST' })
     expect(await stopped.json()).toEqual({ ok: true })

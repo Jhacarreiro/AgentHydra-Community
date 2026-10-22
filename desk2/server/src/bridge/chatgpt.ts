@@ -74,6 +74,12 @@ export function conversationItems(c: Pick<Conversation, 'messages'>, fallbackTs 
   })
 }
 
+/** What a new conversation is called until ChatGPT names it: the start of its first message. */
+const newTitle = (text: string): string => {
+  const line = text.trim().split('\n')[0]!.trim()
+  return line.length > 60 ? `${line.slice(0, 59)}…` : line
+}
+
 /** One list row: ChatGPT keeps no folder, account or model Desk can use, and nothing here resumes it elsewhere. */
 export function chatGptRow(s: Summary, state: TurnState | undefined, at: number | null): ExternalSession {
   const updated = s.updatedAt ? Date.parse(s.updatedAt) : Number.NaN
@@ -205,6 +211,18 @@ export function createChatGptSource(o: ChatGptSourceOptions = {}) {
       await ask(`api/chatgpt/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ text }), timeout: 120_000 })
       const seen = states.get(id)
       states.set(id, { ...seen, state: 'thinking', at: now() })
+    },
+
+    /**
+     * A new conversation, started by the person's first message, typed into ChatGPT once. Its session id, or null when
+     * ChatGPT took the message but did not show the new conversation in time; the list then catches up with it.
+     */
+    async start(text: string): Promise<string | null> {
+      const r = await ask<{ id?: unknown }>('api/chatgpt/conversations', { method: 'POST', body: JSON.stringify({ text }), timeout: 120_000 })
+      listed = null
+      if (typeof r.id !== 'string' || !ID.test(r.id)) return null
+      states.set(r.id, { state: 'thinking', at: now(), title: newTitle(text) })
+      return `${CHATGPT_PREFIX}${r.id}`
     },
 
     async stop(sessionId: string): Promise<boolean> {
