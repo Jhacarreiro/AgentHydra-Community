@@ -14,22 +14,22 @@ const ID = '11111111-2222-3333-4444-555555555555'
 const OTHER = '66666666-7777-8888-9999-aaaaaaaaaaaa'
 const SID = `chatgpt:${ID}`
 
-const conversation = (state = 'idle') => ({
+const conversation = (state: 'idle' | 'thinking' | 'generating' | 'stopped' = 'idle') => ({
   id: ID,
   title: 'Example question',
   state,
   busy: false,
   truncated: false,
   messages: [
-    { id: 'u1', role: 'user', text: 'What is two plus two?', createdAt: 1_760_000_000 },
-    { id: 'a1', role: 'assistant', text: 'Four.', createdAt: 1_760_000_005 },
+    { id: 'u1', role: 'user' as const, text: 'What is two plus two?', createdAt: 1_760_000_000 },
+    { id: 'a1', role: 'assistant' as const, text: 'Four.', createdAt: 1_760_000_005 },
   ],
 })
 
 /** A hub that answers the ChatGPT routes, recording what it was asked. */
 function fakeHub() {
   const seen: { method: string; path: string; auth: string | null; body: string }[] = []
-  let state = 'idle'
+  let state: Parameters<typeof conversation>[0] = 'idle'
   let listing = true
   const server = Bun.serve({
     port: 0,
@@ -51,7 +51,7 @@ function fakeHub() {
   return {
     seen,
     url: `http://127.0.0.1:${server.port}`,
-    setState: (s: string) => (state = s),
+    setState: (s: Parameters<typeof conversation>[0]) => (state = s),
     off: () => (listing = false),
     stop: () => server.stop(true),
   }
