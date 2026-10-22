@@ -2,7 +2,7 @@
 // session list, what a listed session means for "waiting on you", and that one sync pass leaves a
 // cache the adapter reads back and status rows the session list shows.
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // db.ts opens the file on import, so the scratch home has to be in place first.
@@ -11,8 +11,15 @@ process.env.AGENTHYDRA_HOME = scratch
 
 const { db } = await import('../src/db')
 const { getAgentStatus } = await import('../src/agent-status')
-const { cliCloudAccount, cloudAccounts, cloudStatusEvent, syncCloudSessions, toCloudRow } =
-  await import('../src/cloud-sessions')
+const {
+  cliCloudAccount,
+  cloudAccounts,
+  cloudStatusEvent,
+  startCloudSessions,
+  stopCloudSessions,
+  syncCloudSessions,
+  toCloudRow,
+} = await import('../src/cloud-sessions')
 const { readForeignSession, listForeignSessions } = await import('../src/foreign-sessions')
 
 const NOW = Date.parse('2026-01-01T12:00:00.000Z')
@@ -241,6 +248,95 @@ describe('sync', () => {
           : page(sessions),
     })
     expect(refused.get(account.key)?.map((r) => r.id)).toEqual(['cse_waiting', 'cse_bridge'])
+  })
+
+  test("a Project's threads are named after it, through its chat listed or looked up", async () => {
+    const root = join(scratch, 'cache-5')
+    const thread = (id: string, parent: string) => ({
+      id,
+      title: `Example thread ${id}`,
+      environment_kind: 'anthropic_cloud',
+      status_bucket: 'review_ready',
+      worker_status: 'idle',
+      unread: true,
+      last_event_at: '2026-01-01T11:40:00.000Z',
+      tags: ['hearth-thread'],
+      parent_session_id: parent,
+    })
+    const chat = (id: string, name: string) => ({
+      id,
+      title: `Project coordinator ("${name}")`,
+      environment_kind: 'anthropic_cloud',
+      status_bucket: 'blocked',
+      worker_status: 'idle',
+      unread: true,
+      last_event_at: '2026-01-01T11:50:00.000Z',
+      tags: ['hearth-overview'],
+    })
+    const lookedUp: string[] = []
+    const opts = {
+      accounts: () => [account],
+      root,
+      bases: ['https://ok.example.test'],
+      live: false,
+      fetchFn: async (url: string) => {
+        const u = new URL(url)
+        if (u.pathname === '/v1/code/sessions')
+          return u.searchParams.has('tags')
+            ? page([
+                chat('cse_chat', 'Example project'),
+                thread('cse_t1', 'cse_chat'),
+                thread('cse_t2', 'cse_old_chat'),
+                thread('cse_t3', 'cse_gone'),
+              ])
+            : page([])
+        lookedUp.push(u.pathname)
+        if (u.pathname.endsWith('/cse_old_chat'))
+          return new Response(JSON.stringify(chat('cse_old_chat', 'Example older project')), {
+            status: 200,
+          })
+        return new Response('{}', { status: 404 })
+      },
+    }
+    const state = new Map()
+    await syncCloudSessions(opts, state)
+    const listed = () =>
+      Object.fromEntries(
+        listForeignSessions('claude-cloud', root).map((s) => [s.session_id, [s.title, s.project]]),
+      )
+    // The listed Project chat names its threads at once; the look-ups run behind the pass.
+    expect(listed().cse_t1?.[1]).toBe('claude-projects/Example project')
+    await state.get(account.key)?.naming
+    expect(listed()).toEqual({
+      cse_chat: ['Project chat', 'claude-projects/Example project'],
+      cse_t1: ['Example thread cse_t1', 'claude-projects/Example project'],
+      cse_t2: ['Example thread cse_t2', 'claude-projects/Example older project'],
+      cse_t3: ['Example thread cse_t3', 'claude-projects'],
+    })
+    // The Project chat waits on its bucket, like a thread.
+    expect(getAgentStatus('cse_chat')).toMatchObject({ state: 'blocked', waiting: 'input' })
+    // What a look-up found is kept: the next pass asks nothing.
+    lookedUp.length = 0
+    await syncCloudSessions(opts, state)
+    expect(lookedUp).toEqual([])
+    expect(listed().cse_t2?.[1]).toBe('claude-projects/Example older project')
+  })
+
+  test('switched off, the poller forgets what it listed: cache and status rows', async () => {
+    const root = join(scratch, 'cache-6')
+    startCloudSessions({
+      accounts: () => [account],
+      root,
+      bases: ['https://ok.example.test'],
+      fetchFn: async () => page(sessions),
+      live: false,
+    })
+    for (let i = 0; i < 50 && !getAgentStatus('cse_waiting'); i++) await Bun.sleep(20)
+    expect(getAgentStatus('cse_waiting')?.state).toBe('blocked')
+    stopCloudSessions({ forget: true })
+    for (let i = 0; i < 50 && existsSync(root); i++) await Bun.sleep(20)
+    expect(existsSync(root)).toBe(false)
+    expect(getAgentStatus('cse_waiting')).toBeNull()
   })
 
   test('a session that left the list loses its status row', async () => {

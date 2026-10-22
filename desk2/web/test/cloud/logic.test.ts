@@ -101,6 +101,15 @@ describe("the desk list's Apps scope", () => {
     expect(holdsChatGpt({ ...groups[0]!, key: 'pinned' })).toBe(false)
     expect(holdsChatGpt({ key: 'D:/work/app', entries: [] })).toBe(false)
   })
+  test("a claude.ai Project's threads and its Project chat sit in their Project's group unless moved", () => {
+    const thread = (id: string, project: string, over: Partial<ExternalSession> = {}): ExternalSession => ({ ...session(id, 'other'), cwd: null, app: 'claude', cloudProject: project, ...over })
+    const groups = groupChats([], { external: [thread('t1', 'Example project'), thread('chat', 'Example project'), thread('t2', 'Other project'), thread('t3', 'Other project', { group: 'Reading' })] }).folders
+    expect(groups.map((g) => [g.label, g.entries.map((e) => e.id).sort()])).toEqual([
+      ['Example project', ['chat', 't1']],
+      ['Other project', ['t2']],
+      ['Reading', ['t3']]
+    ])
+  })
   test('the unnamed one needs every app but HSwarm', () => {
     expect(listed(['claude', 'codex', 'opencode', 'hermes', 'dsh'])).toContain('unnamed')
   })
@@ -178,6 +187,12 @@ describe('groupCloud', () => {
       outside('codex-1', { source: 'codex', title: 'match in codex' })
     ])
     expect(groupCloud(rows, all, 'PC', { ranked: true, search: 'MATCH', desk }).map((g) => g.rows.map((r) => r.id))).toEqual([['old-match', 'new-match', 'mid-match', 'chatgpt:1']])
+  })
+
+  test("a claude.ai Project's session sits in its Project's group, in the desk list's or its own", () => {
+    const desk = deskPlaces([], [outside('on-desk', { cwd: null, source: 'other', cloudProject: 'Example project' })])
+    const cloudRows = [{ ...row('on-desk', '', 3), cwd: null }, { ...row('cloud-only', '', 2), cwd: null, cloudProject: 'Example project' }]
+    expect(listed(groupCloud(cloudRows, all, 'PC', { desk }))).toEqual([['Example project', ['on-desk', 'cloud-only']]])
   })
 
   // Turning the cloud on must not move a chat to another group: a session the desk list shows sits where

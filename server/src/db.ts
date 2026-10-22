@@ -732,6 +732,10 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   desktop_cli_pairing: '1',
   // JSON array of the desktop folders the pairing has already handled (never paired twice).
   desktop_cli_paired: '[]',
+  // Owner, 2026-10-22: Claude Code's cloud and Remote Control sessions and claude.ai Projects' threads
+  // are listed by default (server/src/cloud-sessions.ts), with a switch in Settings. It reads only with
+  // a Claude Code login this PC already has; a PC without one asks nothing.
+  cloud_sessions: '1',
 }
 
 export function getSetting(key: string): string {

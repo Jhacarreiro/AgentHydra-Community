@@ -1052,17 +1052,21 @@ const claudeCloud: Adapter = {
         const events = join(dir, `${r.id}.jsonl`)
         const last = Date.parse(r.last_event_at)
         const created = r.created_at ? Date.parse(r.created_at) : Number.NaN
-        const where = r.tags?.includes('hearth-thread')
-          ? 'projects'
-          : r.environment_kind === 'bridge'
-            ? 'remote-control'
-            : 'cloud'
+        const projectChat = r.tags?.includes('hearth-overview') === true
+        const where =
+          projectChat || r.tags?.includes('hearth-thread')
+            ? 'projects'
+            : r.environment_kind === 'bridge'
+              ? 'remote-control'
+              : 'cloud'
         out.push({
           session_id: r.id,
           path: events,
-          title: r.title,
+          // A Project's own chat is titled after its Project; in the Project's group it is that Project's chat.
+          title: projectChat && r.project ? 'Project chat' : r.title,
           cwd: '',
-          project: `claude-${where}`,
+          // `claude-projects/<name>` names the claude.ai Project, for Hydra Desk to group its threads under.
+          project: r.project ? `claude-projects/${r.project}` : `claude-${where}`,
           created_at: Number.isFinite(created) ? created : null,
           last_activity_at: Number.isFinite(last) ? last : mtimeOf(events),
           size_bytes: sizeOf(events),

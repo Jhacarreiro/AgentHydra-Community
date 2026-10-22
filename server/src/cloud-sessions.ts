@@ -31,7 +31,8 @@
 // `user:sessions:claude_code` scope; a `claude setup-token` token can be given in
 // CLAUDE_CODE_OAUTH_TOKEN for a machine that never runs the CLI interactively.
 //
-// OPT-IN. Nothing here runs unless AGENTHYDRA_CLOUD_SESSIONS=1.
+// ON BY DEFAULT, with a switch: the `cloud_sessions` setting (Desk's Settings → Connections), which
+// AGENTHYDRA_CLOUD_SESSIONS=1 holds on. With no login that has the sessions scope nothing is asked.
 
 import {
   existsSync,
@@ -46,13 +47,20 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentStatusEvent } from './agent-status'
 import { recordAgentStatus, releaseCloudStatus } from './agent-status'
-import { type CloudSessionRow, writeCloudSnapshot } from './cloud-sessions-cache'
+import {
+  type CloudSessionRow,
+  readProjectNames,
+  writeCloudSnapshot,
+  writeProjectNames,
+} from './cloud-sessions-cache'
 import { claudeUserAgent } from './usage-api'
 
 export { cloudSessionsRoot } from './cloud-sessions-cache'
 export type { CloudSessionRow }
 
 export const CLOUD_SESSIONS_ENV = 'AGENTHYDRA_CLOUD_SESSIONS'
+/** The settings switch (Desk's Settings → Connections) that turns this on without the variable. */
+export const CLOUD_SESSIONS_SETTING = 'cloud_sessions'
 /** The scope the sessions endpoints require. A token without it is skipped, not retried. */
 export const SESSIONS_SCOPE = 'user:sessions:claude_code'
 
@@ -91,6 +99,8 @@ export interface ApiCloudSession {
   created_at?: string | null
   user_message_count?: number | null
   tags?: string[] | null
+  /** The session that started this one: a Project thread's is its Project's chat. */
+  parent_session_id?: string | null
 }
 
 interface ApiList {
@@ -121,7 +131,61 @@ export function toCloudRow(s: ApiCloudSession): CloudSessionRow | null {
     created_at: s.created_at ?? null,
     last_event_at: last,
     tags: Array.isArray(s.tags) ? s.tags.filter((t) => typeof t === 'string') : [],
+    ...(s.parent_session_id ? { parent_id: s.parent_session_id } : {}),
   }
+}
+
+/** A claude.ai Project's own chat, the one its threads are started from. */
+export const PROJECT_CHAT_TAG = 'hearth-overview'
+/** A thread of a claude.ai Project. */
+export const PROJECT_THREAD_TAG = 'hearth-thread'
+
+const isProjectChat = (r: Pick<CloudSessionRow, 'tags'>) =>
+  r.tags?.includes(PROJECT_CHAT_TAG) === true
+const inProject = (r: Pick<CloudSessionRow, 'tags'>) =>
+  isProjectChat(r) || r.tags?.includes(PROJECT_THREAD_TAG) === true
+
+/** A Project's name from its chat's title, `Project coordinator ("<name>")`; any other title is the name. */
+export function projectNameOf(title: string): string {
+  const m = title.match(/^Project coordinator \("(.+)"\)$/)
+  return (m?.[1] ?? title).trim()
+}
+
+/**
+ * Names the Project of every Project chat and thread in `rows`, in place. A thread's parent is its
+ * Project's chat; a thread started by another thread is followed up to its chat. A chat that is not
+ * listed is looked up in `known` (parent id -> name, or null for a parent that is not a Project's
+ * chat). Answers the parents neither the rows nor `known` can name, for the caller to look up.
+ */
+export function assignProjects(
+  rows: CloudSessionRow[],
+  known: Record<string, string | null>,
+): string[] {
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const unknown = new Set<string>()
+  for (const r of rows) {
+    if (!inProject(r)) continue
+    let at: CloudSessionRow | undefined = r
+    let name: string | null | undefined
+    for (let hops = 0; at && hops < 8; hops++) {
+      if (isProjectChat(at)) {
+        name = projectNameOf(at.title)
+        break
+      }
+      const parent: string | undefined = at.parent_id
+      if (!parent) break
+      const next = byId.get(parent)
+      if (!next) {
+        name = known[parent]
+        if (name === undefined) unknown.add(parent)
+        break
+      }
+      at = next
+    }
+    if (name) r.project = name
+    else delete r.project
+  }
+  return [...unknown]
 }
 
 /**
@@ -131,8 +195,9 @@ export function toCloudRow(s: ApiCloudSession): CloudSessionRow | null {
  * claude.ai would show it so: a reply nobody has read, or a bucket that means "your move". Anything
  * else is a finished turn that has been seen.
  *
- * A Project thread is read in the Project, not on the sessions page, so its `unread` stays set and
- * says nothing. There only the bucket counts: `blocked` and `review_ready` wait on the person.
+ * A Project thread (or a Project's own chat) is read in the Project, not on the sessions page, so its
+ * `unread` stays set and says nothing. There only the bucket counts: `blocked` and `review_ready` wait
+ * on the person.
  */
 export function cloudStatusEvent(r: CloudSessionRow): AgentStatusEvent {
   const running = r.worker_status !== 'idle' && r.worker_status !== 'unknown'
@@ -140,7 +205,7 @@ export function cloudStatusEvent(r: CloudSessionRow): AgentStatusEvent {
   if (running || r.status_bucket === 'working') return { ...base, event: 'cloud-working' }
   if (r.status_bucket === 'blocked')
     return { ...base, event: 'cloud-blocked', notificationType: 'input' }
-  if (r.tags?.includes('hearth-thread')) {
+  if (inProject(r)) {
     return r.status_bucket === 'review_ready'
       ? { ...base, event: 'cloud-blocked', notificationType: 'review' }
       : { ...base, event: 'cloud-done' }
@@ -248,7 +313,7 @@ export type ListResult =
  * session started from a claude.ai Project (`hearth-thread`) or from Cowork (`cowork-*`) carries a
  * tag, so those need a second query that asks for them by tag.
  */
-export const LISTED_TAGS = ['hearth-thread', 'cowork-remote', 'cowork-local']
+export const LISTED_TAGS = [PROJECT_THREAD_TAG, PROJECT_CHAT_TAG, 'cowork-remote', 'cowork-local']
 
 type PageResult =
   | { ok: true; rows: CloudSessionRow[] }
@@ -329,6 +394,101 @@ export async function listCloudSessions(
     return { ok: true, base, rows }
   }
   return last
+}
+
+/** Parents looked up per account per pass, so a first pass over many old threads stays short. */
+const PROJECT_LOOKUPS_PER_PASS = 10
+/** A look-up the server would not answer is not asked again before this. */
+const LOOKUP_RETRY_MS = 60 * 60_000
+const lookupRetryAt = new Map<string, number>()
+
+/**
+ * One session by id, for the Project chat an older thread names after that chat was started over and
+ * left the list. Null when it could not be read; `gone` when the server says there is no such session.
+ */
+export async function getCloudSession(
+  a: CloudAccount,
+  base: string,
+  id: string,
+  fetchFn: Fetch = fetch,
+): Promise<{ session: ApiCloudSession | null; gone: boolean }> {
+  try {
+    const res = await fetchFn(`${base}/v1/code/sessions/${encodeURIComponent(id)}`, {
+      headers: headers(a),
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (res.status === 404) return { session: null, gone: true }
+    if (!res.ok) return { session: null, gone: false }
+    const body = (await res.json()) as ApiCloudSession & { data?: ApiCloudSession }
+    const s =
+      body?.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body
+    return { session: s?.id ? s : null, gone: false }
+  } catch {
+    return { session: null, gone: false }
+  }
+}
+
+/**
+ * Looks up the Project chats `unknown` names that are no longer listed, and answers whether anything
+ * was learned (then kept in projects.json). Run behind the discovery pass, never in it: a look-up that
+ * stalls must not hold back the list, the statuses or the sockets.
+ */
+async function lookUpProjects(
+  a: CloudAccount,
+  base: string,
+  root: string,
+  unknown: string[],
+  fetchFn: Fetch,
+): Promise<boolean> {
+  const known = readProjectNames(root, a.key)
+  let learned = false
+  const now = Date.now()
+  const todo = unknown.filter((id) => (lookupRetryAt.get(id) ?? 0) <= now)
+  for (const id of todo.slice(0, PROJECT_LOOKUPS_PER_PASS)) {
+    const { session, gone } = await getCloudSession(a, base, id, fetchFn)
+    if (session) {
+      const tags = Array.isArray(session.tags) ? session.tags : []
+      known[id] = tags.includes(PROJECT_CHAT_TAG)
+        ? projectNameOf(session.title?.trim() || '') || null
+        : null
+    } else if (gone) known[id] = null
+    else {
+      lookupRetryAt.set(id, now + LOOKUP_RETRY_MS)
+      continue
+    }
+    learned = true
+  }
+  if (learned) writeProjectNames(root, a.key, known)
+  return learned
+}
+
+/** Names what it can from what is kept, writes the snapshot, and starts the look-ups for the rest. */
+function writeWithProjects(
+  a: CloudAccount,
+  s: AccountState,
+  root: string,
+  rows: CloudSessionRow[],
+  fetchFn: Fetch,
+): void {
+  const unknown = assignProjects(rows, readProjectNames(root, a.key))
+  writeCloudSnapshot(root, a.key, rows)
+  s.rows = rows
+  if (unknown.length === 0 || s.naming || !s.base) return
+  const base = s.base
+  s.naming = (async () => {
+    try {
+      // The newest rows, not the ones this pass started with: a pass may have run meanwhile.
+      // Stopped meanwhile (base cleared): its cache may be gone, and must stay gone.
+      if ((await lookUpProjects(a, base, root, unknown, fetchFn)) && s.base) {
+        assignProjects(s.rows, readProjectNames(root, a.key))
+        writeCloudSnapshot(root, a.key, s.rows)
+      }
+    } catch {
+      // Names only: the rows stand without them.
+    } finally {
+      s.naming = null
+    }
+  })()
 }
 
 // --- live: one WebSocket per working session ---------------------------------
@@ -506,6 +666,10 @@ interface AccountState {
   /** Per session: the last_event_at its history was last replayed for. */
   replayed: Map<string, string>
   backfilling: boolean
+  /** The rows last written, for the Project look-ups to name once they come back. */
+  rows: CloudSessionRow[]
+  /** The Project look-ups running behind the list, if any. */
+  naming: Promise<void> | null
 }
 
 export interface CloudPollerOptions {
@@ -540,6 +704,8 @@ export async function syncCloudSessions(
         nextWatchTry: 0,
         replayed: new Map(),
         backfilling: false,
+        rows: [],
+        naming: null,
       }
       state.set(a.key, s)
     }
@@ -551,7 +717,7 @@ export async function syncCloudSessions(
       continue
     }
     s.base = res.base
-    writeCloudSnapshot(opts.root, a.key, res.rows)
+    writeWithProjects(a, s, opts.root, res.rows, opts.fetchFn ?? fetch)
     for (const r of res.rows) recordAgentStatus(cloudStatusEvent(r))
     written.set(a.key, res.rows)
     if (opts.live !== false) {
@@ -679,10 +845,30 @@ export function startCloudSessions(opts: CloudPollerOptions): void {
   schedule(0)
 }
 
-export function stopCloudSessions(): void {
+/**
+ * Stops the poller. `forget` also drops what it learned, the cache and the status rows, once a pass
+ * still running has finished: switched off, the sessions leave the lists instead of waiting there.
+ */
+export function stopCloudSessions(opts: { forget?: boolean } = {}): void {
+  const root = pollerOpts?.root
   if (timer) clearTimeout(timer)
   timer = null
-  for (const s of pollerState.values()) for (const sock of s.sockets.values()) sock.close()
+  for (const s of pollerState.values()) {
+    for (const sock of s.sockets.values()) sock.close()
+    s.base = null
+  }
   pollerState.clear()
   pollerOpts = null
+  if (!opts.forget || !root) return
+  const forget = () => {
+    if (pollerOpts) return // switched back on meanwhile
+    releaseCloudStatus([])
+    rmSync(root, { recursive: true, force: true })
+  }
+  if (running) void running.then(forget)
+  else forget()
+}
+
+export function cloudSessionsRunning(): boolean {
+  return pollerOpts !== null
 }
