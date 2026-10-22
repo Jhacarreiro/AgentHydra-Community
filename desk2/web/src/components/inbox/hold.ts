@@ -1,10 +1,10 @@
 // The queue's Undo: while Waiting on you walks the conversations, what the owner sends to the one on screen (a message, a
-// permission, a plan or a question's answer) waits a few seconds before it goes, so Undo can still take it back. The
+// permission, a plan, a question's answer or an MCP form's) waits a few seconds before it goes, so Undo can still take it back. The
 // composer and the store ask here before they send; with the queue off, or for any other conversation, it goes at once.
 // No imports: the store and the composer both use it, and the queue's store (store.ts) sets the holder.
 
 /** What a held send is, for the line that offers Undo. */
-export type HeldKind = 'message' | 'permission' | 'plan' | 'question'
+export type HeldKind = 'message' | 'permission' | 'plan' | 'question' | 'form'
 
 export interface Holder {
   /** Whether a send to this chat waits for Undo now. */

@@ -35,6 +35,8 @@ export interface PendingSend {
   key: string
   title: string
   kind: HeldKind
+  /** Its place in the queue, for Undo. */
+  place: number | undefined
 }
 
 function readSeen(storage: InboxDeps['storage']): Map<string, number> {
@@ -63,8 +65,10 @@ export function createInbox(deps: InboxDeps) {
   const seen = shallowRef(readSeen(deps.storage))
   const later = shallowRef(new Map<string, number>())
   const answered = shallowRef(new Set<string>())
-  /** What the queue holds: everything that waited while it was on, until it is answered, Done, or runs again. */
-  const held = shallowRef(new Set<string>())
+  /** What the queue holds, each with its place (when the queue took it): everything that waited while it was on, until
+   *  it is answered, Done, or runs again. */
+  const held = shallowRef(new Map<string, number>())
+  let places = 0
   /** The conversation on screen; it is the queue's current one only while the queue holds it. */
   const keep = ref<string | null>(keyOfView(deps.selected()))
   const pending = shallowRef<PendingSend | null>(null)
@@ -73,19 +77,27 @@ export function createInbox(deps: InboxDeps) {
   /** The conversation the queue itself just moved away from: Later and Next are no look at it. */
   let quiet: string | null = null
 
-  const entriesFor = (hold: ReadonlySet<string>): InboxEntry[] =>
+  const entriesFor = (hold: ReadonlyMap<string, number>): InboxEntry[] =>
     inboxEntries({ chats: deps.chats(), external: deps.external(), seen: seen.value, later: later.value, answered: answered.value, held: hold, now: now() })
   /** Everything the queue holds and everything that waits; a conversation that is only on screen is not in it. */
   const entries = computed(() => entriesFor(held.value))
   /** What waits now, before the queue holds it. */
-  const fresh = computed(() => entriesFor(new Set()))
+  const fresh = computed(() => entriesFor(new Map()))
   const waiting = entries
   const current = computed(() => entries.value.find((e) => e.key === keep.value) ?? null)
 
   const drop = (key: string) => {
     if (!held.value.has(key)) return
-    const next = new Set(held.value)
+    const next = new Map(held.value)
     next.delete(key)
+    held.value = next
+  }
+  /** Takes what waits now into the queue, behind what it holds, in the order it waits (stopped agents first, oldest). */
+  const take = () => {
+    const add = fresh.value.filter((e) => !held.value.has(e.key))
+    if (!add.length) return
+    const next = new Map(held.value)
+    for (const e of add) next.set(e.key, ++places)
     held.value = next
   }
 
@@ -110,9 +122,7 @@ export function createInbox(deps: InboxDeps) {
   watch(
     [on, fresh],
     () => {
-      if (!on.value) return
-      const add = fresh.value.filter((e) => !held.value.has(e.key))
-      if (add.length) held.value = new Set([...held.value, ...add.map((e) => e.key)])
+      if (on.value) take()
     },
     { immediate: true }
   )
@@ -162,13 +172,19 @@ export function createInbox(deps: InboxDeps) {
     answered.value = next
   }
 
-  const holds = (chatId: string): boolean => on.value && keyOfChatId(chatId) === keep.value
+  /** A send waits for Undo only to the queue's own conversation on screen (or the one whose answer still waits, with
+   *  Auto-advance off): never to a chat opened by hand that does not wait. */
+  const holds = (chatId: string): boolean => {
+    const key = keyOfChatId(chatId)
+    return on.value && key === keep.value && (!!current.value || pending.value?.key === key)
+  }
 
   function hold(chatId: string, kind: HeldKind): Promise<boolean> {
     const key = keyOfChatId(chatId)
     if (!holds(chatId)) return Promise.resolve(true)
+    const title = current.value?.title ?? pending.value?.title ?? ''
+    const place = held.value.get(key) ?? (pending.value?.key === key ? pending.value.place : undefined)
     settle(true)
-    const title = current.value?.title ?? ''
     answered.value = new Set(answered.value).add(key)
     drop(key)
     if (later.value.has(key)) {
@@ -176,7 +192,7 @@ export function createInbox(deps: InboxDeps) {
       next.delete(key)
       later.value = next
     }
-    pending.value = { key, title, kind }
+    pending.value = { key, title, kind, place }
     if (auto.value) go(firstOther(entries.value, key))
     return new Promise<boolean>((resolve) => {
       pendingDone = resolve
@@ -189,7 +205,7 @@ export function createInbox(deps: InboxDeps) {
     const p = pending.value
     if (!p) return
     settle(false)
-    held.value = new Set(held.value).add(p.key)
+    held.value = new Map(held.value).set(p.key, p.place ?? ++places)
     // Back to it only once the undone send put its text back in the chat's saved draft, so the box shown there reads it.
     timers.set(() => go(entries.value.find((e) => e.key === p.key) ?? null), 0)
   }
@@ -197,7 +213,7 @@ export function createInbox(deps: InboxDeps) {
   function start() {
     on.value = true
     store(ON_KEY, '1')
-    held.value = new Set([...held.value, ...fresh.value.map((e) => e.key)])
+    take()
     if (!current.value) go(entries.value[0] ?? null)
   }
 

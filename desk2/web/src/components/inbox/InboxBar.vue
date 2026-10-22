@@ -17,7 +17,7 @@ const pending = inbox.pending
 const position = computed(() => (current.value ? entries.value.indexOf(current.value) + 1 : 0))
 const total = computed(() => inbox.waiting.value.length)
 const seconds = Math.round(HOLD_MS / 1000)
-const WHAT: Record<HeldKind, string> = { message: 'Your reply', permission: 'Your permission answer', plan: 'Your plan answer', question: 'Your answer' }
+const WHAT: Record<HeldKind, string> = { message: 'Your reply', permission: 'Your permission answer', plan: 'Your plan answer', question: 'Your answer', form: 'Your form answer' }
 
 const BTN =
   'flex h-7 shrink-0 items-center gap-1.5 rounded-(--radius-6) px-2 text-ui text-text-2 transition-colors duration-60 hover:bg-fill-hover hover:text-text disabled:opacity-50'

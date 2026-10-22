@@ -10,8 +10,9 @@
 // HELD. Once the queue has a conversation it keeps it until it is answered, marked Done or runs again, though opening it
 // marked it read and Later or Next moved past it (`held`, kept by state.ts).
 //
-// ORDER. Stopped agents first, then the oldest wait first: a conversation that starts waiting joins the end, and never
-// moves the one on screen. Later puts one at the very end, behind everything that waits, in the order Later was pressed.
+// ORDER. Stopped agents first, then the others; within each, in the order the queue took them (`held`: what waited when
+// it was turned on, oldest first, then each new one at the end, as it starts waiting), and never moving the one on
+// screen. Later puts one at the very end, behind everything that waits, in the order Later was pressed.
 import type { ChatStatus, ChatSummary, ExternalSession } from '@shared/protocol'
 import type { View } from '@/components/shell/logic'
 import { sourceLabel } from '@/components/sidebar/logic'
@@ -89,9 +90,9 @@ export interface InboxInputs {
   later: ReadonlyMap<string, number>
   /** Conversations just answered whose answer is still on its way (or just went): left out until it lands. */
   answered: ReadonlySet<string>
-  /** Conversations the queue already holds (and the one on screen): kept while they are not running again, though
-   *  opening one marked it read and Later or Next moved past it. */
-  held: ReadonlySet<string>
+  /** Conversations the queue already holds, each with when it took it (a running number): kept while they are not
+   *  running again, though opening one marked it read and Later or Next moved past it. */
+  held: ReadonlyMap<string, number>
   now: number
 }
 
@@ -113,7 +114,11 @@ export function inboxEntries(i: InboxInputs): InboxEntry[] {
     const la = i.later.get(a.key)
     const lb = i.later.get(b.key)
     if (la !== undefined || lb !== undefined) return la === undefined ? -1 : lb === undefined ? 1 : la - lb
-    return Number(b.blocking) - Number(a.blocking) || a.since - b.since
+    if (a.blocking !== b.blocking) return a.blocking ? -1 : 1
+    const ha = i.held.get(a.key)
+    const hb = i.held.get(b.key)
+    if (ha !== undefined || hb !== undefined) return ha === undefined ? 1 : hb === undefined ? -1 : ha - hb
+    return a.since - b.since
   })
 }
 
@@ -130,10 +135,10 @@ export function after(entries: readonly InboxEntry[], current: string | null): I
 }
 
 /** The held conversations still worth holding: listed, not archived and not running again (answered from anywhere). */
-export function stillHeld(held: ReadonlySet<string>, chats: readonly ChatSummary[], external: readonly ExternalSession[]): Set<string> {
-  const out = new Set<string>()
-  for (const c of chats) if (held.has(c.id) && !c.archived && !BUSY.includes(c.status)) out.add(c.id)
-  for (const s of external) if (held.has(s.id) && !s.archived && s.status !== 'working') out.add(s.id)
+export function stillHeld<T>(held: ReadonlyMap<string, T>, chats: readonly ChatSummary[], external: readonly ExternalSession[]): Map<string, T> {
+  const out = new Map<string, T>()
+  for (const c of chats) if (held.has(c.id) && !c.archived && !BUSY.includes(c.status)) out.set(c.id, held.get(c.id)!)
+  for (const s of external) if (held.has(s.id) && !s.archived && s.status !== 'working') out.set(s.id, held.get(s.id)!)
   return out
 }
 

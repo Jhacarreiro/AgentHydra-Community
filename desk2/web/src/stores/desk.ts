@@ -1292,6 +1292,8 @@ export function useDesk() {
       requestId: string,
       answer: ElicitationAnswer
     ): Promise<{ ok: boolean }> {
+      // Waiting on you holds it for Undo (components/inbox/hold.ts); undone, the card is still there to answer.
+      if (!(await inboxHold(chatId, 'form'))) return { ok: false }
       return fetchJson(`/chats/${chatId}/elicitation/${requestId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

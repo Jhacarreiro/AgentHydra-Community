@@ -22,7 +22,7 @@ const inputs = (over: Partial<InboxInputs>): InboxInputs => ({
   seen: new Map(),
   later: new Map(),
   answered: new Set(),
-  held: new Set(),
+  held: new Map(),
   now: NOW,
   ...over
 })
@@ -64,10 +64,27 @@ describe('what waits on the owner, in which order', () => {
   })
 
   test('a held conversation stays though opening it marked it read, until it runs again', () => {
-    const held = new Set(['read-now', 'answered-elsewhere'])
+    const held = new Map([
+      ['read-now', 1],
+      ['answered-elsewhere', 2]
+    ])
     const chats = [chat('read-now'), chat('answered-elsewhere', { status: 'working' })]
     expect(keys({ chats, held })).toEqual(['read-now'])
-    expect([...stillHeld(held, chats, [])]).toEqual(['read-now'])
+    expect([...stillHeld(held, chats, []).keys()]).toEqual(['read-now'])
+  })
+
+  test('one the queue took later goes behind those it holds, though it waits since longer; stopped agents still first', () => {
+    const chats = [
+      chat('held-reply', { unread: true, lastActionAt: NOW - 5 * MIN }),
+      chat('marked-unread-later', { unread: true, lastActionAt: NOW - 90 * MIN }),
+      chat('new-permission', { status: 'needs_you', lastActionAt: NOW - MIN })
+    ]
+    const held = new Map([
+      ['held-reply', 1],
+      ['marked-unread-later', 2],
+      ['new-permission', 3]
+    ])
+    expect(keys({ chats, held })).toEqual(['new-permission', 'held-reply', 'marked-unread-later'])
   })
 
   test('Later goes behind everything that waits, in the order it was pressed', () => {
@@ -241,5 +258,53 @@ describe('the queue moving on', () => {
     void inboxHold('a', 'plan')
     await nextTick()
     expect(world.selected).toEqual({ kind: 'chat', id: 'a' })
+  })
+
+  test('a send to a chat opened by hand that does not wait goes at once, and Undo cannot bring it in', async () => {
+    const { world, inbox } = setup([chat('a', { unread: true }), chat('read')])
+    inbox.start()
+    await nextTick()
+    world.selected = { kind: 'chat', id: 'read' }
+    await nextTick()
+    expect(inboxHolds('read')).toBe(false)
+    expect(await inboxHold('read', 'message')).toBe(true)
+    expect(world.selected).toEqual({ kind: 'chat', id: 'read' })
+    expect(inbox.pending.value).toBeNull()
+  })
+
+  test('with Auto-advance off, a second send to the same conversation still waits behind the first', async () => {
+    const { inbox } = setup([chat('a', { status: 'needs_you' }), chat('b', { unread: true })])
+    inbox.start()
+    inbox.setAuto(false)
+    await nextTick()
+    const first = inboxHold('a', 'permission')
+    await nextTick()
+    expect(inboxHolds('a')).toBe(true)
+    void inboxHold('a', 'message')
+    expect(await first).toBe(true)
+    expect(inbox.pending.value?.key).toBe('a')
+    expect(inbox.pending.value?.kind).toBe('message')
+  })
+
+  test('one that starts waiting joins the end of the queue', async () => {
+    const { world, inbox } = setup([chat('a', { unread: true, lastActionAt: NOW - 5 * MIN }), chat('b', { unread: true, lastActionAt: NOW - 4 * MIN }), chat('old')])
+    inbox.start()
+    await nextTick()
+    world.chats[2]!.unread = true // marked unread by hand: it waits since long ago, but came in last
+    await nextTick()
+    expect(inbox.entries.value.map((e) => e.key)).toEqual(['a', 'b', 'old'])
+  })
+
+  test('Undo puts it back in its place', async () => {
+    const { inbox } = setup([chat('a', { unread: true, lastActionAt: 1 }), chat('b', { unread: true, lastActionAt: 2 }), chat('c', { unread: true, lastActionAt: 3 })])
+    inbox.start()
+    await nextTick()
+    inbox.next()
+    await nextTick()
+    void inboxHold('b', 'message')
+    await nextTick()
+    inbox.undo()
+    await nextTick()
+    expect(inbox.entries.value.map((e) => e.key)).toEqual(['a', 'b', 'c'])
   })
 })
