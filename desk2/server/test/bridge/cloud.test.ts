@@ -35,3 +35,9 @@ test('toCloudSession keeps the cwd as it is when no folder above it matches the 
   expect(toCloudSession(row('D:\\Work\\notes'))).toMatchObject({ cwd: 'D:\\Work\\notes', lastCwd: null })
   expect(toCloudSession(row(null, 'D--Work'))).toMatchObject({ cwd: null, lastCwd: null })
 })
+
+test('toCloudSession marks a cloud Claude Code session as Claude, and names its claude.ai Project', () => {
+  const cloud = { ...row('claude-projects/Example'), source: 'foreign', tool: 'claude-cloud', project: 'claude-projects/Example' }
+  expect(toCloudSession(cloud)).toMatchObject({ app: 'claude', cloudProject: 'Example', cwd: null })
+  expect(toCloudSession(row('D:\\Work')).app).toBeUndefined()
+})

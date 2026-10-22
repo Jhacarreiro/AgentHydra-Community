@@ -420,7 +420,9 @@ export function remoteSessions(rows: readonly CloudSession[], listed: ReadonlySe
       pinned: false,
       archived: false,
       unread: false,
-      group: null
+      group: null,
+      ...(r.app ? { app: r.app } : {}),
+      ...(r.cloudProject ? { cloudProject: r.cloudProject } : {})
     }))
 }
 

@@ -502,6 +502,8 @@ export interface CloudSession {
   instanceNum: number | null // AgentHydra's instance number, the #37 its rows show
   /** A claude.ai Project's thread or Project chat: the Project's name, the group it sits in (ExternalSession.cloudProject). */
   cloudProject?: string
+  /** 'claude' for a cloud Claude Code session (ExternalSession.app). */
+  app?: string
 }
 
 export interface CloudList {
