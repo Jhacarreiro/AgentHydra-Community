@@ -35,8 +35,11 @@ async function getJson<T>(path: string): Promise<T> {
 const CHATGPT_OFFERED_KEY = 'hydra-desk.cloud.apps.chatgpt'
 function withChatGpt(s: CloudScopes): CloudScopes {
   if (!storage || storage.getItem(CHATGPT_OFFERED_KEY)) return s
+  const next = s.apps.includes('chatgpt') ? s : { ...s, apps: SOURCE_VALUES.filter((v) => v === 'chatgpt' || s.apps.includes(v)) }
+  // Saved before it is marked offered, so a reload keeps the tick (the scopes' watcher writes only on a change).
+  storage.setItem(SCOPES_KEY, JSON.stringify(next))
   storage.setItem(CHATGPT_OFFERED_KEY, '1')
-  return s.apps.includes('chatgpt') ? s : { ...s, apps: SOURCE_VALUES.filter((v) => v === 'chatgpt' || s.apps.includes(v)) }
+  return next
 }
 
 function createCloud() {
@@ -161,6 +164,7 @@ ${rows}`
     dropHidden(
       groupCloud(sessions.value, effectiveScopes(scopes.value, answered.value), thisPc.value, {
         ranked: searching.value,
+        search: answered.value,
         desk: placed.value,
         order: order.value
       }),

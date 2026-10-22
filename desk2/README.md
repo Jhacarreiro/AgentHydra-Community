@@ -194,11 +194,12 @@ sidebar on the left stays put, and only the pane on the right changes.
   lead with a small muted mark for their app (`rowLead` in `web/src/components/cloud/logic.ts`),
   and the Apps ticks below decide which apps' chats the desk list shows too (Desk's own chats always).
   The Filter menu opens with
-  Apps, one checkbox per app (Claude, Codex, OpenCode, Hermes, DSH, HSwarm), one click each, and starts at
-  Claude alone (owner, 2026-10-05: "I don't necessarily want to see open code or ChatGPT in my sidebar by
-  default, but I want to be able to"); search still looks through every app unless Only this view is
-  ticked. The scopes call it `apps`, so a filter saved before (as `source`, every app ticked) comes back at
-  Claude alone with the rest of it kept.
+  Apps, one checkbox per app (Claude, Codex, ChatGPT, OpenCode, Hermes, DSH, HSwarm), one click each, and starts at
+  Claude and ChatGPT (owner, 2026-10-05: "I don't necessarily want to see open code ... in my sidebar by
+  default, but I want to be able to"; ChatGPT's conversations, a source of their own since 2026-10-22, start ticked,
+  and a filter saved before then gets the tick once); search still looks through every app unless Only this view is
+  ticked, ChatGPT's conversations by their titles. The scopes call it `apps`, so a filter saved before (as `source`,
+  every app ticked) comes back at Claude and ChatGPT with the rest of it kept.
   A row of the other PC's shows its AgentHydra instance number (#37), as AgentHydra's rows do, and its menu has Open, Pin and
   Copy session ID. With the cloud on, the search box searches every session AgentHydra knows, from both PCs,
   archived ones included, from all time, unless Only this view is ticked, and lists the best matches first;

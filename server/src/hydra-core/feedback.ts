@@ -188,27 +188,35 @@ export function foldIfDue(dir: string, now = new Date()): boolean {
   return true
 }
 
-const cache = new Map<string, { mtime: number; fb: Feedback | null }>()
+const cache = new Map<string, { mtime: number; size: number; racy: boolean; fb: Feedback | null }>()
+/** A file written this recently when it was read may be written again within the same mtime tick (coarse on Windows). */
+const RACY_MS = 2_000
 
-/** The last fold, cached by the file's mtime; null when there is none or it is unreadable. */
+/**
+ * The last fold, cached by the file's mtime and size; null when there is none or it is unreadable. A read made while
+ * the file was still fresh is never trusted again, since a second write in the same mtime tick leaves both unchanged.
+ */
 export function readFeedback(dir: string): Feedback | null {
   const file = feedbackPath(dir)
   let mtime: number
+  let size: number
   try {
-    mtime = statSync(file).mtimeMs
+    const st = statSync(file)
+    mtime = st.mtimeMs
+    size = st.size
   } catch {
     cache.delete(file)
     return null
   }
   const hit = cache.get(file)
-  if (hit && hit.mtime === mtime) return hit.fb
+  if (hit && !hit.racy && hit.mtime === mtime && hit.size === size) return hit.fb
   let fb: Feedback | null = null
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<Feedback>
     if (raw && typeof raw.base === 'number' && raw.entries && typeof raw.entries === 'object')
       fb = raw as Feedback
   } catch {}
-  cache.set(file, { mtime, fb })
+  cache.set(file, { mtime, size, racy: Date.now() - mtime < RACY_MS, fb })
   return fb
 }
 

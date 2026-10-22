@@ -431,6 +431,8 @@ const newestFirst = (a: CloudSession, b: CloudSession) => b.lastActivityAt - a.l
 export interface GroupCloudOptions {
   /** A search's answer: AgentHydra's order, best match first. */
   ranked?: boolean
+  /** The search a ranked answer is for: AgentHydra knows no ChatGPT chat, so the desk list's matching ones join it. */
+  search?: string
   /** The sessions the desk list lists (deskPlaces). */
   desk?: ReadonlyMap<string, DeskPlace>
   /** The order both lists keep (sidebar/order.ts); without one, groups by their newest row and rows newest first. */
@@ -454,6 +456,13 @@ export interface GroupCloudOptions {
 export function groupCloud(rows: CloudSession[], s: CloudScopes, thisPc: string, opts: GroupCloudOptions = {}): CloudGroup[] {
   const desk = opts.desk ?? new Map<string, DeskPlace>()
   const shown = rows.filter((r) => s.shape.includes(sessionShape(r)) && pcKept(r, s.pcs, thisPc))
+  if (opts.ranked) {
+    const words = opts.search?.trim().toLowerCase()
+    const seen = new Set(shown.map((r) => r.id))
+    if (words)
+      for (const [id, place] of desk)
+        if (!seen.has(id) && place.row.source === 'chatgpt' && place.row.title.toLowerCase().includes(words) && keepsDeskRow(place.row, s, thisPc)) shown.push(place.row)
+  }
   if (opts.ranked) return shown.length ? [{ key: RESULTS_KEY, label: RESULTS_LABEL, cwd: null, orderKey: RESULTS_KEY, rows: shown }] : []
   const answered = new Set(rows.map((r) => r.id))
   for (const [id, place] of desk) if (!answered.has(id) && keepsDeskRow(place.row, s, thisPc)) shown.push(place.row)

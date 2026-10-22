@@ -507,12 +507,27 @@ test('B4b-1: the fold never runs inside a pack, match or find request; a timer f
 
 test('B4b-1: rank code reads feedback.json once per change (cached by mtime)', () => {
   plantFeedback({ 'knowledge:x': { offered: 20, taken: 10, rejected: 0, reported: 0 } })
+  // A settled file: one written just now is read again (the next test).
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(feedbackPath(dir), old, old)
   const spy = spyOn(fs, 'readFileSync')
   readFeedback(dir)
   readFeedback(dir)
   const reads = spy.mock.calls.filter((c) => String(c[0]).endsWith('feedback.json')).length
   spy.mockRestore()
   expect(reads).toBeLessThanOrEqual(1)
+})
+
+test('B4b-1: a second write in the same mtime tick is read, not the cached fold', () => {
+  // Both writes stamped with one recent mtime, as on Windows' coarse clock.
+  const at = new Date(Date.now() - 500)
+  plantFeedback({ 'knowledge:x': { offered: 60, taken: 0, rejected: 0, reported: 0 } })
+  utimesSync(feedbackPath(dir), at, at)
+  expect(readFeedback(dir)?.entries['knowledge:x']?.taken).toBe(0)
+  // Same size, same mtime.
+  plantFeedback({ 'knowledge:x': { offered: 60, taken: 1, rejected: 0, reported: 0 } })
+  utimesSync(feedbackPath(dir), at, at)
+  expect(readFeedback(dir)?.entries['knowledge:x']?.taken).toBe(1)
 })
 
 test('B4b-6: a rotation whose rename fails (log.jsonl held on Windows) never throws out of appendLog', () => {

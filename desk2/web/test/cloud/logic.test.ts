@@ -171,6 +171,15 @@ describe('groupCloud', () => {
     expect(groupCloud(rows, all, 'PC', { ranked: true }).map((g) => g.rows.map((r) => r.id))).toEqual([['old-match', 'new-match', 'mid-match']])
   })
 
+  test("a search's answer has the desk list's ChatGPT chats whose title matches, after AgentHydra's", () => {
+    const desk = deskPlaces([], [
+      outside('chatgpt:1', { source: 'chatgpt', title: 'Quarterly match notes', cwd: null }),
+      outside('chatgpt:2', { source: 'chatgpt', title: 'Something else', cwd: null }),
+      outside('codex-1', { source: 'codex', title: 'match in codex' })
+    ])
+    expect(groupCloud(rows, all, 'PC', { ranked: true, search: 'MATCH', desk }).map((g) => g.rows.map((r) => r.id))).toEqual([['old-match', 'new-match', 'mid-match', 'chatgpt:1']])
+  })
+
   // Turning the cloud on must not move a chat to another group: a session the desk list shows sits where
   // it sits there, whatever folder AgentHydra says it works in now.
   test('a session the desk list shows keeps its desk group: its folder, or the group it was moved to', () => {
