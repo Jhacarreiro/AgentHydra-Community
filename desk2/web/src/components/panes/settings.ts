@@ -42,6 +42,7 @@ export type SettingsRowId =
   | 'notifications'
   | 'idle'
   | 'collapseMode'
+  | 'forgetWaits'
   | 'babysitter'
   | 'instanceManager'
   | 'orchestrator'
@@ -150,6 +151,13 @@ export const SETTINGS_ROWS: SettingsRow[] = [
     group: 'Behaviour',
     label: 'Collapse mode',
     description: 'Folds the AgentHydra window to the right edge of the screen, showing only your chats. Off unless turned on here.'
+  },
+  {
+    id: 'forgetWaits',
+    section: 'general',
+    group: 'Behaviour',
+    label: 'Forget old waits',
+    description: 'Conversations from other apps that have waited on you longer than this many days leave Waiting on you. Off keeps them all.'
   },
   {
     id: 'ahTooltips',

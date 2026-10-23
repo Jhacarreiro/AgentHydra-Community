@@ -84,6 +84,7 @@ const saveError = ref<string | null>(null)
 const showSaved = ref(false)
 const notifyNote = ref<string | null>(null)
 const idleDraft = ref('')
+const forgetDraft = ref('')
 
 const modes = PERMISSION_MODES.filter((m): m is (typeof m & { value: PermissionMode }) => m.value !== null)
 const efforts: { value: Effort | null; label: string }[] = [{ value: null, label: 'Default' }, ...EFFORTS]
@@ -110,6 +111,7 @@ watch(dw.savedAt, flashSaved)
 function setLocal(s: DeskSettings) {
   local.value = { ...s }
   idleDraft.value = String(s.idleCloseMinutes)
+  forgetDraft.value = String(s.forgetWaitsDays)
 }
 
 let savedTimer: ReturnType<typeof setTimeout> | null = null
@@ -138,6 +140,7 @@ async function save(patch: Partial<DeskSettings>) {
       for (const k of keys) if (cur[k] === patch[k]) next[k] = prev[k]
       local.value = next as unknown as DeskSettings
       if (keys.includes('idleCloseMinutes')) idleDraft.value = String(local.value.idleCloseMinutes)
+      if (keys.includes('forgetWaitsDays')) forgetDraft.value = String(local.value.forgetWaitsDays)
     }
     saveError.value = e instanceof Error ? e.message : String(e)
   }
@@ -158,6 +161,23 @@ function commitIdle() {
   const v = Math.min(n, 1440)
   idleDraft.value = String(v)
   if (v !== local.value?.idleCloseMinutes) save({ idleCloseMinutes: v })
+}
+
+let forgetTimer: ReturnType<typeof setTimeout> | null = null
+function onForgetInput() {
+  if (forgetTimer) clearTimeout(forgetTimer)
+  forgetTimer = setTimeout(commitForget, 600)
+}
+function commitForget() {
+  if (forgetTimer) clearTimeout(forgetTimer)
+  const n = Math.round(Number(forgetDraft.value))
+  if (!Number.isFinite(n) || n < 1) {
+    forgetDraft.value = String(local.value?.forgetWaitsDays ?? 7)
+    return
+  }
+  const v = Math.min(n, 365)
+  forgetDraft.value = String(v)
+  if (v !== local.value?.forgetWaitsDays) save({ forgetWaitsDays: v })
 }
 
 const modelValue = computed(() => local.value?.defaultModel ?? NONE)
@@ -460,6 +480,7 @@ onBeforeUnmount(() => {
   stopBridgePoll()
   if (savedTimer) clearTimeout(savedTimer)
   if (idleTimer) clearTimeout(idleTimer)
+  if (forgetTimer) clearTimeout(forgetTimer)
 })
 </script>
 
@@ -644,6 +665,23 @@ onBeforeUnmount(() => {
                     @keydown.enter="commitIdle"
                   />
                   minutes
+                </div>
+
+                <div v-else-if="r.id === 'forgetWaits'" class="flex shrink-0 items-center gap-2 text-ui leading-4.75 text-text-muted">
+                  <input
+                    v-model="forgetDraft"
+                    type="number"
+                    min="1"
+                    max="365"
+                    class="tnum h-7 w-16 rounded-(--radius-6) bg-fill-5 px-2 text-end text-ui text-text shadow-[inset_0_0_0_1px_var(--border)] outline-none [appearance:textfield] focus:shadow-(--focus-ring) [&::-webkit-inner-spin-button]:appearance-none"
+                    aria-label="Forget waits after days"
+                    :disabled="!local.forgetWaits"
+                    @input="onForgetInput"
+                    @blur="commitForget"
+                    @keydown.enter="commitForget"
+                  />
+                  days
+                  <PaneSwitch label="Forget old waits" :model-value="local.forgetWaits" @update:model-value="(v: boolean) => save({ forgetWaits: v })" />
                 </div>
 
                 <PaneSwitch

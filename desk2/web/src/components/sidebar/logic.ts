@@ -534,6 +534,13 @@ export function sourceLabel(source: ExternalSession['source']): string {
   return { desktop: 'Claude Desktop', cli: 'Claude Code CLI', climayte: 'CliMayte', codex: 'Codex', chatgpt: 'ChatGPT', other: 'Another app' }[source]
 }
 
+/** sourceLabel for a listed chat: a Claude Code cloud session or claude.ai Project thread comes as 'other', yet is Claude's. */
+export function sessionSourceLabel(s: Pick<ExternalSession, 'source' | 'app' | 'cloudProject'>): string {
+  if (s.cloudProject) return `claude.ai Project ${s.cloudProject}`
+  if (s.source === 'other' && s.app === 'claude') return 'Claude Code cloud'
+  return sourceLabel(s.source)
+}
+
 /**
  * The status dot. The real language: idle is a hollow ring, running a solid blinking dot. Yellow is
  * for what needs the owner: a question or permission (pulsing). A finished turn not looked at yet is

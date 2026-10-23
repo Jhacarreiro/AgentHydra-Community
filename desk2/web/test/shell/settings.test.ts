@@ -8,7 +8,7 @@ describe('settings search', () => {
   it('shows one section under its group headings when the box is empty', () => {
     expect(settingsGroups('general', '  ').map((g) => [g.heading, g.rows.map((r) => r.id)])).toEqual([
       ['New chats', ['model', 'effort', 'permission']],
-      ['Behaviour', ['notifications', 'idle', 'collapseMode']],
+      ['Behaviour', ['notifications', 'idle', 'collapseMode', 'forgetWaits']],
       ['AgentHydra pages', ['ahTooltips', 'ahPrivacy']]
     ])
     expect(settingsGroups('managers', '  ').map((g) => [g.heading, g.rows.map((r) => r.id)])).toEqual([

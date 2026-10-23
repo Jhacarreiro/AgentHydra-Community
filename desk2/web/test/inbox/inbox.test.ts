@@ -63,6 +63,14 @@ describe('what waits on the owner, in which order', () => {
     expect(keys({ external })).toEqual(['today'])
   })
 
+  test('Forget old waits leaves out outside sessions quiet for longer than its days, but not Desk chats', () => {
+    const DAY = 24 * 60 * MIN
+    const external = [session('recent', { status: 'needs_you', lastActivityAt: NOW - 2 * DAY }), session('weeks', { status: 'needs_you', lastActivityAt: NOW - 15 * DAY })]
+    const chats = [chat('desk-old', { status: 'needs_you', lastActionAt: NOW - 30 * DAY })]
+    expect(keys({ chats, external })).toEqual(['desk-old', 'weeks', 'recent'])
+    expect(keys({ chats, external, forgetAfterMs: 7 * DAY })).toEqual(['desk-old', 'recent'])
+  })
+
   test('a session Desk runs as one of its own chats is listed once, as that chat', () => {
     expect(keys({ chats: [chat('desk', { sessionId: 's1', unread: true })], external: [session('s1')] })).toEqual(['desk'])
   })
@@ -214,8 +222,9 @@ describe('the queue moving on', () => {
     expect(inbox.entries.value.map((e) => e.key)).toEqual(['b', 'a'])
   })
 
-  test('Done takes an outside session out until it writes again', async () => {
-    const { world, inbox, tick } = setup([], [session('s1', { lastActivityAt: NOW - 2 * MIN }), session('s2', { lastActivityAt: NOW - MIN })])
+  test('Done takes an outside session out until it writes again, though it still reads as waiting', async () => {
+    // A claude.ai Project thread resolved there can read blocked for weeks: Done is how it stops waiting here.
+    const { world, inbox, tick } = setup([], [session('s1', { status: 'needs_you', lastActivityAt: NOW - 2 * MIN }), session('s2', { lastActivityAt: NOW - MIN })])
     inbox.start()
     await nextTick()
     expect(world.selected).toEqual({ kind: 'external', id: 's1' })
@@ -226,7 +235,8 @@ describe('the queue moving on', () => {
     expect(inbox.waiting.value.map((e) => e.key)).toEqual(['s2'])
     world.external[0]!.lastActivityAt = NOW + 5 * MIN
     await nextTick()
-    expect(inbox.waiting.value.map((e) => e.key)).toEqual(['s2', 's1'])
+    // Written again, it waits again, first as a stopped agent.
+    expect(inbox.waiting.value.map((e) => e.key)).toEqual(['s1', 's2'])
   })
 
   test('a conversation answered from somewhere else moves the queue on', async () => {

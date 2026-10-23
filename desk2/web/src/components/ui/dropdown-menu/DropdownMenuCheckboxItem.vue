@@ -28,7 +28,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
       'focus:bg-fill-hover focus:text-text focus:**:text-text min-h-7 gap-2 rounded-md py-1.5 pe-8 ps-2 text-xs data-inset:ps-7.5 [&_svg:not([class*=size-])]:size-3.5 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0',
       props.class,
       // Last, so a caller's px-* cannot take the gutter the indicator below sits in (2026-10-12: MENU_ITEM's px-2 put
-      // the check on the end of 'Enable compact mode').
+      // the check on the end of 'Compact mode').
       'pe-8',
     )"
   >

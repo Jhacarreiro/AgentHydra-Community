@@ -110,6 +110,7 @@ export function toCloudSession(r: AhCloudRow): CloudSession {
     effort: r.effort ?? null,
     instanceNum: typeof r.instance_num === 'number' ? r.instance_num : null,
     ...(cloudProject ? { cloudProject } : {}),
+    ...(r.source === 'foreign' && r.tool === 'claude-cloud' ? { app: 'claude' } : {}),
   }
 }
 

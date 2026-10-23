@@ -4,7 +4,7 @@
 // the server places it on: a copy there) and resumes it.
 import type { AccountInfo, AccountRef, ChatPatch, ChatSummary, ExternalSession } from '@shared/protocol'
 import { accountLabel } from '@/components/accounts/format'
-import { sourceLabel } from '@/components/sidebar/logic'
+import { sessionSourceLabel } from '@/components/sidebar/logic'
 
 export const EXTERNAL_CHAT_PREFIX = 'ext:'
 /** The machine's own ~/.claude login's account id. */
@@ -124,6 +124,6 @@ export function externalChat(s: ExternalSession, accounts: AccountInfo[], patch:
 }
 
 /** 'Claude Desktop (eek)': where it runs, for the quiet bar while it works there. */
-export function whereLabel(s: Pick<ExternalSession, 'source' | 'instance'>): string {
-  return `${sourceLabel(s.source)}${s.instance ? ` (${s.instance})` : ''}`
+export function whereLabel(s: Pick<ExternalSession, 'source' | 'instance' | 'app' | 'cloudProject'>): string {
+  return `${sessionSourceLabel(s)}${s.instance ? ` (${s.instance})` : ''}`
 }

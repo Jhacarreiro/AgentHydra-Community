@@ -7,6 +7,9 @@
 // never opened here counts only when it wrote in the last day, so turning the queue on does not bring back every old
 // session. No filtering by what the messages say.
 //
+// DONE. Done on an outside session that waits on a question or a review leaves it out until it writes again: claude.ai
+// does not say a Project thread was resolved, and such a thread can read blocked for weeks (owner, 2026-10-22).
+//
 // HELD. Once the queue has a conversation it keeps it until it is answered, marked Done or runs again, though opening it
 // marked it read and Later or Next moved past it (`held`, kept by state.ts).
 //
@@ -15,7 +18,7 @@
 // screen. Later puts one at the very end, behind everything that waits, in the order Later was pressed.
 import type { ChatStatus, ChatSummary, ExternalSession } from '@shared/protocol'
 import type { View } from '@/components/shell/logic'
-import { sourceLabel } from '@/components/sidebar/logic'
+import { sessionSourceLabel } from '@/components/sidebar/logic'
 import { isExternalChatId, NEW_CHATGPT, sessionOfChatId } from '@/components/external/logic'
 
 /** An outside session never opened here counts as waiting only when it wrote this recently. */
@@ -60,7 +63,7 @@ function externalEntry(s: ExternalSession): InboxEntry {
     key: s.id,
     view: { kind: 'external', id: s.id },
     title: s.title,
-    source: sourceLabel(s.source),
+    source: sessionSourceLabel(s),
     blocking: s.status === 'needs_you',
     since: s.lastActivityAt ?? 0,
     busy: s.status === 'working'
@@ -72,8 +75,10 @@ function chatWaits(c: ChatSummary): boolean {
   return c.status === 'needs_you' || (c.unread && ENDED.includes(c.status))
 }
 
-function externalWaits(s: ExternalSession, seen: ReadonlyMap<string, number>, now: number): boolean {
+function externalWaits(s: ExternalSession, seen: ReadonlyMap<string, number>, done: ReadonlyMap<string, number>, now: number): boolean {
   if (s.archived || s.id === NEW_CHATGPT) return false
+  const doneAt = done.get(s.id)
+  if (doneAt !== undefined && (s.lastActivityAt ?? 0) <= doneAt) return false
   if (s.status === 'needs_you') return true
   if (s.status === 'working' || s.lastActivityAt === null) return false
   if (s.unread) return true
@@ -86,6 +91,8 @@ export interface InboxInputs {
   external: readonly ExternalSession[]
   /** When the owner last looked at each outside session here, ms. */
   seen: ReadonlyMap<string, number>
+  /** When Done was pressed on each outside session, ms: it waits again only once it writes after that. */
+  done?: ReadonlyMap<string, number>
   /** When Later was pressed on each conversation, ms. */
   later: ReadonlyMap<string, number>
   /** Conversations just answered whose answer is still on its way (or just went): left out until it lands. */
@@ -93,8 +100,12 @@ export interface InboxInputs {
   /** Conversations the queue already holds, each with when it took it (a running number): kept while they are not
    *  running again, though opening one marked it read and Later or Next moved past it. */
   held: ReadonlyMap<string, number>
+  /** Outside conversations quiet for longer than this, ms, wait on no one; null keeps them all. */
+  forgetAfterMs?: number | null
   now: number
 }
+
+const NONE: ReadonlyMap<string, number> = new Map()
 
 /** Everything waiting on the owner, in the order the queue walks it. */
 export function inboxEntries(i: InboxInputs): InboxEntry[] {
@@ -108,7 +119,8 @@ export function inboxEntries(i: InboxInputs): InboxEntry[] {
   for (const s of i.external) {
     // A session Desk runs as one of its own chats is that chat.
     if (desk.has(s.id) || i.answered.has(s.id)) continue
-    if (externalWaits(s, i.seen, i.now) || (i.held.has(s.id) && s.status !== 'working' && !s.archived)) out.push(externalEntry(s))
+    if (i.forgetAfterMs != null && s.lastActivityAt !== null && i.now - s.lastActivityAt > i.forgetAfterMs) continue
+    if (externalWaits(s, i.seen, i.done ?? NONE, i.now) || (i.held.has(s.id) && s.status !== 'working' && !s.archived)) out.push(externalEntry(s))
   }
   return out.sort((a, b) => {
     const la = i.later.get(a.key)

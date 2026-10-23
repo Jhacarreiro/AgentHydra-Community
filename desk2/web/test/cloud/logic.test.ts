@@ -437,6 +437,10 @@ describe('remoteSessions', () => {
       ['y-chat', 'PC-Y', 'codex', null, 'idle', 10]
     ])
   })
+  test("another PC's cloud Claude Code session keeps its app and claude.ai Project", () => {
+    const cloud = [row('project-thread', 'PC-X', { source: 'foreign', app: 'claude', cloudProject: 'Example' })]
+    expect(remoteSessions(cloud, new Set(), 'MY-PC', null).map((s) => [s.source, s.app, s.cloudProject])).toEqual([['other', 'claude', 'Example']])
+  })
   test('the Computer filter leaves out the PCs it does not keep', () => {
     expect(remoteSessions(rows, listed, 'MY-PC', ['MY-PC', 'PC-X']).map((s) => s.id)).toEqual(['x-chat'])
     expect(remoteSessions(rows, listed, 'MY-PC', ['MY-PC'])).toEqual([])

@@ -18,6 +18,10 @@ export function useInbox(): Inbox {
     selected: () => desk.selected.value,
     select: (view) => desk.select(view),
     markRead: (id) => void desk.updateChat(id, { unread: false }).catch(() => {}),
+    forgetAfterMs: () => {
+      const s = desk.settings.value
+      return s?.forgetWaits ? s.forgetWaitsDays * 86_400_000 : null
+    },
     storage: typeof localStorage === 'undefined' ? null : localStorage
   })
   setInboxHolder({ holds: made.holds, hold: made.hold })

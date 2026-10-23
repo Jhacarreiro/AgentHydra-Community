@@ -91,7 +91,8 @@ const BTN = `${BTN_SHAPE} text-text`
     <!-- The four view toggles (Cloud sessions, CliMayte tasks, the details, compact mode) are items here, each checked while on
          (owner, 2026-10-12). A check mark shows the state; choosing one emits what its button did and the menu stays open, as
          the cloud filter's items do (owner, 2026-10-12: "don't close this menu when I select something so I can click
-         through them faster"). Labels are the tooltips they replace, so they name the state too. It opens to the right of
+         through them faster"). Each label names the view and the tick alone says whether it is on (owner, 2026-10-22: "Disable cloud sessions ✓" read as
+         neither on nor off). It opens to the right of
          the button with a small dark shadow that shows on the dark window, where the menus' soft 24px one is lost (owner,
          2026-10-12: "fly out to the right of the icon ... add a tiny shadow to the flyout"). -->
     <Tip label="More options">
@@ -104,16 +105,16 @@ const BTN = `${BTN_SHAPE} text-text`
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" :class="[MENU_CONTENT, 'shadow-[inset_0_0_0_1px_#ffffff1a,0_2px_8px_#000000a6]']" @open-auto-focus="focusFirstItem">
           <DropdownMenuCheckboxItem :class="MENU_ITEM" :model-value="!!cloudOn" @select.prevent="emit('cloud')">
-            <Cloud class="size-4" />{{ cloudOn ? 'Disable cloud sessions' : 'Enable cloud sessions' }}
+            <Cloud class="size-4" />Cloud sessions
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem :class="MENU_ITEM" :model-value="!!tasksOn" @select.prevent="emit('tasks')">
-            <component :is="shellIcons.climayte" class="size-4" />{{ tasksOn ? 'Hide CliMayte tasks' : 'Show CliMayte tasks' }}
+            <component :is="shellIcons.climayte" class="size-4" />CliMayte tasks
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem :class="MENU_ITEM" :model-value="!cleanOn" @select.prevent="emit('clean')">
-            <component :is="shellGlyphs.cleanSidebar" class="size-4" />{{ cleanOn ? 'Show more details' : 'Show fewer details' }}
+            <component :is="shellGlyphs.cleanSidebar" class="size-4" />More details
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem :class="MENU_ITEM" :model-value="!!compactOn" @select.prevent="emit('compact')">
-            <Rows3 class="size-4" />{{ compactOn ? 'Disable compact mode' : 'Enable compact mode' }}
+            <Rows3 class="size-4" />Compact mode
           </DropdownMenuCheckboxItem>
         </DropdownMenuContent>
       </DropdownMenu>

@@ -11,7 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/compon
 import { Tip } from '@/components/ui/tooltip'
 import { createReusableTemplate } from '@vueuse/core'
 import { useFirstInterest } from '@/lib/first-interest'
-import { externalGlyph, externalRename, externalRow, glyphDotClass, rowMenu, sourceLabel, type RowMenuEntry, type RowMenuItem, type StatusGlyph } from './logic'
+import { externalGlyph, externalRename, externalRow, glyphDotClass, rowMenu, sessionSourceLabel, type RowMenuEntry, type RowMenuItem, type StatusGlyph } from './logic'
 import ProjectRing from './ProjectRing.vue'
 import RowMenuList from './RowMenuList.vue'
 import AudioButton from './AudioButton.vue'
@@ -59,7 +59,7 @@ const emit = defineEmits<{ select: [e: MouseEvent | KeyboardEvent]; action: [ite
 const lit = computed(() => props.picked ?? props.selected)
 
 const glyph = computed(() => props.dot ?? externalGlyph(props.session))
-const source = computed(() => sourceLabel(props.session.source))
+const source = computed(() => sessionSourceLabel(props.session))
 const speaker = computed(() => isMuted(props.session.id) || isAudible(props.session.id))
 /** Room at the row's right end: for the three dots (and the speaker) on hover in compact mode; always otherwise, where the status dot sits. */
 const extrasPad = computed(() =>

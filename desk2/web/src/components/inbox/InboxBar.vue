@@ -49,7 +49,7 @@ const BTN =
       <span v-else-if="!entries.length" class="text-ui text-text-muted">Nothing is waiting on you. New ones show up here as they stop.</span>
 
       <div class="ms-auto flex items-center gap-0.5">
-        <button v-if="current && !current.blocking" type="button" :class="BTN" title="Nothing to answer: leave the queue until it writes again" @click="inbox.done()">
+        <button v-if="current && (!current.blocking || current.view.kind === 'external')" type="button" :class="BTN" title="Nothing to answer: leave the queue until it writes again" @click="inbox.done()">
           <Check class="size-3.5" />Done
         </button>
         <button v-if="current" type="button" :class="BTN" title="To the end of the queue" @click="inbox.later()">
