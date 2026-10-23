@@ -13,7 +13,7 @@
   "bugs": {
     "url": "https://github.com/Jhacarreiro/AgentHydra-Community/issues"
   },
-  "version": "2026.10.5",
+  "version": "2026.10.6",
   "workspaces": ["server", "web", "hydra"],
   "scripts": {
     "dev": "bun run --parallel dev:server dev:web",

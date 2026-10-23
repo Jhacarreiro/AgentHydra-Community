@@ -9,6 +9,8 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+## [2026.10.6] - 2026-10-23
+
 **TL;DR**
 
 - **A Claude Code cloud session says so, not "Another app"**
@@ -16,7 +18,7 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 - **Done in Waiting on you clears a conversation stuck as waiting**
 - **Settings can forget waits older than a number of days**
 
-**Everything in Unreleased**
+**Everything in 2026.10.6**
 
 - **Cloud sessions named.** A Claude Code cloud session or claude.ai Project thread said "Running in Another app" in its chat view, its row and Waiting on you. It now says Claude Code cloud, or the claude.ai Project it belongs to.
 - **Clear view switches.** The ⋮ menu by the sidebar said "Disable cloud sessions" with a tick, which read as neither on nor off. Its items are now Cloud sessions, CliMayte tasks, More details and Compact mode, each ticked while on.
