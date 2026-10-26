@@ -72,6 +72,16 @@ export function patchTrayConfig(raw, { appRoot, compiledExe }) {
     const parsed = JSON.parse(raw)
     parsed.appRoot = appRoot
     parsed.compiledExe = compiledExe
+    // The shipped commands name the app's own files from misc\ (`..\desk2\...`). A materialized
+    // host sits elsewhere, so those paths are made absolute against the app's real root.
+    for (const key of ['openCommand', 'quitCommand']) {
+      const command = parsed[key]
+      if (!command || typeof command !== 'object') continue
+      const fromRoot = (v) =>
+        typeof v === 'string' && v.startsWith('..\\') ? `${appRoot.replace(/[\\/]+$/, '')}\\${v.slice(3)}` : v
+      if (Array.isArray(command.args)) command.args = command.args.map(fromRoot)
+      if ('requires' in command) command.requires = fromRoot(command.requires)
+    }
     return `${JSON.stringify(parsed, null, 2)}\n`
   } catch {
     return raw

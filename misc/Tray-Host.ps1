@@ -203,6 +203,8 @@ function Start-TrayHost($Config) {
   # revive, no balloon). a sibling app's OLD watchdog had no such gate — it unconditionally relaunched
   # on any health-check failure — so its adapter sets this $false to keep that parity.
   $watchdogRequiresOwnership = Get-TrayConfigValue $Config 'WatchdogRequiresOwnership' $true
+  # A script Quit runs to close what the app runs beside its daemon (quitCommand in the native host).
+  $quitScript = Get-TrayConfigValue $Config 'QuitScript' $null
 
   # Shutdown protocol flavor: token+HTTP (DevWebUI/a sibling app) vs force-kill (ReDesign/RepoYeti).
   $tokenEnvVar   = $Config.ShutdownTokenEnvVar       # $null ⇒ no graceful token shutdown
@@ -1095,8 +1097,15 @@ function Start-TrayHost($Config) {
     if ($watchTimer) { try { $watchTimer.Stop() } catch {} }
     $script:shared.cancel = $true
     $pollTimer.Stop()
+    # Quit closes the whole app: what it runs beside the daemon (QuitScript) goes too, not waited on.
+    if ($quitScript -and (Test-Path -LiteralPath $quitScript)) {
+      try { Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$quitScript`"") -WindowStyle Hidden } catch {}
+    }
+    # A daemon this tray attached to is still the app's when the watchdog revives it anyway
+    # (WatchdogRequiresOwnership = $false): Quit stops it too, or the app comes back by itself.
+    $ownsDaemon = $script:startedByUs -or -not $watchdogRequiresOwnership
     # Token apps: best-effort graceful shutdown of OUR own daemon, bounded (3s) so Quit can't hang.
-    if ($useToken -and $script:startedByUs) {
+    if ($useToken -and $ownsDaemon) {
       try { Invoke-DaemonShutdown $script:url $script:shutdownToken $headerPrefix 3 | Out-Null } catch {}
     }
     # If a job is in flight, reap what the worker spawned (build + a daemon that may not have bound
@@ -1125,7 +1134,7 @@ function Start-TrayHost($Config) {
     if (-not $useToken) {
       Stop-DaemonHere $true
       Clear-RunSentinels $crashSentinelDir
-    } elseif ($script:startedByUs) {
+    } elseif ($ownsDaemon) {
       Stop-DaemonHere $true $true
       Clear-RunSentinels $crashSentinelDir
     }
