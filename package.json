@@ -1,7 +1,7 @@
 {
   "name": "agenthydra",
   "private": true,
-  "version": "2026.10.6",
+  "version": "2026.10.7",
   "license": "MIT",
   "description": "AgentHydra Community: every local AI coding session (Claude Code, Codex, OpenCode) in one window and one dashboard. A community fork of AgentHydra.",
   "author": "AgentHydra Community contributors",
