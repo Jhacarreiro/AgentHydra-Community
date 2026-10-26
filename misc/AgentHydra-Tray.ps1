@@ -106,6 +106,8 @@ $TrayConfig = @{
   # (which stands the watchdog down for an attached instance owned by another session) to preserve
   # that parity: an attached daemon crashing still gets revived by this tray.
   WatchdogRequiresOwnership = $false
+  # Quit closes the window and stops Desk 2's server too, as the native host's quitCommand does.
+  QuitScript           = Join-Path $appRoot "desk2\launcher\quit.ps1"
   SelfTestMarker       = "AGENTHYDRA_TRAY_SELFTEST"
   MenuOpenLabel        = "Open AgentHydra"
   MutexName            = "AgentHydraTrayHost"

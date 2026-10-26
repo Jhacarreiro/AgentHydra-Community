@@ -72,6 +72,16 @@ export function patchTrayConfig(raw, { appRoot, compiledExe }) {
     const parsed = JSON.parse(raw)
     parsed.appRoot = appRoot
     parsed.compiledExe = compiledExe
+    // The shipped commands name the app's own files from misc\ (`..\desk2\...`). A materialized
+    // host sits elsewhere, so those paths are made absolute against the app's real root.
+    for (const key of ['openCommand', 'quitCommand']) {
+      const command = parsed[key]
+      if (!command || typeof command !== 'object') continue
+      const fromRoot = (v) =>
+        typeof v === 'string' && v.startsWith('..\\') ? `${appRoot.replace(/[\\/]+$/, '')}\\${v.slice(3)}` : v
+      if (Array.isArray(command.args)) command.args = command.args.map(fromRoot)
+      if ('requires' in command) command.requires = fromRoot(command.requires)
+    }
     return `${JSON.stringify(parsed, null, 2)}\n`
   } catch {
     return raw
@@ -288,7 +298,9 @@ export function trayHostDecision(input) {
  *  still reported success. The config argument is resolved by the host against ITS OWN exe
  *  directory, so the bare filename is exactly what a shortcut passes. */
 function defaultSpawnHost(exe, cwd, configFile) {
-  const child = spawn(exe, [configFile], { cwd, detached: true, stdio: 'ignore' })
+  // --background: the host only puts its icon up. Without it the host opens the app's window too, so
+  // a person who closed the app had it reopen by itself each time the daemon put the icon back.
+  const child = spawn(exe, [configFile, '--background'], { cwd, detached: true, stdio: 'ignore' })
   child.unref()
 }
 

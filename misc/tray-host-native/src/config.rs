@@ -79,6 +79,9 @@ pub struct Config {
     /// What Open runs instead of opening the daemon's URL, for an app whose window is its own
     /// native host rather than a browser page (AgentHydra opens Hydra Desk 2 this way).
     pub open_command: Option<OpenCommand>,
+    /// `"quitCommand"`, the same shape as `openCommand`: what Quit runs, without waiting, to close
+    /// what the app runs beside its daemon (a window, a second server). `{URL}` is not filled in.
+    pub quit_command: Option<OpenCommand>,
 
     /// Optional EXTRA menu item that POSTs to the live daemon. For apps that supervise work the
     /// daemon owns (DevWebUI's managed dev servers) rather than just the daemon itself: Restart and
@@ -280,7 +283,11 @@ fn resolve_is_dev_tree(v: &Json) -> bool {
 /// A malformed value (no `exe`, a non-string arg) degrades to "feature off": Open then shows the
 /// daemon's URL as it always has, never a half-built command.
 fn resolve_open_command(v: &Json, script_dir: &Path) -> Option<OpenCommand> {
-    let spec = v.get("openCommand")?;
+    resolve_command(v, "openCommand", script_dir)
+}
+
+fn resolve_command(v: &Json, key: &str, script_dir: &Path) -> Option<OpenCommand> {
+    let spec = v.get(key)?;
     let exe = PathBuf::from(expand(spec.str_at("exe").filter(|s| !s.is_empty())?));
     let args = match spec.get("args") {
         None => Vec::new(),
@@ -375,6 +382,7 @@ impl Config {
         let size = resolve_window_size(v);
         let start_env = resolve_start_env(v);
         let open_command = resolve_open_command(v, &script_dir);
+        let quit_command = resolve_command(v, "quitCommand", &script_dir);
 
         Ok(Config {
             display_name: need("displayName")?,
@@ -428,6 +436,7 @@ impl Config {
             portable_window_size: size,
             portable_window_size_hint: v.flag_at("portableWindowSizeHint"),
             open_command,
+            quit_command,
             action_path: opt_string(v.str_at("actionPath")),
             action_label: v.str_at("actionLabel").unwrap_or("Run action").to_string(),
             action_ok_text: v.str_at("actionOkText").unwrap_or("Done.").to_string(),

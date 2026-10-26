@@ -759,9 +759,18 @@ fn quit_app(hwnd: HWND) {
         let _ = std::fs::remove_file(path);
     }
     a.cancel.store(true, Ordering::Relaxed);
+    // Quit closes the whole app: what the app runs beside the daemon (AgentHydra's window and its
+    // Desk server) goes with it. Not waited on, so Quit stays quick.
+    if let Some(q) = a.cfg.quit_command.as_ref().filter(|q| q.ready()) {
+        crate::win::spawn_in(&q.exe, &q.args, &q.cwd);
+    }
 
     let use_token = !a.token.is_empty();
-    let owned = a.started_by_us.load(Ordering::Relaxed);
+    // A daemon this tray attached to is still the app's when the app lets the watchdog revive it
+    // (watchdogRequiresOwnership = false): Quit stops it too. Left running, AgentHydra's daemon
+    // sees its icon gone, starts a new tray, and the app comes back by itself. That is every Quit
+    // after an auto-update, whose relaunched daemon no tray started (2026-10-25).
+    let owned = a.started_by_us.load(Ordering::Relaxed) || !a.cfg.watchdog_requires_ownership;
 
     // A short graceful POST first, so a daemon that can close cleanly does. Bounded at 3s: Quit
     // must never feel like a hang, and the force-kill below is the guaranteed backstop.

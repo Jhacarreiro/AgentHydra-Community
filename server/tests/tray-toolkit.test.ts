@@ -91,6 +91,28 @@ describe('patchTrayConfig', () => {
     expect(out.iconFile).toBe('x.ico')
   })
 
+  test("the window's commands keep naming the app's own files", () => {
+    const shipped = JSON.stringify({
+      openCommand: {
+        exe: 'wscript.exe',
+        args: ['//B', '..\\desk2\\launcher\\start.vbs'],
+        requires: '..\\desk2\\launcher\\start.vbs',
+      },
+      quitCommand: {
+        exe: 'powershell.exe',
+        args: ['-File', '..\\desk2\\launcher\\quit.ps1'],
+        requires: '..\\desk2\\launcher\\quit.ps1',
+      },
+    })
+    const out = JSON.parse(
+      patchTrayConfig(shipped, { appRoot: 'D:\\Downloads\\', compiledExe: 'AgentHydra.exe' }),
+    )
+    expect(out.openCommand.args).toEqual(['//B', 'D:\\Downloads\\desk2\\launcher\\start.vbs'])
+    expect(out.quitCommand.args).toEqual(['-File', 'D:\\Downloads\\desk2\\launcher\\quit.ps1'])
+    expect(out.quitCommand.requires).toBe('D:\\Downloads\\desk2\\launcher\\quit.ps1')
+    expect(out.openCommand.exe).toBe('wscript.exe')
+  })
+
   test('unparseable JSON comes back untouched rather than throwing', () => {
     // A tray with a stale appRoot still shows its icon; a daemon that refuses to boot over a
     // malformed sidecar shows nothing at all.
