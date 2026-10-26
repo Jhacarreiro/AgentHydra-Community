@@ -9,6 +9,8 @@ numbered by date, YYYY.M.PATCH, starting at 2026.10.0.
 
 ## [Unreleased]
 
+- **Closing AgentHydra keeps it closed.** Quit in the tray left the AgentHydra service running after an update, and the service then put the icon back and reopened the window by itself every 30 seconds. Quit now stops the service too, and an icon the service puts back no longer opens the window.
+
 ## [2026.10.6] - 2026-10-23
 
 **TL;DR**

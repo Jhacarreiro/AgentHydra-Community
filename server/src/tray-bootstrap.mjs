@@ -288,7 +288,9 @@ export function trayHostDecision(input) {
  *  still reported success. The config argument is resolved by the host against ITS OWN exe
  *  directory, so the bare filename is exactly what a shortcut passes. */
 function defaultSpawnHost(exe, cwd, configFile) {
-  const child = spawn(exe, [configFile], { cwd, detached: true, stdio: 'ignore' })
+  // --background: the host only puts its icon up. Without it the host opens the app's window too, so
+  // a person who closed the app had it reopen by itself each time the daemon put the icon back.
+  const child = spawn(exe, [configFile, '--background'], { cwd, detached: true, stdio: 'ignore' })
   child.unref()
 }
 
