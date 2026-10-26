@@ -101,6 +101,7 @@ const LAUNCHER_FILES = [
   'start.ps1',
   'stop.ps1',
   'restart.ps1',
+  'quit.ps1',
   'install-shortcuts.ps1',
 ]
 

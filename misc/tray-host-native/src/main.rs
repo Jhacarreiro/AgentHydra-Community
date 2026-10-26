@@ -759,6 +759,11 @@ fn quit_app(hwnd: HWND) {
         let _ = std::fs::remove_file(path);
     }
     a.cancel.store(true, Ordering::Relaxed);
+    // Quit closes the whole app: what the app runs beside the daemon (AgentHydra's window and its
+    // Desk server) goes with it. Not waited on, so Quit stays quick.
+    if let Some(q) = a.cfg.quit_command.as_ref().filter(|q| q.ready()) {
+        crate::win::spawn_in(&q.exe, &q.args, &q.cwd);
+    }
 
     let use_token = !a.token.is_empty();
     // A daemon this tray attached to is still the app's when the app lets the watchdog revive it
